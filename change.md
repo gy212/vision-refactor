@@ -1,3 +1,10 @@
+## 2026-10-03（America/Los_Angeles）: [docs] 本地代理端口改为 7879
+
+- 问题描述：本地代理已从 7890 换到 7879：Windows 系统代理为 `127.0.0.1:7879`，7890 拒绝连接。AGENTS.md"环境与命令"和 P0-基线 第 1 项任务里的代理地址过时。
+- 修改内容：AGENTS.md 4 处、`重构阶段任务/P0-基线.md` 1 处的 `7890` 改为 `7879`；AGENTS.md 注明端口以 Windows 系统代理设置为准。
+- 同步依据：用户本次指示；注册表 `HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings` 的 `ProxyServer`；本日经 7879 的 `git ls-remote`、`git push`、`gh api user` 均成功。
+- 验证方法：除本条记录外，本仓库内不再有 `7890`；按 AGENTS.md 的写法只设置 `HTTP_PROXY`/`HTTPS_PROXY` 环境变量后，`git ls-remote origin` 和 `gh api user` 成功；`git diff --check` 通过。
+
 ## 2026-10-03（America/Los_Angeles）: [chore] 删除与本项目无关的记录，以当前内容重建初始提交
 
 - 问题描述：初始提交 `422b324` 的 change.md 末尾有一条与本项目无关的 2026-10-02 记录（对应文件早已删除），另有三处提到它：2026-09-19 学生练习整理记录、P0 基线整合记录的"来源"一条、P0-基线 任务前检查第 1 项。用户要求全部删除，并以当前内容为基准，保证本仓库的文件和历史里都没有这些内容；外层仓库暂不处理。

@@ -40,12 +40,12 @@
 
 命令在本仓库根运行，按 PowerShell 写；P0 导出代码之前，本仓库还没有代码。用 Git Bash 时，路径写成 `./.venv/Scripts/python.exe`，环境变量用 `export`。
 
-- 联网下载（pip 包、模型 `.task`/`.pt`、GitHub、HuggingFace）一律走本地代理 `http://127.0.0.1:7890`：
+- 联网下载（pip 包、模型 `.task`/`.pt`、GitHub、HuggingFace）一律走本地代理 `http://127.0.0.1:7879`（端口以 Windows 系统代理设置为准）：
 
   ```powershell
-  $env:HTTP_PROXY  = "http://127.0.0.1:7890"
-  $env:HTTPS_PROXY = "http://127.0.0.1:7890"
-  .\.venv\Scripts\python.exe -m pip install -r requirements.txt --proxy http://127.0.0.1:7890
+  $env:HTTP_PROXY  = "http://127.0.0.1:7879"
+  $env:HTTPS_PROXY = "http://127.0.0.1:7879"
+  .\.venv\Scripts\python.exe -m pip install -r requirements.txt --proxy http://127.0.0.1:7879
   ```
 
 - Python 用本仓库的 `.\.venv\Scripts\python.exe`，由 P0 新建（P0-1）；pip 一律用 `python -m pip`。不使用也不修改 `old/.venv`。本仓库的 `.venv` 建好之前，按只读规则用 `D:\DevTools\venvs\vision\Scripts\python.exe` 运行旧代码作参照。
