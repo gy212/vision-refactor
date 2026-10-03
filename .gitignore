@@ -1,0 +1,39 @@
+# Python 与工具
+__pycache__/
+.venv/
+.pytest_cache/
+.hypothesis/
+.idea/
+.trae/
+.claude/
+.kiro/
+
+# 产物根（core/paths.py 解析 models/、templates/、outputs/）：权重与本地产物不入库，运行必需的模板逐个放行
+models/*.task
+models/*.pt
+models/*.onnx
+models/*.engine
+models/*.part
+templates/*
+!templates/online/
+templates/online/*
+!templates/online/直拳_左手.npz
+!templates/online/直拳_右手.npz
+outputs/
+
+# 媒体与打包产物
+*.mp4
+*.avi
+*.zip
+build/
+dist/
+*.exe
+_pip_*.log
+
+# 用户数据与现场样本
+user_prefs.json
+feedback_config.json
+标准样本/
+学员样本/
+标准动作要点/
+标准动作视频--分解版/
