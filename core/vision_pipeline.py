@@ -1,3 +1,4 @@
+"""MediaPipe Tasks 推理封装：infer()/annotate()、骨架与关节角绘制、实时动作标签（P2 拆为 pose/engine、render、live_labels）。"""
 from __future__ import annotations
 
 import os

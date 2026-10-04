@@ -1,3 +1,4 @@
+"""CLI 入口：从标准动作视频生成比对模板（pose33_v3 与 body_core 调试路径）。"""
 from __future__ import annotations
 
 import argparse

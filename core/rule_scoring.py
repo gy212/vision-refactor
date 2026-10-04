@@ -1,3 +1,4 @@
+"""正式规则评分：Pose33 原始序列提取与 8 条散打规则的逐帧判定、扣分汇总。"""
 from __future__ import annotations
 
 from dataclasses import dataclass

@@ -1,3 +1,4 @@
+"""姿态特征：点位有效性 derive_valid_mask、v1/v2/v3 归一化、视角分数与子序列 DTW（P2/P3 按附录 B 拆分）。"""
 from __future__ import annotations
 
 from collections.abc import Callable

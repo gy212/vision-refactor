@@ -1,3 +1,4 @@
+"""批处理入口：批量导出 Pose33 骨架数据与骨架叠加视频。"""
 from __future__ import annotations
 
 import argparse

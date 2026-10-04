@@ -1,3 +1,4 @@
+"""双摄录后处理：片段转码、校验、池级模板比对评分与结果 JSON（P3/P4 按附录 B 拆分）。"""
 from __future__ import annotations
 
 import json

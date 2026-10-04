@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+"""批处理入口：批量计算直拳技术指标（重心、回收速度、发力顺序、拳面角度）并导出。"""
 from __future__ import annotations
 
 import argparse

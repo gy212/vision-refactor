@@ -1,3 +1,4 @@
+"""动作比对：模板加载与契约校验、姿态特征提取、单/双模板与正侧双流的 DTW 比对和模板生成（P3 按附录 B 拆分）。"""
 from __future__ import annotations
 
 import time

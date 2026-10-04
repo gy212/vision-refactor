@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+"""直拳技术指标评估：重心、回收速度、发力顺序与拳面角度（P3 拆入 evaluation/techeval/，原路径保留为门面）。"""
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, is_dataclass, replace

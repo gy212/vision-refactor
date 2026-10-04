@@ -1,3 +1,4 @@
+"""视频写出：open_video_writer 的编码回退与 ffmpeg H.264 转码。"""
 from __future__ import annotations
 
 import subprocess

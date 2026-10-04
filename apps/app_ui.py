@@ -1,3 +1,4 @@
+"""Tk 桌面主程序：实时预览、双摄录制、考试与学生练习入口（P8 拆为 apps/tk/ 的组合根、控制器和视图）。"""
 from __future__ import annotations
 
 import csv

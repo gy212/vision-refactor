@@ -1,3 +1,4 @@
+"""CLI 入口：把待测视频与模板做子序列 DTW 比对并输出分数（含 body_core 调试路径）。"""
 from __future__ import annotations
 
 import argparse
