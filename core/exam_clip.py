@@ -17,7 +17,7 @@ from typing import Any
 import cv2
 import numpy as np
 
-from core.pose_features import find_active_range, motion_energy
+from core.foundation.signal import find_active_range, motion_energy, smooth_1d
 
 
 @dataclass
@@ -45,14 +45,6 @@ def align_frame_counts(front_n: int, side_n: int) -> tuple[int, list[str]]:
             f"frame_align: front={front_n} side={side_n} -> n={n} (trim longer tail)"
         )
     return n, warnings
-
-
-def _smooth_1d(values: np.ndarray, win: int) -> np.ndarray:
-    """轻量移动平均，防单帧能量毛刺；样本不足 win 则原样返回。"""
-    if win < 2 or values.size < win:
-        return values
-    kernel = np.ones(win, dtype=np.float32) / float(win)
-    return np.convolve(values, kernel, mode="same")
 
 
 def estimate_action_range(
@@ -107,7 +99,7 @@ def estimate_action_range(
     start = min(int(round(trim_head_s * fps)), max(0, n // 4))
     end = n
     if energy is not None and energy.size >= 5:
-        e = _smooth_1d(np.asarray(energy, dtype=np.float32), max(3, int(round(0.30 * fps))))
+        e = smooth_1d(np.asarray(energy, dtype=np.float32), max(3, int(round(0.30 * fps))), odd=False, dtype=None)
         thr = float(np.percentile(e, tail_quiet_pct))
         active = np.nonzero(e > thr)[0]
         if active.size:

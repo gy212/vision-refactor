@@ -17,15 +17,7 @@ import cv2
 import mediapipe as mp
 import numpy as np
 
-
-def _angle_deg(a: np.ndarray, b: np.ndarray, c: np.ndarray) -> float:
-    """Return angle ABC (in degrees) using 2D points a,b,c."""
-    ba = a - b
-    bc = c - b
-    denom = (np.linalg.norm(ba) * np.linalg.norm(bc)) + 1e-9
-    cosang = float(np.dot(ba, bc) / denom)
-    cosang = float(np.clip(cosang, -1.0, 1.0))
-    return math.degrees(math.acos(cosang))
+from core.foundation.geometry import angle_deg
 
 
 def _pt2d(lm, w: int, h: int) -> np.ndarray:
@@ -46,14 +38,14 @@ def _finger_extended(lm, w: int, h: int, mcp: int, pip: int, dip: int) -> bool:
     a = _lm2d(lm[mcp], w, h)
     b = _lm2d(lm[pip], w, h)
     c = _lm2d(lm[dip], w, h)
-    return _angle_deg(a, b, c) > 150.0
+    return angle_deg(a, b, c) > 150.0
 
 
 def _finger_curled(lm, w: int, h: int, mcp: int, pip: int, dip: int) -> bool:
     a = _lm2d(lm[mcp], w, h)
     b = _lm2d(lm[pip], w, h)
     c = _lm2d(lm[dip], w, h)
-    return _angle_deg(a, b, c) < 150.0
+    return angle_deg(a, b, c) < 150.0
 
 
 def _is_v_sign(hand_lm, w: int, h: int) -> bool:
@@ -139,7 +131,7 @@ def _classify_pose_actions(landmarks, w: int, h: int) -> list[str]:
         knee = _pt2d(knee_lm, w, h)
         ankle = _pt2d(ankle_lm, w, h)
 
-        ang = _angle_deg(hip, knee, ankle)  # 180 ~= straight
+        ang = angle_deg(hip, knee, ankle)  # 180 ~= straight
         hip_knee_dist = abs((hip[1] - knee[1]) / max(h, 1))  # normalized vertical distance
         return ang < 125.0 and hip_knee_dist < 0.18
 
@@ -450,7 +442,7 @@ class MediaPipePipeline:
             if _visibility(a) < 0.3 or _visibility(b) < 0.3 or _visibility(c) < 0.3:
                 continue
             pa, pb, pc = _pt2d(a, w, h), _pt2d(b, w, h), _pt2d(c, w, h)
-            ang = _angle_deg(pa, pb, pc)
+            ang = angle_deg(pa, pb, pc)
 
             # 加粗重画构成夹角的两条边与三个节点（覆盖在 _draw_pose 的细线之上）。
             # 用与整副骨架（橙 0,140,255 / 绿点）明显不同的高对比色，便于区分夹角。

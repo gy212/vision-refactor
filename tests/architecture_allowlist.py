@@ -50,16 +50,12 @@ CYCLES: dict[str, tuple[int, str]] = {  # v4 规则三件套互相导入：P3 �
 }
 
 PRIVATE: dict[str, tuple[int, str]] = {
-    'analysis/offline_matching_profile.py: core.action_compare._longest_segment': (1, 'P1'),
     'analysis/offline_matching_profile.py: core.action_compare._multi_subsequence_matches': (1, 'P9'),
     'analysis/offline_matching_profile.py: core.action_compare._normalizer_version_from_layout': (1, 'P9'),
     'analysis/offline_matching_profile.py: core.action_compare._runtime_feature_layout': (1, 'P9'),
     'analysis/offline_matching_profile.py: core.action_compare._select_representative_cycle': (1, 'P9'),
-    'analysis/offline_matching_profile.py: core.action_compare._smooth_1d': (1, 'P1'),
-    'analysis/offline_matching_profile.py: core.action_compare._trimmed_mean': (1, 'P1'),
     'apps/camera_capture.py: apps.camera_enum._enumerate_media_foundation_names': (1, 'P5'),
     'core/body_core_compare.py: core.action_compare._assert_feature_layout_match': (1, 'P3'),
-    'core/feedback_geometry.py: core.rule_scoring._angle_deg': (1, 'P1'),
     'core/feedback_geometry.py: core.rule_scoring._rule_feet_parallel': (1, 'P3'),
     'core/feedback_geometry.py: core.rule_scoring._rule_knee_slight_bend': (1, 'P3'),
 }
@@ -97,7 +93,7 @@ PRIMITIVES: dict[str, tuple[int, str]] = {
     'np_load: core/online_matcher.py': (1, 'P3'),
     'np_load: scripts/match_segments_probe.py': (1, 'P9'),
     'rule_math: core/feedback_geometry.py': (11, 'P3'),
-    'rule_math: core/rule_scoring.py': (21, 'P3'),
+    'rule_math: core/rule_scoring.py': (17, 'P3'),
     'subsequence_dtw: analysis/calibrate_body_core.py': (1, 'P9'),
     'subsequence_dtw: analysis/offline_matching_profile.py': (2, 'P9'),
     'subsequence_dtw: apps/match_template.py': (1, 'P3'),
@@ -148,21 +144,18 @@ PRIMITIVES: dict[str, tuple[int, str]] = {
 
 CLONES: dict[str, tuple[int, str]] = {
     'analysis/offline_matching_profile.py::_split_views.<locals>.shrink == core/action_compare.py::compare_video_to_dual_templates.<locals>.shrink': (1, 'P3'),
-    'analysis/tech_eval.py::_angle_deg == core/rule_scoring.py::_angle_deg': (1, 'P1'),
-    'analysis/tech_eval.py::_longest_segment == core/action_compare.py::_longest_segment': (1, 'P1'),
-    'analysis/tech_eval.py::_smooth_1d == core/action_compare.py::_smooth_1d': (1, 'P1'),
 }
 
 MODULE_SIZE: dict[str, tuple[int, str]] = {
     'analysis/bench_annotate_fps.py': (1018, 'P9'),
-    'analysis/offline_matching_profile.py': (825, 'P9'),
-    'analysis/tech_eval.py': (2380, 'P9'),
+    'analysis/offline_matching_profile.py': (821, 'P9'),
+    'analysis/tech_eval.py': (2330, 'P9'),
     'apps/app_ui.py': (5973, 'P8'),
     'apps/camera_warmup.py': (1125, 'P9'),
     'apps/exam_panel.py': (869, 'P8'),
     'apps/feedback_result_panel.py': (1326, 'P8'),
     'apps/recording_postprocess.py': (1169, 'P4'),
-    'core/action_compare.py': (1724, 'P3'),
+    'core/action_compare.py': (1676, 'P3'),
     'core/exam_roster.py': (854, 'P4'),
     'core/feedback_report.py': (1538, 'P8'),
     'core/qwen_coach.py': (916, 'P9'),
@@ -229,4 +222,4 @@ DEFENSIVE_GETATTR: dict[str, tuple[int, str]] = {
     'apps/app_ui.py': (169, 'P8'),
 }
 
-ENTRY_CEILING = 164
+ENTRY_CEILING = 157

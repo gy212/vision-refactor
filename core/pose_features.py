@@ -578,54 +578,6 @@ def normalize_pose_body_core_v1(pose_landmarks) -> np.ndarray | None:
     return out
 
 
-def motion_energy(seq: np.ndarray) -> np.ndarray:
-    # seq: (T, D) with finite values
-    d = np.diff(seq, axis=0)
-    return np.sqrt(np.mean(d * d, axis=1))
-
-
-def find_active_range(energy: np.ndarray, pad: int = 10) -> tuple[int, int]:
-    """
-    Pick the most "active" contiguous segment based on motion energy.
-    Returns (start_frame, end_frame) inclusive, in original frame indices.
-    """
-    if energy.size == 0:
-        return 0, 0
-
-    # Smooth (simple moving average)
-    k = 9
-    if energy.size >= k:
-        kernel = np.ones(k, dtype=np.float32) / k
-        e = np.convolve(energy, kernel, mode="same")
-    else:
-        e = energy
-
-    thr = float(np.percentile(e, 70))
-    active = e > thr
-    if not active.any():
-        return 0, int(energy.size)  # energy is T-1
-
-    best_s = best_e = 0
-    cur_s = None
-    for i, on in enumerate(active.tolist()):
-        if on and cur_s is None:
-            cur_s = i
-        if (not on) and cur_s is not None:
-            cur_e = i - 1
-            if (cur_e - cur_s) > (best_e - best_s):
-                best_s, best_e = cur_s, cur_e
-            cur_s = None
-    if cur_s is not None:
-        cur_e = int(active.size - 1)
-        if (cur_e - cur_s) > (best_e - best_s):
-            best_s, best_e = cur_s, cur_e
-
-    # energy index i corresponds to transition frame i->i+1, so map back to frames
-    start = max(0, best_s - pad)
-    end = min(int(active.size), best_e + 1 + pad)  # end frame index
-    return start, end
-
-
 _DtwCancelSignal = Event | Callable[[], bool]
 
 

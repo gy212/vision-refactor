@@ -82,9 +82,8 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from core.feature_layout import BODY_CORE_V1, POSE33_V3  # noqa: E402
+from core.foundation import find_active_range, motion_energy  # noqa: E402
 from core.pose_features import (  # noqa: E402
-    find_active_range,
-    motion_energy,
     normalize_pose_body_core_v1,
     normalize_pose_xy_v3,
     subsequence_dtw,

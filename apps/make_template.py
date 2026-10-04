@@ -12,9 +12,9 @@ from core.vision_pipeline import MediaPipePipeline, PipelineConfig
 from core.pose_features import (
     DEFAULT_VALID_CONF_THR,
     MEDIAPIPE_VALIDITY_POLICY,
-    motion_energy,
     normalize_pose_xy_v3,
 )
+from core.foundation import motion_energy
 from core.action_compare import (
     TemplateAutoCropReviewRequired,
     analyze_template_auto_crop,

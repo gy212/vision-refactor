@@ -16,6 +16,7 @@ from .pose_features import (
     landmark_names,
     landmarks_missing_for_capabilities,
 )
+from .foundation.geometry import angle_deg, landmark_xy, torso_length
 from .paths import models_dir
 from .vision_pipeline import MediaPipePipeline, PipelineConfig
 
@@ -109,26 +110,6 @@ class RuleScore:
 class Pose33RawSeries:
     landmarks: np.ndarray
     meta: dict
-
-
-def _lm_xy(lm: np.ndarray, idx: int) -> np.ndarray:
-    return lm[idx, :2].astype(np.float32)
-
-
-def _angle_deg(a: np.ndarray, b: np.ndarray, c: np.ndarray) -> float:
-    """计算 ABC 夹角（度），适用于 2D 点。"""
-    ba = a - b
-    bc = c - b
-    denom = float(np.linalg.norm(ba) * np.linalg.norm(bc) + 1e-9)
-    cosang = float(np.dot(ba, bc) / denom)
-    cosang = float(np.clip(cosang, -1.0, 1.0))
-    return float(np.degrees(np.arccos(cosang)))
-
-
-def _torso_len(lm: np.ndarray) -> float:
-    sh = 0.5 * (_lm_xy(lm, L_SHOULDER) + _lm_xy(lm, R_SHOULDER))
-    hip = 0.5 * (_lm_xy(lm, L_HIP) + _lm_xy(lm, R_HIP))
-    return float(np.linalg.norm(sh - hip) + 1e-9)
 
 
 def _valid_frame(mask_row: np.ndarray, idxs: tuple[int, ...]) -> bool:
@@ -315,8 +296,8 @@ def _rule_elbow_front_arm_range(landmarks: np.ndarray, valid_mask: np.ndarray) -
     for i, lm in enumerate(landmarks):
         if not bool(valid[i]):
             continue
-        ang_l = _angle_deg(_lm_xy(lm, L_SHOULDER), _lm_xy(lm, L_ELBOW), _lm_xy(lm, L_WRIST))
-        ang_r = _angle_deg(_lm_xy(lm, R_SHOULDER), _lm_xy(lm, R_ELBOW), _lm_xy(lm, R_WRIST))
+        ang_l = angle_deg(landmark_xy(lm, L_SHOULDER), landmark_xy(lm, L_ELBOW), landmark_xy(lm, L_WRIST))
+        ang_r = angle_deg(landmark_xy(lm, R_SHOULDER), landmark_xy(lm, R_ELBOW), landmark_xy(lm, R_WRIST))
         ok = (90.0 <= ang_l <= 135.0) or (90.0 <= ang_r <= 135.0)
         viol[i] = not ok
     return viol, valid, "前手肘角需在90-135度"
@@ -329,10 +310,10 @@ def _rule_fist_height_near_nose(landmarks: np.ndarray, valid_mask: np.ndarray) -
     for i, lm in enumerate(landmarks):
         if not bool(valid[i]):
             continue
-        nose_y = _lm_xy(lm, NOSE)[1]
-        lw_y = _lm_xy(lm, L_WRIST)[1]
-        rw_y = _lm_xy(lm, R_WRIST)[1]
-        torso = _torso_len(lm)
+        nose_y = landmark_xy(lm, NOSE)[1]
+        lw_y = landmark_xy(lm, L_WRIST)[1]
+        rw_y = landmark_xy(lm, R_WRIST)[1]
+        torso = torso_length(lm)
         tol = 0.08 * torso  # 近似 3cm 宽容（按画面比例）
         ok = (abs(lw_y - nose_y) <= tol) or (abs(rw_y - nose_y) <= tol)
         viol[i] = not ok
@@ -346,14 +327,14 @@ def _rule_back_arm_close(landmarks: np.ndarray, valid_mask: np.ndarray) -> tuple
     for i, lm in enumerate(landmarks):
         if not bool(valid[i]):
             continue
-        mouth = 0.5 * (_lm_xy(lm, MOUTH_L) + _lm_xy(lm, MOUTH_R))
-        torso = _torso_len(lm)
-        center = 0.5 * (_lm_xy(lm, L_SHOULDER) + _lm_xy(lm, R_SHOULDER) + _lm_xy(lm, L_HIP) + _lm_xy(lm, R_HIP))
-        l_ok = (np.linalg.norm(_lm_xy(lm, L_WRIST) - mouth) <= 0.45 * torso) and (
-            np.linalg.norm(_lm_xy(lm, L_ELBOW) - center) <= 0.5 * torso
+        mouth = 0.5 * (landmark_xy(lm, MOUTH_L) + landmark_xy(lm, MOUTH_R))
+        torso = torso_length(lm)
+        center = 0.5 * (landmark_xy(lm, L_SHOULDER) + landmark_xy(lm, R_SHOULDER) + landmark_xy(lm, L_HIP) + landmark_xy(lm, R_HIP))
+        l_ok = (np.linalg.norm(landmark_xy(lm, L_WRIST) - mouth) <= 0.45 * torso) and (
+            np.linalg.norm(landmark_xy(lm, L_ELBOW) - center) <= 0.5 * torso
         )
-        r_ok = (np.linalg.norm(_lm_xy(lm, R_WRIST) - mouth) <= 0.45 * torso) and (
-            np.linalg.norm(_lm_xy(lm, R_ELBOW) - center) <= 0.5 * torso
+        r_ok = (np.linalg.norm(landmark_xy(lm, R_WRIST) - mouth) <= 0.45 * torso) and (
+            np.linalg.norm(landmark_xy(lm, R_ELBOW) - center) <= 0.5 * torso
         )
         viol[i] = not (l_ok or r_ok)
     return viol, valid, "后手应贴近下颌并靠近躯干"
@@ -366,8 +347,8 @@ def _rule_knee_slight_bend(landmarks: np.ndarray, valid_mask: np.ndarray) -> tup
     for i, lm in enumerate(landmarks):
         if not bool(valid[i]):
             continue
-        ang_l = _angle_deg(_lm_xy(lm, L_HIP), _lm_xy(lm, L_KNEE), _lm_xy(lm, L_ANKLE))
-        ang_r = _angle_deg(_lm_xy(lm, R_HIP), _lm_xy(lm, R_KNEE), _lm_xy(lm, R_ANKLE))
+        ang_l = angle_deg(landmark_xy(lm, L_HIP), landmark_xy(lm, L_KNEE), landmark_xy(lm, L_ANKLE))
+        ang_r = angle_deg(landmark_xy(lm, R_HIP), landmark_xy(lm, R_KNEE), landmark_xy(lm, R_ANKLE))
         viol[i] = (ang_l > 170.0) or (ang_r > 170.0)
     return viol, valid, "膝关节应微曲（过直扣分）"
 
@@ -379,8 +360,8 @@ def _rule_stance_width(landmarks: np.ndarray, valid_mask: np.ndarray) -> tuple[n
     for i, lm in enumerate(landmarks):
         if not bool(valid[i]):
             continue
-        foot_w = float(np.linalg.norm(_lm_xy(lm, L_ANKLE) - _lm_xy(lm, R_ANKLE)))
-        shoulder_w = float(np.linalg.norm(_lm_xy(lm, L_SHOULDER) - _lm_xy(lm, R_SHOULDER)))
+        foot_w = float(np.linalg.norm(landmark_xy(lm, L_ANKLE) - landmark_xy(lm, R_ANKLE)))
+        shoulder_w = float(np.linalg.norm(landmark_xy(lm, L_SHOULDER) - landmark_xy(lm, R_SHOULDER)))
         if shoulder_w < 1e-6:
             viol[i] = True
             continue
@@ -396,8 +377,8 @@ def _rule_feet_parallel(landmarks: np.ndarray, valid_mask: np.ndarray) -> tuple[
     for i, lm in enumerate(landmarks):
         if not bool(valid[i]):
             continue
-        v_l = _lm_xy(lm, L_FOOT_INDEX) - _lm_xy(lm, L_HEEL)
-        v_r = _lm_xy(lm, R_FOOT_INDEX) - _lm_xy(lm, R_HEEL)
+        v_l = landmark_xy(lm, L_FOOT_INDEX) - landmark_xy(lm, L_HEEL)
+        v_r = landmark_xy(lm, R_FOOT_INDEX) - landmark_xy(lm, R_HEEL)
         if np.linalg.norm(v_l) < 1e-6 or np.linalg.norm(v_r) < 1e-6:
             viol[i] = True
             continue
@@ -416,17 +397,17 @@ def _rule_punch_elbow_straight(landmarks: np.ndarray, valid_mask: np.ndarray) ->
     for i, lm in enumerate(landmarks):
         if not bool(visible[i]):
             continue
-        torso = _torso_len(lm)
-        ext_l = np.linalg.norm(_lm_xy(lm, L_WRIST) - _lm_xy(lm, L_SHOULDER)) / torso
-        ext_r = np.linalg.norm(_lm_xy(lm, R_WRIST) - _lm_xy(lm, R_SHOULDER)) / torso
+        torso = torso_length(lm)
+        ext_l = np.linalg.norm(landmark_xy(lm, L_WRIST) - landmark_xy(lm, L_SHOULDER)) / torso
+        ext_r = np.linalg.norm(landmark_xy(lm, R_WRIST) - landmark_xy(lm, R_SHOULDER)) / torso
         # 仅在出拳伸展明显时进行判定
         if max(ext_l, ext_r) < 1.05:
             continue
         valid[i] = True
         if ext_l >= ext_r:
-            ang = _angle_deg(_lm_xy(lm, L_SHOULDER), _lm_xy(lm, L_ELBOW), _lm_xy(lm, L_WRIST))
+            ang = angle_deg(landmark_xy(lm, L_SHOULDER), landmark_xy(lm, L_ELBOW), landmark_xy(lm, L_WRIST))
         else:
-            ang = _angle_deg(_lm_xy(lm, R_SHOULDER), _lm_xy(lm, R_ELBOW), _lm_xy(lm, R_WRIST))
+            ang = angle_deg(landmark_xy(lm, R_SHOULDER), landmark_xy(lm, R_ELBOW), landmark_xy(lm, R_WRIST))
         viol[i] = ang < 160.0
     return viol, valid, "出拳时肘应接近伸直"
 
@@ -439,17 +420,17 @@ def _rule_guard_hand(landmarks: np.ndarray, valid_mask: np.ndarray) -> tuple[np.
     for i, lm in enumerate(landmarks):
         if not bool(visible[i]):
             continue
-        torso = _torso_len(lm)
-        ext_l = np.linalg.norm(_lm_xy(lm, L_WRIST) - _lm_xy(lm, L_SHOULDER)) / torso
-        ext_r = np.linalg.norm(_lm_xy(lm, R_WRIST) - _lm_xy(lm, R_SHOULDER)) / torso
+        torso = torso_length(lm)
+        ext_l = np.linalg.norm(landmark_xy(lm, L_WRIST) - landmark_xy(lm, L_SHOULDER)) / torso
+        ext_r = np.linalg.norm(landmark_xy(lm, R_WRIST) - landmark_xy(lm, R_SHOULDER)) / torso
         if max(ext_l, ext_r) < 1.05:
             continue
         valid[i] = True
-        mouth = 0.5 * (_lm_xy(lm, MOUTH_L) + _lm_xy(lm, MOUTH_R))
+        mouth = 0.5 * (landmark_xy(lm, MOUTH_L) + landmark_xy(lm, MOUTH_R))
         if ext_l >= ext_r:
-            guard_dist = float(np.linalg.norm(_lm_xy(lm, R_WRIST) - mouth))
+            guard_dist = float(np.linalg.norm(landmark_xy(lm, R_WRIST) - mouth))
         else:
-            guard_dist = float(np.linalg.norm(_lm_xy(lm, L_WRIST) - mouth))
+            guard_dist = float(np.linalg.norm(landmark_xy(lm, L_WRIST) - mouth))
         viol[i] = guard_dist > 0.6 * torso
     return viol, valid, "出拳时另一手应靠近下颌护防"
 
