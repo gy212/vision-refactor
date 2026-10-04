@@ -1,3 +1,10 @@
+## 2026-10-03（America/Los_Angeles）: [style] 清理 PR #2 全量 diff 的尾随空白，更正此前"diff --check 通过"的记录
+
+- 问题描述：评审对 `origin/main...HEAD` 运行 `git diff --check` 返回 2，有 70 处尾随空白（`analysis/tech_eval.py` 38、`tests/test_force_sequence.py` 14、`tests/test_standard_video.py` 12、`docs/yolo_migration_plan_optimized.md` 4、`tests/test_left_side.py` 2），都来自导入提交 `5574d95`（旧仓库原样带来的）。下面 P0a、P0b 两条记录写的"`git diff --check` 通过"只检查了各自提交的增量，没有对整个 PR diff 检查，那几处说法不成立，以本条为准。另外 P0 文件验收里"change.md 记录"一项没有勾选。
+- 修改内容：4 个 Python 文件删除行尾空格/制表符，不改其他内容；`docs/yolo_migration_plan_optimized.md` 第 3–6 行的 Markdown 硬换行由行尾两空格改为行尾反斜杠，渲染效果不变；`重构阶段任务/P0-基线.md` 勾选 change.md 记录一项。
+- 同步依据：评审意见；`git diff --check origin/main...HEAD` 的输出。`tech_eval.py` 有 5 处尾随空白在 docstring 的空行里，只影响 `__doc__` 的原始文本。
+- 验证方法：清理脚本对每个 Python 文件比较前后的 AST，把字符串常量经 `inspect.cleandoc` 归一后要求完全一致；`git diff --check origin/main` 退出码 0；全量 `pytest tests -q` 958 passed（含 golden、`test_tech_eval_contract`，以及读取该 YOLO 文档的 `test_s5_*`、`test_s6_*`）。以后的 PR 用 `git diff --check origin/main...HEAD` 检查整个 PR。
+
 ## 2026-10-03（America/Los_Angeles）: [docs] 实机测试改为重构完成后统一做，P0 完成
 
 - 问题描述：原安排要求 P0b 交付前、P5 验收时在甲方目标双摄上做 §13.4 实机清单。用户指出重构期间不应把中间版本交给甲方，决定实机测试留到重构完成后统一做，先记为待办。

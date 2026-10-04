@@ -961,12 +961,12 @@ def eval_cog_com(
 ) -> IndicatorResult:
     """
     基于分段质心(CoM)的重心判定（方案3）
-    
+
     优势：
     - 更准确反映全身重心分布
     - 对"上身前倾/后仰"场景更鲁棒
     - 减少单点（髋部）代理带来的偏差
-    
+
     参数说明：
     - com_r_back/com_r_front: CoM投影比例阈值（需重新标定，比髋部阈值更宽松）
     """
@@ -1001,7 +1001,7 @@ def eval_cog_com(
         # 计算支撑面边界（两脚heel/toe）
         left_edges = _foot_edges_x(lm, mask_row, side="L", dir_x=d)
         right_edges = _foot_edges_x(lm, mask_row, side="R", dir_x=d)
-        
+
         if left_edges is None or right_edges is None:
             unknown += 1
             continue
@@ -1009,7 +1009,7 @@ def eval_cog_com(
         support_back = float(min(left_edges[0], right_edges[0]))
         support_front = float(max(left_edges[1], right_edges[1]))
         denom = float(support_front - support_back)
-        
+
         if denom < 0.02:
             unknown += 1
             continue
@@ -1026,7 +1026,7 @@ def eval_cog_com(
             center += 1
 
     valid = forward + backward + center
-    
+
     # 计算com_ratio统计信息
     com_stats = {}
     if com_ratios:
@@ -1380,19 +1380,19 @@ def _detect_extension_events(
 
 
 def _eval_cog_side_prefer_punch_windows(
-    landmarks: np.ndarray, 
-    *, 
+    landmarks: np.ndarray,
+    *,
     fps: float,
     use_com: bool = False,
     valid_mask: np.ndarray | None = None,
 ) -> tuple[IndicatorResult, IndicatorResult | None]:
     """
     侧面重心评估（优先出拳窗口）
-    
+
     Args:
         use_com: 是否同时返回CoM（方案3）评估结果
         valid_mask: ``(T,33)`` 有效性掩码，``None`` 时现场推导（行为不变）。
-    
+
     Returns:
         (主评估结果, CoM评估结果或None)
     """
@@ -1409,9 +1409,9 @@ def _eval_cog_side_prefer_punch_windows(
         max_window_sec=1.0,
         valid_mask=mask,
     )
-    
+
     com_res: IndicatorResult | None = None
-    
+
     if not events:
         if seg_res.detail is not None:
             seg_res.detail["eval_scope"] = "segment"
@@ -1433,14 +1433,14 @@ def _eval_cog_side_prefer_punch_windows(
         intervals.append((s - pre, int(end) + post))
 
     subset, used, subset_mask = _subset_by_intervals(landmarks, intervals, mask)
-    
+
     # 方案1+2：基于髋部/膝角的评估
     win_res = eval_cog_side(subset, fps=fps, stance_fallback="L", valid_mask=subset_mask)
     if win_res.detail is not None:
         win_res.detail["eval_scope"] = "punch_windows"
         win_res.detail["punch_windows"] = used
         win_res.detail["punch_events"] = int(len(events))
-    
+
     # 方案3：基于分段质心的评估（出拳窗口）
     if use_com:
         com_res = eval_cog_com(subset, fps=fps, valid_mask=subset_mask)
@@ -1448,7 +1448,7 @@ def _eval_cog_side_prefer_punch_windows(
             com_res.detail["eval_scope"] = "punch_windows"
             com_res.detail["punch_windows"] = used
             com_res.detail["punch_events"] = int(len(events))
-    
+
     if win_res.status != "无法判定":
         return win_res, com_res
 
@@ -1457,7 +1457,7 @@ def _eval_cog_side_prefer_punch_windows(
         seg_res.detail["eval_scope"] = "segment_fallback"
         seg_res.detail["punch_windows"] = used
         seg_res.detail["punch_events"] = int(len(events))
-    
+
     return seg_res, com_res
 
 
@@ -1704,7 +1704,7 @@ def eval_force_sequence(
 
     def _push_off_ok(lm: np.ndarray, mask_row: np.ndarray) -> bool | None:
         """检测蹬地动作：后脚脚跟明显抬高 + 膝盖参与伸展发力。
-        
+
         真正的蹬地特征：
         1. 脚跟明显抬高（pitch 在合理范围，且垂直位移足够）
         2. 后腿膝盖有一定伸展（说明腿部在发力推地）
@@ -1714,21 +1714,21 @@ def eval_force_sequence(
             heel, toe, hip, knee, ankle = L_HEEL, L_FOOT_INDEX, L_HIP, L_KNEE, L_ANKLE
         else:
             heel, toe, hip, knee, ankle = R_HEEL, R_FOOT_INDEX, R_HIP, R_KNEE, R_ANKLE
-        
+
         # 检查基本可见性
         if not _valid(mask_row, (heel, toe, knee, ankle)):
             return None
-        
+
         # 1. 脚跟明显抬高检测
         heel_xy = _lm_xy(lm, heel)
         toe_xy = _lm_xy(lm, toe)
         dy = float(toe_xy[1] - heel_xy[1])  # 脚尖y - 脚跟y（y向下为正）
         if dy <= 0.0:
             return False  # 脚跟必须高于脚尖（抬脚跟）
-        
+
         dx = float(toe_xy[0] - heel_xy[0])
         pitch = float(np.degrees(np.arctan2(abs(dy), abs(dx) + 1e-9)))
-        
+
         # 基于标准动作NPZ数据分析优化的阈值（侧面视角）
         # - Pitch P80 范围: 31-38°, 取 20-45° 作为有效范围
         # - dy_ratio P80 范围: 0.6-0.8, 取 ≥0.5 作为阈值
@@ -1736,12 +1736,12 @@ def eval_force_sequence(
         pitch_ok = 20.0 <= pitch <= 45.0
         dy_ratio = dy / (abs(dx) + 1e-6)
         heel_lift_ok = pitch_ok and (dy >= 0.03) and (dy_ratio >= 0.5)
-        
+
         # 2. 后腿膝盖角度检测（基于标准动作数据：P20=125°, P90=165°）
         knee_ang = _angle_deg(_lm_xy(lm, hip), _lm_xy(lm, knee), _lm_xy(lm, ankle))
         # 蹬地时后腿膝盖通常在 120°-165° 之间
         knee_ok = 120.0 <= knee_ang <= 165.0
-        
+
         return heel_lift_ok and knee_ok
 
     def _calc_heel_lift(lm: np.ndarray, mask_row: np.ndarray) -> float | None:
@@ -1759,7 +1759,7 @@ def eval_force_sequence(
         if dy <= 0:
             return 0.0
         return dy / (abs(dx) + 1e-6)
-    
+
     def _calc_knee_angle(lm: np.ndarray, mask_row: np.ndarray) -> float | None:
         """计算后腿膝盖角度。"""
         if back_leg == "L":
@@ -1796,17 +1796,17 @@ def eval_force_sequence(
             if bool(ok_push):
                 t_push = int(s + j)
                 break
-        
+
         # 2. 如果静态检测失败，尝试动态检测（脚跟是否有明显抬高趋势）
         push_dynamic_score = 0.0
         if t_push is None and lm_pre.shape[0] >= 5:
             heel_lifts = [_calc_heel_lift(lm_pre[j], mask_pre[j]) for j in range(lm_pre.shape[0])]
             knee_angles = [_calc_knee_angle(lm_pre[j], mask_pre[j]) for j in range(lm_pre.shape[0])]
-            
+
             # 寻找脚跟抬高的趋势：早期低 -> 晚期高
             valid_lifts = [(j, v) for j, v in enumerate(heel_lifts) if v is not None]
             valid_knees = [(j, v) for j, v in enumerate(knee_angles) if v is not None]
-            
+
             if len(valid_lifts) >= 4 and len(valid_knees) >= 4:
                 # 分前后两半比较
                 mid = len(valid_lifts) // 2
@@ -1814,16 +1814,16 @@ def eval_force_sequence(
                 late_lifts = [v for _, v in valid_lifts[mid:]]
                 early_knees = [v for _, v in valid_knees[:mid]]
                 late_knees = [v for _, v in valid_knees[mid:]]
-                
+
                 lift_increase = float(np.median(late_lifts)) - float(np.median(early_lifts))
                 knee_change = float(np.median(late_knees)) - float(np.median(early_knees))
-                
+
                 # 动态蹬地特征（基于标准动作NPZ数据分析优化）：
                 # - 脚跟明显抬高（后半段比前半段高至少 0.10，且后半段中位数≥0.40）
                 # - 膝盖角度变化不大或略微伸展（变化在 -15°~+20° 之间）
                 lift_ok = lift_increase >= 0.10 and float(np.median(late_lifts)) >= 0.40
                 knee_stable = -15.0 <= knee_change <= 20.0
-                
+
                 if lift_ok and knee_stable:
                     # 找到后半段第一个lift达标的位置作为t_push
                     for j, lift in valid_lifts[mid:]:
@@ -1981,7 +1981,7 @@ def eval_force_sequence(
     step_back_detected = sum(1 for e in per_event if e.get("back_step_detected") is True)
     step_eval = [e for e in per_event if e.get("step_ok") is not None]
     step_ok = sum(1 for e in step_eval if e.get("step_ok") is True)
-    
+
     detail = {
         "events_total": int(len(events)),
         "events_used": int(used),
@@ -2013,26 +2013,26 @@ def eval_force_sequence(
 
     # 2. 计算蹬地检测率
     push_detection_rate = float(push_detected / max(1, used))
-    
+
     # 3. 在有效检测到蹬地的事件中，按顺序正确率判定
     evaluated = ok + bad
     accuracy = float(ok / max(1, evaluated)) if evaluated > 0 else 0.0
-    
+
     # 4. 综合判定（改进版）：
     # 关键逻辑：蹬地检测率过低说明大量出拳没有标准蹬地动作
     # - 如果蹬地检测率 < 40%：视为"不合格"（大量出拳蹬地动作不标准）
     # - 如果检测率 >= 40% 且正确率 >= 70%：合格
     # - 如果检测率 >= 40% 且正确率 < 70%：不合格
-    # 
+    #
     # 理由：侧面视角下虽然后腿可能部分遮挡，但40%以上的检测率是基本要求
     # 如果检测率<40%，说明多数出拳的蹬地动作不规范或没有蹬地
-    
+
     if push_detection_rate < 0.40:
         detail["primary_cause"] = "蹬地检测率低"
         detail["failed_stage"] = "push_off"
         return IndicatorResult(
-            status="不合格", 
-            reason="发力顺序：蹬地动作检测率偏低，多数出拳蹬地动作不标准", 
+            status="不合格",
+            reason="发力顺序：蹬地动作检测率偏低，多数出拳蹬地动作不标准",
             detail=detail
         )
 
@@ -2045,11 +2045,11 @@ def eval_force_sequence(
         detail["primary_cause"] = "上步不规范"
         detail["failed_stage"] = "step"
         return IndicatorResult(status="不合格", reason="发力顺序：上步不规范", detail=detail)
-    
+
     if evaluated < 2:
         detail["primary_cause"] = "有效评估事件不足"
         return IndicatorResult(status="无法判定", reason="发力顺序：有效评估事件不足", detail=detail)
-    
+
     if accuracy >= 0.7:  # 至少70%的正确率才算合格
         detail["primary_cause"] = "达标"
         return IndicatorResult(status="合格", reason="发力顺序：顺序一致性良好", detail=detail)

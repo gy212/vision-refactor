@@ -23,11 +23,11 @@ if not video_path:
 else:
     print(f"正在处理: {video_path}")
     result = evaluate_video_full(video_path, pose_variant="full", stance="left", view_hint="auto")
-    
+
     force_seq = result.get("force_sequence", {})
     print(f"\n状态: {force_seq.get('status')}")
     print(f"原因: {force_seq.get('reason')}")
-    
+
     detail = force_seq.get("detail", {})
     print(f"\n总出拳事件: {detail.get('events_total', 0)}")
     print(f"蹬地检测数: {detail.get('push_detected', 0)}")

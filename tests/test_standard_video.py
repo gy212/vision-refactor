@@ -12,7 +12,7 @@ OUTPUT_DIR = Path("outputs/test_standard_force_seq")
 
 def main():
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    
+
     video_path = VIDEO_PATH
     if not video_path.exists():
         print(f"视频文件不存在: {video_path}")
@@ -32,29 +32,29 @@ def main():
         if not found:
             print("找不到视频文件，请检查路径")
             return
-    
+
     print(f"正在处理标准视频: {video_path}")
     print("=" * 60)
-    
+
     try:
         # 运行完整评估
         result = evaluate_video_full(video_path, pose_variant="full", stance="left", view_hint="auto")
-        
+
         # 保存完整结果
         output_file = OUTPUT_DIR / "standard_result.json"
         with open(output_file, "w", encoding="utf-8") as f:
             json.dump(result, f, ensure_ascii=False, indent=2)
         print(f"\n完整结果已保存到: {output_file}")
-        
+
         # 打印发力顺序详情
         print("\n" + "=" * 60)
         print("【发力顺序检测结果】")
         print("=" * 60)
-        
+
         force_seq = result.get("force_sequence", {})
         print(f"状态: {force_seq.get('status')}")
         print(f"原因: {force_seq.get('reason')}")
-        
+
         detail = force_seq.get("detail", {})
         print(f"\n总出拳事件: {detail.get('events_total', 0)}")
         print(f"有效评估事件: {detail.get('events_used', 0)}")
@@ -64,7 +64,7 @@ def main():
         print(f"转腰检测数: {detail.get('twist_detected', 0)}")
         print(f"送肩检测数: {detail.get('drive_detected', 0)}")
         print(f"前腿: {detail.get('front_leg', '未知')}, 后腿: {detail.get('back_leg', '未知')}")
-        
+
         # 打印每个事件的详细信息
         events = detail.get("events", [])
         if events:
@@ -77,20 +77,20 @@ def main():
                 t_drive = e.get("t_drive")
                 t_punch = e.get("t_punch")
                 dyn_score = e.get("push_dynamic_score")
-                
+
                 status_str = "✓ OK" if ok else ("✗ FAIL" if ok is False else "? N/A")
                 dyn_str = f" (动态:{dyn_score:.2f})" if dyn_score else ""
-                
+
                 print(f"  事件{i+1:2d} ({arm}): {status_str}")
                 print(f"         push={t_push}, twist={t_twist}, drive={t_drive}, punch={t_punch}{dyn_str}")
-        
+
         # 导出调试视频
         print("\n" + "=" * 60)
         print("正在导出调试视频...")
         debug_path = OUTPUT_DIR / "debug_video.mp4"
         export_debug_video(video_path, debug_path, pose_variant="full", stance="left", view_hint="auto")
         print(f"调试视频已保存到: {debug_path}")
-        
+
     except Exception as e:
         print(f"错误: {e}")
         import traceback
