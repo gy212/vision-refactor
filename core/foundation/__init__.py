@@ -7,6 +7,7 @@ from core.foundation.atomic_io import (
     atomic_write_text,
     replace_file,
 )
+from core.foundation.epoch import Epoch
 from core.foundation.geometry import angle_deg, distance, landmark_xy, torso_length, unit
 from core.foundation.paths import models_dir, outputs_dir, repo_root, templates_dir
 from core.foundation.prefs import (
@@ -39,9 +40,19 @@ from core.foundation.signal import (
     smooth_1d,
     trimmed_mean,
 )
+from core.foundation.tasks import (
+    Cancelled,
+    CancelToken,
+    TaskGroup,
+    TaskHandle,
+    as_stopped,
+    translate_interrupted,
+)
 
 __all__ = [
     "CAMERA_SELECTION",
+    "CancelToken",
+    "Cancelled",
     "EXAM_EMPTY_HOLD_S",
     "EXAM_ENTER_STABLE_S",
     "EXAM_INTER_STUDENT_GAP_S",
@@ -50,12 +61,16 @@ __all__ = [
     "EXAM_ROI",
     "EXAM_ROI_ROTATE",
     "EXAM_ROSTER_PATH",
+    "Epoch",
     "FRONT_TEMPLATES",
     "PrefKey",
     "PreferenceStore",
     "RECORD_DIR",
     "SIDE_TEMPLATES",
+    "TaskGroup",
+    "TaskHandle",
     "angle_deg",
+    "as_stopped",
     "atomic_target",
     "atomic_write_bytes",
     "atomic_write_json",
@@ -80,6 +95,7 @@ __all__ = [
     "smooth_1d",
     "templates_dir",
     "torso_length",
+    "translate_interrupted",
     "trimmed_mean",
     "unit",
 ]
