@@ -136,3 +136,20 @@ def test_single_tk_spec_bundles_feedback_assets_and_build_info():
     assert '("assets/feedback", "assets/feedback")' in text
     assert "build_info.require_clean" in text
     assert "delivery.assemble" in text
+
+
+def test_every_runtime_requirement_has_a_license_in_delivery():
+    licenses = delivery.ATTACHMENTS_DIR / "第三方许可"
+    manifest = (licenses / "清单.txt").read_text(encoding="utf-8-sig")
+    lines = (_REPO_ROOT / "requirements.txt").read_text(encoding="utf-8").splitlines()
+    runtime = []
+    for line in lines:
+        if "测试依赖" in line:
+            break
+        if line.startswith("#") or not line.strip():
+            continue
+        runtime.append(line.split("==")[0].split(">=")[0].strip())
+    for name in runtime + ["imageio-ffmpeg"]:
+        files = list((licenses / name).glob("*"))
+        assert files, f"第三方许可缺少 {name}"
+        assert name in manifest
