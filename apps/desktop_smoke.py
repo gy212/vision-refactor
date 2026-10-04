@@ -51,6 +51,41 @@ class _CameraSmokePreview(_CameraSmokeRecovered):
         time.sleep(0.1)  # Realistic asynchronous driver shutdown across mode switches.
 
 
+# 结果页状态图标：4 种状态 × 2 种命名 × 3 种尺寸 = 24 个，结果页按 parent.parent 定位。
+FEEDBACK_ICON_STATES = ("candidate", "not_observed", "pending_rule", "unable")
+FEEDBACK_ICON_SIZES = (24, 32, 48)
+
+
+def _package_root() -> Path:
+    """源码模式为仓库根，冻结模式为 PyInstaller 解包目录；与模块的 ``__file__`` 定位一致。"""
+    return Path(__file__).resolve().parent.parent
+
+
+def load_build_info(root: Path) -> dict | None:
+    """读取构建时打进包内的 ``build_info.json``；源码运行没有该文件时返回 None。"""
+    path = root / "build_info.json"
+    if not path.is_file():
+        return None
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def check_feedback_icons(root: Path) -> int:
+    """断言结果页的全部状态图标都能解码且尺寸正确，返回图标个数。"""
+    from PIL import Image
+    icon_dir = root / "assets" / "feedback"
+    count = 0
+    for state in FEEDBACK_ICON_STATES:
+        for prefix in ("", "status_"):
+            for size in FEEDBACK_ICON_SIZES:
+                path = icon_dir / f"{prefix}{state}_{size}.png"
+                assert path.is_file(), f"包内缺少结果页图标：{path.name}"
+                with Image.open(path) as image:
+                    image.load()
+                    assert image.size == (size, size), f"{path.name} 尺寸为 {image.size}"
+                count += 1
+    return count
+
+
 def _check_camera_mode_switch(app, root):
     """Exercise real Tk callbacks, pool, spawn and claim with simulated devices."""
     from unittest.mock import patch
@@ -168,6 +203,16 @@ def run(report_path: Path) -> int:
 
                 model_dir = paths.models_dir()
                 report["dataRoot"] = str(paths.repo_root())
+                build = load_build_info(_package_root())
+                report["buildInfo"] = build
+                if report["frozen"]:
+                    assert build is not None, "包内缺少 build_info.json"
+                    assert build["clean"] is True, "EXE 不是从干净的工作区构建的"
+                    from core.action_feedback import RULE_VERSION
+                    assert build["ruleVersion"] == RULE_VERSION
+                report["checks"].append("build_info")
+                report["feedbackIcons"] = check_feedback_icons(_package_root())
+                report["checks"].append("feedback_status_icons")
                 assert model_dir.is_relative_to(Path(temporary))
                 assert all(model_manager.is_installed(spec) for spec in model_manager.MEDIAPIPE_MODELS)
                 report["checks"].append("four_bundled_models_seeded")

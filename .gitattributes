@@ -1,0 +1,2 @@
+# 第三方许可证原样随包分发：不转换行尾，不做空白检查（上游文本含行尾空格）
+packaging/delivery/第三方许可/** -text -whitespace
