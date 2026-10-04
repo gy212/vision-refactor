@@ -75,12 +75,6 @@ PRIMITIVES: dict[str, tuple[int, str]] = {
     'engine_construct: core/parallel_pose_engine.py': (1, 'P2'),
     'engine_construct: core/rule_scoring.py': (1, 'P2'),
     'engine_construct: scripts/match_segments_probe.py': (1, 'P2'),
-    'file_replace: apps/recording_postprocess.py': (1, 'P1'),
-    'file_replace: core/exam_roster.py': (3, 'P1'),
-    'file_replace: core/feedback_history.py': (2, 'P1'),
-    'file_replace: core/model_manager.py': (1, 'P1'),
-    'file_replace: core/paths.py': (1, 'P1'),
-    'file_replace: core/video_writer.py': (1, 'P1'),
     'np_load: analysis/calibrate_body_core.py': (1, 'P9'),
     'np_load: analysis/offline_matching_profile.py': (6, 'P9'),
     'np_load: apps/app_ui.py': (1, 'P3'),
@@ -154,9 +148,9 @@ MODULE_SIZE: dict[str, tuple[int, str]] = {
     'apps/camera_warmup.py': (1125, 'P9'),
     'apps/exam_panel.py': (869, 'P8'),
     'apps/feedback_result_panel.py': (1326, 'P8'),
-    'apps/recording_postprocess.py': (1169, 'P4'),
+    'apps/recording_postprocess.py': (1150, 'P4'),
     'core/action_compare.py': (1676, 'P3'),
-    'core/exam_roster.py': (854, 'P4'),
+    'core/exam_roster.py': (818, 'P4'),
     'core/feedback_report.py': (1538, 'P8'),
     'core/qwen_coach.py': (916, 'P9'),
     'core/yolo_adapter.py': (1019, 'P2'),
@@ -222,4 +216,4 @@ DEFENSIVE_GETATTR: dict[str, tuple[int, str]] = {
     'apps/app_ui.py': (169, 'P8'),
 }
 
-ENTRY_CEILING = 157
+ENTRY_CEILING = 151

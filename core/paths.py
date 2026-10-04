@@ -29,9 +29,10 @@ import json
 import os
 import shutil
 import sys
-import tempfile
 from pathlib import Path
 from typing import Any
+
+from core.foundation.atomic_io import atomic_target
 
 
 _CAMERA_SELECTION_PREF_KEY = "camera_selection"
@@ -74,16 +75,9 @@ def _seed_bundled(directory: str) -> Path:
             if target.is_file() and target.stat().st_size > 0:
                 continue
             target.parent.mkdir(parents=True, exist_ok=True)
-            temporary = None
-            try:
-                with tempfile.NamedTemporaryFile(dir=target.parent, delete=False) as temp:
-                    temporary = Path(temp.name)
-                    with source.open("rb") as reader:
-                        shutil.copyfileobj(reader, temp)
-                temporary.replace(target)
-            finally:
-                if temporary is not None:
-                    temporary.unlink(missing_ok=True)
+            with atomic_target(target) as temporary:
+                with source.open("rb") as reader, temporary.open("wb") as writer:
+                    shutil.copyfileobj(reader, writer)
     return d
 
 

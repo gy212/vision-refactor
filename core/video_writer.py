@@ -10,6 +10,8 @@ from threading import Event
 
 import cv2
 
+from core.foundation.atomic_io import replace_file
+
 FFMPEG_TRANSCODE_TIMEOUT_S = 30 * 60
 _FFMPEG_POLL_INTERVAL_S = 0.05
 _FFMPEG_TERMINATE_TIMEOUT_S = 1.0
@@ -159,7 +161,7 @@ def transcode_to_h264(
                 raise InterruptedError("视频转码已取消")
         if not temporary_dst.is_file() or temporary_dst.stat().st_size <= 0:
             raise OSError("ffmpeg produced no output")
-        temporary_dst.replace(dst)
+        replace_file(temporary_dst, dst)
     except InterruptedError:
         try:
             temporary_dst.unlink(missing_ok=True)

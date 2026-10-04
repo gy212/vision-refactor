@@ -14,6 +14,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Iterable, Literal
 
+from core.foundation.atomic_io import atomic_target
+
 IMPORT_HEADERS = ("序号", "学号", "姓名", "班级", "备注")
 EXPORT_HEADERS = (
     "序号",
@@ -516,47 +518,9 @@ def write_scorebook_xlsx(path: Path | str, rows: Iterable[ExamResultRow]) -> Non
         ws.append(row_to_export_values(row, action_names))
 
     # 临时文件用 ASCII 名，避免部分环境下中文文件名 + 前导点的怪异行为
-    tmp = path.parent / f"_scorebook_{time.time_ns()}.tmp.xlsx"
-    try:
+    with atomic_target(path) as tmp:
         wb.save(tmp)
         wb.close()
-        _atomic_replace(tmp, path)
-    finally:
-        if tmp.exists():
-            try:
-                tmp.unlink()
-            except OSError:
-                pass
-
-
-def _atomic_replace(src: Path, dst: Path) -> None:
-    """同卷 replace；失败时 copy+replace 回退。"""
-    import shutil
-
-    try:
-        src.replace(dst)
-        return
-    except OSError:
-        pass
-    # 跨盘或部分 Windows 场景
-    bak = dst.with_suffix(dst.suffix + ".bak")
-    try:
-        if dst.exists():
-            try:
-                dst.replace(bak)
-            except OSError:
-                bak = None  # type: ignore[assignment]
-        shutil.copy2(src, dst)
-        src.unlink(missing_ok=True)
-        if bak is not None and Path(bak).exists():
-            Path(bak).unlink(missing_ok=True)
-    except OSError:
-        if bak is not None and Path(bak).exists() and not dst.exists():
-            try:
-                Path(bak).replace(dst)
-            except OSError:
-                pass
-        raise
 
 
 class ExamScorebook:

@@ -4,7 +4,6 @@ from __future__ import annotations
 import json
 import os
 import queue
-import tempfile
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -17,6 +16,7 @@ import numpy as np
 from analysis.tech_eval import to_jsonable
 from core import action_compare, model_manager, video_writer
 from core.kick_quality import score_kick_quality
+from core.foundation import atomic_write_json
 from core.paths import repo_root, templates_dir
 from core.rule_scoring import extract_pose_raw_series, slice_pose_raw_series
 
@@ -1013,7 +1013,7 @@ class DualRecordingPostProcessor:
                 ):
                     raise InterruptedError("后台比对已取消")
             try:
-                self._write_json_atomic(job.segment_dir / "result.json", payload)
+                self._write_result_json(job.segment_dir / "result.json", payload)
             except Exception as exc:
                 if cancelled_enrichment:
                     return
@@ -1116,28 +1116,9 @@ class DualRecordingPostProcessor:
             )
 
     @staticmethod
-    def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+    def _write_result_json(path: Path, payload: dict[str, Any]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        temporary_path: Path | None = None
-        try:
-            with tempfile.NamedTemporaryFile(
-                mode="w",
-                encoding="utf-8",
-                prefix=f".{path.stem}.",
-                suffix=".tmp",
-                dir=path.parent,
-                delete=False,
-            ) as temporary:
-                json.dump(payload, temporary, ensure_ascii=False, indent=2)
-                temporary.write("\n")
-                temporary_path = Path(temporary.name)
-            temporary_path.replace(path)
-        finally:
-            if temporary_path is not None:
-                try:
-                    temporary_path.unlink(missing_ok=True)
-                except OSError:
-                    pass
+        atomic_write_json(path, payload, trailing_newline=True)
 
     @staticmethod
     def _update_from_payload(payload: dict[str, Any], message: str) -> PostprocessUpdate:

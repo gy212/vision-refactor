@@ -574,7 +574,7 @@ def test_submit_returns_while_another_result_write_is_blocked(tmp_path: Path) ->
     )
     first = _job(tmp_path, "record_blocked_write")
     second = _job(tmp_path, "record_submit_during_write")
-    original_write = processor._write_json_atomic
+    original_write = processor._write_result_json
 
     def blocking_write(path: Path, payload: dict) -> None:
         if (
@@ -589,7 +589,7 @@ def test_submit_returns_while_another_result_write_is_blocked(tmp_path: Path) ->
         submitted.append(processor.submit(second))
         submit_returned.set()
 
-    processor._write_json_atomic = blocking_write
+    processor._write_result_json = blocking_write
     submit_thread = threading.Thread(target=submit_second)
     try:
         assert processor.submit(first)
@@ -637,7 +637,7 @@ def test_cancel_all_returns_during_result_write_and_wins_publication_race(
         model_available=lambda: True,
     )
     job = _job(tmp_path, f"record_cancel_during_{blocked_status}_write")
-    original_write = processor._write_json_atomic
+    original_write = processor._write_result_json
 
     def blocking_write(path: Path, payload: dict) -> None:
         original_write(path, payload)
@@ -649,7 +649,7 @@ def test_cancel_all_returns_during_result_write_and_wins_publication_race(
         processor.cancel_all()
         cancel_returned.set()
 
-    processor._write_json_atomic = blocking_write
+    processor._write_result_json = blocking_write
     cancel_thread = threading.Thread(target=cancel)
     try:
         assert processor.submit(job)
@@ -1399,7 +1399,7 @@ def test_cancelled_enrichment_write_failure_preserves_original_terminal(
         video_validator=lambda _path: True,
         model_available=lambda: True,
     )
-    original_write = processor._write_json_atomic
+    original_write = processor._write_result_json
 
     def fail_enrichment(path: Path, payload: dict) -> None:
         if (
@@ -1411,7 +1411,7 @@ def test_cancelled_enrichment_write_failure_preserves_original_terminal(
             raise OSError("disk unavailable during enrichment")
         original_write(path, payload)
 
-    processor._write_json_atomic = fail_enrichment
+    processor._write_result_json = fail_enrichment
     try:
         assert processor.submit(job)
         _wait(terminal)
@@ -1709,14 +1709,14 @@ def test_result_write_failure_does_not_stop_fifo_worker(tmp_path: Path) -> None:
     )
     first = _job(tmp_path, "record_first")
     second = _job(tmp_path, "record_second")
-    original_write = processor._write_json_atomic
+    original_write = processor._write_result_json
 
     def flaky_write(path: Path, payload: dict) -> None:
         if path.parent.name == "record_first":
             raise OSError("disk full")
         original_write(path, payload)
 
-    processor._write_json_atomic = flaky_write
+    processor._write_result_json = flaky_write
     try:
         assert processor.submit(first)
         assert processor.submit(second)
@@ -1749,7 +1749,7 @@ def test_one_shot_result_write_failure_has_stable_error_code(tmp_path: Path) -> 
         model_available=lambda: True,
     )
     job = _job(tmp_path, "record_one_shot_write_failure")
-    original_write = processor._write_json_atomic
+    original_write = processor._write_result_json
     failed_once = False
 
     def flaky_write(path: Path, payload: dict) -> None:
@@ -1759,7 +1759,7 @@ def test_one_shot_result_write_failure_has_stable_error_code(tmp_path: Path) -> 
             raise OSError("disk hiccup")
         original_write(path, payload)
 
-    processor._write_json_atomic = flaky_write
+    processor._write_result_json = flaky_write
     try:
         assert processor.submit(job)
         _wait(terminal)
