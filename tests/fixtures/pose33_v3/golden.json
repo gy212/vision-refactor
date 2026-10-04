@@ -1,0 +1,525 @@
+{
+  "dual_template": {
+    "combined_percent": 46,
+    "combined_score": 0.4582994707923157,
+    "front_joint_errors": [
+      {
+        "joint": "L_SHOULDER",
+        "max_dist": 0.27764445543289185,
+        "mean_dist": 0.1634114682674408,
+        "p90_dist": 0.24659855663776398,
+        "valid_frames": 30
+      },
+      {
+        "joint": "R_SHOULDER",
+        "max_dist": 0.1969703733921051,
+        "mean_dist": 0.10925762355327606,
+        "p90_dist": 0.19298848509788513,
+        "valid_frames": 30
+      },
+      {
+        "joint": "L_ELBOW",
+        "max_dist": 0.5300740003585815,
+        "mean_dist": 0.18338632583618164,
+        "p90_dist": 0.48488181829452515,
+        "valid_frames": 30
+      },
+      {
+        "joint": "R_ELBOW",
+        "max_dist": 0.7216123938560486,
+        "mean_dist": 0.21356123685836792,
+        "p90_dist": 0.4638857841491699,
+        "valid_frames": 30
+      },
+      {
+        "joint": "L_WRIST",
+        "max_dist": 0.49758878350257874,
+        "mean_dist": 0.2350447028875351,
+        "p90_dist": 0.4184361696243286,
+        "valid_frames": 30
+      },
+      {
+        "joint": "R_WRIST",
+        "max_dist": 0.6090776324272156,
+        "mean_dist": 0.23271332681179047,
+        "p90_dist": 0.536394476890564,
+        "valid_frames": 30
+      },
+      {
+        "joint": "L_PINKY",
+        "max_dist": 0.5241634249687195,
+        "mean_dist": 0.25837257504463196,
+        "p90_dist": 0.48717617988586426,
+        "valid_frames": 30
+      },
+      {
+        "joint": "R_PINKY",
+        "max_dist": 0.730817437171936,
+        "mean_dist": 0.27578598260879517,
+        "p90_dist": 0.635819137096405,
+        "valid_frames": 30
+      },
+      {
+        "joint": "L_INDEX",
+        "max_dist": 0.48429155349731445,
+        "mean_dist": 0.23766575753688812,
+        "p90_dist": 0.44171541929244995,
+        "valid_frames": 30
+      },
+      {
+        "joint": "R_INDEX",
+        "max_dist": 0.6649881601333618,
+        "mean_dist": 0.24789465963840485,
+        "p90_dist": 0.5379085540771484,
+        "valid_frames": 30
+      },
+      {
+        "joint": "L_THUMB",
+        "max_dist": 0.5063628554344177,
+        "mean_dist": 0.23186764121055603,
+        "p90_dist": 0.41665083169937134,
+        "valid_frames": 30
+      },
+      {
+        "joint": "R_THUMB",
+        "max_dist": 0.5591164231300354,
+        "mean_dist": 0.22528526186943054,
+        "p90_dist": 0.4645654261112213,
+        "valid_frames": 30
+      },
+      {
+        "joint": "L_HIP",
+        "max_dist": 0.07172740995883942,
+        "mean_dist": 0.03995627164840698,
+        "p90_dist": 0.06310610473155975,
+        "valid_frames": 30
+      },
+      {
+        "joint": "R_HIP",
+        "max_dist": 0.07172739505767822,
+        "mean_dist": 0.0399562306702137,
+        "p90_dist": 0.06310593336820602,
+        "valid_frames": 30
+      },
+      {
+        "joint": "L_KNEE",
+        "max_dist": 0.46534252166748047,
+        "mean_dist": 0.18552595376968384,
+        "p90_dist": 0.4292750358581543,
+        "valid_frames": 30
+      },
+      {
+        "joint": "R_KNEE",
+        "max_dist": 0.49330294132232666,
+        "mean_dist": 0.23512190580368042,
+        "p90_dist": 0.460396409034729,
+        "valid_frames": 30
+      },
+      {
+        "joint": "L_ANKLE",
+        "max_dist": 0.31658270955085754,
+        "mean_dist": 0.16989874839782715,
+        "p90_dist": 0.30086860060691833,
+        "valid_frames": 30
+      },
+      {
+        "joint": "R_ANKLE",
+        "max_dist": 0.5101149678230286,
+        "mean_dist": 0.31526070833206177,
+        "p90_dist": 0.4378664493560791,
+        "valid_frames": 30
+      },
+      {
+        "joint": "L_HEEL",
+        "max_dist": 0.36991965770721436,
+        "mean_dist": 0.18509291112422943,
+        "p90_dist": 0.2886495292186737,
+        "valid_frames": 30
+      },
+      {
+        "joint": "R_HEEL",
+        "max_dist": 0.6726670861244202,
+        "mean_dist": 0.4071131944656372,
+        "p90_dist": 0.6252930164337158,
+        "valid_frames": 30
+      },
+      {
+        "joint": "L_FOOT_INDEX",
+        "max_dist": 0.48028239607810974,
+        "mean_dist": 0.21826918423175812,
+        "p90_dist": 0.3697073757648468,
+        "valid_frames": 30
+      },
+      {
+        "joint": "R_FOOT_INDEX",
+        "max_dist": 0.3594264090061188,
+        "mean_dist": 0.21999050676822662,
+        "p90_dist": 0.30262070894241333,
+        "valid_frames": 30
+      }
+    ],
+    "front_rule_deduction": 8,
+    "front_rule_score": 92,
+    "front_rule_violations": [
+      {
+        "detail": "前手肘角需在90-135度",
+        "name": "前手肘角",
+        "penalty": 2,
+        "rule_id": "stance_elbow",
+        "total_frames": 45,
+        "valid_frames": 45,
+        "violation_ratio": 0.8888888888888888
+      },
+      {
+        "detail": "拳峰高度需与鼻尖接近",
+        "name": "拳峰高度",
+        "penalty": 2,
+        "rule_id": "stance_fist_height",
+        "total_frames": 45,
+        "valid_frames": 45,
+        "violation_ratio": 1.0
+      },
+      {
+        "detail": "后手应贴近下颌并靠近躯干",
+        "name": "后手贴近",
+        "penalty": 2,
+        "rule_id": "stance_back_arm",
+        "total_frames": 45,
+        "valid_frames": 45,
+        "violation_ratio": 1.0
+      },
+      {
+        "detail": "膝关节应微曲（过直扣分）（合格）",
+        "name": "双膝微曲",
+        "penalty": 0,
+        "rule_id": "stance_knee",
+        "total_frames": 45,
+        "valid_frames": 45,
+        "violation_ratio": 0.06666666666666667
+      },
+      {
+        "detail": "站距应接近肩宽",
+        "name": "站距合理",
+        "penalty": 2,
+        "rule_id": "stance_width",
+        "total_frames": 45,
+        "valid_frames": 45,
+        "violation_ratio": 0.3111111111111111
+      },
+      {
+        "detail": "双脚方向应基本平行（合格）",
+        "name": "脚尖方向",
+        "penalty": 0,
+        "rule_id": "stance_feet",
+        "total_frames": 45,
+        "valid_frames": 45,
+        "violation_ratio": 0.022222222222222223
+      },
+      {
+        "detail": "出拳时肘应接近伸直（有效帧不足，未评估）",
+        "name": "出拳伸直",
+        "penalty": 0,
+        "rule_id": "punch_elbow",
+        "total_frames": 45,
+        "valid_frames": 0,
+        "violation_ratio": 0.0
+      },
+      {
+        "detail": "出拳时另一手应靠近下颌护防（有效帧不足，未评估）",
+        "name": "护手位置",
+        "penalty": 0,
+        "rule_id": "punch_guard",
+        "total_frames": 45,
+        "valid_frames": 0,
+        "violation_ratio": 0.0
+      }
+    ],
+    "front_score": 0.7234849285166056,
+    "front_segment": [
+      15,
+      59
+    ],
+    "side_joint_errors": [
+      {
+        "joint": "R_SHOULDER",
+        "max_dist": 2.031832218170166,
+        "mean_dist": 1.170174479484558,
+        "p90_dist": 2.0070712566375732,
+        "valid_frames": 30
+      },
+      {
+        "joint": "L_SHOULDER",
+        "max_dist": 2.047646999359131,
+        "mean_dist": 1.1524499654769897,
+        "p90_dist": 2.036990165710449,
+        "valid_frames": 30
+      },
+      {
+        "joint": "R_ELBOW",
+        "max_dist": 2.0166525840759277,
+        "mean_dist": 1.0184862613677979,
+        "p90_dist": 1.5857359170913696,
+        "valid_frames": 30
+      },
+      {
+        "joint": "L_ELBOW",
+        "max_dist": null,
+        "mean_dist": null,
+        "p90_dist": null,
+        "valid_frames": 0
+      },
+      {
+        "joint": "R_WRIST",
+        "max_dist": 2.9129092693328857,
+        "mean_dist": 1.67831552028656,
+        "p90_dist": 2.5122218132019043,
+        "valid_frames": 30
+      },
+      {
+        "joint": "L_WRIST",
+        "max_dist": 1.9130970239639282,
+        "mean_dist": 1.6519547700881958,
+        "p90_dist": 1.8188414573669434,
+        "valid_frames": 6
+      },
+      {
+        "joint": "R_PINKY",
+        "max_dist": 3.159055709838867,
+        "mean_dist": 1.8569750785827637,
+        "p90_dist": 2.7554075717926025,
+        "valid_frames": 30
+      },
+      {
+        "joint": "L_PINKY",
+        "max_dist": 2.638026237487793,
+        "mean_dist": 2.0022757053375244,
+        "p90_dist": 2.6267027854919434,
+        "valid_frames": 9
+      },
+      {
+        "joint": "R_INDEX",
+        "max_dist": 3.027233600616455,
+        "mean_dist": 1.8772279024124146,
+        "p90_dist": 2.694469451904297,
+        "valid_frames": 30
+      },
+      {
+        "joint": "L_INDEX",
+        "max_dist": 2.6707568168640137,
+        "mean_dist": 2.0390026569366455,
+        "p90_dist": 2.6702136993408203,
+        "valid_frames": 9
+      },
+      {
+        "joint": "R_THUMB",
+        "max_dist": 2.9128851890563965,
+        "mean_dist": 1.8168820142745972,
+        "p90_dist": 2.605095624923706,
+        "valid_frames": 30
+      },
+      {
+        "joint": "L_THUMB",
+        "max_dist": 2.5960030555725098,
+        "mean_dist": 1.9670450687408447,
+        "p90_dist": 2.5694704055786133,
+        "valid_frames": 9
+      },
+      {
+        "joint": "R_HIP",
+        "max_dist": 0.3009693920612335,
+        "mean_dist": 0.16008064150810242,
+        "p90_dist": 0.22720307111740112,
+        "valid_frames": 30
+      },
+      {
+        "joint": "L_HIP",
+        "max_dist": 0.3009689152240753,
+        "mean_dist": 0.16008047759532928,
+        "p90_dist": 0.22720259428024292,
+        "valid_frames": 30
+      },
+      {
+        "joint": "R_KNEE",
+        "max_dist": 1.4280076026916504,
+        "mean_dist": 1.1244789361953735,
+        "p90_dist": 1.3436487913131714,
+        "valid_frames": 30
+      },
+      {
+        "joint": "L_KNEE",
+        "max_dist": 1.2473561763763428,
+        "mean_dist": 1.0711091756820679,
+        "p90_dist": 1.2345457077026367,
+        "valid_frames": 30
+      },
+      {
+        "joint": "R_ANKLE",
+        "max_dist": 2.6300277709960938,
+        "mean_dist": 2.116765022277832,
+        "p90_dist": 2.432443618774414,
+        "valid_frames": 30
+      },
+      {
+        "joint": "L_ANKLE",
+        "max_dist": 2.221302032470703,
+        "mean_dist": 1.709565281867981,
+        "p90_dist": 2.1616408824920654,
+        "valid_frames": 30
+      },
+      {
+        "joint": "R_HEEL",
+        "max_dist": 2.8843259811401367,
+        "mean_dist": 2.3010520935058594,
+        "p90_dist": 2.643131971359253,
+        "valid_frames": 30
+      },
+      {
+        "joint": "L_HEEL",
+        "max_dist": 2.439016103744507,
+        "mean_dist": 1.8145853281021118,
+        "p90_dist": 2.3668737411499023,
+        "valid_frames": 30
+      },
+      {
+        "joint": "R_FOOT_INDEX",
+        "max_dist": 2.936497211456299,
+        "mean_dist": 2.4549877643585205,
+        "p90_dist": 2.852383852005005,
+        "valid_frames": 30
+      },
+      {
+        "joint": "L_FOOT_INDEX",
+        "max_dist": 2.5482265949249268,
+        "mean_dist": 1.9510778188705444,
+        "p90_dist": 2.454659938812256,
+        "valid_frames": 30
+      }
+    ],
+    "side_rule_deduction": 0,
+    "side_rule_score": 100,
+    "side_rule_violations": [
+      {
+        "detail": "膝关节应微曲（过直扣分）（合格）",
+        "name": "双膝微曲",
+        "penalty": 0,
+        "rule_id": "stance_knee",
+        "total_frames": 29,
+        "valid_frames": 29,
+        "violation_ratio": 0.0
+      },
+      {
+        "detail": "出拳时肘应接近伸直（有效帧不足，未评估）",
+        "name": "出拳伸直",
+        "penalty": 0,
+        "rule_id": "punch_elbow",
+        "total_frames": 29,
+        "valid_frames": 0,
+        "violation_ratio": 0.0
+      },
+      {
+        "detail": "出拳时另一手应靠近下颌护防（有效帧不足，未评估）",
+        "name": "护手位置",
+        "penalty": 0,
+        "rule_id": "punch_guard",
+        "total_frames": 29,
+        "valid_frames": 0,
+        "violation_ratio": 0.0
+      }
+    ],
+    "side_score": 0.28150916564278916,
+    "side_segment": [
+      133,
+      161
+    ]
+  },
+  "single_template": {
+    "avg_cost": 0.3891994794209798,
+    "cost": 11.675984382629395,
+    "end_frame": 71,
+    "fps": 30.0,
+    "score": 0.8851647765839171,
+    "start_frame": 45
+  },
+  "tech_eval": {
+    "cog_com": {
+      "detail_keys": {
+        "backward_frames": 0,
+        "center_frames": 68,
+        "forward_frames": 0,
+        "primary_cause": "居中",
+        "total_frames": 68,
+        "unknown_frames": 0,
+        "valid_frames": 68
+      },
+      "reason": "重心居中（CoM）",
+      "status": "合格"
+    },
+    "cog_final": {
+      "detail_keys": {
+        "backward_frames": 0,
+        "center_frames": 68,
+        "forward_frames": 0,
+        "front_leg": "L",
+        "primary_cause": "居中",
+        "total_frames": 68,
+        "unknown_frames": 0,
+        "valid_frames": 68
+      },
+      "reason": "侧面：重心居中",
+      "status": "合格"
+    },
+    "cog_front": {
+      "detail_keys": {},
+      "reason": "正面段缺失",
+      "status": "无法判定"
+    },
+    "cog_side": {
+      "detail_keys": {
+        "backward_frames": 0,
+        "center_frames": 68,
+        "forward_frames": 0,
+        "front_leg": "L",
+        "primary_cause": "居中",
+        "total_frames": 68,
+        "unknown_frames": 0,
+        "valid_frames": 68
+      },
+      "reason": "侧面：重心居中",
+      "status": "合格"
+    },
+    "force_sequence": {
+      "detail_keys": {
+        "events_bad": 0,
+        "events_ok": 0,
+        "events_total": 2,
+        "events_used": 2,
+        "front_leg": "L",
+        "primary_cause": "蹬地检测率低"
+      },
+      "reason": "发力顺序：蹬地动作检测率偏低，多数出拳蹬地动作不标准",
+      "status": "不合格"
+    },
+    "front_segment": null,
+    "retract_speed": {
+      "detail_keys": {
+        "primary_cause": "出拳次数不足"
+      },
+      "reason": "侧面：出拳次数不足",
+      "status": "无法判定"
+    },
+    "side_segment": [
+      0,
+      179
+    ],
+    "view_mode": "single",
+    "wrist_angle": {
+      "detail_keys": {
+        "events_ok": 0,
+        "events_total": 2,
+        "primary_cause": "折腕"
+      },
+      "reason": "拳面角度：存在折腕/塌腕",
+      "status": "不合格"
+    }
+  }
+}

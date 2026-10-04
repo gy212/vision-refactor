@@ -1,0 +1,80 @@
+{
+  "schema_version": 1,
+  "description": "S0（#1）基线样本集。覆盖正面 / 侧面 / 长视频 / 边界（学员视频，存在镜面、旁人入镜等多人风险）。路径相对仓库根。视频本体受 .gitignore 排除，不入库，仅登记清单。",
+  "generated_at": "2026-05-30",
+  "frame_rate_note": "全部约 30fps，分辨率 720x1280（竖屏）。",
+  "samples": [
+    {
+      "id": "std_front",
+      "path": "标准样本/正面.mp4",
+      "view": "front",
+      "frames": 250,
+      "duration_sec": 8.4,
+      "fps": 29.8,
+      "resolution": "720x1280",
+      "scene_tags": ["standard", "single_person", "front"],
+      "multi_person": false,
+      "role": "标准动作-正面基线"
+    },
+    {
+      "id": "std_side_long",
+      "path": "标准样本/侧面.mp4",
+      "view": "side",
+      "frames": 694,
+      "duration_sec": 23.1,
+      "fps": 30.0,
+      "resolution": "720x1280",
+      "scene_tags": ["standard", "single_person", "side", "long_video"],
+      "multi_person": false,
+      "role": "标准动作-侧面 + 长视频边界（最长样本）"
+    },
+    {
+      "id": "student_1",
+      "path": "学员样本/1.mp4",
+      "view": "mixed",
+      "frames": 450,
+      "duration_sec": 15.1,
+      "fps": 29.9,
+      "resolution": "720x1280",
+      "scene_tags": ["student", "boundary", "possible_multi_person"],
+      "multi_person": "unknown",
+      "role": "学员视频-边界样本（镜面/旁人入镜风险，用于多人闸门观察）"
+    },
+    {
+      "id": "student_4_long",
+      "path": "学员样本/4.mp4",
+      "view": "mixed",
+      "frames": 618,
+      "duration_sec": 20.6,
+      "fps": 30.0,
+      "resolution": "720x1280",
+      "scene_tags": ["student", "boundary", "long_video", "possible_multi_person"],
+      "multi_person": "unknown",
+      "role": "学员视频-较长 + 边界样本"
+    },
+    {
+      "id": "punch_front",
+      "path": "标准动作视频--分解版/直拳/直拳 正面.mp4",
+      "view": "front",
+      "frames": 283,
+      "duration_sec": 9.4,
+      "fps": 30.0,
+      "resolution": "720x1280",
+      "scene_tags": ["standard", "single_person", "front", "straight_punch"],
+      "multi_person": false,
+      "role": "直拳分解-正面（评分依赖脚部/嘴角的典型动作）"
+    },
+    {
+      "id": "punch_side",
+      "path": "标准动作视频--分解版/直拳/直拳 左侧.mp4",
+      "view": "side",
+      "frames": 129,
+      "duration_sec": 4.3,
+      "fps": 30.0,
+      "resolution": "720x1280",
+      "scene_tags": ["standard", "single_person", "side", "straight_punch"],
+      "multi_person": false,
+      "role": "直拳分解-侧面（发力顺序/蹬地依赖脚跟脚尖的典型动作）"
+    }
+  ]
+}
