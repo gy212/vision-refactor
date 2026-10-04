@@ -1,3 +1,15 @@
+## 2026-10-03（America/Los_Angeles）: [chore] P0a 基线导入：从旧仓库 5a6d99c 导入代码，新建 .venv，测定基线
+
+- 问题描述：P0a 阻断 P1。本仓库此前只有文档，需要按 P0-4 从旧仓库导入参与重构的代码、新建本仓库 `.venv` 并重新测定全量基线。开工前用户对 P0-1～P0-4 均采纳清单建议。
+- 修改内容：
+  - 导入（提交 `5574d95`，内容与 `5a6d99c` 一致）：`git archive 5a6d99c` 导出 `core/`、`apps/`、`analysis/`、`batch/`、`scripts/`、`tests/`、`assets/`、`templates/`、`packaging/`、三份 requirements、两份 Tk spec，以及按原路径的 6 份 YOLO 文档和 `docs/yolo_eval_samples.json`（`analysis/` 三个脚本的 `--samples` 默认值）。未导入：web 端（`apps/ui_backend.py`、`frontend/`、`ui_backend_sidecar.spec`、`package.json`、`start-desktop-dev.cmd`、3 个 Tauri 脚本、`test_ui_backend_*.py` 5 个、`test_vue_tauri_acceptance_gaps.py`、`test_windows_packaging_smoke.py`）、其余旧文档、`README.md`、`DUAL_TEMPLATE_COMPARE.md`、change 归档。D-10 随之了结。
+  - 门禁测试拆分：`tests/test_backend_routing_contract.py` 去掉顶层 `from apps import ui_backend`，删除依赖它的 4 个用例（`test_ui_session_start_uses_yolo_preview_pipeline_and_surfaces_frame_meta`、`test_ui_session_start_requires_capabilities_prevents_yolo_preview_route`、`test_default_pipeline_factory_maps_yolo_realtime_profile_to_yolo26n_without_loading_ultralytics`、`..._yolo26s_...`）和只被它们用到的 `_wait_frame_events`、`time`、`numpy` 导入；`tests/test_batch_backend_args.py` 去掉顶层导入，删除 2 个用例（`test_ui_high_quality_analysis_runs_yolo26l_internal_body_core`、`test_ui_high_quality_missing_yolo26l_is_structured_error_without_job`）。这 6 个用例测的是已弃用的 web 桥，留在 `old/`，没有替换测试（D-13）；router 本身的契约仍由两文件其余 11 + 17 个用例覆盖。
+  - 依赖（P0-1）：`requirements.txt` 的 pytest 固定为 9.1.1；`requirements-dev.txt` 的 pytest 由 8.4.2 改为 9.1.1，新增 `pyinstaller==6.22.3`、`imageio-ffmpeg==0.6.0`（`app_ui_onefile.spec` 顶层导入）。
+  - 环境：`D:\DevTools\Python312\python.exe -m venv .venv`（`include-system-site-packages = false`），经代理 7879 安装两份 requirements；`old/models/` 的 4 个 MediaPipe 模型复制到 `models/`（不入库）。
+  - 文档：设计文档 §11.2 新增 P0-1～P0-4 并划线、D-10 划线；§12 P0 行、基线段、`.venv` 段、工作量段改为 P0a 已完成；README 阶段表、决策表、通用任务前检查的基线；P0 文件的状态、任务前检查、决策结论与 P0a 验收。按用户要求，阶段 PR 等 P0b 完成后再开。
+- 同步依据：`git ls-tree`/`git grep 5a6d99c` 确认导入范围与对 `docs/`、`templates/`、`ui_backend` 的引用；`old/` 与本仓库逐文件的用例收集数对比；`D:\DevToolsenvsision` 的 `pip freeze`。
+- 验证方法：本仓库 `.venv` 全量 `pytest tests -q`：947 passed，0 failed，0 skipped。旧基线 1033 项（1026 + 6 + 1）减去未导入的 86 项（web 端 7 个文件 80 项，含 5 项失败与 1 项跳过；拆出的 6 项，含 1 项失败）正好 947，其余每个文件的用例数与 `old/` 相同。golden 与契约门禁 49 passed；`test_camera_capture.py::test_tk_preview_student_switch_with_process_cameras` passed；`.venv` 中 `pip freeze` 与 DevTools 环境只差 `comtypes`（1.4.17/1.4.16）和 `pyinstaller-hooks-contrib` 的补丁版本；`git diff --check` 通过。
+
 ## 2026-10-03（America/Los_Angeles）: [docs] AGENTS.md 新增"模块职责与体量"：单一职责、体量上限与棘轮 allowlist；D-15 已决
 
 - 问题描述：用户要求防止重构后再长成"屎山"：不允许单文件承担过多职责，不允许单文件代码行数过度累积。原规则只有一句"新代码模块不超过 800 行，函数不超过 100 行；现有超限项只许变小"：没有职责要求；只管"新代码"，搬迁过来的旧文件不受约束；"只许变小"没有记录行数，架构测试无法校验，文件降下来后还能涨回去；没有预警，模块要到 799 行才会被注意。另外 `CameraWarmupPool` 是单个 969 行的类，P5"池不重写"原样迁入后 `pool.py` 仍超过 800 行，与 P9 的 allowlist 清零冲突，文档没有处置。用户随后拍板：D-15 采纳建议；`tests/` 不纳入体量上限。

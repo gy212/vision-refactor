@@ -4,5 +4,8 @@
 # YOLO 迁移 Issue #3（S1 pose33_v3 golden 回归基线）确定的测试框架：方案 A（pytest）。
 # 后续所有 Issue 的新增测试统一沿用 pytest 风格，
 # 验收命令：.\.venv\Scripts\python.exe -m pytest tests\xxx.py
-pytest==8.4.2
+pytest==9.1.1
 hypothesis==6.155.2
+# 打包依赖（P0-1）：构建命令见 spec 顶部；imageio-ffmpeg 提供随包分发的 ffmpeg
+pyinstaller==6.22.3
+imageio-ffmpeg==0.6.0

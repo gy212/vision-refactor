@@ -19,7 +19,6 @@ if str(_REPO_ROOT) not in sys.path:
 
 from batch import batch_dual_compare, batch_export_skeleton, batch_tech_eval  # noqa: E402
 from batch.backend_options import meta_for_backend, normalize_backend_layout, yolo_batch_meta  # noqa: E402
-from apps import ui_backend  # noqa: E402
 
 
 def test_backend_layout_defaults_preserve_pose33_path():
@@ -57,114 +56,6 @@ def test_yolo_body_core_batch_meta_defaults_to_yolo26l():
     assert meta["model_profile"] == "yolo26l-pose.pt"
     assert meta["display_scope"] == "internal"
     assert meta["score_authorized"] is False
-
-
-def test_ui_high_quality_analysis_runs_yolo26l_internal_body_core():
-    manager = ui_backend.BridgeJobManager()
-    calls: list[dict[str, object]] = []
-
-    def fake_body_core_analysis(video_path, **kwargs):
-        calls.append({"video_path": video_path, **kwargs})
-        return (
-            np.zeros((4, 12, 2), dtype=np.float32),
-            24.0,
-            {
-                "backend": "yolo",
-                "model_name": "yolo26l-pose.pt",
-                "raw_layout": "pose33_like_coco17",
-                "feature_layout": "body_core_v1",
-                "calibration_status": "unvalidated",
-                "score_authorized": False,
-                "display_scope": "internal",
-                "body_core_valid_frame_ratio": 0.75,
-                "multi_person_detected": False,
-                "review_required": False,
-                "max_persons": 1,
-                "calibration_note": "internal only",
-            },
-        )
-
-    service = ui_backend.TemplateAnalysisService(
-        job_manager=manager,
-        body_core_analysis=fake_body_core_analysis,
-    )
-    response = service.start_analysis_run(
-        ui_backend.CommandRequest(
-            command="analysis.run",
-            request_id="req-body-core",
-            payload={
-                "videoPath": "student.mp4",
-                "doCompare": False,
-                "doTechEval": False,
-                "qualityProfile": "high_quality",
-                "enableHands": False,
-                "modelAvailability": {"yoloSupported": True, "yolo26L": True},
-            },
-        )
-    )
-
-    assert response["ok"] is True
-    route = response["payload"]["backendRoute"]
-    assert route["backend"] == "yolo"
-    assert route["modelProfile"] == "yolo26l"
-    assert route["displayScope"] == "internal"
-    assert route["scoreAuthorized"] is False
-
-    final = manager.wait(response["jobId"], 2.0)
-
-    assert final is not None
-    assert final.status == "succeeded"
-    assert calls == [
-        {
-            "video_path": "student.mp4",
-            "backend": "yolo",
-            "pose_variant": "full",
-            "model_profile": "yolo26l",
-            "should_stop": calls[0]["should_stop"],
-        }
-    ]
-    assert callable(calls[0]["should_stop"])
-    result = final.result["bodyCoreAnalysis"]
-    assert "compare" not in final.result
-    assert "techEval" not in final.result
-    assert result["backend"] == "yolo"
-    assert result["requestedBackend"] == "yolo"
-    assert result["modelProfile"] == "yolo26l"
-    assert result["modelName"] == "yolo26l-pose.pt"
-    assert result["rawLayout"] == "pose33_like_coco17"
-    assert result["featureLayout"] == "body_core_v1"
-    assert result["scoreAuthorized"] is False
-    assert result["calibrationStatus"] == "unvalidated"
-    assert result["displayScope"] == "internal"
-    assert result["score"] is None
-    assert result["validFrameRatio"] == pytest.approx(0.75)
-
-
-def test_ui_high_quality_missing_yolo26l_is_structured_error_without_job():
-    service = ui_backend.TemplateAnalysisService(job_manager=ui_backend.BridgeJobManager())
-    response = service.start_analysis_run(
-        ui_backend.CommandRequest(
-            command="analysis.run",
-            request_id="req-missing-yolo26l",
-            payload={
-                "videoPath": "student.mp4",
-                "doCompare": False,
-                "doTechEval": False,
-                "qualityProfile": "high_quality",
-                "enableHands": False,
-                "modelAvailability": {"yoloSupported": True, "yolo26L": False},
-            },
-        )
-    )
-
-    assert response["ok"] is False
-    assert response["error"]["code"] == "yolo26l_unavailable"
-    route = response["payload"]["backendRoute"]
-    assert route["ok"] is False
-    assert route["requestedBackend"] == "yolo"
-    assert route["modelProfile"] == "yolo26l"
-    assert route["featureLayout"] == "body_core_v1"
-    assert route["displayScope"] == "internal"
 
 
 def test_meta_for_backend_uses_shared_router_contract_for_mediapipe_body_core():
