@@ -73,7 +73,7 @@
 ```
 
 - `batch_dual_compare.py --paired` 只用于默认的 MediaPipe `pose33_v3` 路径：按学员文件名里的正/侧关键词配对，再调用 `compare_dual_streams`，CSV 的 `video` 列写学员 id。`--export_raw` 在 paired 模式下跳过；`body_core_v1`/YOLO 调试批处理不支持 paired。
-- 打包与交付按 P0 执行：合并 spec、写入 `build_info`、只从干净的 commit 构建。构建命令写在 spec 顶部，如 `.\.venv\Scripts\python.exe -m PyInstaller app_ui_onefile.spec --noconfirm`。EXE 自检命令：`vision_ui.exe --offline-self-check <报告.json>`。
+- 打包与交付按 P0 执行：合并 spec、写入 `build_info`、只从干净的 commit 构建。唯一的 spec 是 `app_ui_onefile.spec`，构建命令写在它顶部：`.\.venv\Scripts\python.exe -m PyInstaller app_ui_onefile.spec --noconfirm`；打包路径不干净时拒绝构建，产物是 `dist/vision_ui.exe` 和交付目录 `dist/vision_ui_<日期>_<commit>/`。EXE 自检命令：`vision_ui.exe --offline-self-check <报告.json>`。
 
 ## 测试门禁
 

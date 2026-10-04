@@ -1,3 +1,17 @@
+## 2026-10-03（America/Los_Angeles）: [feat] P0b 打包与交付：单一 spec、build_info、干净构建、自检补强、交付目录
+
+- 问题描述：两份 Tk spec 并存且都没有收入 `assets/feedback`（9-29 包的结果页因此没有状态图标）；EXE 里没有源码版本信息，v4 曾从未跟踪的源码出包；交付附带文件不在仓库里；自检不检查图标和构建来源。
+- 修改内容：
+  - spec（P0-2）：删除目录版 `app_ui.spec`；`app_ui_onefile.spec` 收入 `assets/feedback`、`build_info.json`，顶部写明构建命令、产物和干净构建规则，EXE 生成后组织交付目录。
+  - `packaging/pyinstaller/build_info.py`：记录 commit、UTC 构建时间、`RULE_VERSION`（从源码读取，不导入业务模块）、4 个模型的 SHA-256、Python 与 PyInstaller 版本、是否干净；`core apps analysis batch assets templates packaging app_ui_onefile.spec` 下有改动或未跟踪文件时拒绝构建（比任务 3 多了 `templates`、`packaging`，两者都打进 EXE）。顶层包名 `packaging` 与 PyPI 的 `packaging` 冲突，spec 与测试按文件路径加载。
+  - 交付（P0-3）：`packaging/pyinstaller/delivery.py` 把 EXE、`build_info.json` 和 `packaging/delivery/` 复制到 `dist/vision_ui_<日期>_<commit>/`。`使用说明.txt` 由 9-20 包改写（EXE 名、v4 的分析模型与逐帧分析、图文报告、14 天历史）；`feedback_config.example.json` 按 v4 `FeedbackConfig` 默认值重新生成（9-20 包里是 v3 参数，去掉由界面决定的 `pose_variant`）；`第三方许可/` 按 `PYZ-00.toc` 实际收入的包从 `.venv` dist-info 重建，比 9-20 包多出 openpyxl、et_xmlfile、absl-py、flatbuffers（上游未附文件，放 Apache-2.0 全文）、sounddevice、Python，numpy 换成当前版本，新增 `清单.txt`；`.gitattributes` 让许可证原样入库（pillow 的上游文本有行尾空格）。
+  - 自检（`apps/desktop_smoke.py`）：报告写入 `buildInfo`，冻结包内断言 `build_info.json` 存在、`clean=true`、规则版本与 `RULE_VERSION` 一致；断言 24 个结果页状态图标都能从包内解码且尺寸正确；新增 `build_info`、`feedback_status_icons` 两项检查。
+  - 新测试 `tests/test_packaging_build_info.py`（11 项）：干净/改动/未跟踪/打包路径外改动、build_info 字段、真实规则版本、交付目录内容、配置示例与默认值同步、源码树 24 个图标、缺图标报错、只有一份 spec 且收入图标和 build_info、每个运行时依赖都有许可证。未替换任何旧测试（D-13）。
+  - 文档：P0 文件、README 阶段表、设计文档 §12 的 P0 行与工作量段、AGENTS.md 的打包一条。设计文档风险表第一行要等实机验收后交付时再改。
+  - 未完成：§13.4 实机清单要在甲方的目标双摄上由人执行。按用户要求，阶段 PR 等 P0 全部完成后再开。
+- 同步依据：`apps/feedback_result_panel.py` 的 `_ASSETS_DIR` 与图标文件名；`core/paths.py` 的冻结模式解析；`core/feedback_geometry.py` 的 `FeedbackConfig`；`old/dist/散打动作练习_双视角版_20260920/` 的附带文件；`build/app_ui_onefile/PYZ-00.toc`；`imageio_ffmpeg.get_ffmpeg_version()` 为 7.1 essentials（与 `FFmpeg说明.txt` 一致）。
+- 验证方法：工作区有未提交改动和未跟踪文件时运行 PyInstaller，输出"拒绝构建"、退出码 1、不生成 `dist/`；从干净的 `2219a8f` 构建成功，`vision_ui.exe --offline-self-check` 退出码 0，报告 `ok=true`、`frozen=true`、`feedbackVersion=sanda-feedback-mediapipe-2026-09-20-v4`、`feedbackIcons=24`、`buildInfo.commit=2219a8f…`、`clean=true`，`checks` 共 12 项，模型哈希与 `models/` 的 `sha256sum` 一致；报告留在 `outputs/p0b/`（不入库）。交付目录含 EXE、`build_info.json`、`使用说明.txt`、`feedback_config.example.json`、`第三方许可/`。全量 `pytest tests -q` 958 passed（947 + 新增 11）；golden 与契约门禁 49 passed；`git diff --check` 通过。
+
 ## 2026-10-03（America/Los_Angeles）: [chore] P0a 基线导入：从旧仓库 5a6d99c 导入代码，新建 .venv，测定基线
 
 - 问题描述：P0a 阻断 P1。本仓库此前只有文档，需要按 P0-4 从旧仓库导入参与重构的代码、新建本仓库 `.venv` 并重新测定全量基线。开工前用户对 P0-1～P0-4 均采纳清单建议。
