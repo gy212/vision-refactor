@@ -8,18 +8,19 @@
 
 | 阶段 | 文件 | 前置 | 规模 | 状态 |
 |---|---|---|---|---|
-| P0 基线（阻断） | [P0-基线.md](P0-基线.md) | — | 小 | 进行中，剩余事项见该文件第 3 节 |
-| P1 基础层 | [P1-基础层.md](P1-基础层.md) | P0 | 小 | 未开始 |
+| P0a 基线导入（阻断 P1） | [P0-基线.md](P0-基线.md) 第 3a 节 | — | 小 | 未开始（旧仓库的整合已完成） |
+| P0b 打包与交付（阻断交付，最晚 P5 验收前） | [P0-基线.md](P0-基线.md) 第 3b 节 | P0a | 中 | 未开始 |
+| P1 基础层 | [P1-基础层.md](P1-基础层.md) | P0a | 小 | 未开始 |
 | P2 解码与姿态 | [P2-解码与姿态.md](P2-解码与姿态.md) | P1 | 中 | 未开始 |
 | P3 评估 | [P3-评估.md](P3-评估.md) | P2 | 大 | 未开始 |
 | P4 录制 | [P4-录制.md](P4-录制.md) | P1 | 中 | 未开始 |
-| P5 摄像头 | [P5-摄像头.md](P5-摄像头.md) | P1，计划排在 P4 之后 | 中 | 未开始 |
+| P5 摄像头 | [P5-摄像头.md](P5-摄像头.md) | P1，计划排在 P4 之后（两者都改旧 worker 循环，见该文件）；验收要出 EXE 自检，需 P0b | 中 | 未开始 |
 | P6 实时会话 | [P6-实时会话.md](P6-实时会话.md) | P2、P5 | 大 | 未开始 |
 | P7 工作流 | [P7-工作流.md](P7-工作流.md) | P4、P6 | 中 | 未开始 |
 | P8 Tk 拆分 | [P8-Tk拆分.md](P8-Tk拆分.md) | P7 | 大 | 未开始 |
-| P9 收尾 | [P9-收尾.md](P9-收尾.md) | P3、P8 | 小 | 未开始 |
+| P9 收尾 | [P9-收尾.md](P9-收尾.md) | P3、P8 | 中 | 未开始 |
 
-P0、P1 之后分两条线：算法线 P2→P3，运行时线 P4→P5→P6→P7→P8。两条线有两个汇合点：P4 的评分步骤先接旧评分函数，P3 完成后替换；P6 要用 P2 的 `create_engine`、`VideoSource` 和 `extract_pose_sequence`，所以 P2 要先完成。
+P0a、P1 之后分两条线：算法线 P2→P3，运行时线 P4→P5→P6→P7→P8。两条线有两个汇合点：P4 的评分步骤先接旧评分函数，P3 完成后替换；P6 要用 P2 的 `create_engine`、`VideoSource` 和 `extract_pose_sequence`，所以 P2 要先完成。两条线都会改 `apps/recording_postprocess.py` 和 `apps/app_ui.py`，并行只在开发期成立，合并是串行的：约定 P4 先于 P3 合入，先合入者负责搬迁重叠文件，后合入者 rebase 后在新位置改（设计文档 §12）。
 
 ## 待决策事项总表
 
@@ -31,7 +32,7 @@ P0、P1 之后分两条线：算法线 P2→P3，运行时线 P4→P5→P6→P7�
 | P0-2 | 合并 spec 后保留单文件版还是目录版 | P0 | 无法合并 spec |
 | P0-3 | 交付包附带哪些文件 | P0 | 只交付 EXE（同 9-29 包） |
 | P0-4 | 从旧仓库导入哪些文件作为本仓库的基线 | P0 | 无法导入，P0 不能开工 |
-| D-13 | 测试改造范围 | P1 开工前 | 依赖半成品 `App` 的测试改不了，P4 起的删除清单无法完成 |
+| D-13 | 测试改造范围 | P4 开工前（P1 的架构测试 allowlist 不依赖它） | 依赖半成品 `App` 的测试改不了，P4 起的删除清单无法完成 |
 | V-7 | `desktop.log` 诊断行统一格式 | P1 | 现有日志行保持原样，`diag` 只用于新增事件 |
 | D-4 | 考试与 `batch --paired` 计分不一致 | P3 | 三种方案并存，batch 不加 `--scheme` |
 | D-9 / V-8 | 模板池混用 v2/v3 归一化 | P3 | 保持现状：按首个模板归一化 |
@@ -43,14 +44,14 @@ P0、P1 之后分两条线：算法线 P2→P3，运行时线 P4→P5→P6→P7�
 | D-7 | 双摄预览平滑与在线识别 | P6 | 关闭 |
 | D-8 / V-2 | 单摄模型加载期显示裸帧 | P6 | 不显示 |
 | V-5 | 学生练习显示锁定，不再改写用户勾选 | P7 | 保留改写后恢复，`_student_saved_*` 不删 |
-| D-10 | web 端代码处置 | P9 | 保留不动 |
+| D-10 | web 端代码处置 | P0a（随 P0-4 了结：不导入即归档） | P0-4 若导入了 web 端，则保留不动 |
 | D-12 | 删除 `core/qwen_coach.py` | P9 | 保留 |
 | D-2 | 正式规则把补帧判为有效 | 重构完成后 | 维持 `HOLD_LAST_LEGACY` |
 | D-3 | 两套规则对同一检查项结论不同 | 重构完成后，需教师/甲方确认 | 两个 profile 并存 |
 | D-5 | 正式测量改用宽高比修正后的坐标 | 与 D-3 一起 | 不修正 |
 | D-11 | body_core 标定用的 baseline 2.0 与 3.0 不一致 | 任意时间，只影响 batch/analysis | 保持 1.2826 |
 
-已决：D-1（学生练习以 v4 为基线，`f7112f9`）、D-14（摄像头沿用 PR #75 的"池 + 租约"，`095aed2`）。
+已决：D-1（学生练习以 v4 为基线，`f7112f9`）、D-14（摄像头沿用 PR #75 的"池 + 租约"，`095aed2`）、D-15（`CameraPool` 体量：P5 原样迁入，P9 按职责拆分、只搬不改，2026-10-03）。
 
 ## 附录 B 搬迁的阶段归属
 
@@ -59,14 +60,14 @@ P0、P1 之后分两条线：算法线 P2→P3，运行时线 P4→P5→P6→P7�
 | 阶段 | 搬迁 |
 |---|---|
 | P1 | `core/paths.py` → `foundation/paths.py`；三套偏好读写 → `foundation/prefs.py`；`motion_energy`、`find_active_range` → `foundation/signal.py`；`to_jsonable` → `foundation/jsonable.py` |
-| P2 | `vision_pipeline` → `pose/engine.py`、`pose/render.py`、`evaluation/live_labels.py`；`pose_features` 的有效性、归一化、视角分数；`feature_layout`、`model_manager`、`parallel_pose_engine`、`preview_smoother`、`backend_router`、`yolo_adapter`；`body_core_compare` 的提取部分；`video_writer` → `media/writer.py` |
+| P2 | `vision_pipeline` → `pose/engine.py`、`pose/render.py`、`pose/live_labels.py`；`pose_features` 的有效性、归一化、视角分数；`feature_layout`、`model_manager`、`parallel_pose_engine`、`preview_smoother`、`backend_router`、`yolo_adapter`；`body_core_compare` 的提取部分；`video_writer` → `media/writer.py` |
 | P3 | `action_compare` 其余部分（模板、匹配、切分、模板创建、匹配预览导出）、`rule_scoring`、`online_matcher`、`kick_quality`、`action_feedback`、`feedback_geometry`、`feedback_phases`；`pose_features.subsequence_dtw`；`body_core_compare` 的匹配部分；`recording_postprocess` 的评分常量与模板校验；`analysis/tech_eval.py` → `evaluation/techeval/`；`make_template`、`match_template` 的实现 → `apps/cli/` |
-| P4 | `recording_controller` → `recording/controller.py`；`recording_postprocess` 的后处理 → `recording/finalizer.py`；`exam_clip` → `workflows/exam/clip.py`；`exam_roster` 的台账部分 → `workflows/exam/scorebook.py`；`feedback_history` → `services/practice_history.py` |
+| P4 | `recording_controller` → `recording/controller.py`；`recording_postprocess` 的后处理 → `recording/finalizer.py`；`exam_clip` → `workflows/exam/clip.py`（L5 包骨架由 P4 先建，只含 clip 与 scorebook）；`exam_roster` 的台账部分 → `workflows/exam/scorebook.py`；`feedback_history` → `services/practice_history.py`（报告渲染调用移出）；新建 `media/segment_layout.py`、`recording/service.py`、`recording/steps.py` |
 | P5 | `camera_enum` → `media/camera/devices.py`；`camera_capture` → `media/camera/capture_process.py`；`camera_warmup` → `media/camera/pool.py` |
 | P6 | `apps/main.py` 的实现 → `apps/cli/main.py` |
 | P7 | `exam_session`、`exam_roster` 其余部分、`presence_gate`、`exam_announcer` → `workflows/` |
 | P8 | `app_ui`、`exam_panel`、`feedback_panel`、`feedback_result_panel`、`desktop_smoke` → `apps/tk/`；`feedback_report` → `reporting/` |
-| P9 | 删除全部门面；按 D-10 处置 `ui_backend` 与 `ui_backend_sidecar.spec`，按 D-12 处置 `qwen_coach` |
+| P9 | 删除全部门面；D-10 若已随 P0-4 了结则跳过，否则按 D-10 处置 `ui_backend` 与 `ui_backend_sidecar.spec`；按 D-12 处置 `qwen_coach` |
 
 ## 通用任务前检查
 
@@ -85,9 +86,10 @@ P0、P1 之后分两条线：算法线 P2→P3，运行时线 P4→P5→P6→P7�
 每个阶段结束时，除本阶段文件第 4 节外：
 
 - [ ] "删除"清单逐项完成，用文件里给出的搜索确认没有残留。
-- [ ] 门禁测试通过；全量测试除 web 桥 6 项外全部通过（D-10 执行后全部通过）。
+- [ ] 门禁测试通过；全量测试全部通过（P0-4 不导入 web 端后，web 桥的 6 项失败不进入本仓库；若导入了，除这 6 项外全部通过）。
 - [ ] golden 零漂移。只有已批准的决策可以改变数值，且单独 PR、单独重生成 golden。
-- [ ] 架构测试通过，allowlist 条数没有增加。
+- [ ] 架构测试通过，allowlist 条数没有增加，体量条目的行数上限没有调高（棘轮规则见 AGENTS.md"模块职责与体量"）。
+- [ ] 本阶段新建或改动的模块：docstring 写明职责；超过 600 行的已在 PR 里说明拆分安排。
 - [ ] 每个 PR：`git diff --check` 通过；change.md 写明问题描述、修改内容、同步依据、验证方法；Conventional Commits；列出被替换的测试和对应的新测试（D-13）。
 - [ ] 推送阶段分支（`refactor/p<N>-<主题>`），用 `gh pr create --base main` 向本仓库开 PR。PR 合并后，依赖本阶段的后续阶段才能开工。
 - [ ] 设计文档与本目录同步：§12 状态、受影响的章节、本阶段文件的状态。

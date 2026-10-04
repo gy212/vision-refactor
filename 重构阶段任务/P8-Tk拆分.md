@@ -30,7 +30,7 @@
 4. 视图 `apps/tk/views/`：main_window、capture_panel、preview_surface、recording_panel、exam_window、practice_controls、practice_result/、compare_dialog、settings_dialog、widgets。`_build_ui` 按界面区域拆分。
 5. 结果页 `views/practice_result/`：`FeedbackResultPanel` 拆成头部、概览卡片、相位条、检查列表、证据区、诊断区、底部操作栏，只消费报告模型。
 6. 报告：`reporting/practice_model.py`（原 `build_report_model`、标题摘要、原因分组、相位时间线数据）；`reporting/html/`（HTML 模板文件 + 小型渲染器，取代 `render_html_report`；证据帧经 `media.video_source`；路径脱敏函数保留）。
-7. 组合根 `apps/tk/app.py`：创建 `PreferenceStore`、`TaskGroup`、`UiDispatcher`、`CameraService`、`RecordingService`、`SegmentFinalizer`、`LiveSessionManager`、`ModeManager`、`ScorebookRegistry` 等对象并连线，不含业务逻辑。`apps/app_ui.py` 留入口壳；`apps/desktop_launcher.py` 改为启动 `apps/tk/app.py`；`apps/desktop_smoke.py` → `apps/tk/self_check.py`。
+7. 组合根 `apps/tk/app.py`：创建 `PreferenceStore`、`TaskGroup`、`UiDispatcher`、`CameraService`、`RecordingService`、`SegmentFinalizer`、`LiveSessionManager`、`ModeManager`、`WorkflowHost`、`ScorebookRegistry` 等对象并连线，不含业务逻辑。`apps/app_ui.py` 留入口壳；`apps/desktop_launcher.py` 改为启动 `apps/tk/app.py`；`apps/desktop_smoke.py` → `apps/tk/self_check.py`。
 8. 测试：控制器与服务用假服务、假设备单测；真实 Tk 主循环只保留少量冒烟（沿用"真实 spawn 子进程 + 模拟驱动"的模式切换检查）；改写 48 处半成品构造，保留行为断言，删除对私有属性的断言。
 
 删除（本阶段完成条件）：
@@ -43,7 +43,7 @@
 ## 4. 验收标准
 
 - [ ] 通用验收（见 README）。
-- [ ] 体量：`apps/tk/app.py` 不超过 300 行，每个控制器不超过 400 行，每个视图不超过 600 行，函数不超过 100 行（allowlist 中的旧项除外）。
+- [ ] 体量：`apps/tk/app.py` 不超过 300 行，每个控制器不超过 400 行，每个视图不超过 600 行，函数不超过 100 行（allowlist 中的旧项除外）。这几项预算写进架构测试长期生效，不只在本阶段验收时检查一次。
 - [ ] 架构测试：`core/` 不导入 tkinter 或 `PIL.ImageTk`；`.after(` 只出现在 `apps/tk/`；`apps/tk` 中 `getattr(self, "_…")` 只减不增。
 - [ ] 控制器单测、真实 Tk 冒烟、源码模式的模式切换检查、EXE 自检全部通过。
 - [ ] 附录 A 的 Tk 能力清单逐项走查，与第 1 节的记录一致。

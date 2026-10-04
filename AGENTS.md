@@ -12,18 +12,29 @@
 
 `old/` 只读，只作参照：不修改、不新增、不删除其中的任何文件（包括 `.venv`、缓存和输出）；除非用户要求，也不在外层仓库提交。优先阅读源码；必须运行旧代码对照时，用 `python -B`（pytest 再加 `-p no:cacheprovider`），工作目录放在 `old/` 之外，输出路径显式指到 `old/` 之外。
 
-已弃用，不参与重构：web 端，包括 `apps/ui_backend.py`、`frontend/`、`ui_backend_sidecar.spec`、`package.json`（`npm run *` 脚本）、`start-desktop-dev.cmd`、`scripts/` 下 3 个 Tauri 脚本，以及相关测试（`tests/test_ui_backend_*.py`、`test_vue_tauri_acceptance_gaps.py`、`test_windows_packaging_smoke.py`）。建议 P0 不把它们导入本仓库，留在 `old/` 即归档（P0-4）。如果导入，就不改代码、不加功能、不作门禁，迁移模块时为它保留旧路径门面，web 测试的失败不得多于基线，去留由 D-10 在 P9 决定。web bridge 的接口约定在工作区根目录用 `git show 5a6d99c:AGENTS.md` 查看（Desktop Bridge Contracts 一节）。
+已弃用，不参与重构：web 端，包括 `apps/ui_backend.py`、`frontend/`、`ui_backend_sidecar.spec`、`package.json`（`npm run *` 脚本）、`start-desktop-dev.cmd`、`scripts/` 下 3 个 Tauri 脚本，以及相关测试（`tests/test_ui_backend_*.py`、`test_vue_tauri_acceptance_gaps.py`、`test_windows_packaging_smoke.py`）。建议 P0 不把它们导入本仓库，留在 `old/` 即归档（P0-4）。门禁测试 `tests/test_backend_routing_contract.py`、`tests/test_batch_backend_args.py` 在模块顶层导入 `apps.ui_backend`：导入时去掉顶层导入，依赖它的 6 个用例留在 `old/`，文件名不变。如果导入，就不改代码、不加功能、不作门禁，迁移模块时为它保留旧路径门面，web 测试的失败不得多于基线，去留由 D-10 决定（P0-4 不导入即了结，否则 P9 处置）。web bridge 的接口约定在工作区根目录用 `git show 5a6d99c:AGENTS.md` 查看（Desktop Bridge Contracts 一节）。
 
 ## 重构工作方式
 
 - 先读设计文档 §0–§1 和 `重构阶段任务/README.md`（通用任务前检查与通用验收标准），再读当前阶段的文件。细节以设计文档为准；清单与设计文档不一致时，先改设计文档，再改清单。
-- 按清单顺序推进。P0 是阻断项，P0 验收前 P1 起各阶段都不开工。开工前逐项完成"任务前检查"，收尾时逐项核对"验收标准"，并更新设计文档 §12 和阶段文件里的状态。
+- 按清单顺序推进。P0a（基线导入）是阻断项，P0a 验收前 P1 起各阶段都不开工；P0b（打包与交付）阻断交付，最晚在 P5 验收前完成。开工前逐项完成"任务前检查"，收尾时逐项核对"验收标准"，并更新设计文档 §12 和阶段文件里的状态。
 - 代码位置：重构的代码全部在本仓库。P0 按 P0-4 从旧仓库导出参与重构的部分作为基线，之后按设计文档在本仓库内迁移。文档里的"旧实现""门面""删除"都指本仓库里的副本，`old/` 始终不动。
 - 行为不变（设计文档 §1.3）：每项能力只留一个实现。同一能力在各入口的现有差异改写为命名策略，默认值复现当前输出；用差分测试证明新旧输出一致后，删除旧实现。改变行为（合并策略、修正数值）属于 §11 的决策项，单独提 PR、单独重新生成 golden，不和重构混在一起。需要新行为时新增策略和测试，不要复制一份旧代码再改。
 - 待决策项没有结论时，按清单总表"未决时的做法"保持现状，不要自行决定。需要拍板的问用户，结论记入设计文档 §11，已决的条目划线。
-- 分层（设计文档 §2.1）：`foundation → media → pose → evaluation → {services, recording, live, reporting} → workflows → 入口`。只能依赖更低层；L4 的四个包互不导入；入口层只用各包 `__init__` 导出的公共 API；不跨模块导入下划线开头的符号（`tests/` 除外）；`core/` 不导入 tkinter。P1 起由 `tests/test_architecture.py` 强制，allowlist 只减不增。
+- 分层（设计文档 §2.1）：`foundation → media → pose → evaluation → {services, recording, live, reporting} → workflows → 入口`。只能依赖更低层；L4 的四个包互不导入（要共用的纯逻辑下沉到 L0/L1，要调另一个 L4 包的函数时由调用方注入）；L4 不向上调用 L5（finalizer 的处理步骤由构建计划的一方注入）；入口层只用各包 `__init__` 导出的公共 API；不跨模块导入下划线开头的符号（`tests/` 除外）；`core/` 不导入 tkinter。P1 起由 `tests/test_architecture.py` 强制，allowlist 只减不增。
 - 门面：迁移期间，旧导入路径可以保留为只做转发的门面，门面里不能有逻辑；按设计文档 §12 和清单附录 B 在对应阶段删除，大部分在 P9。阶段结束时，被取代的旧实现必须删除，不长期双轨。
-- 迁移期间的新功能一律写在新结构上，不往旧结构加代码。新代码模块不超过 800 行，函数不超过 100 行；现有超限项只许变小。
+- 迁移期间的新功能一律写在新结构上，不往旧结构加代码，并遵守下一节的职责与体量规则。
+
+## 模块职责与体量
+
+不再出现 `App`（4855 行、135 个方法）这样的文件：一个文件只做一件事，体量有硬上限，超限项只许变小。能机器检查的部分 P1 起由 `tests/test_architecture.py` 强制（设计文档 §13.2），其余在评审时把关。
+
+- 单一职责：`core/`、`apps/`、`batch/`、`analysis/`、`scripts/` 下的每个模块都有模块 docstring，第一句写明它负责什么。要用"和""以及"连接两件不相关的事才说得清，就该拆。新代码放进设计文档 §2.2 指定的模块；不属于现有模块职责的，按 §2.2 新建模块，不顺手塞进手边的文件。
+- 不建杂物模块：不新增 `utils`、`helpers`、`common`、`misc` 这类名字的模块（含 `pose_utils.py` 这样的后缀形式），共用代码按用途放进具体模块，如 `foundation/geometry.py`、`foundation/signal.py`。`__init__.py` 只做导出，只含 docstring、导入和 `__all__`。
+- 体量上限（不含 `tests/`）：模块不超过 800 行，函数不超过 100 行，按物理行计数（含注释、docstring 和空行）。P8 起 Tk 层更严：`apps/tk/app.py` 不超过 300 行，每个控制器不超过 400 行，每个视图不超过 600 行。
+- 预警线 600 行：超过 600 行的模块不再接收新职责。改动使模块越过 600 行时，同一 PR 内按职责拆分，或在 PR 说明里写明暂不拆的原因和拆分时点。
+- 拆分按职责：拆出的每个模块、每个函数都能用一句话说清职责，并据此命名，如 `eval_force_sequence` 按"事件检测 → 时序 → 判定"拆。不按行数机械切片（`xxx_part2.py`、`xxx_impl.py`、`_step1()`），也不靠删注释、多条语句并成一行、写超长表达式来压行数。
+- 现有超限项按棘轮处理：P1 把现有超限的模块和函数登记进 allowlist，记下当时的行数作为上限，写明计划消除的阶段，之后只许变小。超过上限即失败；实际行数低于上限也判失败，提示在同一提交里把上限改成实际行数，防止降下来又涨回去。修 bug 必须在超限文件里加行时，同一 PR 从该文件移出不少于新增的行数。搬迁超限文件时优先按职责拆到上限以内；拆不完的，allowlist 条目随文件改到新路径，上限沿用原值，不新增条目、不调高上限。allowlist 条数只减不增，P9 清零。
 
 ## 硬约束
 
