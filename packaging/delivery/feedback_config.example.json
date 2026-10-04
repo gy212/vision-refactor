@@ -1,0 +1,50 @@
+{
+  "sample_fps": 0.0,
+  "max_edge": 1920,
+  "min_valid": 3,
+  "valid_ratio": 0.6,
+  "trigger_ratio": 0.3,
+  "motion_distance": 0.25,
+  "guard_drop": 0.25,
+  "guard_back": 0.18,
+  "shoulder_height": 0.2,
+  "elbow_raise": 0.1,
+  "torso_front_ratio": 0.75,
+  "foot_angle": 145.0,
+  "hip_rotation": 20.0,
+  "fusion_support": 0.7,
+  "phase_tolerance_seconds": 0.4,
+  "stance_window_seconds": 0.2,
+  "min_motion_seconds": 0.06,
+  "return_distance": 0.15,
+  "max_gap_seconds": 0.1,
+  "finish_window_seconds": 0.05,
+  "front_weights": {
+    "stance": {
+      "default": 0.5,
+      "stance_elbow": 0.2,
+      "stance_knee": 0.2,
+      "stance_rear_guard": 0.6
+    },
+    "straight": {
+      "default": 0.4,
+      "guard_low": 0.7,
+      "guard_elbow": 0.7,
+      "shoulder_level": 0.7
+    },
+    "hook": {
+      "default": 0.6,
+      "guard_low": 0.75,
+      "guard_elbow": 0.7,
+      "shoulder_level": 0.6
+    },
+    "kick": {
+      "default": 0.4,
+      "guard_low": 0.65,
+      "guard_elbow": 0.65,
+      "foot_flexed": 0.15,
+      "hip_turn": 0.7,
+      "arm_swing": 0.6
+    }
+  }
+}

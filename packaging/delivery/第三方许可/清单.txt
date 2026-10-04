@@ -1,0 +1,16 @@
+﻿随 vision_ui.exe 分发的第三方组件（构建环境 .venv 的分发包元数据）：
+
+mediapipe 0.10.31：Apache 2.0；LICENSE
+numpy 2.4.1：BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0；LICENSE.txt
+opencv-python 4.13.0.90：Apache 2.0；LICENSE-3RD-PARTY.txt, LICENSE.txt
+pillow 12.1.0：MIT-CMU；LICENSE
+pygrabber 0.2：MIT；LICENSE
+comtypes 1.4.17：MIT；LICENSE.txt
+openpyxl 3.1.5：MIT；LICENCE.rst
+et_xmlfile 2.0.0：MIT；LICENCE.python, LICENCE.rst
+absl-py 2.5.0：Apache-2.0；LICENSE
+flatbuffers 25.12.19：Apache 2.0；LICENSE（分发包未附许可证文件，此为 Apache-2.0 标准全文）
+sounddevice 0.5.6：MIT；LICENSE
+imageio-ffmpeg 0.6.0：BSD-2-Clause；LICENSE
+Python 3.12.10（含 Tcl/Tk）：PSF-2.0；LICENSE.txt
+FFmpeg 7.1 essentials（imageio-ffmpeg 附带）：GPL-3.0；FFmpeg说明.txt、GPL-3.0.txt

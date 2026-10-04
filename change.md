@@ -1,3 +1,43 @@
+## 2026-10-03（America/Los_Angeles）: [style] 清理 PR #2 全量 diff 的尾随空白，更正此前"diff --check 通过"的记录
+
+- 问题描述：评审对 `origin/main...HEAD` 运行 `git diff --check` 返回 2，有 70 处尾随空白（`analysis/tech_eval.py` 38、`tests/test_force_sequence.py` 14、`tests/test_standard_video.py` 12、`docs/yolo_migration_plan_optimized.md` 4、`tests/test_left_side.py` 2），都来自导入提交 `5574d95`（旧仓库原样带来的）。下面 P0a、P0b 两条记录写的"`git diff --check` 通过"只检查了各自提交的增量，没有对整个 PR diff 检查，那几处说法不成立，以本条为准。另外 P0 文件验收里"change.md 记录"一项没有勾选。
+- 修改内容：4 个 Python 文件删除行尾空格/制表符，不改其他内容；`docs/yolo_migration_plan_optimized.md` 第 3–6 行的 Markdown 硬换行由行尾两空格改为行尾反斜杠，渲染效果不变；`重构阶段任务/P0-基线.md` 勾选 change.md 记录一项。
+- 同步依据：评审意见；`git diff --check origin/main...HEAD` 的输出。`tech_eval.py` 有 5 处尾随空白在 docstring 的空行里，只影响 `__doc__` 的原始文本。
+- 验证方法：清理脚本对每个 Python 文件比较前后的 AST，把字符串常量经 `inspect.cleandoc` 归一后要求完全一致；`git diff --check origin/main` 退出码 0；全量 `pytest tests -q` 958 passed（含 golden、`test_tech_eval_contract`，以及读取该 YOLO 文档的 `test_s5_*`、`test_s6_*`）。以后的 PR 用 `git diff --check origin/main...HEAD` 检查整个 PR。
+
+## 2026-10-03（America/Los_Angeles）: [docs] 实机测试改为重构完成后统一做，P0 完成
+
+- 问题描述：原安排要求 P0b 交付前、P5 验收时在甲方目标双摄上做 §13.4 实机清单。用户指出重构期间不应把中间版本交给甲方，决定实机测试留到重构完成后统一做，先记为待办。
+- 修改内容：阶段 README 新增"待办"一节，第 1 项写明统一实机测试的时点（P9 验收后、用合并后的 `main` 构建）和完整清单；P0 文件第 8 项与对应验收划线并指向待办，P0 状态改为已完成；P5 删掉"能接上目标双摄"的任务前检查，实机验收改为指向待办；P9 验收写明统一实机测试通过后才交付；设计文档 §0 第 6 条、§12 P0 行与工作量段、风险表第一行、§13.4 补上时点。
+- 同步依据：用户本次指示；本仓库全文搜索 `13.4`、`实机`、`目标双摄`，`camera_session_architecture.md` 第 95 行是摄像头设计的现状表，记的是"未完成"，与新安排不冲突，未改。
+- 验证方法：改后再次搜索，各阶段文件的实机条目都指向 README"待办"第 1 项；`git diff --check` 通过。
+
+## 2026-10-03（America/Los_Angeles）: [feat] P0b 打包与交付：单一 spec、build_info、干净构建、自检补强、交付目录
+
+- 问题描述：两份 Tk spec 并存且都没有收入 `assets/feedback`（9-29 包的结果页因此没有状态图标）；EXE 里没有源码版本信息，v4 曾从未跟踪的源码出包；交付附带文件不在仓库里；自检不检查图标和构建来源。
+- 修改内容：
+  - spec（P0-2）：删除目录版 `app_ui.spec`；`app_ui_onefile.spec` 收入 `assets/feedback`、`build_info.json`，顶部写明构建命令、产物和干净构建规则，EXE 生成后组织交付目录。
+  - `packaging/pyinstaller/build_info.py`：记录 commit、UTC 构建时间、`RULE_VERSION`（从源码读取，不导入业务模块）、4 个模型的 SHA-256、Python 与 PyInstaller 版本、是否干净；`core apps analysis batch assets templates packaging app_ui_onefile.spec` 下有改动或未跟踪文件时拒绝构建（比任务 3 多了 `templates`、`packaging`，两者都打进 EXE）。顶层包名 `packaging` 与 PyPI 的 `packaging` 冲突，spec 与测试按文件路径加载。
+  - 交付（P0-3）：`packaging/pyinstaller/delivery.py` 把 EXE、`build_info.json` 和 `packaging/delivery/` 复制到 `dist/vision_ui_<日期>_<commit>/`。`使用说明.txt` 由 9-20 包改写（EXE 名、v4 的分析模型与逐帧分析、图文报告、14 天历史）；`feedback_config.example.json` 按 v4 `FeedbackConfig` 默认值重新生成（9-20 包里是 v3 参数，去掉由界面决定的 `pose_variant`）；`第三方许可/` 按 `PYZ-00.toc` 实际收入的包从 `.venv` dist-info 重建，比 9-20 包多出 openpyxl、et_xmlfile、absl-py、flatbuffers（上游未附文件，放 Apache-2.0 全文）、sounddevice、Python，numpy 换成当前版本，新增 `清单.txt`；`.gitattributes` 让许可证原样入库（pillow 的上游文本有行尾空格）。
+  - 自检（`apps/desktop_smoke.py`）：报告写入 `buildInfo`，冻结包内断言 `build_info.json` 存在、`clean=true`、规则版本与 `RULE_VERSION` 一致；断言 24 个结果页状态图标都能从包内解码且尺寸正确；新增 `build_info`、`feedback_status_icons` 两项检查。
+  - 新测试 `tests/test_packaging_build_info.py`（11 项）：干净/改动/未跟踪/打包路径外改动、build_info 字段、真实规则版本、交付目录内容、配置示例与默认值同步、源码树 24 个图标、缺图标报错、只有一份 spec 且收入图标和 build_info、每个运行时依赖都有许可证。未替换任何旧测试（D-13）。
+  - 文档：P0 文件、README 阶段表、设计文档 §12 的 P0 行与工作量段、AGENTS.md 的打包一条。设计文档风险表第一行要等实机验收后交付时再改。
+  - 未完成：§13.4 实机清单要在甲方的目标双摄上由人执行。按用户要求，阶段 PR 等 P0 全部完成后再开。
+- 同步依据：`apps/feedback_result_panel.py` 的 `_ASSETS_DIR` 与图标文件名；`core/paths.py` 的冻结模式解析；`core/feedback_geometry.py` 的 `FeedbackConfig`；`old/dist/散打动作练习_双视角版_20260920/` 的附带文件；`build/app_ui_onefile/PYZ-00.toc`；`imageio_ffmpeg.get_ffmpeg_version()` 为 7.1 essentials（与 `FFmpeg说明.txt` 一致）。
+- 验证方法：工作区有未提交改动和未跟踪文件时运行 PyInstaller，输出"拒绝构建"、退出码 1、不生成 `dist/`；从干净的 `2219a8f` 构建成功，`vision_ui.exe --offline-self-check` 退出码 0，报告 `ok=true`、`frozen=true`、`feedbackVersion=sanda-feedback-mediapipe-2026-09-20-v4`、`feedbackIcons=24`、`buildInfo.commit=2219a8f…`、`clean=true`，`checks` 共 12 项，模型哈希与 `models/` 的 `sha256sum` 一致；报告留在 `outputs/p0b/`（不入库）。交付目录含 EXE、`build_info.json`、`使用说明.txt`、`feedback_config.example.json`、`第三方许可/`。全量 `pytest tests -q` 958 passed（947 + 新增 11）；golden 与契约门禁 49 passed；`git diff --check` 通过。
+
+## 2026-10-03（America/Los_Angeles）: [chore] P0a 基线导入：从旧仓库 5a6d99c 导入代码，新建 .venv，测定基线
+
+- 问题描述：P0a 阻断 P1。本仓库此前只有文档，需要按 P0-4 从旧仓库导入参与重构的代码、新建本仓库 `.venv` 并重新测定全量基线。开工前用户对 P0-1～P0-4 均采纳清单建议。
+- 修改内容：
+  - 导入（提交 `5574d95`，内容与 `5a6d99c` 一致）：`git archive 5a6d99c` 导出 `core/`、`apps/`、`analysis/`、`batch/`、`scripts/`、`tests/`、`assets/`、`templates/`、`packaging/`、三份 requirements、两份 Tk spec，以及按原路径的 6 份 YOLO 文档和 `docs/yolo_eval_samples.json`（`analysis/` 三个脚本的 `--samples` 默认值）。未导入：web 端（`apps/ui_backend.py`、`frontend/`、`ui_backend_sidecar.spec`、`package.json`、`start-desktop-dev.cmd`、3 个 Tauri 脚本、`test_ui_backend_*.py` 5 个、`test_vue_tauri_acceptance_gaps.py`、`test_windows_packaging_smoke.py`）、其余旧文档、`README.md`、`DUAL_TEMPLATE_COMPARE.md`、change 归档。D-10 随之了结。
+  - 门禁测试拆分：`tests/test_backend_routing_contract.py` 去掉顶层 `from apps import ui_backend`，删除依赖它的 4 个用例（`test_ui_session_start_uses_yolo_preview_pipeline_and_surfaces_frame_meta`、`test_ui_session_start_requires_capabilities_prevents_yolo_preview_route`、`test_default_pipeline_factory_maps_yolo_realtime_profile_to_yolo26n_without_loading_ultralytics`、`..._yolo26s_...`）和只被它们用到的 `_wait_frame_events`、`time`、`numpy` 导入；`tests/test_batch_backend_args.py` 去掉顶层导入，删除 2 个用例（`test_ui_high_quality_analysis_runs_yolo26l_internal_body_core`、`test_ui_high_quality_missing_yolo26l_is_structured_error_without_job`）。这 6 个用例测的是已弃用的 web 桥，留在 `old/`，没有替换测试（D-13）；router 本身的契约仍由两文件其余 11 + 17 个用例覆盖。
+  - 依赖（P0-1）：`requirements.txt` 的 pytest 固定为 9.1.1；`requirements-dev.txt` 的 pytest 由 8.4.2 改为 9.1.1，新增 `pyinstaller==6.22.3`、`imageio-ffmpeg==0.6.0`（`app_ui_onefile.spec` 顶层导入）。
+  - 环境：`D:\DevTools\Python312\python.exe -m venv .venv`（`include-system-site-packages = false`），经代理 7879 安装两份 requirements；`old/models/` 的 4 个 MediaPipe 模型复制到 `models/`（不入库）。
+  - 文档：设计文档 §11.2 新增 P0-1～P0-4 并划线、D-10 划线；§12 P0 行、基线段、`.venv` 段、工作量段改为 P0a 已完成；README 阶段表、决策表、通用任务前检查的基线；P0 文件的状态、任务前检查、决策结论与 P0a 验收。按用户要求，阶段 PR 等 P0b 完成后再开。
+- 同步依据：`git ls-tree`/`git grep 5a6d99c` 确认导入范围与对 `docs/`、`templates/`、`ui_backend` 的引用；`old/` 与本仓库逐文件的用例收集数对比；`D:\DevToolsenvsision` 的 `pip freeze`。
+- 验证方法：本仓库 `.venv` 全量 `pytest tests -q`：947 passed，0 failed，0 skipped。旧基线 1033 项（1026 + 6 + 1）减去未导入的 86 项（web 端 7 个文件 80 项，含 5 项失败与 1 项跳过；拆出的 6 项，含 1 项失败）正好 947，其余每个文件的用例数与 `old/` 相同。golden 与契约门禁 49 passed；`test_camera_capture.py::test_tk_preview_student_switch_with_process_cameras` passed；`.venv` 中 `pip freeze` 与 DevTools 环境只差 `comtypes`（1.4.17/1.4.16）和 `pyinstaller-hooks-contrib` 的补丁版本；`git diff --check` 通过。
+
 ## 2026-10-03（America/Los_Angeles）: [docs] AGENTS.md 新增"模块职责与体量"：单一职责、体量上限与棘轮 allowlist；D-15 已决
 
 - 问题描述：用户要求防止重构后再长成"屎山"：不允许单文件承担过多职责，不允许单文件代码行数过度累积。原规则只有一句"新代码模块不超过 800 行，函数不超过 100 行；现有超限项只许变小"：没有职责要求；只管"新代码"，搬迁过来的旧文件不受约束；"只许变小"没有记录行数，架构测试无法校验，文件降下来后还能涨回去；没有预警，模块要到 799 行才会被注意。另外 `CameraWarmupPool` 是单个 969 行的类，P5"池不重写"原样迁入后 `pool.py` 仍超过 800 行，与 P9 的 allowlist 清零冲突，文档没有处置。用户随后拍板：D-15 采纳建议；`tests/` 不纳入体量上限。

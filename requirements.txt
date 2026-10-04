@@ -1,0 +1,12 @@
+mediapipe==0.10.31
+opencv-python==4.13.0.90
+numpy==2.4.1
+pillow==12.1.0
+# Windows 摄像头友好名（DirectShow）
+pygrabber==0.2
+# 考试名单 / 成绩 Excel
+openpyxl>=3.1.0
+
+# 测试依赖（属性测试）
+hypothesis==6.155.2
+pytest==9.1.1
