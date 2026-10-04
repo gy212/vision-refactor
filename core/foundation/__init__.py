@@ -9,6 +9,7 @@ from core.foundation.atomic_io import (
 )
 from core.foundation.epoch import Epoch
 from core.foundation.geometry import angle_deg, distance, landmark_xy, torso_length, unit
+from core.foundation.jsonable import to_jsonable
 from core.foundation.paths import models_dir, outputs_dir, repo_root, templates_dir
 from core.foundation.prefs import (
     CAMERA_SELECTION,
@@ -95,6 +96,7 @@ __all__ = [
     "save_template_pools",
     "smooth_1d",
     "templates_dir",
+    "to_jsonable",
     "torso_length",
     "translate_interrupted",
     "trimmed_mean",

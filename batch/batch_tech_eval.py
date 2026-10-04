@@ -10,7 +10,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from analysis.tech_eval import evaluate_video_assets, evaluate_video_detail, export_debug_video, to_jsonable
+from analysis.tech_eval import evaluate_video_assets, evaluate_video_detail, export_debug_video
+from core.foundation import to_jsonable
 from core.paths import outputs_dir
 from batch.backend_options import (
     FEATURE_LAYOUT_BODY_CORE,

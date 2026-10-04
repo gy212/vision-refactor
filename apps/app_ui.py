@@ -18,11 +18,11 @@ import numpy as np
 from PIL import Image, ImageTk
 
 from core.action_compare import compare_video_to_templates, create_template_from_video
-from analysis.tech_eval import to_jsonable
 from core.vision_pipeline import MediaPipePipeline, PipelineConfig, draw_pose_frame
 from core.foundation import (
     EXAM_ROI,
     PreferenceStore,
+    to_jsonable,
     load_camera_selection,
     load_record_dir,
     load_template_pools,

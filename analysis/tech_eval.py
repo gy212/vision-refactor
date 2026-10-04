@@ -2,7 +2,7 @@
 """直拳技术指标评估：重心、回收速度、发力顺序与拳面角度（P3 拆入 evaluation/techeval/，原路径保留为门面）。"""
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, is_dataclass, replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal
 
@@ -17,7 +17,7 @@ from core.pose_features import (
     landmarks_missing_for_capabilities,
     pose_view_score,
 )
-from core.foundation import angle_deg, landmark_xy, longest_segment, smooth_1d
+from core.foundation import angle_deg, landmark_xy, longest_segment, smooth_1d, to_jsonable
 from core.paths import models_dir
 from core.vision_pipeline import MediaPipePipeline, PipelineConfig
 
@@ -88,22 +88,6 @@ class TechEvalResult:
     retract_speed: IndicatorResult
     force_sequence: IndicatorResult
     wrist_angle: IndicatorResult
-
-
-def to_jsonable(obj: Any) -> Any:
-    if isinstance(obj, Path):
-        return str(obj)
-    if isinstance(obj, (np.floating, np.integer)):
-        return obj.item()
-    if isinstance(obj, (np.ndarray,)):
-        return obj.tolist()
-    if is_dataclass(obj):
-        return to_jsonable(asdict(obj))
-    if isinstance(obj, dict):
-        return {str(k): to_jsonable(v) for k, v in obj.items()}
-    if isinstance(obj, (list, tuple)):
-        return [to_jsonable(v) for v in obj]
-    return obj
 
 
 def _valid(mask_row: np.ndarray, idxs: tuple[int, ...] | list[int]) -> bool:

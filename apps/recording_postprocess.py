@@ -13,10 +13,9 @@ from typing import Any, Callable, Literal
 import cv2
 import numpy as np
 
-from analysis.tech_eval import to_jsonable
 from core import action_compare, model_manager, video_writer
 from core.kick_quality import score_kick_quality
-from core.foundation import atomic_write_json
+from core.foundation import atomic_write_json, to_jsonable
 from core.paths import templates_dir
 from core.rule_scoring import extract_pose_raw_series, slice_pose_raw_series
 
