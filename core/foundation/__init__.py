@@ -1,5 +1,5 @@
 """基础层（L0）的公共 API：几何与信号、原子写、偏好、路径、任务与取消、epoch、诊断、JSON 序列化。"""
-from core.foundation import prefs
+from core.foundation import diag, prefs
 from core.foundation.atomic_io import (
     atomic_target,
     atomic_write_bytes,
@@ -76,6 +76,7 @@ __all__ = [
     "atomic_write_json",
     "atomic_write_text",
     "contiguous_runs",
+    "diag",
     "distance",
     "find_active_range",
     "landmark_xy",
