@@ -1,3 +1,20 @@
+## 2026-10-04（America/Los_Angeles）: [refactor] P1 基础层：core/foundation 上线，删除重复的几何/信号、原子写、偏好实现
+
+- 问题描述：P1 要把散落各处的基础能力收口成唯一实现（设计文档 §4、§3 第 1–9 项），并让架构测试上线、以棘轮方式只阻止新增违规（§13.2）。开工前 V-7 未决，经询问用户接受。
+- 修改内容（分支 `refactor/p1-foundation`，按清单顺序 8 步提交）：
+  - 架构测试 `tests/test_architecture.py`（标准库 `ast`）与 `tests/architecture_allowlist.py`；先给 13 个模块补职责 docstring（`483e87c`）。
+  - `foundation/geometry.py`、`signal.py`：角度、躯干长度、平滑、最长区段等副本合并，差异写成参数（`torso_length(method=)`、`smooth_1d(odd=, dtype=)`）（`725ed51`）。
+  - `foundation/atomic_io.py`：4 处原子写合并，`os.replace` 只剩这一处（`6978ff1`）。
+  - `foundation/prefs.py`：`PrefKey`/`PreferenceStore`，3 套偏好读写与 2 个多余的 `_prefs_path()` 删除；ROI 合法性检查迁入键的 `parse`，学生练习不再导入 `apps.exam_panel`。`core/paths.py` 迁到 `foundation/paths.py`，原路径留纯转发门面（P9 删）；conftest、`test_user_prefs`、`test_camera_capture` 的补丁目标改到新模块（`9b00411`）。
+  - `foundation/tasks.py`、`epoch.py`：`Cancelled`、`CancelToken`、`TaskGroup`、`Epoch`，以及迁移期适配器 `as_stopped`、`translate_interrupted`；只提供原语（`9fd9ced`）。
+  - `foundation/diag.py`：`event(name, **fields)` 写 `key=value` 行；调用点在 P5、P6 替换（`2748548`）。
+  - `foundation/jsonable.py`：`to_jsonable` 原样迁入，apps 不再为它导入 tech_eval（`d689814`）。
+  - 行为差异（只有一处，考试面板）：偏好里 ROI 或考试时长非法时改为回退默认值，原先会抛异常导致面板打不开。偏好写入改为原子替换。
+  - 文档：设计文档 §0、§11.1（V-7 划线）、§12；阶段 README 的阶段表与决策表；P1 文件的状态与勾选。
+- allowlist 基线：148 条（P1 开工时 164 条）。按类别：分层 1、循环 1、私有符号 8、原语 70、克隆 1、模块体量 13、函数体量 53、防御式访问 1。浮点：几何、信号合并后差分逐位一致，没有需要登记的末位差异。
+- 同步依据：设计文档 §4.1–§4.5、P1 清单第 1 节的重复实现位置（逐项复核后合并）；`git grep` 核对补丁目标与导入方。
+- 验证方法：全量 `pytest tests -q` 1026 passed（P0 基线 947，加新增的 foundation 与架构测试；无失败、无跳过）；golden 与契约门禁通过；`test_camera_capture.py::test_tk_preview_student_switch_with_process_cameras` 通过；`scripts/sim_exam_flow.py` 37 passed；清单第 4 节的 3 条搜索都满足；把 `apps/exam_panel.py` 的体量登记值改成 +1、−1，架构测试都失败；仓库根没有生成 `user_prefs.json`；`git diff --check` 无空白错误。本阶段没有构建 EXE（spec 里的 `core.paths` 仍以门面形式存在），EXE 自检留到 P5。
+
 ## 2026-10-03（America/Los_Angeles）: [style] 清理 PR #2 全量 diff 的尾随空白，更正此前"diff --check 通过"的记录
 
 - 问题描述：评审对 `origin/main...HEAD` 运行 `git diff --check` 返回 2，有 70 处尾随空白（`analysis/tech_eval.py` 38、`tests/test_force_sequence.py` 14、`tests/test_standard_video.py` 12、`docs/yolo_migration_plan_optimized.md` 4、`tests/test_left_side.py` 2），都来自导入提交 `5574d95`（旧仓库原样带来的）。下面 P0a、P0b 两条记录写的"`git diff --check` 通过"只检查了各自提交的增量，没有对整个 PR diff 检查，那几处说法不成立，以本条为准。另外 P0 文件验收里"change.md 记录"一项没有勾选。
