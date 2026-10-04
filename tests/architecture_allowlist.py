@@ -109,9 +109,6 @@ PRIMITIVES: dict[str, tuple[int, str]] = {
     'tk_after: apps/desktop_smoke.py': (2, 'P8'),
     'tk_after: apps/exam_panel.py': (3, 'P8'),
     'tk_after: apps/feedback_panel.py': (2, 'P8'),
-    'user_prefs_literal: apps/exam_panel.py': (1, 'P1'),
-    'user_prefs_literal: apps/recording_postprocess.py': (1, 'P1'),
-    'user_prefs_literal: core/paths.py': (1, 'P1'),
     'video_capture: analysis/bench_annotate_fps.py': (4, 'P9'),
     'video_capture: analysis/offline_matching_profile.py': (1, 'P9'),
     'video_capture: analysis/spike_yolo_baseline.py': (2, 'P9'),
@@ -144,11 +141,11 @@ MODULE_SIZE: dict[str, tuple[int, str]] = {
     'analysis/bench_annotate_fps.py': (1018, 'P9'),
     'analysis/offline_matching_profile.py': (821, 'P9'),
     'analysis/tech_eval.py': (2330, 'P9'),
-    'apps/app_ui.py': (5973, 'P8'),
+    'apps/app_ui.py': (5963, 'P8'),
     'apps/camera_warmup.py': (1125, 'P9'),
-    'apps/exam_panel.py': (869, 'P8'),
+    'apps/exam_panel.py': (844, 'P8'),
     'apps/feedback_result_panel.py': (1326, 'P8'),
-    'apps/recording_postprocess.py': (1150, 'P4'),
+    'apps/recording_postprocess.py': (1052, 'P4'),
     'core/action_compare.py': (1676, 'P3'),
     'core/exam_roster.py': (818, 'P4'),
     'core/feedback_report.py': (1538, 'P8'),
@@ -216,4 +213,4 @@ DEFENSIVE_GETATTR: dict[str, tuple[int, str]] = {
     'apps/app_ui.py': (169, 'P8'),
 }
 
-ENTRY_CEILING = 151
+ENTRY_CEILING = 148

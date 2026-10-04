@@ -1,4 +1,5 @@
 import sys
+from pathlib import Path
 
 from core import paths
 
@@ -24,7 +25,7 @@ def test_offline_bundle_seeds_writable_data_without_overwriting_user_files(tmp_p
     assert paths.outputs_dir().is_dir()
     (bundle / "models" / "pose_landmarker_lite.task").unlink()
     (bundle / "models").rmdir()
-    assert paths.repo_root() == paths.Path(sys.executable).resolve().parent
+    assert paths.repo_root() == Path(sys.executable).resolve().parent
 
 
 def test_windows_unicode_model_uses_bytes(tmp_path, monkeypatch):

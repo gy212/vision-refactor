@@ -6,7 +6,8 @@ from unittest.mock import Mock
 
 import pytest
 
-from apps import app_ui, exam_panel
+from apps import app_ui
+from core.foundation import prefs as user_prefs
 
 
 def practice_app(monkeypatch, *, ready=True):
@@ -48,7 +49,7 @@ def practice_app(monkeypatch, *, ready=True):
     monkeypatch.setattr(app_ui.App, "_begin_recording_segment", begin)
     monkeypatch.setattr(app_ui.App, "_end_recording_segment", end)
     monkeypatch.setattr(app_ui.model_manager, "is_installed", lambda _model: True)
-    monkeypatch.setattr(exam_panel, "load_exam_prefs", lambda: {"exam_roi_norm": [.3, .2, .7, .9]})
+    user_prefs.PreferenceStore().set(user_prefs.EXAM_ROI, (.3, .2, .7, .9))
     monkeypatch.setattr(app_ui.time, "monotonic", lambda: 100.0)
     return app
 

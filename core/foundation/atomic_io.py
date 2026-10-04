@@ -41,6 +41,8 @@ def replace_file(
     复制失败时把 .bak 还原并抛出原异常。
     """
     src, dst = Path(src), Path(dst)
+    if dst.is_dir():
+        raise IsADirectoryError(f"替换目标是目录：{dst}")
     if durable:
         _fsync_file(src)
     for attempt in range(retries + 1):

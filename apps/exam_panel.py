@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import json
 import time
 import traceback
 from pathlib import Path
@@ -21,14 +20,22 @@ from core.exam_roster import (
     write_import_template,
 )
 from core.exam_session import ExamCommand, ExamSession, ExamSessionConfig
-from core.paths import outputs_dir, repo_root
+from core.foundation import (
+    EXAM_EMPTY_HOLD_S,
+    EXAM_ENTER_STABLE_S,
+    EXAM_INTER_STUDENT_GAP_S,
+    EXAM_MIN_RECORD_S,
+    EXAM_POST_CALL_GUARD_S,
+    EXAM_ROI,
+    EXAM_ROI_ROTATE,
+    EXAM_ROSTER_PATH,
+    PreferenceStore,
+)
+from core.paths import outputs_dir
 from core.presence_gate import PresenceGate, PresenceGateConfig
 
 if TYPE_CHECKING:
     from apps.app_ui import App
-
-
-_EXAM_ROSTER_PATH_PREF_KEY = "exam_roster_path"
 
 
 def apply_postprocess_update_to_scorebook(
@@ -68,43 +75,17 @@ def apply_postprocess_update_to_scorebook(
     return row
 
 
-def _prefs_path() -> Path:
-    return repo_root() / "user_prefs.json"
-
-
-def load_exam_prefs() -> dict[str, Any]:
-    try:
-        data = json.loads(_prefs_path().read_text(encoding="utf-8"))
-        return dict(data) if isinstance(data, dict) else {}
-    except (OSError, ValueError):
-        return {}
-
-
-def save_exam_prefs(updates: dict[str, Any]) -> None:
-    path = _prefs_path()
-    data = load_exam_prefs()
-    data.update(updates)
-    try:
-        path.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-    except OSError:
-        pass
-
-
 class ExamPanel:
     def __init__(self, app: "App") -> None:
         self.app = app
-        prefs = load_exam_prefs()
-        roi = prefs.get("exam_roi_norm") or [0.2, 0.1, 0.8, 0.95]
+        prefs = PreferenceStore().raw()
         self.session = ExamSession(
             ExamSessionConfig(
-                post_call_guard_s=float(prefs.get("exam_post_call_guard_s", 1.5)),
-                inter_student_gap_s=float(prefs.get("exam_inter_student_gap_s", 2.0)),
-                enter_stable_s=float(prefs.get("exam_enter_stable_s", 0.8)),
-                empty_hold_s=float(prefs.get("exam_empty_hold_s", 2.0)),
-                min_record_s=float(prefs.get("exam_min_record_s", 3.0)),
+                post_call_guard_s=EXAM_POST_CALL_GUARD_S.read(prefs),
+                inter_student_gap_s=EXAM_INTER_STUDENT_GAP_S.read(prefs),
+                enter_stable_s=EXAM_ENTER_STABLE_S.read(prefs),
+                empty_hold_s=EXAM_EMPTY_HOLD_S.read(prefs),
+                min_record_s=EXAM_MIN_RECORD_S.read(prefs),
             )
         )
         self.gate = PresenceGate(
@@ -114,12 +95,7 @@ class ExamPanel:
                 min_record_s=self.session.config.min_record_s,
             )
         )
-        self.roi = (
-            float(roi[0]),
-            float(roi[1]),
-            float(roi[2]),
-            float(roi[3]),
-        )
+        self.roi = EXAM_ROI.read(prefs)
         self.run_dir: Path | None = None
         self.scorebook: ExamScorebook | None = None
         self._announcer = ExamAnnouncer(on_text=self._on_announce_text)
@@ -138,7 +114,7 @@ class ExamPanel:
         self.roi_var = StringVar(value=self._roi_text())
 
         self._build()
-        self._restore_roster(prefs)
+        self._restore_roster(EXAM_ROSTER_PATH.read(prefs))
         self._tick_id = self.win.after(100, self._panel_tick)
         app._exam_panel = self  # type: ignore[attr-defined]
 
@@ -316,11 +292,10 @@ class ExamPanel:
         candidates = import_roster_xlsx(path)
         self._replace_roster(candidates)
         if persist:
-            save_exam_prefs({_EXAM_ROSTER_PATH_PREF_KEY: str(path.resolve())})
+            PreferenceStore().set(EXAM_ROSTER_PATH, str(path.resolve()))
         return len(candidates)
 
-    def _restore_roster(self, prefs: dict[str, Any]) -> None:
-        raw_path = str(prefs.get(_EXAM_ROSTER_PATH_PREF_KEY) or "").strip()
+    def _restore_roster(self, raw_path: str) -> None:
         if not raw_path:
             return
         try:
@@ -350,7 +325,7 @@ class ExamPanel:
             rotate = self.app._exam_primary_rotate()  # type: ignore[attr-defined]
         except Exception:
             pass
-        save_exam_prefs({"exam_roi_norm": list(self.roi), "exam_roi_rotate": rotate})
+        PreferenceStore().update({EXAM_ROI: self.roi, EXAM_ROI_ROTATE: rotate})
         self.roi_var.set(self._roi_text())
         self.app._exam_set_roi(self.roi)  # type: ignore[attr-defined]
         self.status_var.set("ROI 已保存")

@@ -5,10 +5,11 @@ import json
 from pathlib import Path
 
 from core import paths
+from core.foundation import prefs as user_prefs
 
 
 def _use_prefs_path(monkeypatch, path: Path) -> None:
-    monkeypatch.setattr(paths, "_prefs_path", lambda: path)
+    monkeypatch.setattr(user_prefs, "_prefs_path", lambda: path)
 
 
 def test_camera_selection_roundtrip_preserves_other_preferences(

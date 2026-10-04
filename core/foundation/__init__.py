@@ -1,4 +1,5 @@
 """基础层（L0）的公共 API：几何与信号、原子写、偏好、路径、任务与取消、epoch、诊断、JSON 序列化。"""
+from core.foundation import prefs
 from core.foundation.atomic_io import (
     atomic_target,
     atomic_write_bytes,
@@ -7,6 +8,29 @@ from core.foundation.atomic_io import (
     replace_file,
 )
 from core.foundation.geometry import angle_deg, distance, landmark_xy, torso_length, unit
+from core.foundation.paths import models_dir, outputs_dir, repo_root, templates_dir
+from core.foundation.prefs import (
+    CAMERA_SELECTION,
+    EXAM_EMPTY_HOLD_S,
+    EXAM_ENTER_STABLE_S,
+    EXAM_INTER_STUDENT_GAP_S,
+    EXAM_MIN_RECORD_S,
+    EXAM_POST_CALL_GUARD_S,
+    EXAM_ROI,
+    EXAM_ROI_ROTATE,
+    EXAM_ROSTER_PATH,
+    FRONT_TEMPLATES,
+    RECORD_DIR,
+    SIDE_TEMPLATES,
+    PreferenceStore,
+    PrefKey,
+    load_camera_selection,
+    load_record_dir,
+    load_template_pools,
+    save_camera_selection,
+    save_record_dir,
+    save_template_pools,
+)
 from core.foundation.signal import (
     contiguous_runs,
     find_active_range,
@@ -17,6 +41,20 @@ from core.foundation.signal import (
 )
 
 __all__ = [
+    "CAMERA_SELECTION",
+    "EXAM_EMPTY_HOLD_S",
+    "EXAM_ENTER_STABLE_S",
+    "EXAM_INTER_STUDENT_GAP_S",
+    "EXAM_MIN_RECORD_S",
+    "EXAM_POST_CALL_GUARD_S",
+    "EXAM_ROI",
+    "EXAM_ROI_ROTATE",
+    "EXAM_ROSTER_PATH",
+    "FRONT_TEMPLATES",
+    "PrefKey",
+    "PreferenceStore",
+    "RECORD_DIR",
+    "SIDE_TEMPLATES",
     "angle_deg",
     "atomic_target",
     "atomic_write_bytes",
@@ -26,10 +64,21 @@ __all__ = [
     "distance",
     "find_active_range",
     "landmark_xy",
+    "load_camera_selection",
+    "load_record_dir",
+    "load_template_pools",
     "longest_segment",
+    "models_dir",
     "motion_energy",
+    "outputs_dir",
+    "prefs",
     "replace_file",
+    "repo_root",
+    "save_camera_selection",
+    "save_record_dir",
+    "save_template_pools",
     "smooth_1d",
+    "templates_dir",
     "torso_length",
     "trimmed_mean",
     "unit",
