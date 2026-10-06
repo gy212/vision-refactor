@@ -1,3 +1,17 @@
+## 2026-10-06（America/Los_Angeles）: [docs] PR #4 合并后的评审补充：参数名笔误与过时注释
+
+- 问题描述：PR #4 合并后，渲染部分的评审完成，又发现 3 处文字问题：
+  - 上一条记录第 7 项把 `batch/batch_tech_eval.py` 的参数写成了 `--debug_video`，实际是 `--debug-video`（`batch/batch_tech_eval.py:47`），argparse 不认下划线写法。
+  - `core/pose/smoothing.py` 的注释仍引用已删除的 `_classify_pose_actions`、`_draw_pose`。
+  - `core/online_matcher.py` 的注释仍引用已删除的 `_classify_pose_actions`。
+- 修改内容：参数名改为 `--debug-video`；注释改为现有的函数名 `visibility`、`classify_pose_actions`、`draw_skeleton`。只改文字，不改代码。
+- 同步依据：渲染评审在 `5721f1d`（P2 前）与 `50d2087` 之间逐像素比对 1800 个用例，0 差异，没有发现代码问题。以下 4 项不影响数值，留给后续阶段决定修复还是写进阶段清单：
+  - `render_pose` 与 `draw_joint_angles` 不接受 `(33, 4)` 数组，只有 `draw_skeleton` 接受。P6 的 Overlay stage 如果直接用 `PoseSequence` 数组，需要先转换。
+  - `core.pose` 包初始化时导入 mediapipe 与 cv2，导入任何 `core.pose.*` 子模块（包括旧路径门面）都会加载它们。
+  - `render.py` 的模块说明称其为唯一的绘制实现，但 `backends/yolo.py`、`analysis/bench_annotate_fps.py`、`core/feedback_report.py`、`apps/feedback_panel.py` 里仍有各自的绘制代码。这些不在 §3 第 19 项的取代清单里。
+  - `batch_export_skeleton` 导出骨架视频时要多解码一遍。
+- 验证方法：`git diff` 只涉及这 3 个文件的文字；`python -m py_compile core/pose/smoothing.py core/online_matcher.py` 通过；`pytest tests/test_preview_smoother.py tests/test_architecture.py -q` 通过；`git diff --check` 无空白错误。
+
 ## 2026-10-06（America/Los_Angeles）: [fix] PR #4 评审修复：缓存前缀误用、分段忽略解码选项与零尺寸、monkeypatch 泄漏、取消 token 轮询、引擎构造守护漏洞、异常 pickle 往返、守护连锁报错
 
 - 问题描述：PR #4（`refactor/p2-decode-pose`）评审发现 8 处问题：
@@ -7,7 +21,7 @@
   4. `_PolledToken`（`from_stopped()` 产出）继承 `CancelToken.wait`，只等内部 `Event`，看不到构造时传入的轮询回调：回调已经返回 `True` 时，`wait(1.0)` 仍会整整睡 1 秒再返回 `False`。
   5. `tests/test_architecture.py` 的 `engine_construct` 原语只匹配 `MediaPipePipeline(`，直接写 `PoseEngine(...)` 能绕过 `create_engine` 这一唯一构造入口而不被架构守护抓到。
   6. `core/media/video_source.py` 的 `VideoOpenError`、`core/pose/engine.py` 的 `ModelMissing` 两个异常类用默认 `__reduce__`：往返 pickle 后分别得到消息里"无法打开视频："重复一次、`.path` 错误，以及缺 `model_key` 抛 `TypeError`（已复现）。
-  7. 行为变化（只记录不改代码）：旧 `analysis/tech_eval.py::export_debug_video` 内部 `from video_writer import open_video_writer`，源码模式下找不到 `video_writer` 模块会抛 `ModuleNotFoundError`，只有冻结包靠 PyInstaller runtime hook 的别名才能跑；P2 改成模块顶层 `from core.media import ... open_video_writer` 后，`batch/batch_tech_eval.py --debug_video` 在源码模式下也能正常运行，顺带修好了这处崩溃。
+  7. 行为变化（只记录不改代码）：旧 `analysis/tech_eval.py::export_debug_video` 内部 `from video_writer import open_video_writer`，源码模式下找不到 `video_writer` 模块会抛 `ModuleNotFoundError`，只有冻结包靠 PyInstaller runtime hook 的别名才能跑；P2 改成模块顶层 `from core.media import ... open_video_writer` 后，`batch/batch_tech_eval.py --debug-video` 在源码模式下也能正常运行，顺带修好了这处崩溃。
   8. `tests/conftest.py` 的 `pytest_runtest_teardown` 守护发现问题 3 的污染时只抛错、不恢复真值，污染会一直留到下一次被该守护捡到之前，期间所有测试都连带报错，无法定位真正出问题的那一个用例。
 - 修改内容：
   - `core/media/video_source.py`：`VideoSource` 新增 `exhausted` 标志，三处帧耗尽的早退（`grab`/`read`/`retrieve` 失败）都置位，用来区分"读到 `end`"与"视频本身到头"；`VideoOpenError` 新增 `__reduce__`，往返时按 `(self.path,)` 重建而不是复用已拼好的消息。
