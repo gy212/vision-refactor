@@ -1,3 +1,21 @@
+## 2026-10-05（America/Los_Angeles）: [fix] P1 评审修复：原子写回退还原、文本换行、临时文件后缀、取消 token 泄漏、启动报错路径
+
+- 问题描述：PR #3 评审发现：
+  1. `atomic_io._copy_replace` 把旧文件挪成 `.bak` 后，复制写到一半失败时，因为目标已存在而不还原，留下半截目标和 `.bak`；旧文件挪不开时还会就地覆盖，失败同样留下半截文件。这与"失败不留半截文件"相违，而且回退现在覆盖偏好、结果 JSON、练习历史、模型下载和转码。
+  2. `atomic_write_text`/`atomic_write_json` 先编码成字节再写，Windows 上的换行从 CRLF 变成 LF（偏好、`result.json`、练习记录、TXT/HTML 报告），PR 里没有说明。
+  3. 临时文件保留目标后缀（`_tmp_<uuid>.npz`）：离线包首次播种模板时进程被杀，残片会被 `load_template_library` 的 `*.npz` 扫描读到，`_build_online_matcher` 吞掉异常后在线识别一直关着，也没有提示。
+  4. `CancelToken` 的子 token 列表只在取消时清空：长寿的 `TaskGroup` 组 token 会留住每个已结束任务的子 token（200 个任务后仍留 200 个）。
+  5. `core.paths` 经 `core.foundation/__init__` 现在会导入 numpy；`desktop_launcher` 在 try 之外导入它，导入失败时既写不进 `desktop.log`，也不弹"启动失败"。
+  6. change.md 与 PR 说明里"行为差异只有一处"的说法不完整。
+- 修改内容：
+  - `core/foundation/atomic_io.py`：旧文件挪不开时不就地覆盖，保留原内容并抛出最初的异常；复制失败时还原 `.bak`（原先没有目标的，删掉半截文件）；复制成功后的清理失败不再报错。文本写入改用文本模式，换行与 `Path.write_text` 一致。临时文件后缀统一为 `.tmp`，删掉没有调用方的 `tag`、`temporary` 参数（openpyxl 保存不看后缀，已实测）。
+  - `core/foundation/tasks.py`：父 token 用 `WeakSet` 弱引用子 token，子 token 强引用父 token，仍被持有的孙 token 照样能收到级联取消。
+  - `apps/desktop_launcher.py`：把 `core.paths` 的导入和日志重定向移进 try，日志还没建立时提示里写明"日志尚未建立"。
+  - change.md 下面一条 P1 记录：改正行为差异的说法。
+- 被替换的测试（D-13）：`test_foundation_atomic_io.py::test_temporary_keeps_suffix_and_is_ascii` 换成 `test_temporary_is_ascii_and_invisible_to_suffix_scans`（断言改为与后缀扫描不相交）；`test_persistent_lock_raises_and_leaves_target_and_no_temporary` 改为断言旧文件挪不开时不调用复制。新增：`test_partial_copy_after_moving_old_aside_restores_old`、`test_partial_copy_without_old_file_leaves_nothing`、`test_copy_fallback_succeeds_and_removes_bak`、`test_text_writers_match_path_write_text_bytes`（`test_foundation_atomic_io.py`）；`test_finished_tasks_do_not_accumulate_in_long_lived_group_token`、`test_grandchild_still_cascades_when_intermediate_token_is_dropped`（`test_foundation_tasks.py`）；`tests/test_desktop_launcher.py`，修复前失败、修复后通过。
+- 同步依据：设计文档 §4.2（原子写）、§4.3（取消级联）；接口没变，设计文档不用改，只更新 §12 的测试数。
+- 验证方法：全量 `pytest tests -q` 1033 passed（上一条记录 1026，加新增 7 项；第一次全量有 1 项 `test_real_tk_evidence_frames_and_model_choice` 因 Tk 偶发读不到 `init.tcl` 失败，单独重跑 3 次、再跑全量都通过，与 `c3d63bb` 记录的偶发问题相同）；golden 与契约门禁、架构测试通过；`tests/test_desktop_launcher.py` 在修复前的代码上失败；`git diff --check` 无空白错误。
+
 ## 2026-10-04（America/Los_Angeles）: [refactor] P1 基础层：core/foundation 上线，删除重复的几何/信号、原子写、偏好实现
 
 - 问题描述：P1 要把散落各处的基础能力收口成唯一实现（设计文档 §4、§3 第 1–9 项），并让架构测试上线、以棘轮方式只阻止新增违规（§13.2）。开工前 V-7 未决，经询问用户接受。
@@ -9,7 +27,7 @@
   - `foundation/tasks.py`、`epoch.py`：`Cancelled`、`CancelToken`、`TaskGroup`、`Epoch`，以及迁移期适配器 `as_stopped`、`translate_interrupted`；只提供原语（`9fd9ced`）。
   - `foundation/diag.py`：`event(name, **fields)` 写 `key=value` 行；调用点在 P5、P6 替换（`2748548`）。
   - `foundation/jsonable.py`：`to_jsonable` 原样迁入，apps 不再为它导入 tech_eval（`d689814`）。
-  - 行为差异（只有一处，考试面板）：偏好里 ROI 或考试时长非法时改为回退默认值，原先会抛异常导致面板打不开。偏好写入改为原子替换。
+  - 行为差异（考试面板与学生练习读偏好）：偏好里的 ROI 越界、倒置、分量个数不对或类型非法，以及考试时长非法时，一律回退默认值。原先考试面板遇到不可转换的值抛异常、面板打不开，越界或倒置的 ROI 原样使用；学生练习本来就会回退。界面保存的 ROI 已按同一条件校验，只有手改偏好文件才会触发。原子写的差异：写入前 fsync；替换时的 `PermissionError` 有界重试（成绩表原先遇到任何 `OSError` 都直接走复制回退）。文本与 JSON 产物的字节（含 Windows 的 CRLF）不变。
   - 文档：设计文档 §0、§11.1（V-7 划线）、§12；阶段 README 的阶段表与决策表；P1 文件的状态与勾选。
 - allowlist 基线：148 条（P1 开工时 164 条）。按类别：分层 1、循环 1、私有符号 8、原语 70、克隆 1、模块体量 13、函数体量 53、防御式访问 1。浮点：几何、信号合并后差分逐位一致，没有需要登记的末位差异。
 - 同步依据：设计文档 §4.1–§4.5、P1 清单第 1 节的重复实现位置（逐项复核后合并）；`git grep` 核对补丁目标与导入方。
