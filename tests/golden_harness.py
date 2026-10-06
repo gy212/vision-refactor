@@ -14,7 +14,8 @@ S1 后续（#4 / #5）会改动以下热路径：
 为了把“当前行为”冻结成 golden，又要避免 MediaPipe 模型推理带来的不确定性
 （同一视频多次推理结果可能有浮点漂移、且依赖模型权重），本 harness 把：
   1) cv2.VideoCapture  替换为读取“已保存的 (T,33,4) landmark 序列”的假对象；
-  2) MediaPipePipeline 替换为直接把序列里的一帧 (33,4) 还原成 landmark 对象的假管线。
+  2) 推理引擎替换为直接把序列里的一帧 (33,4) 还原成 landmark 对象的假管线。
+     P2 起所有离线提取都经 ``core.pose.extract`` 构造引擎，只需 patch 这一处。
 
 这样所有上层入口（compare_video_to_template / compare_video_to_dual_templates /
 evaluate_video_full / extract_pose_raw / score_rules / extract_pose_and_view_scores）
@@ -39,10 +40,8 @@ def _norm_key(path) -> str:
     避免 Windows 下 'golden://x' 被 Path 规整成 'golden:\\x' 后对不上。"""
     return str(Path(str(path)))
 
-# 上层模块在各自命名空间里绑定了 MediaPipePipeline，需要逐个 patch。
-import core.action_compare as _ac
-import core.rule_scoring as _rs
-import analysis.tech_eval as _te
+# P2 起"解码 → 推理"只有 core.pose.extract 一处，引擎由它构造。
+import core.pose.extract as _extract
 
 
 # 路径 -> (landmarks[T,33,4], fps, width, height) 注册表。
@@ -126,6 +125,9 @@ class _FakePipeline:
         self.cfg = cfg
         self.models_dir = models_dir
 
+    def close(self) -> None:
+        return None
+
     def infer(self, frame, *, timestamp_ms=None):
         if not isinstance(frame, _FakeFrame):
             raise TypeError("golden harness 下收到非 _FakeFrame 帧，patch 未生效")
@@ -141,17 +143,11 @@ class _FakePipeline:
 def replay_context():
     """在上下文内，所有上层入口的视频读取/姿态推理都走确定性回放。"""
     orig_capture = cv2.VideoCapture
-    orig_ac_pipe = _ac.MediaPipePipeline
-    orig_rs_pipe = _rs.MediaPipePipeline
-    orig_te_pipe = _te.MediaPipePipeline
+    orig_create = _extract.create_engine
     try:
         cv2.VideoCapture = _FakeVideoCapture  # type: ignore[assignment]
-        _ac.MediaPipePipeline = _FakePipeline  # type: ignore[assignment]
-        _rs.MediaPipePipeline = _FakePipeline  # type: ignore[assignment]
-        _te.MediaPipePipeline = _FakePipeline  # type: ignore[assignment]
+        _extract.create_engine = lambda spec, **_kw: _FakePipeline(cfg=spec)  # type: ignore[assignment]
         yield
     finally:
         cv2.VideoCapture = orig_capture  # type: ignore[assignment]
-        _ac.MediaPipePipeline = orig_ac_pipe  # type: ignore[assignment]
-        _rs.MediaPipePipeline = orig_rs_pipe  # type: ignore[assignment]
-        _te.MediaPipePipeline = orig_te_pipe  # type: ignore[assignment]
+        _extract.create_engine = orig_create  # type: ignore[assignment]

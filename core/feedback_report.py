@@ -21,6 +21,7 @@ import cv2
 import numpy as np
 from PIL import Image
 
+from core.media.video_source import read_frame_at
 from core.action_feedback import ACTIONS, STANCES, PHASES, build_checks, format_fusion
 
 # Color tokens adhering to Style A and diagram-design editorial palette
@@ -904,19 +905,12 @@ def extract_evidence_frame(
     if not video_path.is_file() or video_path.is_symlink():
         return None
 
-    cap = cv2.VideoCapture(str(video_path))
-    if not cap.isOpened():
-        return None
-
     try:
-        cap.set(cv2.CAP_PROP_POS_FRAMES, max(0, int(frame_idx)))
-        ret, frame = cap.read()
-        if not ret or frame is None:
-            return None
+        frame = read_frame_at(video_path, int(frame_idx))
     except Exception:
         return None
-    finally:
-        cap.release()
+    if frame is None:
+        return None
 
     h, w = frame.shape[:2]
     if landmarks is not None and len(landmarks) > 0:

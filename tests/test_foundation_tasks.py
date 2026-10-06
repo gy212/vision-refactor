@@ -15,6 +15,7 @@ from core.foundation.tasks import (
     Cancelled,
     TaskGroup,
     as_stopped,
+    from_stopped,
     translate_interrupted,
 )
 
@@ -159,6 +160,30 @@ def test_legacy_adapters():
         with translate_interrupted(reason="timeout"):
             raise InterruptedError
     assert info.value.reason == "timeout"
+
+
+def test_polled_token_wait_sees_already_true_callback():
+    """问题 4：回调已为 True 时 wait 必须立即返回，不等满超时。"""
+    token = from_stopped(lambda: True)
+    started = time.monotonic()
+    assert token.wait(1.0) is True
+    assert time.monotonic() - started < 0.5
+
+
+def test_polled_token_wait_sees_callback_set_by_another_thread():
+    flag = threading.Event()
+    token = from_stopped(flag.is_set)
+    threading.Timer(0.05, flag.set).start()
+    started = time.monotonic()
+    assert token.wait(5.0) is True
+    assert time.monotonic() - started < 1.0
+
+
+def test_polled_token_wait_times_out_when_callback_stays_false():
+    token = from_stopped(lambda: False)
+    started = time.monotonic()
+    assert token.wait(0.1) is False
+    assert time.monotonic() - started >= 0.08
 
 
 def test_epoch_marks_older_tokens_stale():

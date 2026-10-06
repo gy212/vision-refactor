@@ -100,7 +100,7 @@ def test_dual_template_normalizer_follows_template_metadata(tmp_path):
 def test_issue44_does_not_modify_core_dtw_or_baselines():
     diff_paths = [
         _REPO_ROOT / "core" / "pose_features.py",
-        _REPO_ROOT / "core" / "feature_layout.py",
+        _REPO_ROOT / "core" / "pose" / "layouts.py",  # P2：原 core/feature_layout.py
         _REPO_ROOT / "core" / "body_core_compare.py",
     ]
     # Regression intent: this issue adds profiling/reporting only. The test keeps

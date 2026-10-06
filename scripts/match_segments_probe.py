@@ -20,12 +20,11 @@ import sys
 import time
 from pathlib import Path
 
-import cv2
 import numpy as np
 
-from core.paths import models_dir
-from core.pose_features import normalize_pose_xy_v3, subsequence_dtw
-from core.vision_pipeline import MediaPipePipeline, PipelineConfig
+from core.media import VideoOpenError
+from core.pose import FORMAL, POSE33_V3, extract_pose_sequence, formal_engine, normalize_pose_xy_v3
+from core.pose_features import subsequence_dtw
 
 TEMPL_DIR = Path("templates/segments")
 BASELINE = 3.0  # 与 compare_video_to_template 一致
@@ -37,32 +36,14 @@ FRONT_ACTIONS = ["摇闪"]
 
 def extract_features(video: Path) -> tuple[np.ndarray, float, int, int]:
     """提取整段视频的 pose33_v3 归一化特征 (T,22,2),返回 (feats, fps, w, h)。"""
-    pipe = MediaPipePipeline(
-        models_dir=models_dir(),
-        cfg=PipelineConfig(pose_variant="heavy", running_mode="video", enable_hands=False),
-    )
-    cap = cv2.VideoCapture(str(video))
-    if not cap.isOpened():
-        raise SystemExit(f"无法打开视频: {video}")
-    fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0) or 30.0
-    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
-    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
-    feats: list[np.ndarray] = []
-    i = 0
-    while True:
-        ok, fr = cap.read()
-        if not ok:
-            break
-        lm, _ = pipe.infer(fr, timestamp_ms=int(i * 1000.0 / fps))
-        f = normalize_pose_xy_v3(lm)
-        if f is None:
-            f = feats[-1].copy() if feats else np.zeros((22, 2), dtype=np.float32)
-        feats.append(f)
-        i += 1
-    cap.release()
-    if not feats:
+    try:
+        seq = extract_pose_sequence(video, formal_engine("heavy"), FORMAL)
+    except VideoOpenError:
+        raise SystemExit(f"无法打开视频: {video}") from None
+    if len(seq) == 0:
         raise SystemExit("未从视频读到任何帧")
-    return np.stack(feats, axis=0), fps, w, h
+    feats = seq.features(normalize_pose_xy_v3, tuple(POSE33_V3.shape))
+    return feats, seq.meta.fps, seq.meta.width, seq.meta.height
 
 
 def main() -> None:

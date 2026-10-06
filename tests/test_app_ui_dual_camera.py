@@ -779,7 +779,7 @@ def test_dual_startup_metrics_expose_all_six_timing_points_once(capsys):
 
 
 def test_dual_camera_worker_creates_two_mediapipe_pipelines():
-    """双摄主预览两路 + 考试占用 lite 一路，源码中共 3 处 MediaPipePipeline 构造点。"""
+    """双摄主预览两路 + 考试占用 lite 一路，源码中共 3 处引擎构造点（P2 起统一为 create_engine）。"""
     worker = _function_node("_worker_loop_dual_camera")
 
     calls = [
@@ -787,8 +787,8 @@ def test_dual_camera_worker_creates_two_mediapipe_pipelines():
         for node in ast.walk(worker)
         if isinstance(node, ast.Call)
         and (
-            (isinstance(node.func, ast.Name) and node.func.id == "MediaPipePipeline")
-            or (isinstance(node.func, ast.Attribute) and node.func.attr == "MediaPipePipeline")
+            (isinstance(node.func, ast.Name) and node.func.id == "create_engine")
+            or (isinstance(node.func, ast.Attribute) and node.func.attr == "create_engine")
         )
     ]
 
@@ -1087,7 +1087,9 @@ def _exercise_dual_runtime_failure(monkeypatch, *, record_skeleton: bool, phase:
         capture_size=(1920, 1080) if student else (1280, 720),
     )
     monkeypatch.setattr(app_ui, "models_dir", lambda: Path("models"))
-    monkeypatch.setattr(app_ui, "MediaPipePipeline", pipeline_factory)
+    monkeypatch.setattr(
+        app_ui, "create_engine", lambda spec, *, models_dir=None: pipeline_factory(models_dir=models_dir, cfg=spec)
+    )
     monkeypatch.setattr(app_ui.cv2, "putText", lambda image, *_args, **_kwargs: image)
     monkeypatch.setattr(app_ui.cv2, "destroyAllWindows", lambda: None)
 
@@ -1271,7 +1273,9 @@ def test_pipeline_loading_keeps_raw_pair_flowing_without_writes(monkeypatch):
         record_skeleton=True,
     )
     monkeypatch.setattr(app_ui, "models_dir", lambda: Path("models"))
-    monkeypatch.setattr(app_ui, "MediaPipePipeline", pipeline_factory)
+    monkeypatch.setattr(
+        app_ui, "create_engine", lambda spec, *, models_dir=None: pipeline_factory(models_dir=models_dir, cfg=spec)
+    )
     monkeypatch.setattr(app_ui.cv2, "putText", lambda image, *_args, **_kwargs: image)
     monkeypatch.setattr(app_ui.cv2, "destroyAllWindows", lambda: None)
 
@@ -1374,7 +1378,9 @@ def test_second_pipeline_failure_closes_first_without_starting_recording(monkeyp
         record_skeleton=True,
     )
     monkeypatch.setattr(app_ui, "models_dir", lambda: Path("models"))
-    monkeypatch.setattr(app_ui, "MediaPipePipeline", pipeline_factory)
+    monkeypatch.setattr(
+        app_ui, "create_engine", lambda spec, *, models_dir=None: pipeline_factory(models_dir=models_dir, cfg=spec)
+    )
     monkeypatch.setattr(app_ui.cv2, "destroyAllWindows", lambda: None)
 
     app_ui.App._worker_loop_dual_camera(app, state)

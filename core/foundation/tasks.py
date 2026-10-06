@@ -178,6 +178,49 @@ def as_stopped(token: CancelToken) -> Callable[[], bool]:
     return lambda: token.cancelled
 
 
+class _PolledToken(CancelToken):
+    _POLL_INTERVAL_S = 0.05
+
+    def __init__(self, stopped: Callable[[], bool]) -> None:
+        super().__init__()
+        self._stopped = stopped
+
+    @property
+    def cancelled(self) -> bool:
+        if not self._event.is_set() and self._stopped():
+            self.cancel("user_stop")
+        return self._event.is_set()
+
+    def raise_if_cancelled(self) -> None:
+        if self.cancelled:
+            raise Cancelled(self._reason)
+
+    def wait(self, timeout: float | None = None) -> bool:
+        """按小间隔轮询回调直到取消或超时；父类只等内部 Event，看不到回调置位（问题 4）。"""
+        if self.cancelled:
+            return True
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while True:
+            remaining = self._POLL_INTERVAL_S if deadline is None else min(self._POLL_INTERVAL_S, deadline - time.monotonic())
+            if remaining <= 0:
+                return self.cancelled
+            if self._event.wait(remaining):
+                return True
+            if self.cancelled:
+                return True
+            if deadline is not None and time.monotonic() >= deadline:
+                return False
+
+    def child(self) -> "CancelToken":
+        # 子 token 也要轮询父回调，否则父的取消只有在被查询时才会级联。
+        return _PolledToken(lambda: self.cancelled)
+
+
+def from_stopped(stopped: Callable[[], bool] | None) -> CancelToken | None:
+    """把旧接口的 ``stopped()`` 回调（或 ``Event.is_set``）适配成 token：每次查询时轮询回调。"""
+    return None if stopped is None else _PolledToken(stopped)
+
+
 @contextmanager
 def translate_interrupted(token: CancelToken | None = None, reason: str = "") -> Iterator[None]:
     """把块内旧代码抛出的 ``InterruptedError`` 转成 ``Cancelled``；原因优先取 token 的取消原因。"""

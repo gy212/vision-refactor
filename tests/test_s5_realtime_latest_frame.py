@@ -182,7 +182,7 @@ def test_latest_frame_smoke_runs_with_fake_capture_and_pipeline(monkeypatch):
 
     monkeypatch.setattr(app_main, "_open_capture", lambda source: FakeCap())
     monkeypatch.setattr(app_main, "models_dir", lambda: Path("models"))
-    monkeypatch.setattr(app_main, "MediaPipePipeline", FakePipeline)
+    monkeypatch.setattr(app_main, "create_engine", lambda spec, *, models_dir=None: FakePipeline(models_dir=models_dir, cfg=spec))
     monkeypatch.setattr(app_main.cv2, "destroyAllWindows", lambda: None)
 
     metrics = app_main.run_realtime_latest_frame_smoke(
@@ -228,7 +228,7 @@ def test_latest_frame_smoke_reraises_worker_failures(monkeypatch):
 
     monkeypatch.setattr(app_main, "_open_capture", lambda source: FakeCap())
     monkeypatch.setattr(app_main, "models_dir", lambda: Path("models"))
-    monkeypatch.setattr(app_main, "MediaPipePipeline", BrokenPipeline)
+    monkeypatch.setattr(app_main, "create_engine", lambda spec, *, models_dir=None: BrokenPipeline(models_dir=models_dir, cfg=spec))
     monkeypatch.setattr(app_main.cv2, "destroyAllWindows", lambda: None)
 
     try:

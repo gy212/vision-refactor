@@ -10,10 +10,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Literal
 
-import cv2
 import numpy as np
 
 from core import action_compare, model_manager, video_writer
+from core.media import first_frame_ok
+from core.pose import missing_model_message
 from core.kick_quality import score_kick_quality
 from core.foundation import atomic_write_json, to_jsonable
 from core.paths import templates_dir
@@ -158,14 +159,7 @@ def _default_video_validator(path: Path) -> bool:
     path = Path(path)
     if not path.is_file() or path.stat().st_size <= 0:
         return False
-    cap = cv2.VideoCapture(str(path))
-    try:
-        if not cap.isOpened():
-            return False
-        ok, frame = cap.read()
-        return bool(ok and frame is not None and getattr(frame, "size", 0) > 0)
-    finally:
-        cap.release()
+    return first_frame_ok(path)
 
 
 def _default_model_available() -> bool:
@@ -601,7 +595,7 @@ class DualRecordingPostProcessor:
         if not self._model_available():
             raise PostprocessError(
                 "model_missing",
-                "缺少 pose_landmarker_heavy.task，请先在模型管理中安装 heavy 模型",
+                missing_model_message("postprocess_heavy"),
             )
 
         self._raise_if_cancelled(stop_evt)

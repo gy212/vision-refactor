@@ -18,6 +18,7 @@ import sys
 from pathlib import Path
 from threading import Event
 
+import cv2
 import numpy as np
 import pytest
 
@@ -50,9 +51,9 @@ class _TrackedCapture:
         return True
 
     def get(self, prop) -> float:
-        if prop == ac.cv2.CAP_PROP_FPS:
+        if prop == cv2.CAP_PROP_FPS:
             return 25.0
-        if prop == ac.cv2.CAP_PROP_FRAME_COUNT:
+        if prop == cv2.CAP_PROP_FRAME_COUNT:
             return 3.0
         return 0.0
 
@@ -63,7 +64,7 @@ class _TrackedCapture:
         return True, object()
 
     def set(self, prop, value) -> bool:
-        if prop == ac.cv2.CAP_PROP_POS_FRAMES:
+        if prop == cv2.CAP_PROP_POS_FRAMES:
             self.index = int(value)
         return True
 
@@ -97,8 +98,12 @@ def tracked_extraction(monkeypatch):
     _TrackedPipeline.instances.clear()
     _TrackedPipeline.fail_on_infer = False
     _TrackedPipeline.cancel_evt = None
-    monkeypatch.setattr(ac.cv2, "VideoCapture", _TrackedCapture)
-    monkeypatch.setattr(ac, "MediaPipePipeline", _TrackedPipeline)
+    # P2：解码与引擎构造统一在 core.media.video_source / core.pose.extract。
+    from core.media import video_source
+    from core.pose import extract
+
+    monkeypatch.setattr(video_source.cv2, "VideoCapture", _TrackedCapture)
+    monkeypatch.setattr(extract, "create_engine", lambda spec, **_kw: _TrackedPipeline(cfg=spec))
     yield
     _TrackedPipeline.fail_on_infer = False
     _TrackedPipeline.cancel_evt = None

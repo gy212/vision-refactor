@@ -11,8 +11,9 @@ from typing import Iterable
 import cv2
 import numpy as np
 
-from core.vision_pipeline import MediaPipePipeline, PipelineConfig
-from core.paths import models_dir, outputs_dir
+from core.media import open_video, probe_video
+from core.paths import outputs_dir
+from core.pose import FORMAL, GapPolicy, PoseSequence, draw_skeleton, extract_pose_sequence, formal_engine
 from batch.backend_options import (
     FEATURE_LAYOUT_BODY_CORE,
     add_backend_layout_args,
@@ -68,6 +69,24 @@ def _unique_name(base: str, used: set[str]) -> str:
         idx += 1
 
 
+def _write_skeleton_video(seq: PoseSequence, video_path: Path, out_video: Path, *, draw_face: bool) -> None:
+    """按提取结果在原视频上画骨架写出（mp4v）；未检出帧不画骨架。"""
+    out_video.parent.mkdir(parents=True, exist_ok=True)
+    writer = cv2.VideoWriter(str(out_video), cv2.VideoWriter_fourcc(*"mp4v"), seq.meta.fps,
+                             (seq.meta.width, seq.meta.height))
+    try:
+        with open_video(video_path) as source:
+            for frame in source:
+                if frame.index >= len(seq):
+                    break
+                annotated = frame.bgr.copy()
+                if seq.detected[frame.index]:
+                    draw_skeleton(annotated, seq.landmarks[frame.index], draw_face=draw_face)
+                writer.write(annotated)
+    finally:
+        writer.release()
+
+
 def _extract_pose_and_video(
     video_path: Path,
     *,
@@ -75,99 +94,38 @@ def _extract_pose_and_video(
     pose_variant: str,
     draw_face: bool,
 ) -> tuple[np.ndarray, dict]:
-    cap = cv2.VideoCapture(str(video_path))
-    if not cap.isOpened():
-        raise RuntimeError(f"无法打开视频：{video_path}")
-
-    fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0) or 30.0
-    n_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
-    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
-
-    models_dir_path = models_dir()
-    pipe = MediaPipePipeline(
-        models_dir=models_dir_path,
-        cfg=PipelineConfig(
-            pose_variant=pose_variant,
-            running_mode="video",
-            enable_hands=False,
-            draw_pose_face=draw_face,
-        ),
-    )
-
-    writer: cv2.VideoWriter | None = None
-    if out_video is not None:
-        out_video.parent.mkdir(parents=True, exist_ok=True)
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        writer = cv2.VideoWriter(str(out_video), fourcc, fps, (w, h))
-
-    out: list[np.ndarray] = []
-    last: np.ndarray | None = None
-
-    i = 0
-    while True:
-        ok, frame = cap.read()
-        if not ok:
-            break
-        ts = int(i * 1000.0 / fps)
-        pose_landmarks, _hands = pipe.infer(frame, timestamp_ms=ts)
-        if pose_landmarks is None:
-            arr = last.copy() if last is not None else np.zeros((33, 4), dtype=np.float32)
-        else:
-            arr = np.zeros((33, 4), dtype=np.float32)
-            for j in range(min(33, len(pose_landmarks))):
-                lm = pose_landmarks[j]
-                arr[j, 0] = float(getattr(lm, "x", 0.0))
-                arr[j, 1] = float(getattr(lm, "y", 0.0))
-                arr[j, 2] = float(getattr(lm, "z", 0.0))
-                arr[j, 3] = float(getattr(lm, "visibility", 0.0))
-            last = arr
-
-        out.append(arr)
-
-        if writer is not None:
-            annotated = frame.copy()
-            MediaPipePipeline._draw_pose(annotated, pose_landmarks, w, h, draw_face=draw_face)
-            writer.write(annotated)
-
-        i += 1
-
-    cap.release()
-    if writer is not None:
-        writer.release()
-
-    if not out:
+    """``FORMAL`` 顺序提取，原始序列按 ``HOLD_LAST_LEGACY`` 补未检出帧；可选导出骨架视频。"""
+    seq = extract_pose_sequence(video_path, formal_engine(pose_variant), FORMAL)
+    if len(seq) == 0:
         raise RuntimeError(f"未能从视频提取姿态：{video_path}")
+    if out_video is not None:
+        _write_skeleton_video(seq, video_path, out_video, draw_face=draw_face)
 
+    m = seq.meta
     meta = {
         "video": str(video_path),
         "name": video_path.stem.strip(),
-        "fps": float(fps),
-        "frame_count": int(n_frames),
-        "width": int(w),
-        "height": int(h),
+        "fps": float(m.fps),
+        "frame_count": int(m.frame_count),
+        "width": int(m.width),
+        "height": int(m.height),
         "pose_variant": str(pose_variant),
         "landmark_layout": "pose33_normalized_xyzw(visibility)",
         "skeleton_video": None if out_video is None else str(out_video),
     }
-    return np.stack(out, axis=0), meta
+    return seq.raw(GapPolicy.HOLD_LAST_LEGACY).copy(), meta
 
 
 def _video_basic_meta(video_path: Path) -> dict:
-    cap = cv2.VideoCapture(str(video_path))
-    if not cap.isOpened():
-        raise RuntimeError(f"无法打开视频：{video_path}")
-    try:
-        return {
-            "video": str(video_path),
-            "name": video_path.stem.strip(),
-            "fps": float(cap.get(cv2.CAP_PROP_FPS) or 0.0) or 30.0,
-            "frame_count": int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0),
-            "width": int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0),
-            "height": int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0),
-        }
-    finally:
-        cap.release()
+    meta = probe_video(video_path)
+    return {
+        "video": str(video_path),
+        "name": video_path.stem.strip(),
+        "fps": meta.fps,
+        "frame_count": meta.frame_count,
+        "width": meta.width,
+        "height": meta.height,
+    }
 
 
 def _extract_body_core_features(video_path: Path, *, backend: str, pose_variant: str) -> tuple[np.ndarray, dict]:

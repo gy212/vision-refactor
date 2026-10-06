@@ -18,6 +18,7 @@ import cv2
 import numpy as np
 
 from core.foundation.signal import find_active_range, motion_energy, smooth_1d
+from core.media.video_source import DecodeOptions, open_video
 
 
 @dataclass
@@ -126,27 +127,19 @@ def energy_from_gray_frames(frames: list[np.ndarray]) -> np.ndarray:
     return np.asarray(diffs, dtype=np.float32)
 
 
-def _open_capture(path: Path) -> cv2.VideoCapture:
-    cap = cv2.VideoCapture(str(path))
-    if not cap.isOpened():
-        raise RuntimeError(f"无法打开视频：{path}")
-    return cap
-
-
 def _stream_energy_first_n(
     path: Path, n: int
 ) -> tuple[np.ndarray, int, float, tuple[int, int]]:
     """流式读取前 n 帧，只保留上一灰度帧算能量；返回 energy、实际帧数、fps、尺寸。"""
-    cap = _open_capture(path)
-    try:
-        fps = float(cap.get(cv2.CAP_PROP_FPS) or 30.0) or 30.0
-        diffs: list[float] = []
-        prev: np.ndarray | None = None
-        count = 0
-        size = (0, 0)
-        while count < n:
-            ok, fr = cap.read()
-            if not ok or fr is None:
+    diffs: list[float] = []
+    prev: np.ndarray | None = None
+    count = 0
+    size = (0, 0)
+    with open_video(path, DecodeOptions(end=n - 1)) as source:
+        fps = source.meta.fps
+        for frame in source:
+            fr = frame.bgr
+            if fr is None:
                 break
             if count == 0:
                 h, w = fr.shape[:2]
@@ -157,30 +150,23 @@ def _stream_energy_first_n(
             prev = g
             count += 1
             del fr
-        return np.asarray(diffs, dtype=np.float32), count, fps, size
-    finally:
-        cap.release()
+    return np.asarray(diffs, dtype=np.float32), count, fps, size
 
 
 def _count_frames_up_to(path: Path, n: int) -> tuple[int, float, tuple[int, int]]:
     """流式计数，不保留像素。"""
-    cap = _open_capture(path)
-    try:
-        fps = float(cap.get(cv2.CAP_PROP_FPS) or 30.0) or 30.0
-        count = 0
-        size = (0, 0)
-        while count < n:
-            ok, fr = cap.read()
-            if not ok or fr is None:
+    count = 0
+    size = (0, 0)
+    with open_video(path, DecodeOptions(end=n - 1)) as source:
+        fps = source.meta.fps
+        for frame in source:
+            if frame.bgr is None:
                 break
             if count == 0:
-                h, w = fr.shape[:2]
+                h, w = frame.bgr.shape[:2]
                 size = (int(w), int(h))
             count += 1
-            del fr
-        return count, fps, size
-    finally:
-        cap.release()
+    return count, fps, size
 
 
 def _stream_write_range(
@@ -195,29 +181,15 @@ def _stream_write_range(
     """流式写出 [start, end) 帧到 out_path；返回实际路径与写出帧数。"""
     if end <= start:
         raise RuntimeError("裁剪区间为空")
-    cap = _open_capture(path)
     writer = None
     out = out_path
     written = 0
+    # 尽量 seek 并核对位置；不可靠时重开顺序跳过
+    source = open_video(path, DecodeOptions(start=start, end=end - 1, seek="verified"))
     try:
-        # 尽量 seek；失败则顺序丢弃
-        if start > 0:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, float(start))
-            pos = int(cap.get(cv2.CAP_PROP_POS_FRAMES) or 0)
-            if pos != start:
-                # seek 不可靠：重开顺序跳过
-                cap.release()
-                cap = _open_capture(path)
-                for _ in range(start):
-                    ok, fr = cap.read()
-                    if not ok:
-                        break
-                    del fr
-
-        idx = start
-        while idx < end:
-            ok, fr = cap.read()
-            if not ok or fr is None:
+        for frame in source:
+            fr = frame.bgr
+            if fr is None:
                 break
             if writer is None:
                 h, w = fr.shape[:2]
@@ -234,12 +206,11 @@ def _stream_write_range(
                     raise RuntimeError(f"无法创建视频写出：{out_path}")
             writer.write(fr)
             written += 1
-            idx += 1
             del fr
     finally:
         if writer is not None:
             writer.release()
-        cap.release()
+        source.close()
     if written <= 0:
         raise RuntimeError(f"裁剪写出 0 帧：{path}")
     return out, written

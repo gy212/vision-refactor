@@ -262,7 +262,8 @@ def test_no_22_2_literal_in_action_compare_hotpath():
 
 
 def test_no_22_2_literal_in_pose_features_hotpath():
-    src = (_REPO_ROOT / "core" / "pose_features.py").read_text(encoding="utf-8")
+    # P2：mirror_pose_features 迁入 core/pose/normalize.py（原 pose_features）。
+    src = (_REPO_ROOT / "core" / "pose" / "normalize.py").read_text(encoding="utf-8")
     tree = ast.parse(src)
     # mirror_pose_features 不得再写死 range(0,22,2)
     assert _int_literal_22_calls(tree) == [], "pose_features mirror 不得出现 range(0,22,2) 魔法值"
@@ -270,6 +271,6 @@ def test_no_22_2_literal_in_pose_features_hotpath():
 
 def test_no_22_2_literal_in_feature_layout_is_allowed():
     # 反向确认：注册定义里出现 (22,2) 是合法的（shape 注册），不应被上面规则误伤。
-    src = (_REPO_ROOT / "core" / "feature_layout.py").read_text(encoding="utf-8")
+    src = (_REPO_ROOT / "core" / "pose" / "layouts.py").read_text(encoding="utf-8")  # P2：原 feature_layout
     tree = ast.parse(src)
     assert len(_tuple_22_2_literals(tree)) >= 1

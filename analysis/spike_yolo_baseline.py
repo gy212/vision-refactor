@@ -57,6 +57,10 @@ os.environ.setdefault("GLOG_minloglevel", "3")
 
 import cv2  # noqa: E402
 
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:  # 直接运行脚本时也能导入 core
+    sys.path.insert(0, str(_REPO_ROOT))
+
 
 # ---------------------------------------------------------------------------
 # COCO17 → BlazePose33 映射（与迁移计划映射表一致）
@@ -154,7 +158,9 @@ def run_mediapipe(video_path: Path, *, pose_variant: str, models_dir: Path) -> B
     pose_path = models_dir / f"pose_landmarker_{pose_variant}.task"
     if not pose_path.exists():
         cap.release()
-        raise FileNotFoundError(f"缺少 MediaPipe pose 模型：{pose_path}")
+        from core.pose import missing_model_message  # 提示文案唯一来源
+
+        raise FileNotFoundError(missing_model_message("pose_path", path=pose_path))
 
     t_init = time.perf_counter()
     landmarker = mp.tasks.vision.PoseLandmarker.create_from_options(

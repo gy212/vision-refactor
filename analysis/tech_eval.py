@@ -6,20 +6,25 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal
 
-import cv2
 import numpy as np
 
 from core.pose_features import (
-    DEFAULT_VALID_CONF_THR,
-    MEDIAPIPE_VALIDITY_POLICY,
-    derive_valid_mask,
     landmark_names,
     landmarks_missing_for_capabilities,
-    pose_view_score,
 )
 from core.foundation import angle_deg, landmark_xy, longest_segment, smooth_1d, to_jsonable
-from core.paths import models_dir
-from core.vision_pipeline import MediaPipePipeline, PipelineConfig
+from core.media import DecodeOptions, open_video, open_video_writer
+from core.pose import (
+    BODY_CONNECTIONS,
+    DEFAULT_VALID_CONF_THR,
+    MEDIAPIPE_VALIDITY_POLICY,
+    GapPolicy,
+    derive_valid_mask,
+    draw_skeleton,
+    draw_status_lines,
+    formal_end_frame,
+    formal_sequence,
+)
 
 Status = Literal["合格", "不合格", "无法判定"]
 
@@ -191,72 +196,26 @@ def extract_pose_and_view_scores(
     start_frame: int | None = None,
     end_frame: int | None = None,
 ) -> tuple[np.ndarray, np.ndarray, dict]:
-    cap = cv2.VideoCapture(str(video_path))
-    if not cap.isOpened():
-        raise RuntimeError(f"无法打开视频：{video_path}")
-
-    fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0) or 30.0
-    n_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
-    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
-
-    start_i = int(start_frame) if start_frame is not None else 0
-    end_i = int(end_frame) if end_frame is not None else (n_frames - 1 if n_frames > 0 else 10**9)
-    start_i = max(0, start_i)
-    end_i = max(start_i, end_i)
-
-    models_dir_path = models_dir()
-    pipe = MediaPipePipeline(
-        models_dir=models_dir_path,
-        cfg=PipelineConfig(pose_variant=pose_variant, running_mode="video", enable_hands=False),
-    )
-
-    lms: list[np.ndarray] = []
-    vs: list[float] = []
-
-    i = 0
-    while True:
-        ok, frame = cap.read()
-        if not ok:
-            break
-
-        ts = int(i * 1000.0 / fps)
-        pose_landmarks, _hands = pipe.infer(frame, timestamp_ms=ts)
-
-        if start_i <= i <= end_i:
-            if pose_landmarks is None:
-                arr = np.zeros((33, 4), dtype=np.float32)
-                lms.append(arr)
-                vs.append(float("nan"))
-            else:
-                arr = np.zeros((33, 4), dtype=np.float32)
-                for j in range(min(33, len(pose_landmarks))):
-                    lm = pose_landmarks[j]
-                    arr[j, 0] = float(getattr(lm, "x", 0.0))
-                    arr[j, 1] = float(getattr(lm, "y", 0.0))
-                    arr[j, 2] = float(getattr(lm, "z", 0.0))
-                    arr[j, 3] = float(getattr(lm, "visibility", 0.0))
-                lms.append(arr)
-                s = pose_view_score(pose_landmarks)
-                vs.append(float("nan") if (s is None or not np.isfinite(s)) else float(s))
-
-        if i >= end_i:
-            break
-        i += 1
-
-    cap.release()
-    if not lms:
+    """``FORMAL`` 从第 0 帧顺序跟踪到 ``end_frame``，取 ``[start, end]`` 的 ``raw(ZERO)`` 与 ``view_scores(NAN)``。"""
+    video = Path(video_path)
+    start_i = max(0, int(start_frame) if start_frame is not None else 0)
+    end_i = max(start_i, formal_end_frame(video, end_frame))
+    seq = formal_sequence(video, pose_variant, end_i)
+    lms = seq.raw(GapPolicy.ZERO)[start_i : end_i + 1].copy()
+    vs = seq.view_scores(GapPolicy.NAN)[start_i : end_i + 1].copy()
+    if lms.shape[0] == 0:
         raise RuntimeError(f"未能从视频提取姿态：{video_path}")
 
+    m = seq.meta
     meta = {
         "video": str(video_path),
-        "fps": float(fps),
-        "frame_count": int(n_frames),
-        "width": int(w),
-        "height": int(h),
+        "fps": float(m.fps),
+        "frame_count": int(m.frame_count),
+        "width": int(m.width),
+        "height": int(m.height),
         "pose_variant": str(pose_variant),
         "start_frame": int(start_i),
-        "end_frame": int(start_i + len(lms) - 1),
+        "end_frame": int(start_i + lms.shape[0] - 1),
         "landmark_layout": "pose33_normalized_xyzw(visibility)",
         # valid_mask 契约（YOLO 迁移 Issue #5）：声明有效性策略与阈值，便于下游区分
         # 可信/待标定。本入口的 meta 会被序列化进 JSON 报告，故只落地标量字段；
@@ -264,7 +223,7 @@ def extract_pose_and_view_scores(
         "validity_policy": MEDIAPIPE_VALIDITY_POLICY,
         "valid_conf_thr": float(DEFAULT_VALID_CONF_THR),
     }
-    return np.stack(lms, axis=0), np.asarray(vs, dtype=np.float32), meta
+    return lms, vs, meta
 
 
 def split_front_side_segments(
@@ -1179,28 +1138,6 @@ def _detect_retract_events_side(
     return sorted(detect_events("L") + detect_events("R"), key=lambda d: int(d.get("start") or 0))
 
 
-_POSE_CONNECTIONS: tuple[tuple[int, int], ...] = (
-    (L_SHOULDER, R_SHOULDER),
-    (L_SHOULDER, L_ELBOW),
-    (L_ELBOW, L_WRIST),
-    (R_SHOULDER, R_ELBOW),
-    (R_ELBOW, R_WRIST),
-    (L_SHOULDER, L_HIP),
-    (R_SHOULDER, R_HIP),
-    (L_HIP, R_HIP),
-    (L_HIP, L_KNEE),
-    (L_KNEE, L_ANKLE),
-    (L_ANKLE, L_HEEL),
-    (L_HEEL, L_FOOT_INDEX),
-    (L_ANKLE, L_FOOT_INDEX),
-    (R_HIP, R_KNEE),
-    (R_KNEE, R_ANKLE),
-    (R_ANKLE, R_HEEL),
-    (R_HEEL, R_FOOT_INDEX),
-    (R_ANKLE, R_FOOT_INDEX),
-)
-
-
 def _merge_intervals(intervals: list[tuple[int, int]]) -> list[tuple[int, int]]:
     if not intervals:
         return []
@@ -1993,21 +1930,6 @@ def eval_force_sequence(
     return IndicatorResult(status="不合格", reason="发力顺序：顺序一致性不足", detail=detail)
 
 
-def _draw_pose33(frame_bgr: np.ndarray, lm: np.ndarray) -> None:
-    h, w = int(frame_bgr.shape[0]), int(frame_bgr.shape[1])
-    for i, j in _POSE_CONNECTIONS:
-        if float(lm[i, 3]) < 0.3 or float(lm[j, 3]) < 0.3:
-            continue
-        ax, ay = int(float(lm[i, 0]) * w), int(float(lm[i, 1]) * h)
-        bx, by = int(float(lm[j, 0]) * w), int(float(lm[j, 1]) * h)
-        cv2.line(frame_bgr, (ax, ay), (bx, by), (0, 140, 255), 2, cv2.LINE_AA)
-    for idx in range(33):
-        if float(lm[idx, 3]) < 0.3:
-            continue
-        x, y = int(float(lm[idx, 0]) * w), int(float(lm[idx, 1]) * h)
-        cv2.circle(frame_bgr, (x, y), 3, (0, 255, 0), -1, cv2.LINE_AA)
-
-
 def _status_tag(s: str) -> str:
     if s == "合格":
         return "PASS"
@@ -2251,18 +2173,12 @@ def export_debug_video(
     view_scores: np.ndarray | None = None,
     meta: dict[str, Any] | None = None,
 ) -> Path:
-    from video_writer import open_video_writer
-
     if res is None or landmarks is None or view_scores is None or meta is None:
         res, landmarks, view_scores, meta = evaluate_video_assets(video_path, pose_variant=pose_variant, stance=stance, view_hint=view_hint)
     fps = float((meta or {}).get("fps") or res.fps or 30.0)
 
-    cap = cv2.VideoCapture(str(video_path))
-    if not cap.isOpened():
-        raise RuntimeError(f"无法打开视频：{video_path}")
-
-    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
-    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+    source = open_video(video_path, DecodeOptions())
+    w, h = source.meta.width, source.meta.height
     vw, actual_path, _codec = open_video_writer(Path(out_path), fps=fps, size=(w, h))
 
     windows: list[tuple[int, int]] = []
@@ -2283,15 +2199,10 @@ def export_debug_video(
                 return True
         return False
 
-    i = 0
-    while True:
-        ok, frame = cap.read()
-        if not ok:
-            break
+    for item in source:
+        frame, i = item.bgr, item.index
         if i < int(landmarks.shape[0]):
-            _draw_pose33(frame, landmarks[i])
-        y0 = 22
-        dy = 22
+            draw_skeleton(frame, landmarks[i], connections=BODY_CONNECTIONS)
         lines = [
             f"COG:{_status_tag(res.cog_final.status)}  Retract:{_status_tag(res.retract_speed.status)}",
             f"ForceSeq:{_status_tag(res.force_sequence.status)}  Wrist:{_status_tag(res.wrist_angle.status)}",
@@ -2303,12 +2214,9 @@ def export_debug_video(
             lines.append(f"ViewScore:{float(view_scores[i]):.2f}")
         if in_window(i):
             lines.append("PUNCH_WINDOW")
-        for k, t in enumerate(lines):
-            cv2.putText(frame, t, (10, y0 + k * dy), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
-            cv2.putText(frame, t, (10, y0 + k * dy), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 1, cv2.LINE_AA)
+        draw_status_lines(frame, lines)
         vw.write(frame)
-        i += 1
 
     vw.release()
-    cap.release()
+    source.close()
     return actual_path

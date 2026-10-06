@@ -43,7 +43,7 @@ from core.body_core_compare import (  # noqa: E402
 )
 from core.feature_layout import BODY_CORE_V1, POSE33_V3  # noqa: E402
 from core.foundation import find_active_range, longest_segment, motion_energy, smooth_1d, trimmed_mean  # noqa: E402
-from core.paths import models_dir  # noqa: E402
+from core.media import DecodeOptions, open_video  # noqa: E402
 from core.pose_features import (  # noqa: E402
     DEFAULT_VALID_CONF_THR,
     derive_valid_mask,
@@ -54,7 +54,7 @@ from core.pose_features import (  # noqa: E402
     pose_view_score,
     subsequence_dtw,
 )
-from core.vision_pipeline import MediaPipePipeline, PipelineConfig  # noqa: E402
+from core.pose import create_engine, formal_engine  # noqa: E402
 
 
 POSE33_BASELINE = 3.0  # 2026-07-11 校准：2.0 → 3.0（同人自复现 avg_cost≈0.333 锚到 ~0.90 分）
@@ -205,31 +205,24 @@ def _extract_pose33_from_video(
     stages: StageSet,
     normalizer: Callable[[Any], np.ndarray | None],
 ) -> tuple[np.ndarray, np.ndarray, float]:
-    cap = cv2.VideoCapture(str(video_path))
-    if not cap.isOpened():
-        raise RuntimeError(f"无法打开视频：{video_path}")
+    end = None if limit_frames is None else int(limit_frames) - 1
+    source = open_video(video_path, DecodeOptions(end=end))
     feats: list[np.ndarray] = []
     views: list[float] = []
     last_view = 0.0
     zero = np.zeros(tuple(int(x) for x in POSE33_V3.shape), dtype=np.float32)
-    i = 0
-    pipe: MediaPipePipeline | None = None
+    pipe = None
     try:
-        fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0) or 30.0
-        pipe = MediaPipePipeline(
-            models_dir=models_dir(),
-            cfg=PipelineConfig(pose_variant=pose_variant, running_mode="video", enable_hands=False),
-        )
+        fps = source.meta.fps
+        pipe = create_engine(formal_engine(pose_variant))
+        frames = iter(source)
         while True:
-            if limit_frames is not None and i >= int(limit_frames):
-                break
             with stages.time("video_io_read"):
-                ok, frame = cap.read()
-            if not ok:
+                frame = next(frames, None)
+            if frame is None:
                 break
-            timestamp_ms = int(i * 1000.0 / max(1e-6, fps))
             with stages.time("model_inference_mediapipe_pose"):
-                pose_landmarks, _hands = pipe.infer(frame, timestamp_ms=timestamp_ms)
+                pose_landmarks, _hands = pipe.infer(frame.bgr, timestamp_ms=frame.t_ms)
             with stages.time("feature_normalization_pose33"):
                 f = normalizer(pose_landmarks)
             if f is None:
@@ -242,9 +235,8 @@ def _extract_pose33_from_video(
             else:
                 last_view = float(v)
             views.append(float(v))
-            i += 1
     finally:
-        cap.release()
+        source.close()
         if pipe is not None:
             pipe.close()
     if not feats:

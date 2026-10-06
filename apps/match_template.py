@@ -4,14 +4,21 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-import cv2
 import numpy as np
 
-from core.vision_pipeline import MediaPipePipeline, PipelineConfig
-from core.pose_features import normalize_pose_xy, normalize_pose_xy_v1, normalize_pose_xy_v3, subsequence_dtw
-from core.feature_layout import POSE33_V3
-from core.paths import models_dir, templates_dir
-from core.video_writer import open_video_writer
+from core.action_compare import write_pose_preview
+from core.media import VideoOpenError
+from core.paths import templates_dir
+from core.pose import (
+    FORMAL,
+    POSE33_V3,
+    extract_pose_sequence,
+    formal_engine,
+    normalize_pose_xy,
+    normalize_pose_xy_v1,
+    normalize_pose_xy_v3,
+)
+from core.pose_features import subsequence_dtw
 
 
 def _extract_features(
@@ -20,39 +27,14 @@ def _extract_features(
     pose_variant: str,
     normalizer=normalize_pose_xy,
 ) -> tuple[np.ndarray, float]:
-    cap = cv2.VideoCapture(str(video_path))
-    if not cap.isOpened():
-        raise RuntimeError(f"Cannot open video: {video_path}")
-
-    fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0) or 30.0
-
-    models_dir_path = models_dir()
-    pipe = MediaPipePipeline(
-        models_dir=models_dir_path,
-        cfg=PipelineConfig(pose_variant=pose_variant, running_mode="video", enable_hands=False),
-    )
-
-    feats: list[np.ndarray] = []
-    i = 0
-    while True:
-        ok, frame = cap.read()
-        if not ok:
-            break
-        ts = int(i * 1000.0 / fps)
-        pose_landmarks, _hands = pipe.infer(frame, timestamp_ms=ts)
-        f = normalizer(pose_landmarks)
-        if f is None:
-            if feats:
-                f = feats[-1].copy()
-            else:
-                f = np.zeros((22, 2), dtype=np.float32)
-        feats.append(f)
-        i += 1
-    cap.release()
-
-    if not feats:
+    """``FORMAL`` 顺序提取；未检出帧沿用上一帧特征，首帧前补零。"""
+    try:
+        seq = extract_pose_sequence(video_path, formal_engine(pose_variant), FORMAL)
+    except VideoOpenError:
+        raise RuntimeError(f"Cannot open video: {video_path}") from None
+    if len(seq) == 0:
         raise RuntimeError("No frames read")
-    return np.stack(feats, axis=0), fps
+    return seq.features(normalizer, tuple(POSE33_V3.shape)), seq.meta.fps
 
 
 def main() -> None:
@@ -196,34 +178,9 @@ def _match_pose33_v3(args) -> None:
         out_dir = templates_dir()
         out_path = out_dir / f"{video_path.stem}.match_{Path(args.template).stem}.mp4"
 
-        cap = cv2.VideoCapture(str(video_path))
-        if not cap.isOpened():
-            raise RuntimeError(f"Cannot reopen video: {video_path}")
-        w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
-        h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
-        vw, actual_path, codec = open_video_writer(out_path, fps=fps, size=(w, h))
-
-        models_dir_path = models_dir()
-        pipe = MediaPipePipeline(
-            models_dir=models_dir_path,
-            cfg=PipelineConfig(pose_variant=pose_variant, running_mode="video", enable_hands=False),
+        actual_path, codec = write_pose_preview(
+            video_path, out_path=out_path, start_frame=start, end_frame=end, pose_variant=pose_variant,
         )
-        i = 0
-        while True:
-            ok, frame = cap.read()
-            if not ok:
-                break
-            if i < start:
-                i += 1
-                continue
-            if i > end:
-                break
-            ts = int(i * 1000.0 / fps)
-            annotated, _actions = pipe.annotate(frame, timestamp_ms=ts)
-            vw.write(annotated)
-            i += 1
-        cap.release()
-        vw.release()
         print(f"Saved match preview: {actual_path} (codec={codec})")
 
 

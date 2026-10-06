@@ -4,11 +4,9 @@ from __future__ import annotations
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from queue import Queue
-from threading import Event, Lock, Thread
+from threading import Event
 from typing import Callable
 
-import cv2
 import numpy as np
 
 from .pose_features import (
@@ -25,7 +23,7 @@ from .pose_features import (
 )
 from .foundation.signal import find_active_range, longest_segment, motion_energy, smooth_1d, trimmed_mean
 from .feature_layout import POSE33_V3, FeatureLayoutSpec, is_valid_feature_shape
-from .paths import models_dir, templates_dir
+from .paths import templates_dir
 from .rule_scoring import (
     RuleViolation,
     extract_pose_raw,
@@ -33,8 +31,12 @@ from .rule_scoring import (
     score_rules,
     slice_pose_raw_series,
 )
-from .vision_pipeline import MediaPipePipeline, PipelineConfig
-from .video_writer import open_video_writer
+from .foundation.tasks import Cancelled, from_stopped
+from .media.video_source import DecodeOptions, open_video
+from .media.writer import open_video_writer
+from .pose.engine import EngineSpec, create_engine
+from .pose.extract import FORMAL, extract_pose_sequence, formal_engine
+from .pose.sequence import GapPolicy
 
 
 ProgressCb = Callable[[str, int, int], None]  # (stage, done, total)
@@ -245,212 +247,27 @@ def _extract_pose_features(
     Extract normalized pose features for the entire video.
     Returns (features[T,J,2], fps, view_scores[T] or None), where J/D come from `layout`.
 
-    本期默认 `layout=POSE33_V3`（即 (22,2)），行为与旧路径一致；缺帧补零按 layout
-    shape 生成，不再写死 (22,2)。
+    ``FORMAL`` 提取 + ``features``（归一化返回 None 沿用上一帧，补零按 layout shape）+
+    ``view_scores(HOLD_LAST)``。``workers > 1`` 走分段并行（每段前 15 帧跟踪预热）。
     """
-    stop_evt = stop_evt or Event()
-    zero_frame_shape = tuple(int(x) for x in layout.shape)
-    workers = max(1, int(workers))
-    cap = cv2.VideoCapture(str(video_path))
-    if not cap.isOpened():
-        cap.release()
-        raise RuntimeError(f"无法打开视频：{video_path}")
-
-    try:
-        fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0) or 30.0
-        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-    except BaseException:
-        cap.release()
-        raise
-
-    def _emit(done: int) -> None:
+    def progress(done: int, total: int) -> None:
         if progress_cb is not None:
             progress_cb("提取骨架特征", done, total)
 
-    # Single-thread path: VIDEO mode (more stable landmarks).
-    if workers == 1:
-        pipe: MediaPipePipeline | None = None
-        try:
-            models_dir_path = models_dir()
-            pipe = MediaPipePipeline(
-                models_dir=models_dir_path,
-                cfg=PipelineConfig(pose_variant=pose_variant, running_mode="video", enable_hands=False),
-            )
-            feats: list[np.ndarray] = []
-            views: list[float] | None = [] if compute_view else None
-            last_view = 0.0
-            i = 0
-            while not stop_evt.is_set():
-                ok, frame = cap.read()
-                if not ok:
-                    break
-                ts = int(i * 1000.0 / fps)
-                pose_landmarks, _hands = pipe.infer(frame, timestamp_ms=ts)
-                f = normalizer(pose_landmarks)
-                if f is None:
-                    if feats:
-                        f = feats[-1].copy()
-                    else:
-                        f = np.zeros(zero_frame_shape, dtype=np.float32)
-                feats.append(f)
-                if views is not None:
-                    v = pose_view_score(pose_landmarks)
-                    if v is None:
-                        v = last_view
-                    else:
-                        last_view = float(v)
-                    views.append(float(v))
-                i += 1
-                if (i % 10 == 0) or (total > 0 and i == total):
-                    _emit(i)
-
-            if stop_evt.is_set():
-                raise InterruptedError("姿态特征提取已取消")
-            if not feats:
-                raise RuntimeError("视频为空或无法读取帧")
-            view_arr = np.array(views, dtype=np.float32) if views is not None else None
-            return np.stack(feats, axis=0), fps, view_arr
-        finally:
-            try:
-                cap.release()
-            finally:
-                if pipe is not None:
-                    close = getattr(pipe, "close", None)
-                    if callable(close):
-                        close()
-
-    # Multi-thread path: split the video into segments and process each segment sequentially
-    # with VIDEO mode (tracking enabled within each segment). This keeps features comparable
-    # to the template (VIDEO mode) and avoids the huge mismatch caused by IMAGE mode.
-    if total <= 0:
-        # Can't segment without a known frame count; fall back to single-thread.
-        cap.release()
-        return _extract_pose_features(
-            video_path,
-            pose_variant=pose_variant,
-            workers=1,
-            normalizer=normalizer,
-            compute_view=compute_view,
-            layout=layout,
-            progress_cb=progress_cb,
-            stop_evt=stop_evt,
-        )
-
-    cap.release()
-
-    models_dir_path = models_dir()
-    feat_arr = np.zeros((total, *zero_frame_shape), dtype=np.float32)
-    view_arr = np.zeros((total,), dtype=np.float32) if compute_view else None
-
-    done_lock = Lock()
-    error_lock = Lock()
-    worker_errors: list[BaseException] = []
-    done = 0
-
-    def _inc_done(n: int = 1) -> None:
-        nonlocal done
-        with done_lock:
-            done += n
-            d = done
-        if (d % 10 == 0) or d == total:
-            _emit(d)
-
-    overlap = 15  # warm-up frames per segment to stabilize tracking
-
-    def _record_worker_error(exc: BaseException) -> None:
-        with error_lock:
-            worker_errors.append(exc)
-        stop_evt.set()
-
-    def seg_worker(seg_start: int, seg_end: int) -> None:
-        cap2: cv2.VideoCapture | None = None
-        pipe: MediaPipePipeline | None = None
-        try:
-            if stop_evt.is_set():
-                return
-            warm_start = max(0, seg_start - overlap)
-            cap2 = cv2.VideoCapture(str(video_path))
-            if not cap2.isOpened():
-                raise RuntimeError(f"无法打开视频分段：{video_path}")
-            # Seek to warm_start; if seek fails, OpenCV will usually continue from 0.
-            cap2.set(cv2.CAP_PROP_POS_FRAMES, float(warm_start))
-
-            pipe = MediaPipePipeline(
-                models_dir=models_dir_path,
-                cfg=PipelineConfig(
-                    pose_variant=pose_variant,
-                    running_mode="video",
-                    enable_hands=False,
-                ),
-            )
-
-            last: np.ndarray | None = None
-            last_view: float | None = None
-            i = warm_start
-            while (not stop_evt.is_set()) and i <= seg_end:
-                ok, frame = cap2.read()
-                if not ok:
-                    break
-                ts = int(i * 1000.0 / fps)
-                pose_landmarks, _hands = pipe.infer(frame, timestamp_ms=ts)
-                f = normalizer(pose_landmarks)
-                if f is None:
-                    f = (
-                        last.copy()
-                        if last is not None
-                        else np.zeros(zero_frame_shape, dtype=np.float32)
-                    )
-                else:
-                    last = f
-
-                if i >= seg_start:
-                    feat_arr[i] = f
-                    if view_arr is not None:
-                        v = pose_view_score(pose_landmarks)
-                        if v is None:
-                            v = float(last_view or 0.0)
-                        else:
-                            last_view = float(v)
-                        view_arr[i] = float(v)
-                    _inc_done(1)
-                i += 1
-        except BaseException as exc:  # thread failures must reach the caller
-            _record_worker_error(exc)
-        finally:
-            if cap2 is not None:
-                try:
-                    cap2.release()
-                except BaseException as exc:
-                    _record_worker_error(exc)
-            if pipe is not None:
-                close = getattr(pipe, "close", None)
-                if callable(close):
-                    try:
-                        close()
-                    except BaseException as exc:
-                        _record_worker_error(exc)
-
-    # Partition [0, total) across workers
-    segs: list[tuple[int, int]] = []
-    for k in range(workers):
-        s = (k * total) // workers
-        e = ((k + 1) * total) // workers - 1
-        if e >= s:
-            segs.append((s, e))
-
-    threads = [Thread(target=seg_worker, args=segs[i], daemon=True) for i in range(len(segs))]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
-
-    if worker_errors:
-        raise worker_errors[0]
-    if stop_evt.is_set():
-        raise InterruptedError("姿态特征提取已取消")
-    if done == 0:
+    cancel = from_stopped(stop_evt.is_set) if stop_evt is not None else None
+    try:
+        seq = extract_pose_sequence(video_path, formal_engine(pose_variant), FORMAL, workers=workers,
+                                    cancel=cancel, progress=progress)
+        if cancel is not None:
+            cancel.raise_if_cancelled()  # 最后一帧推理期间收到的取消也生效
+    except Cancelled:
+        raise InterruptedError("姿态特征提取已取消") from None
+    if seq.decoded_count == 0:
         raise RuntimeError("视频为空或无法读取帧")
-    return feat_arr, fps, view_arr
+    zero_shape = tuple(int(x) for x in layout.shape)
+    feats = seq.features(normalizer, zero_shape).copy()
+    views = seq.view_scores(GapPolicy.HOLD_LAST).copy() if compute_view else None
+    return feats, seq.meta.fps, views
 
 
 def _swap_lr(name: str) -> str:
@@ -985,7 +802,7 @@ def create_template_from_video(
         "pose_variant": pose_variant,
         "feature_layout": POSE33_V3.name,
         "running_mode": "video",
-        "cfg": asdict(PipelineConfig(pose_variant=pose_variant, running_mode="video", enable_hands=False)),
+        "cfg": asdict(EngineSpec(pose_variant=pose_variant, running_mode="video", enable_hands=False)),
         # 模板 metadata 扩展（YOLO 迁移 S1 / Issue #6）：增量字段，向后兼容。
         "backend": "mediapipe",
         "model_name": f"pose_landmarker_{pose_variant}",
@@ -1625,6 +1442,39 @@ def compare_dual_streams(
     )
 
 
+def write_pose_preview(
+    video_path: Path,
+    *,
+    out_path: Path,
+    start_frame: int,
+    end_frame: int,
+    pose_variant: str,
+    progress_cb: ProgressCb | None = None,
+    stop_evt: Event | None = None,
+) -> tuple[Path, str]:
+    """把 ``[start_frame, end_frame]`` 逐帧推理并画骨架写成预览视频；返回 ``(实际路径, 编码)``。"""
+    cancel = from_stopped(stop_evt.is_set) if stop_evt is not None else None
+    total = max(0, int(end_frame - start_frame + 1))
+    with open_video(video_path, DecodeOptions(start=int(start_frame), end=int(end_frame)), cancel) as source:
+        meta = source.meta
+        vw, actual_path, codec = open_video_writer(out_path, fps=meta.fps, size=(meta.width, meta.height))
+        pipe = create_engine(formal_engine(pose_variant))
+        done = 0
+        try:
+            for frame in source:
+                annotated, _actions = pipe.annotate(frame.bgr, timestamp_ms=frame.t_ms)
+                vw.write(annotated)
+                done += 1
+                if progress_cb is not None and (done % 5 == 0 or done == total):
+                    progress_cb("导出匹配预览", done, total)
+        except Cancelled:
+            pass  # 取消时保留已写出的部分（与旧实现一致）
+        finally:
+            vw.release()
+            pipe.close()
+    return actual_path, codec
+
+
 def export_match_preview(
     video_path: Path,
     *,
@@ -1635,42 +1485,8 @@ def export_match_preview(
     progress_cb: ProgressCb | None = None,
     stop_evt: Event | None = None,
 ) -> Path:
-    stop_evt = stop_evt or Event()
-    cap = cv2.VideoCapture(str(video_path))
-    if not cap.isOpened():
-        raise RuntimeError(f"无法打开视频：{video_path}")
-
-    fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0) or 30.0
-    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
-    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
-    vw, actual_path, codec = open_video_writer(out_path, fps=fps, size=(w, h))
-
-    models_dir_path = models_dir()
-    pipe = MediaPipePipeline(
-        models_dir=models_dir_path,
-        cfg=PipelineConfig(pose_variant=pose_variant, running_mode="video", enable_hands=False),
+    path, _codec = write_pose_preview(
+        video_path, out_path=out_path, start_frame=start_frame, end_frame=end_frame,
+        pose_variant=pose_variant, progress_cb=progress_cb, stop_evt=stop_evt,
     )
-
-    total = max(0, int(end_frame - start_frame + 1))
-    done = 0
-    i = 0
-    while not stop_evt.is_set():
-        ok, frame = cap.read()
-        if not ok:
-            break
-        if i < start_frame:
-            i += 1
-            continue
-        if i > end_frame:
-            break
-        ts = int(i * 1000.0 / fps)
-        annotated, _actions = pipe.annotate(frame, timestamp_ms=ts)
-        vw.write(annotated)
-        i += 1
-        done += 1
-        if progress_cb is not None and (done % 5 == 0 or done == total):
-            progress_cb("导出匹配预览", done, total)
-
-    cap.release()
-    vw.release()
-    return actual_path
+    return path

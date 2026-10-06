@@ -6,7 +6,8 @@
 搬迁文件时条目随文件改到新路径，登记值沿用原值，不新增条目、不调高登记值。P9 清零。
 """
 
-# 旧的平铺模块按设计文档附录 B 的去向归层（配置，不计入违规条数）。迁走后删掉对应行。
+# 旧的平铺模块按设计文档附录 B 的去向归层（配置，不计入违规条数）。迁走后删掉对应行；
+# P2 迁走的模块留下的转发门面仍按目标层归层，P9 删门面时一并删掉。
 LEGACY_TARGETS = {
     "core": "core.foundation",
     "core.paths": "core.foundation",
@@ -61,20 +62,6 @@ PRIVATE: dict[str, tuple[int, str]] = {
 }
 
 PRIMITIVES: dict[str, tuple[int, str]] = {
-    'engine_construct: analysis/bench_annotate_fps.py': (1, 'P2'),
-    'engine_construct: analysis/offline_matching_profile.py': (1, 'P2'),
-    'engine_construct: analysis/tech_eval.py': (1, 'P2'),
-    'engine_construct: apps/app_ui.py': (5, 'P2'),
-    'engine_construct: apps/desktop_smoke.py': (1, 'P2'),
-    'engine_construct: apps/main.py': (3, 'P2'),
-    'engine_construct: apps/make_template.py': (2, 'P2'),
-    'engine_construct: apps/match_template.py': (2, 'P2'),
-    'engine_construct: batch/batch_export_skeleton.py': (1, 'P2'),
-    'engine_construct: core/action_compare.py': (3, 'P2'),
-    'engine_construct: core/feedback_geometry.py': (1, 'P2'),
-    'engine_construct: core/parallel_pose_engine.py': (1, 'P2'),
-    'engine_construct: core/rule_scoring.py': (1, 'P2'),
-    'engine_construct: scripts/match_segments_probe.py': (1, 'P2'),
     'np_load: analysis/calibrate_body_core.py': (1, 'P9'),
     'np_load: analysis/offline_matching_profile.py': (6, 'P9'),
     'np_load: apps/app_ui.py': (1, 'P3'),
@@ -104,33 +91,17 @@ PRIMITIVES: dict[str, tuple[int, str]] = {
     'thread: core/exam_announcer.py': (1, 'P7'),
     'thread: core/exam_roster.py': (1, 'P4'),
     'thread: core/online_matcher.py': (1, 'P3'),
-    'thread: core/parallel_pose_engine.py': (2, 'P2'),
     'tk_after: apps/app_ui.py': (22, 'P8'),
     'tk_after: apps/desktop_smoke.py': (2, 'P8'),
     'tk_after: apps/exam_panel.py': (3, 'P8'),
     'tk_after: apps/feedback_panel.py': (2, 'P8'),
     'video_capture: analysis/bench_annotate_fps.py': (4, 'P9'),
-    'video_capture: analysis/offline_matching_profile.py': (1, 'P9'),
     'video_capture: analysis/spike_yolo_baseline.py': (2, 'P9'),
-    'video_capture: analysis/tech_eval.py': (2, 'P9'),
-    'video_capture: apps/app_ui.py': (1, 'P2'),
+    'video_capture: apps/app_ui.py': (1, 'P6'),  # _worker_loop 打开 source，随循环在 P6 删除
     'video_capture: apps/camera_capture.py': (1, 'P5'),
     'video_capture: apps/camera_enum.py': (3, 'P5'),
-    'video_capture: apps/desktop_smoke.py': (1, 'P2'),
-    'video_capture: apps/feedback_panel.py': (1, 'P2'),
-    'video_capture: apps/main.py': (1, 'P2'),
-    'video_capture: apps/make_template.py': (2, 'P2'),
-    'video_capture: apps/match_template.py': (2, 'P2'),
-    'video_capture: apps/recording_postprocess.py': (1, 'P2'),
-    'video_capture: batch/batch_export_skeleton.py': (2, 'P9'),
-    'video_capture: core/action_compare.py': (3, 'P2'),
-    'video_capture: core/exam_clip.py': (1, 'P2'),
-    'video_capture: core/feedback_geometry.py': (1, 'P2'),
-    'video_capture: core/feedback_report.py': (1, 'P2'),
-    'video_capture: core/qwen_coach.py': (1, 'P2'),
-    'video_capture: core/rule_scoring.py': (2, 'P2'),
-    'video_capture: core/yolo_adapter.py': (1, 'P2'),
-    'video_capture: scripts/match_segments_probe.py': (1, 'P9'),
+    'video_capture: apps/main.py': (1, 'P6'),  # _open_capture，随 CLI 逐帧循环在 P6 删除
+    'video_capture: core/qwen_coach.py': (1, 'P9'),  # D-12 未决：保留到 P9 按 D-12 处置
 }
 
 CLONES: dict[str, tuple[int, str]] = {
@@ -139,18 +110,17 @@ CLONES: dict[str, tuple[int, str]] = {
 
 MODULE_SIZE: dict[str, tuple[int, str]] = {
     'analysis/bench_annotate_fps.py': (1018, 'P9'),
-    'analysis/offline_matching_profile.py': (821, 'P9'),
-    'analysis/tech_eval.py': (2314, 'P9'),
-    'apps/app_ui.py': (5963, 'P8'),
+    'analysis/offline_matching_profile.py': (813, 'P9'),
+    'analysis/tech_eval.py': (2222, 'P9'),
+    'apps/app_ui.py': (5875, 'P8'),
     'apps/camera_warmup.py': (1125, 'P9'),
     'apps/exam_panel.py': (844, 'P8'),
     'apps/feedback_result_panel.py': (1326, 'P8'),
-    'apps/recording_postprocess.py': (1051, 'P4'),
-    'core/action_compare.py': (1676, 'P3'),
+    'apps/recording_postprocess.py': (1045, 'P4'),
+    'core/action_compare.py': (1492, 'P3'),
     'core/exam_roster.py': (818, 'P4'),
-    'core/feedback_report.py': (1538, 'P8'),
+    'core/feedback_report.py': (1532, 'P8'),
     'core/qwen_coach.py': (916, 'P9'),
-    'core/yolo_adapter.py': (1019, 'P2'),
 }
 
 FUNCTION_SIZE: dict[str, tuple[int, str]] = {
@@ -173,26 +143,24 @@ FUNCTION_SIZE: dict[str, tuple[int, str]] = {
     'apps/app_ui.py::App._exit_student_practice': (102, 'P8'),
     'apps/app_ui.py::App._on_close': (115, 'P8'),
     'apps/app_ui.py::App._set_running_controls': (124, 'P8'),
-    'apps/app_ui.py::App._worker_loop': (217, 'P8'),
-    'apps/app_ui.py::App._worker_loop_dual_camera': (399, 'P8'),
-    'apps/app_ui.py::App._worker_loop_parallel_camera': (206, 'P8'),
-    'apps/app_ui.py::App._worker_loop_parallel_video': (117, 'P8'),
+    'apps/app_ui.py::App._worker_loop': (195, 'P8'),
+    'apps/app_ui.py::App._worker_loop_dual_camera': (365, 'P8'),
+    'apps/app_ui.py::App._worker_loop_parallel_camera': (194, 'P8'),
+    'apps/app_ui.py::App._worker_loop_parallel_video': (105, 'P8'),
     'apps/app_ui.py::CompareWindow._build': (128, 'P8'),
     'apps/camera_enum.py::_enumerate_media_foundation_names': (107, 'P5'),
-    'apps/desktop_smoke.py::run': (145, 'P8'),
+    'apps/desktop_smoke.py::run': (142, 'P8'),
     'apps/exam_panel.py::ExamPanel._retest_current': (108, 'P8'),
     'apps/feedback_result_panel.py::FeedbackResultPanel._build_split_section': (301, 'P8'),
     'apps/feedback_result_panel.py::FeedbackResultPanel._build_ui': (109, 'P8'),
-    'apps/main.py::_process_video_multithread': (135, 'P6'),
-    'apps/main.py::run_realtime_latest_frame_smoke': (149, 'P6'),
-    'apps/make_template.py::_make_pose33_v3_template': (118, 'P3'),
+    'apps/main.py::_process_video_multithread': (122, 'P6'),
+    'apps/main.py::run_realtime_latest_frame_smoke': (142, 'P6'),
     'apps/recording_postprocess.py::DualRecordingPostProcessor._process': (102, 'P4'),
     'apps/recording_postprocess.py::DualRecordingPostProcessor._run_auto_compare': (112, 'P4'),
     'batch/batch_dual_compare.py::_run_body_core_batch': (115, 'P9'),
     'batch/batch_dual_compare.py::main': (267, 'P9'),
     'batch/batch_export_skeleton.py::main': (120, 'P9'),
     'batch/batch_tech_eval.py::main': (190, 'P9'),
-    'core/action_compare.py::_extract_pose_features': (221, 'P3'),
     'core/action_compare.py::_score_view_seq': (158, 'P3'),
     'core/action_compare.py::compare_dual_streams': (212, 'P3'),
     'core/action_compare.py::compare_video_to_dual_templates': (216, 'P3'),
@@ -205,7 +173,6 @@ FUNCTION_SIZE: dict[str, tuple[int, str]] = {
     'core/feedback_report.py::get_headline_summary': (131, 'P8'),
     'core/feedback_report.py::render_html_report': (517, 'P8'),
     'core/rule_scoring.py::score_rules': (132, 'P3'),
-    'core/yolo_adapter.py::extract_yolo_landmark_series': (145, 'P2'),
     'scripts/sim_exam_flow.py::scenario_5': (107, 'P9'),
 }
 
@@ -213,4 +180,4 @@ DEFENSIVE_GETATTR: dict[str, tuple[int, str]] = {
     'apps/app_ui.py': (169, 'P8'),
 }
 
-ENTRY_CEILING = 148
+ENTRY_CEILING = 114

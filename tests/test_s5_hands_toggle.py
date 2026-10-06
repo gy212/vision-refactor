@@ -119,7 +119,7 @@ def test_ui_state_can_disable_hands():
 
 
 def _occupancy_pipeline_configs(tree: ast.AST) -> list[ast.Call]:
-    """``occupancy_pipe = MediaPipePipeline(cfg=PipelineConfig(...))`` 中的 PipelineConfig。
+    """``occupancy_pipe = create_engine(EngineSpec(...), ...)`` 中的 EngineSpec（P2 前为 MediaPipePipeline/PipelineConfig）。
 
     考试 / 学生练习的站位检测只用髋部中点判断是否到位，固定跑 lite pose、不跑手部，
     与界面的手部开关无关（bf8c908 引入）。
@@ -134,14 +134,10 @@ def _occupancy_pipeline_configs(tree: ast.AST) -> list[ast.Call]:
         if not (
             isinstance(value, ast.Call)
             and isinstance(value.func, ast.Name)
-            and value.func.id == "MediaPipePipeline"
+            and value.func.id == "create_engine"
         ):
             continue
-        found.extend(
-            keyword.value
-            for keyword in value.keywords
-            if keyword.arg == "cfg" and isinstance(keyword.value, ast.Call)
-        )
+        found.extend(arg for arg in value.args[:1] if isinstance(arg, ast.Call))
     return found
 
 
@@ -154,7 +150,7 @@ def test_ui_worker_pipelines_use_state_enable_hands():
         for node in ast.walk(tree)
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Name)
-        and node.func.id == "PipelineConfig"
+        and node.func.id == "EngineSpec"
         and any(keyword.arg == "enable_hands" for keyword in node.keywords)
     ]
 
