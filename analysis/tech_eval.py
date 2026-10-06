@@ -14,6 +14,7 @@ from core.pose_features import (
 )
 from core.foundation import angle_deg, landmark_xy, longest_segment, smooth_1d, to_jsonable
 from core.media import DecodeOptions, open_video, open_video_writer
+from core.evaluation import center_x, classify_single_view, facing_direction, foot_edges_x, infer_front_leg, split_front_side
 from core.pose import (
     BODY_CONNECTIONS,
     DEFAULT_VALID_CONF_THR,
@@ -226,162 +227,9 @@ def extract_pose_and_view_scores(
     return lms, vs, meta
 
 
-def split_front_side_segments(
-    view_scores: np.ndarray,
-    fps: float,
-    *,
-    min_len_sec: float = 1.0,
-    min_mean_diff: float = 0.12,
-    side_thr: float = 0.9,
-    front_thr: float = 0.95,
-    max_transitions: int = 3,
-) -> tuple[tuple[int, int] | None, tuple[int, int] | None, str]:
-    """Split by per-frame view score into (front_seg, side_seg, view_mode).
-
-    Conservative strategy:
-    - Try to find two stable segments (high vs low) by median threshold.
-    - Only accept "mixed" when both segments are long enough and differ enough.
-    - Otherwise fall back to "single": treat entire video as front (side unavailable).
-
-    NOTE: side-only videos are hard to detect robustly from a single heuristic, so we prefer
-    returning side_seg=None over mislabeling.
-    """
-    if view_scores.size == 0:
-        return None, None, "single"
-
-    vs = np.nan_to_num(view_scores.astype(np.float32), nan=0.0, posinf=0.0, neginf=0.0)
-    k = int(max(5, min(51, round(float(fps) * 0.5))))
-    vs_s = smooth_1d(vs, k=k)
-
-    thr = float(np.median(vs_s))
-    high_mask = vs_s >= thr
-    high_seg = longest_segment(high_mask)
-    low_seg = longest_segment(~high_mask)
-
-    margin = int(max(5, min(20, round(float(fps) * 0.3))))
-    min_len = int(max(1, round(float(fps) * float(min_len_sec))))
-    transitions = int(np.sum(high_mask[1:] != high_mask[:-1]))
-
-    def _shrink(seg: tuple[int, int] | None) -> tuple[int, int] | None:
-        if seg is None:
-            return None
-        s, e = int(seg[0]), int(seg[1])
-        if e - s + 1 > (2 * margin + 10):
-            s += margin
-            e -= margin
-        if (e - s + 1) < min_len:
-            return None
-        return s, e
-
-    high_seg = _shrink(high_seg)
-    low_seg = _shrink(low_seg)
-
-    if transitions <= int(max_transitions) and high_seg is not None and low_seg is not None:
-        hs, he = high_seg
-        ls, le = low_seg
-        mean_high = float(np.mean(vs_s[hs : he + 1]))
-        mean_low = float(np.mean(vs_s[ls : le + 1]))
-        if abs(mean_high - mean_low) >= float(min_mean_diff):
-            if mean_high >= mean_low:
-                if mean_high >= float(front_thr) and mean_low <= float(side_thr):
-                    return high_seg, low_seg, "mixed"
-            else:
-                if mean_low >= float(front_thr) and mean_high <= float(side_thr):
-                    return low_seg, high_seg, "mixed"
-
-    # Fallback: keep front on the full clip, side unavailable.
-    return (0, int(vs_s.size - 1)), None, "single"
-
-
-def _classify_single_view(view_scores: np.ndarray, *, side_thr: float, front_thr: float) -> str:
-    vs = np.nan_to_num(view_scores.astype(np.float32), nan=0.0, posinf=0.0, neginf=0.0)
-    if vs.size == 0:
-        return "unknown"
-    med = float(np.median(vs))
-    if med <= float(side_thr):
-        return "side"
-    if med >= float(front_thr):
-        return "front"
-    return "unknown"
-
-
-def _center_x(lm: np.ndarray, mask_row: np.ndarray, idx_a: int, idx_b: int) -> float | None:
-    va, vb = bool(mask_row[idx_a]), bool(mask_row[idx_b])
-    xa, xb = float(landmark_xy(lm, idx_a)[0]), float(landmark_xy(lm, idx_b)[0])
-    if va and vb:
-        return 0.5 * (xa + xb)
-    if va:
-        return xa
-    if vb:
-        return xb
-    return None
-
-
-def _frame_dir(lm: np.ndarray, mask_row: np.ndarray) -> float | None:
-    ref = _center_x(lm, mask_row, L_HIP, R_HIP)
-    if ref is None:
-        ref = _center_x(lm, mask_row, L_SHOULDER, R_SHOULDER)
-    if ref is None:
-        return None
-
-    face_x = None
-    if bool(mask_row[NOSE]):
-        face_x = float(landmark_xy(lm, NOSE)[0])
-    else:
-        cand: list[float] = []
-        for idx in (MOUTH_L, MOUTH_R, L_EAR, R_EAR):
-            if bool(mask_row[idx]):
-                cand.append(float(landmark_xy(lm, idx)[0]))
-        if cand:
-            face_x = float(np.mean(np.asarray(cand, dtype=np.float32)))
-    if face_x is None:
-        return None
-
-    dx = float(face_x) - float(ref)
-    if not np.isfinite(dx):
-        return None
-    return 1.0 if dx >= 0.0 else -1.0
-
-
-def _foot_edges_x(lm: np.ndarray, mask_row: np.ndarray, *, side: str, dir_x: float) -> tuple[float, float] | None:
-    if side.upper() == "L":
-        heel, toe, ankle = L_HEEL, L_FOOT_INDEX, L_ANKLE
-    else:
-        heel, toe, ankle = R_HEEL, R_FOOT_INDEX, R_ANKLE
-
-    if _valid(mask_row, (heel, toe)):
-        hx = float(landmark_xy(lm, heel)[0]) * float(dir_x)
-        tx = float(landmark_xy(lm, toe)[0]) * float(dir_x)
-        return (min(hx, tx), max(hx, tx))
-
-    if bool(mask_row[ankle]):
-        ax = float(landmark_xy(lm, ankle)[0]) * float(dir_x)
-        return (ax, ax)
-
-    return None
-
-
-def _infer_front_leg_side(landmarks: np.ndarray, valid_mask: np.ndarray, *, fallback: str = "L") -> str:
-    # Determine which ankle tends to be more "forward" (+x) after applying per-frame dir.
-    cnt_l = 0
-    cnt_r = 0
-    for i, lm in enumerate(landmarks):
-        mask_row = valid_mask[i]
-        d = _frame_dir(lm, mask_row)
-        if d is None:
-            continue
-        if not _valid(mask_row, (L_ANKLE, R_ANKLE)):
-            continue
-        xl = float(landmark_xy(lm, L_ANKLE)[0]) * float(d)
-        xr = float(landmark_xy(lm, R_ANKLE)[0]) * float(d)
-        if xl >= xr:
-            cnt_l += 1
-        else:
-            cnt_r += 1
-
-    if (cnt_l + cnt_r) < 10:
-        return fallback.upper()
-    return "L" if cnt_l >= cnt_r else "R"
+def split_front_side_segments(view_scores: np.ndarray, fps: float, **thresholds) -> tuple:
+    """按逐帧视角分数切出 ``(正面段, 侧面段, view_mode)``，保守口径（``segmentation.split_front_side``）。"""
+    return split_front_side(view_scores, fps, mode="conservative", **thresholds)
 
 
 def eval_cog_side(
@@ -406,14 +254,14 @@ def eval_cog_side(
         return IndicatorResult(status="无法判定", reason="无有效帧", detail=detail)
 
     mask = _resolve_mask(landmarks, valid_mask, vis_thr)
-    front_leg = _infer_front_leg_side(landmarks, mask, fallback=stance_fallback)
+    front_leg = infer_front_leg(landmarks, mask, fallback=stance_fallback)
     back_leg = "R" if front_leg == "L" else "L"
 
     forward = backward = center = unknown = 0
 
     for i, lm in enumerate(landmarks):
         mask_row = mask[i]
-        d = _frame_dir(lm, mask_row)
+        d = facing_direction(lm, mask_row)
         if d is None:
             unknown += 1
             continue
@@ -443,10 +291,10 @@ def eval_cog_side(
         # Center by knee projection on the front foot.
         if front_leg == "L":
             knee_idx = L_KNEE
-            foot_edges = _foot_edges_x(lm, mask_row, side="L", dir_x=d)
+            foot_edges = foot_edges_x(lm, mask_row, side="L", dir_x=d)
         else:
             knee_idx = R_KNEE
-            foot_edges = _foot_edges_x(lm, mask_row, side="R", dir_x=d)
+            foot_edges = foot_edges_x(lm, mask_row, side="R", dir_x=d)
 
         if foot_edges is not None and bool(mask_row[knee_idx]):
             fb, ff = foot_edges
@@ -459,13 +307,13 @@ def eval_cog_side(
                     continue
 
         # Scheme 1: hip projection ratio in the overall support area.
-        hip_x = _center_x(lm, mask_row, L_HIP, R_HIP)
+        hip_x = center_x(lm, mask_row, L_HIP, R_HIP)
         if hip_x is None:
             unknown += 1
             continue
 
-        left_edges = _foot_edges_x(lm, mask_row, side="L", dir_x=d)
-        right_edges = _foot_edges_x(lm, mask_row, side="R", dir_x=d)
+        left_edges = foot_edges_x(lm, mask_row, side="L", dir_x=d)
+        right_edges = foot_edges_x(lm, mask_row, side="R", dir_x=d)
         if left_edges is None or right_edges is None:
             unknown += 1
             continue
@@ -885,7 +733,7 @@ def eval_cog_com(
             unknown += 1
             continue
 
-        d = _frame_dir(lm, mask_row)
+        d = facing_direction(lm, mask_row)
         if d is None:
             unknown += 1
             continue
@@ -893,8 +741,8 @@ def eval_cog_com(
         com_x = float(com[0]) * float(d)
 
         # 计算支撑面边界（两脚heel/toe）
-        left_edges = _foot_edges_x(lm, mask_row, side="L", dir_x=d)
-        right_edges = _foot_edges_x(lm, mask_row, side="R", dir_x=d)
+        left_edges = foot_edges_x(lm, mask_row, side="L", dir_x=d)
+        right_edges = foot_edges_x(lm, mask_row, side="R", dir_x=d)
 
         if left_edges is None or right_edges is None:
             unknown += 1
@@ -1059,7 +907,7 @@ def _detect_retract_events_side(
 
         for i, lm in enumerate(landmarks):
             mask_row = mask[i]
-            d = _frame_dir(lm, mask_row)
+            d = facing_direction(lm, mask_row)
             if d is None:
                 continue
             if not _valid(mask_row, (sh, el, wr)):
@@ -1543,7 +1391,7 @@ def eval_force_sequence(
         detail = {"primary_cause": "未检测到出拳", "events": []}
         return IndicatorResult(status="无法判定", reason="发力顺序：未检测到出拳", detail=detail)
 
-    front_leg = _infer_front_leg_side(side_landmarks, side_mask, fallback=("L" if (stance or "left").lower() == "left" else "R"))
+    front_leg = infer_front_leg(side_landmarks, side_mask, fallback=("L" if (stance or "left").lower() == "left" else "R"))
     back_leg = "R" if front_leg == "L" else "L"
 
     def _wrap_deg(x: float) -> float:
@@ -1562,7 +1410,7 @@ def eval_force_sequence(
         return abs(_wrap_deg(sa - ha))
 
     def _shoulder_drive(lm: np.ndarray, mask_row: np.ndarray, arm: str) -> float | None:
-        d = _frame_dir(lm, mask_row)
+        d = facing_direction(lm, mask_row)
         if d is None:
             return None
         if arm.upper() == "L":
@@ -1745,7 +1593,7 @@ def eval_force_sequence(
             for i in range(lms.shape[0]):
                 lm = lms[i]
                 mask_row = lms_mask[i]
-                d = _frame_dir(lm, mask_row)
+                d = facing_direction(lm, mask_row)
                 if d is None:
                     continue
                 cx = _foot_center_x(lm, mask_row, side)
@@ -1965,7 +1813,7 @@ def _evaluate_from_arrays(
     else:
         front_seg, side_seg, view_mode = split_front_side_segments(view_scores, fps)
         if view_mode == "single":
-            single_view = _classify_single_view(view_scores, side_thr=0.9, front_thr=0.95)
+            single_view = classify_single_view(view_scores, side_thr=0.9, front_thr=0.95)
             if single_view == "side":
                 front_seg, side_seg = None, (0, int(landmarks.shape[0] - 1))
             elif single_view == "front":

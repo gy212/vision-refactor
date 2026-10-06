@@ -54,7 +54,6 @@ PRIVATE: dict[str, tuple[int, str]] = {
     'analysis/offline_matching_profile.py: core.action_compare._multi_subsequence_matches': (1, 'P9'),
     'analysis/offline_matching_profile.py: core.action_compare._normalizer_version_from_layout': (1, 'P9'),
     'analysis/offline_matching_profile.py: core.action_compare._runtime_feature_layout': (1, 'P9'),
-    'analysis/offline_matching_profile.py: core.action_compare._select_representative_cycle': (1, 'P9'),
     'apps/camera_capture.py: apps.camera_enum._enumerate_media_foundation_names': (1, 'P5'),
     'core/body_core_compare.py: core.action_compare._assert_feature_layout_match': (1, 'P3'),
     'core/feedback_geometry.py: core.rule_scoring._rule_feet_parallel': (1, 'P3'),
@@ -104,20 +103,17 @@ PRIMITIVES: dict[str, tuple[int, str]] = {
     'video_capture: core/qwen_coach.py': (1, 'P9'),  # D-12 未决：保留到 P9 按 D-12 处置
 }
 
-CLONES: dict[str, tuple[int, str]] = {
-    'analysis/offline_matching_profile.py::_split_views.<locals>.shrink == core/action_compare.py::compare_video_to_dual_templates.<locals>.shrink': (1, 'P3'),
-}
+CLONES: dict[str, tuple[int, str]] = {}
 
 MODULE_SIZE: dict[str, tuple[int, str]] = {
     'analysis/bench_annotate_fps.py': (1018, 'P9'),
-    'analysis/offline_matching_profile.py': (813, 'P9'),
-    'analysis/tech_eval.py': (2222, 'P9'),
+    'analysis/tech_eval.py': (2070, 'P9'),
     'apps/app_ui.py': (5875, 'P8'),
     'apps/camera_warmup.py': (1125, 'P9'),
     'apps/exam_panel.py': (844, 'P8'),
     'apps/feedback_result_panel.py': (1326, 'P8'),
     'apps/recording_postprocess.py': (1045, 'P4'),
-    'core/action_compare.py': (1492, 'P3'),
+    'core/action_compare.py': (1361, 'P3'),
     'core/exam_roster.py': (818, 'P4'),
     'core/feedback_report.py': (1532, 'P8'),
     'core/qwen_coach.py': (916, 'P9'),
@@ -161,9 +157,9 @@ FUNCTION_SIZE: dict[str, tuple[int, str]] = {
     'batch/batch_dual_compare.py::main': (267, 'P9'),
     'batch/batch_export_skeleton.py::main': (120, 'P9'),
     'batch/batch_tech_eval.py::main': (190, 'P9'),
-    'core/action_compare.py::_score_view_seq': (158, 'P3'),
+    'core/action_compare.py::_score_view_seq': (141, 'P3'),
     'core/action_compare.py::compare_dual_streams': (212, 'P3'),
-    'core/action_compare.py::compare_video_to_dual_templates': (216, 'P3'),
+    'core/action_compare.py::compare_video_to_dual_templates': (192, 'P3'),
     'core/body_core_compare.py::match_body_core_template': (162, 'P3'),
     'core/exam_clip.py::prepare_exam_pair': (114, 'P4'),
     'core/feedback_geometry.py::evaluate_series': (124, 'P3'),
@@ -180,4 +176,4 @@ DEFENSIVE_GETATTR: dict[str, tuple[int, str]] = {
     'apps/app_ui.py': (169, 'P8'),
 }
 
-ENTRY_CEILING = 114
+ENTRY_CEILING = 111

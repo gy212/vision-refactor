@@ -1,10 +1,25 @@
 # -*- coding: utf-8 -*-
-"""单帧 landmark 的统一读取：MediaPipe landmark 对象与 ``(33, 4)`` 数组行两种输入共用一套访问函数。"""
+"""单帧 landmark 的统一读取：BlazePose 33 点的索引名，MediaPipe landmark 对象与 ``(33, 4)`` 数组行共用的访问函数。"""
 from __future__ import annotations
 
 import numpy as np
 
 LANDMARK_COUNT = 33
+
+# BlazePose 33 点索引（规则、侧别、技术指标共用；原先 rule_scoring、kick_quality、tech_eval 各写一份）。
+NOSE = 0
+L_EAR, R_EAR = 7, 8
+MOUTH_L, MOUTH_R = 9, 10
+L_SHOULDER, R_SHOULDER = 11, 12
+L_ELBOW, R_ELBOW = 13, 14
+L_WRIST, R_WRIST = 15, 16
+L_PINKY, R_PINKY = 17, 18
+L_INDEX, R_INDEX = 19, 20
+L_HIP, R_HIP = 23, 24
+L_KNEE, R_KNEE = 25, 26
+L_ANKLE, R_ANKLE = 27, 28
+L_HEEL, R_HEEL = 29, 30
+L_FOOT_INDEX, R_FOOT_INDEX = 31, 32
 
 
 def as_rows(landmarks) -> np.ndarray | None:

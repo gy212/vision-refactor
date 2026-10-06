@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import numpy as np
 
+from core.evaluation.body_sides import infer_kick_leg
+
 # BlazePose33 索引（与 core/rule_scoring.py 一致）
 NOSE = 0
 L_HIP, R_HIP = 23, 24
@@ -38,29 +40,6 @@ def _y_up(lm_row: np.ndarray, idx: int) -> float:
     """up-positive 高度：图像 y 向下增大,取负使"越高越大"。"""
     return -float(lm_row[idx, 1])
 
-
-def _kick_stand_sides(
-    landmarks: np.ndarray, valid: np.ndarray
-) -> tuple[int, int, int, int]:
-    """按窗口内踝帧间位移判定踢腿腿；返回 (kick_ankle, kick_knee, stand_hip, stand_knee)。"""
-    def _travel(ankle_idx: int) -> float:
-        ys = np.array(
-            [float(landmarks[i, ankle_idx, 1]) for i in range(len(landmarks)) if valid[i]],
-            dtype=np.float32,
-        )
-        xs = np.array(
-            [float(landmarks[i, ankle_idx, 0]) for i in range(len(landmarks)) if valid[i]],
-            dtype=np.float32,
-        )
-        if ys.size < 2:
-            return 0.0
-        return float(np.abs(np.diff(ys)).sum() + np.abs(np.diff(xs)).sum())
-
-    left_travel = _travel(L_ANKLE)
-    right_travel = _travel(R_ANKLE)
-    if left_travel >= right_travel:
-        return L_ANKLE, L_KNEE, R_HIP, R_KNEE
-    return R_ANKLE, R_KNEE, L_HIP, L_KNEE
 
 
 def _peak_frame(landmarks: np.ndarray, valid: np.ndarray, kick_ankle: int) -> int:
@@ -185,7 +164,7 @@ def score_kick_quality(
     valid = np.asarray(valid_mask[:, key_idx], dtype=bool).all(axis=1)
     if int(valid.sum()) < MIN_VALID_FRAMES:
         return None, "有效帧不足,未评估几何质量"
-    kick_ankle, kick_knee, stand_hip, stand_knee = _kick_stand_sides(landmarks, valid)
+    kick_ankle, kick_knee, stand_hip, stand_knee = infer_kick_leg(landmarks, valid)
     peak = _peak_frame(landmarks, valid, kick_ankle)
     if peak < 0:
         return None, "无法定位峰值帧"

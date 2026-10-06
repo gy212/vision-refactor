@@ -5,13 +5,9 @@ import math
 
 import numpy as np
 
+from core.evaluation.body_sides import sides_for_stance as limb_indices
 from core.foundation.geometry import torso_length
 from core.foundation.signal import contiguous_runs
-
-
-def limb_indices(role, stance):
-    left = (stance == "left") == (role != "rear")
-    return (11, 13, 15, 23, 25, 27, 29, 31) if left else (12, 14, 16, 24, 26, 28, 30, 32)
 
 
 def phase_windows(series: dict, action: str, stance: str, cfg, diagnostics=None) -> dict:

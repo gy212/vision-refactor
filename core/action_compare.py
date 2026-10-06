@@ -21,7 +21,10 @@ from .pose_features import (
     subsequence_dtw,
     subsequence_dtw_with_path,
 )
-from .foundation.signal import find_active_range, longest_segment, motion_energy, smooth_1d, trimmed_mean
+from .evaluation.segmentation import active_window, estimate_period_frames as _estimate_period_frames  # noqa: F401
+from .evaluation.segmentation import select_representative_cycle as _select_representative_cycle
+from .evaluation.segmentation import split_front_side
+from .foundation.signal import find_active_range, motion_energy, trimmed_mean
 from .feature_layout import POSE33_V3, FeatureLayoutSpec, is_valid_feature_shape
 from .paths import templates_dir
 from .rule_scoring import (
@@ -301,25 +304,8 @@ def _score_view_seq(
     if query.size == 0:
         return 0.0, [], None
 
-    # 3) 选择学员分段（缺失则回退整段视频）。
-    if seg is None:
-        seg_s, seg_e = 0, int(seq.shape[0] - 1)
-    else:
-        seg_s, seg_e = int(seg[0]), int(seg[1])
-        seg_s = max(0, min(seg_s, int(seq.shape[0] - 1)))
-        seg_e = max(seg_s, min(seg_e, int(seq.shape[0] - 1)))
-
-    seg_seq = seq[seg_s : seg_e + 1]
-    seg_offset = seg_s
-
-    # 4) 限制到更“活跃”的区间，减少静止帧对匹配的干扰。
-    if seg_seq.shape[0] >= 2:
-        energy = motion_energy(seg_seq.reshape(seg_seq.shape[0], -1))
-        a_s, a_e = find_active_range(energy, pad=10)
-        a_s = max(0, min(int(a_s), int(seg_seq.shape[0] - 1)))
-        a_e = max(a_s, min(int(a_e), int(seg_seq.shape[0] - 1)))
-        seg_seq = seg_seq[a_s : a_e + 1]
-        seg_offset += int(a_s)
+    # 3) 学员分段（缺失则整段）再收窄到运动活跃区间，减少静止帧对匹配的干扰。
+    seg_seq, seg_offset = active_window(seq, seg)
 
     exclusion = max(3, int(round(0.2 * float(query.shape[0]))))
     max_matches = int(min(30, max(1, round(float(seg_seq.shape[0]) / max(1.0, float(query.shape[0]))))))
@@ -497,99 +483,6 @@ def _normalizer_version_from_layout(layout: str) -> str:
         return "v2"
     return "v1"
 
-
-def _estimate_period_frames(energy: np.ndarray, fps: float) -> int | None:
-    """
-    Estimate dominant repetition period (in frames) via normalized autocorrelation on motion energy.
-    Returns None if not confident.
-    """
-    e = energy.astype(np.float32).ravel()
-    if e.size < 30:
-        return None
-
-    x = e - float(np.mean(e))
-    x_std = float(np.std(x))
-    if not np.isfinite(x_std) or x_std < 1e-6:
-        return None
-
-    fps = float(fps or 0.0) or 30.0
-    min_lag = max(6, int(0.4 * fps))
-    max_lag = min(int(3.0 * fps), int(e.size // 2))
-    if max_lag <= min_lag:
-        return None
-
-    best_lag = None
-    best_corr = -1.0
-    for lag in range(min_lag, max_lag + 1):
-        a = x[:-lag]
-        b = x[lag:]
-        denom = float(np.linalg.norm(a) * np.linalg.norm(b) + 1e-6)
-        c = float(np.dot(a, b) / denom)
-        if c > best_corr:
-            best_corr = c
-            best_lag = lag
-
-    # Weak periodicity => don't force a cycle cut.
-    if best_lag is None or best_corr < 0.15:
-        return None
-    return int(best_lag)
-
-
-def _select_representative_cycle(features: np.ndarray, fps: float) -> np.ndarray:
-    """
-    For a repeated standard video, pick a single representative repetition as the matching query.
-    If we can't estimate a stable period, return the original features.
-
-    布局守卫泛化（Issue #4）：旧实现写死 ``if features.shape[1:] != (22, 2): return features``，
-    会让任意非 22 点布局 **静默跳过周期裁切**（DTW query 退化成整段模板，不报错最难查）。
-    现改为只依赖 ``features.shape[1:]`` 是否为合法 ``(J, 2)`` 布局（``J >= 下限``即可裁切），
-    不再写死 22 点；这样任意 ``(T, J, 2)`` 输入都能正常裁切代表周期。
-    """
-    if features.ndim != 3 or not is_valid_feature_shape(features.shape[1:]):
-        return features
-    if features.shape[0] < 30:
-        return features
-
-    seq = features.reshape(features.shape[0], -1)
-    energy = motion_energy(seq)
-    period = _estimate_period_frames(energy, fps=float(fps))
-    if period is None or period < 8:
-        return features
-
-    t = int(features.shape[0])
-    mid = t // 2
-    start = max(0, mid - (period // 2))
-
-    # Try to snap start/end to low-motion frames to avoid cutting mid-gesture.
-    e_frame = np.concatenate([energy[:1], energy]).astype(np.float32)  # len T
-    low_thr = float(np.percentile(e_frame, 30))
-    low = np.where(e_frame <= low_thr)[0].astype(int)
-
-    def nearest_low(idx: int) -> int | None:
-        if low.size == 0:
-            return None
-        radius = max(3, period // 3)
-        lo = int(max(0, idx - radius))
-        hi = int(min(t - 1, idx + radius))
-        cand = low[(low >= lo) & (low <= hi)]
-        if cand.size == 0:
-            return None
-        j = int(cand[np.argmin(np.abs(cand - idx))])
-        return j
-
-    s2 = nearest_low(start)
-    if s2 is not None:
-        start = int(s2)
-
-    end = min(t, start + period)
-    e2 = nearest_low(end)
-    if e2 is not None and int(e2) > start + 10:
-        end = int(e2)
-
-    if end - start < max(12, period // 2):
-        end = min(t, start + period)
-
-    return features[start:end]
 
 
 def _multi_subsequence_matches(
@@ -1119,35 +1012,11 @@ def compare_video_to_dual_templates(
             raw_series = extract_pose_raw_series(video_path, pose_variant=pv)
         return slice_pose_raw_series(raw_series, start_frame=start_frame, end_frame=end_frame)
 
-    # 1) 按“正面程度”把长视频拆成正/侧两段（无需手动标注转身点）。
-    #    正面程度来自肩宽/躯干长度 + 左右可见度平衡，先平滑再二分。
+    # 1) 按“正面程度”把长视频拆成正/侧两段（无需手动标注转身点），转身附近的临界帧两端各收一段。
     front_seg: tuple[int, int] | None = None
     side_seg: tuple[int, int] | None = None
     if view_scores is not None and view_scores.size == seq.shape[0] and seq.shape[0] >= 10:
-        vs = np.nan_to_num(view_scores.astype(np.float32), nan=0.0, posinf=0.0, neginf=0.0)
-        k = int(max(5, min(51, round(float(fps) * 0.5))))
-        vs_s = smooth_1d(vs, k=k)
-        thr = float(np.median(vs_s))
-        front_mask = vs_s >= thr
-        front_seg = longest_segment(front_mask)
-        side_seg = longest_segment(~front_mask)
-
-        # 去掉临界帧：转身附近往往更模糊，缩短边缘以提升稳定性。
-        margin = int(max(5, min(20, round(float(fps) * 0.3))))
-
-        def shrink(seg: tuple[int, int] | None) -> tuple[int, int] | None:
-            if seg is None:
-                return None
-            s, e = int(seg[0]), int(seg[1])
-            if e - s + 1 > (2 * margin + 10):
-                s += margin
-                e -= margin
-            if e <= s:
-                return None
-            return s, e
-
-        front_seg = shrink(front_seg)
-        side_seg = shrink(side_seg)
+        front_seg, side_seg, _mode = split_front_side(view_scores, fps, mode="median_always")
 
     # 1.5) 可选规则评分：基于原始 Pose33，分视角段独立评估。
     #      规则采用“违规帧占比 >= 阈值则扣分”，降低单帧抖动影响。
