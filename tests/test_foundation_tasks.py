@@ -2,8 +2,10 @@
 """core.foundation.tasks / epoch：CancelToken 级联与 wait、TaskGroup 的 pending 与 close_deadline、Epoch 过期判断。"""
 from __future__ import annotations
 
+import gc
 import threading
 import time
+import weakref
 
 import pytest
 
@@ -187,3 +189,33 @@ def test_epoch_advance_is_thread_safe():
         t.join()
     assert sorted(seen) == list(range(1, 4001))
     assert epoch.current == 4000
+
+
+def _collected(refs: list[weakref.ref], timeout_s: float = 5.0) -> bool:
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        gc.collect()
+        if all(r() is None for r in refs):
+            return True
+        time.sleep(0.01)
+    return False
+
+
+def test_finished_tasks_do_not_accumulate_in_long_lived_group_token():
+    group = TaskGroup("leak")
+    handles = [group.spawn(str(i), lambda t: None, owner="o") for i in range(50)]
+    refs = [weakref.ref(h.token) for h in handles]
+    for h in handles:
+        assert h.join(5.0)
+    assert group.pending() == []
+    del handles, h
+    assert _collected(refs)
+    group.cancel(reason="app_close")  # 组 token 仍可正常取消
+
+
+def test_grandchild_still_cascades_when_intermediate_token_is_dropped():
+    root = CancelToken()
+    grandchild = root.child().child()  # 中间层没有外部引用
+    gc.collect()
+    root.cancel("mode_switch")
+    assert grandchild.cancelled and grandchild.reason == "mode_switch"

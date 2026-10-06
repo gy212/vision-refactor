@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import threading
 import time
+import weakref
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from typing import Any
@@ -25,13 +26,18 @@ class Cancelled(Exception):
 
 
 class CancelToken:
-    """线程安全的取消标记。取消不可撤销，第一次的原因生效。"""
+    """线程安全的取消标记。取消不可撤销，第一次的原因生效。
 
-    def __init__(self) -> None:
+    父 token 只弱引用子 token，子 token 强引用父 token：长寿的父 token（如 ``TaskGroup`` 的组 token）
+    不会攒下已结束任务的子 token，而仍被持有的孙 token 能经由中间层收到级联取消。
+    """
+
+    def __init__(self, parent: "CancelToken | None" = None) -> None:
         self._event = threading.Event()
         self._lock = threading.Lock()
         self._reason = ""
-        self._children: list[CancelToken] = []
+        self._parent = parent
+        self._children: weakref.WeakSet[CancelToken] = weakref.WeakSet()
 
     @property
     def cancelled(self) -> bool:
@@ -47,7 +53,8 @@ class CancelToken:
                 return
             self._reason = reason
             self._event.set()
-            children, self._children = self._children, []
+            children = list(self._children)
+            self._children = weakref.WeakSet()
         for child in children:
             child.cancel(reason)
 
@@ -61,10 +68,10 @@ class CancelToken:
 
     def child(self) -> "CancelToken":
         """派生子 token：父取消时级联取消，子取消不影响父。父已取消时子立即取消。"""
-        token = CancelToken()
+        token = CancelToken(parent=self)
         with self._lock:
             if not self._event.is_set():
-                self._children.append(token)
+                self._children.add(token)
                 return token
             reason = self._reason
         token.cancel(reason)

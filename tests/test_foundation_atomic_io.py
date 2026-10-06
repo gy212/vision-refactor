@@ -72,7 +72,7 @@ def test_persistent_lock_raises_and_leaves_target_and_no_temporary(tmp_path, mon
         raise PermissionError("locked by Excel")
 
     def no_copy(*_a, **_k):
-        raise PermissionError("locked by Excel")
+        raise AssertionError("旧文件挪不开时不得就地覆盖")
 
     monkeypatch.setattr(atomic_io.os, "replace", locked)
     monkeypatch.setattr(atomic_io.shutil, "copy2", no_copy)
@@ -80,8 +80,67 @@ def test_persistent_lock_raises_and_leaves_target_and_no_temporary(tmp_path, mon
         atomic_write_bytes(target, b"new")
     # retries+1 次直接替换，再试一次挪 .bak；之后放弃
     assert attempts.count("成绩.xlsx") == atomic_io.REPLACE_RETRIES + 1
+    assert attempts.count("成绩.xlsx.bak") == 1
     assert target.read_bytes() == b"old"
     assert _leftovers(tmp_path, {"成绩.xlsx"}) == []
+
+
+def _block_temporary_replace(monkeypatch):
+    """临时文件 → 目标的替换一直被占用，其它 os.replace（挪 .bak、还原）照常。"""
+    real_replace = os.replace
+
+    def fake(a, b):
+        if Path(a).name.startswith("_tmp_"):
+            raise PermissionError("source held by scanner")
+        real_replace(a, b)
+
+    monkeypatch.setattr(atomic_io.os, "replace", fake)
+
+
+def _partial_copy(src, dst, **_kwargs):
+    Path(dst).write_bytes(b"NE")
+    raise OSError(28, "No space left on device")
+
+
+def test_partial_copy_after_moving_old_aside_restores_old(tmp_path, monkeypatch):
+    target = tmp_path / "成绩.xlsx"
+    target.write_bytes(b"OLD-GOOD")
+    _block_temporary_replace(monkeypatch)
+    monkeypatch.setattr(atomic_io.shutil, "copy2", _partial_copy)
+    with pytest.raises(PermissionError):
+        atomic_write_bytes(target, b"NEW" * 100)
+    assert target.read_bytes() == b"OLD-GOOD"
+    assert _leftovers(tmp_path, {"成绩.xlsx"}) == []
+
+
+def test_partial_copy_without_old_file_leaves_nothing(tmp_path, monkeypatch):
+    target = tmp_path / "result.json"
+    _block_temporary_replace(monkeypatch)
+    monkeypatch.setattr(atomic_io.shutil, "copy2", _partial_copy)
+    with pytest.raises(PermissionError):
+        atomic_write_bytes(target, b"{}")
+    assert _leftovers(tmp_path, set()) == []
+
+
+def test_copy_fallback_succeeds_and_removes_bak(tmp_path, monkeypatch):
+    target = tmp_path / "record.json"
+    target.write_bytes(b"old")
+    _block_temporary_replace(monkeypatch)
+    atomic_write_bytes(target, b"new")
+    assert target.read_bytes() == b"new"
+    assert _leftovers(tmp_path, {"record.json"}) == []
+
+
+def test_text_writers_match_path_write_text_bytes(tmp_path):
+    """换行随平台转换，与原先的 write_text / 文本模式临时文件逐字节一致（Windows 为 CRLF）。"""
+    text = "第一行\n第二行\n"
+    (tmp_path / "ref.txt").write_text(text, encoding="utf-8-sig")
+    atomic_write_text(tmp_path / "new.txt", text, encoding="utf-8-sig")
+    assert (tmp_path / "new.txt").read_bytes() == (tmp_path / "ref.txt").read_bytes()
+    data = {"键": [1, 2]}
+    (tmp_path / "ref.json").write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    atomic_write_json(tmp_path / "new.json", data, trailing_newline=True)
+    assert (tmp_path / "new.json").read_bytes() == (tmp_path / "ref.json").read_bytes()
 
 
 def test_exception_inside_atomic_target_keeps_old_file(tmp_path):
@@ -102,10 +161,12 @@ def test_atomic_target_without_output_is_an_error(tmp_path):
     assert not (tmp_path / "x.txt").exists()
 
 
-def test_temporary_keeps_suffix_and_is_ascii(tmp_path):
-    with atomic_target(tmp_path / "考试 成绩.xlsx") as tmp:
-        assert tmp.parent == tmp_path and tmp.suffix == ".xlsx" and tmp.name.isascii()
+def test_temporary_is_ascii_and_invisible_to_suffix_scans(tmp_path):
+    """残片不能匹配目标后缀，否则 ``*.npz`` 模板库等扫描会把半截文件当正式文件读。"""
+    with atomic_target(tmp_path / "直拳_左手.npz") as tmp:
+        assert tmp.parent == tmp_path and tmp.suffix == ".tmp" and tmp.name.isascii()
         tmp.write_bytes(b"x")
+        assert list(tmp_path.glob("*.npz")) == []
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows 下打开中的文件不能被 os.replace 覆盖")

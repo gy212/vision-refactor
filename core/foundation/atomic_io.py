@@ -2,7 +2,8 @@
 """原子写文件的唯一实现：同目录临时文件写完、flush 并 fsync 后整体替换目标，失败不留半截文件。
 
 Windows 上目标被其它进程短暂占用（杀毒、索引、Excel 预览）时 ``os.replace`` 会抛
-``PermissionError``，这里有界重试；仍失败时沿用成绩表原来的 copy 回退，最后把异常抛给调用方。
+``PermissionError``，这里有界重试；仍失败时先把旧文件挪成 ``.bak`` 再复制，复制失败就还原 ``.bak``。
+旧文件挪不开时不就地覆盖，原样保留并把异常抛给调用方。
 """
 from __future__ import annotations
 
@@ -26,6 +27,13 @@ def _fsync_file(path: Path) -> None:
         os.fsync(fh.fileno())
 
 
+def _discard(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 def replace_file(
     src: Path | str,
     dst: Path | str,
@@ -37,8 +45,8 @@ def replace_file(
     """把写好的 ``src`` 替换为 ``dst``。
 
     ``durable`` 时先 fsync ``src``。``PermissionError`` 最多重试 ``retries`` 次；
-    其它 ``OSError``（如跨卷）或重试用尽后改用"旧文件挪成 .bak → 复制 → 删 .bak"，
-    复制失败时把 .bak 还原并抛出原异常。
+    其它 ``OSError`` 或重试用尽后改走 ``.bak`` 复制回退（见模块说明）。回退也失败时抛出最初的异常，
+    ``dst`` 保持原内容。
     """
     src, dst = Path(src), Path(dst)
     if dst.is_dir():
@@ -51,58 +59,67 @@ def replace_file(
             return
         except PermissionError:
             if attempt >= retries:
-                break
+                if not _copy_replace(src, dst):
+                    raise
+                return
             time.sleep(delay_s)
         except OSError:
-            break
-    _copy_replace(src, dst)
+            if not _copy_replace(src, dst):
+                raise
+            return
 
 
-def _copy_replace(src: Path, dst: Path) -> None:
-    bak: Path | None = dst.with_suffix(dst.suffix + ".bak")
+def _copy_replace(src: Path, dst: Path) -> bool:
+    """``.bak`` 复制回退；返回是否已写入。失败时 ``dst`` 为原内容（原先不存在则仍不存在）。"""
+    bak: Path | None = None
+    if dst.exists():
+        bak = dst.with_name(dst.name + ".bak")
+        try:
+            os.replace(dst, bak)
+        except OSError:
+            return False  # 旧文件挪不开：不就地覆盖
     try:
-        if dst.exists():
-            try:
-                os.replace(dst, bak)
-            except OSError:
-                bak = None
         shutil.copy2(src, dst)
-        src.unlink(missing_ok=True)
-        if bak is not None and bak.exists():
-            bak.unlink(missing_ok=True)
     except OSError:
-        if bak is not None and bak.exists() and not dst.exists():
+        if bak is None:
+            _discard(dst)
+        else:
             try:
                 os.replace(bak, dst)
             except OSError:
-                pass
-        raise
+                pass  # 还原失败时 .bak 留给人工恢复
+        return False
+    # 已写入；清理失败不影响结果
+    _discard(src)
+    if bak is not None:
+        _discard(bak)
+    return True
 
 
-def temporary_sibling(path: Path | str, *, tag: str = "tmp") -> Path:
-    """与目标同目录、ASCII 文件名、保留原后缀的临时路径（部分库按后缀判断格式）。"""
+def temporary_sibling(path: Path | str) -> Path:
+    """与目标同目录、ASCII 文件名的临时路径。
+
+    后缀固定为 ``.tmp``：进程中途被杀留下的残片不会被按后缀扫描目录的代码（如 ``*.npz`` 模板库）当成正式文件。
+    """
     path = Path(path)
-    return path.with_name(f"_{tag}_{uuid.uuid4().hex}{path.suffix}")
+    return path.with_name(f"_tmp_{uuid.uuid4().hex}.tmp")
 
 
 @contextmanager
-def atomic_target(path: Path | str, *, durable: bool = True, temporary: Path | None = None) -> Iterator[Path]:
+def atomic_target(path: Path | str, *, durable: bool = True) -> Iterator[Path]:
     """产出临时路径，由调用方写入；正常退出时替换为 ``path``，异常时删除临时文件并原样抛出。
 
     调用方没有写出临时文件就正常退出时，按 ``FileNotFoundError`` 处理。
     """
     path = Path(path)
-    tmp = temporary if temporary is not None else temporary_sibling(path)
+    tmp = temporary_sibling(path)
     try:
         yield tmp
         if not tmp.is_file():
             raise FileNotFoundError(f"临时文件未写出：{tmp}")
         replace_file(tmp, path, durable=durable)
     finally:
-        try:
-            tmp.unlink(missing_ok=True)
-        except OSError:
-            pass
+        _discard(tmp)
 
 
 def atomic_write_bytes(path: Path | str, data: bytes) -> None:
@@ -111,7 +128,9 @@ def atomic_write_bytes(path: Path | str, data: bytes) -> None:
 
 
 def atomic_write_text(path: Path | str, text: str, *, encoding: str = "utf-8") -> None:
-    atomic_write_bytes(path, text.encode(encoding))
+    """按文本模式写入（换行随平台转换，与 ``Path.write_text`` 一致）后原子替换。"""
+    with atomic_target(path) as tmp:
+        tmp.write_text(text, encoding=encoding)
 
 
 def atomic_write_json(
