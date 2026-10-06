@@ -1,8 +1,13 @@
 # -*- coding: utf-8 -*-
-"""骨架与叠加绘制的唯一实现：骨架、关节角、手部、ROI 框、FPS/提示/标签文字（设计文档 §6.4）。
+"""Pose33 骨架叠加的唯一实现：骨架、关节角、手部、ROI 框、FPS/提示/标签文字（设计文档 §6.4、§3 第 19 项）。
 
 ``render_pose`` 是"骨架 + 关节角 + 手部 + 实时标签"的无状态组合，``PoseEngine.annotate`` 与各实时循环
-都调用它。文字叠加按样式常量绘制，样式逐项复现迁移前各循环里的 ``cv2.putText`` 参数。
+都调用它。文字叠加按样式常量绘制，样式逐项复现迁移前各循环里的 ``cv2.putText`` 参数。骨架输入可以是
+landmark 对象序列，也可以是 ``PoseSequence`` 的 ``(33, 4)`` 数组行。
+
+"唯一"的范围是 §3 第 19 项取代的 Pose33 叠加。以下绘制不在其内、各自保留：YOLO 调试框
+（``backends/yolo.py``，YOLO 不进默认路径）、``analysis/bench_annotate_fps`` 的基准对照、练习报告的
+证据帧插图（``feedback_report``，P8 随报告迁入 reporting）、练习面板的 Tk 画布（``apps/feedback_panel``）。
 """
 from __future__ import annotations
 
@@ -11,10 +16,10 @@ from dataclasses import dataclass
 from functools import lru_cache
 
 import cv2
-import mediapipe as mp
 import numpy as np
 
 from core.foundation.geometry import angle_deg
+from core.pose.mediapipe_runtime import mediapipe
 from core.pose.landmarks import as_landmark_objects, visibility as _visibility
 from core.pose.live_labels import classify_pose_actions, is_v_sign
 
@@ -34,7 +39,8 @@ BODY_CONNECTIONS: tuple[tuple[int, int], ...] = (
 
 @lru_cache(maxsize=1)
 def _mediapipe_connections() -> tuple[tuple[int, int], ...]:
-    return tuple((int(c.start), int(c.end)) for c in mp.tasks.vision.PoseLandmarksConnections.POSE_LANDMARKS)
+    connections = mediapipe().tasks.vision.PoseLandmarksConnections.POSE_LANDMARKS
+    return tuple((int(c.start), int(c.end)) for c in connections)
 
 
 def draw_skeleton(out_bgr: np.ndarray, landmarks, *, draw_face: bool = False,
@@ -74,7 +80,8 @@ def _pt2d(lm, w: int, h: int) -> np.ndarray:
 
 
 def draw_joint_angles(out_bgr: np.ndarray, landmarks) -> None:
-    """Overlay knee (hip-knee-ankle) and elbow (shoulder-elbow-wrist) angles."""
+    """Overlay knee (hip-knee-ankle) and elbow (shoulder-elbow-wrist) angles. ``landmarks`` 可为对象序列或 ``(33, 4)`` 数组。"""
+    landmarks = as_landmark_objects(landmarks)
     if landmarks is None:
         return
     h, w = out_bgr.shape[:2]
@@ -120,8 +127,9 @@ def draw_hands(out_bgr: np.ndarray, hands) -> None:
     if not hands:
         return
     h, w = out_bgr.shape[:2]
+    connections = mediapipe().tasks.vision.HandLandmarksConnections.HAND_CONNECTIONS
     for hand in hands:
-        for c in mp.tasks.vision.HandLandmarksConnections.HAND_CONNECTIONS:
+        for c in connections:
             a, b = hand[int(c.start)], hand[int(c.end)]
             cv2.line(out_bgr, (int(a.x * w), int(a.y * h)), (int(b.x * w), int(b.y * h)),
                      (200, 255, 0), 2, cv2.LINE_AA)
@@ -135,14 +143,15 @@ UNSET_ACTION_POSE = object()
 def render_pose(frame_bgr: np.ndarray, pose_landmarks, hands, *, draw_face: bool = False,
                 draw_joint_angles_overlay: bool = False,
                 action_pose_landmarks=UNSET_ACTION_POSE) -> tuple[np.ndarray, list[str]]:
-    """无状态绘制：在帧副本上画 pose/hands 并返回 ``(annotated, actions)``。
+    """无状态绘制：在帧副本上画 pose/hands 并返回 ``(annotated, actions)``；pose 可为对象序列或 ``(33, 4)`` 数组。
 
     ``action_pose_landmarks`` 可单独指定用于动作分类的 raw landmarks，使平滑结果只影响骨架绘制；
     省略时用 ``pose_landmarks`` 分类。
     """
     out = frame_bgr.copy()
     h, w = out.shape[:2]
-    action_pose = pose_landmarks if action_pose_landmarks is UNSET_ACTION_POSE else action_pose_landmarks
+    pose_landmarks = as_landmark_objects(pose_landmarks)
+    action_pose = pose_landmarks if action_pose_landmarks is UNSET_ACTION_POSE else as_landmark_objects(action_pose_landmarks)
     actions = classify_pose_actions(action_pose, w, h)
 
     draw_skeleton(out, pose_landmarks, draw_face=draw_face)

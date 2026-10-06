@@ -13,18 +13,13 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
-# Reduce noisy native logs (glog/TFLite) in console/UI.
-# Use hard set (not setdefault) so user env doesn't accidentally re-enable spammy logs.
-os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
-os.environ["GLOG_minloglevel"] = "3"
+import cv2
+import numpy as np
 
-import cv2  # noqa: E402
-import mediapipe as mp  # noqa: E402
-import numpy as np  # noqa: E402
-
-from core.foundation.paths import models_dir as default_models_dir  # noqa: E402
-from core.pose.models import MEDIAPIPE_MODELS  # noqa: E402
-from core.pose.render import UNSET_ACTION_POSE, render_pose  # noqa: E402
+from core.foundation.paths import models_dir as default_models_dir
+from core.pose.mediapipe_runtime import mediapipe
+from core.pose.models import MEDIAPIPE_MODELS
+from core.pose.render import UNSET_ACTION_POSE, render_pose
 
 HAND_MODEL_URL = (
     "https://storage.googleapis.com/mediapipe-models/hand_landmarker/"
@@ -113,7 +108,8 @@ def _normalize_delegate(delegate: str) -> str:
     raise ValueError(f"Unsupported MediaPipe delegate: {delegate!r} (use 'cpu' or 'gpu')")
 
 
-def _base_options(model_path: Path, *, delegate: str) -> mp.tasks.BaseOptions:
+def _base_options(model_path: Path, *, delegate: str):
+    mp = mediapipe()
     delegate_norm = _normalize_delegate(delegate)
     # Windows 原生模型加载器不能可靠打开中文路径；Python 读字节避开其窄字符文件接口。
     asset = ({"model_asset_buffer": model_path.read_bytes()}
@@ -151,6 +147,7 @@ class PoseEngine:
         if mode not in ("video", "image"):
             raise ValueError(f"Unsupported running_mode: {cfg.running_mode!r} (use 'video' or 'image')")
         self.running_mode = mode
+        mp = mediapipe()
         mp_mode = mp.tasks.vision.RunningMode.VIDEO if mode == "video" else mp.tasks.vision.RunningMode.IMAGE
 
         self.pose_landmarker = None
@@ -177,6 +174,7 @@ class PoseEngine:
     def _create_landmarkers(self, *, pose_path: Path, hand_path: Path | None, mp_mode: object,
                             delegate: str) -> None:
         cfg = self.cfg
+        mp = mediapipe()
         self.pose_landmarker = None
         self.hand_landmarker = None
         try:
@@ -230,6 +228,7 @@ class PoseEngine:
 
     def infer(self, frame_bgr: np.ndarray, *, timestamp_ms: int | None = None):
         """Run landmarkers and return raw landmarks (pose_landmarks, hands_list)."""
+        mp = mediapipe()
         rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
 

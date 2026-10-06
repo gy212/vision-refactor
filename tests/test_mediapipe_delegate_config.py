@@ -14,6 +14,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from core.pose import engine as vision_pipeline  # noqa: E402  P2：引擎迁入 core/pose/engine.py
+from core.pose.mediapipe_runtime import mediapipe as _mp  # noqa: E402  P3：mediapipe 改为首次使用时导入
 
 
 def test_base_options_keeps_legacy_cpu_default(monkeypatch):
@@ -25,7 +26,7 @@ def test_base_options_keeps_legacy_cpu_default(monkeypatch):
         def __init__(self, **kwargs) -> None:
             calls.append(kwargs)
 
-    monkeypatch.setattr(vision_pipeline.mp.tasks, "BaseOptions", FakeBaseOptions)
+    monkeypatch.setattr(_mp().tasks, "BaseOptions", FakeBaseOptions)
 
     vision_pipeline._base_options(Path("pose.task"), delegate="cpu")
 
@@ -41,7 +42,7 @@ def test_base_options_uses_gpu_delegate_only_when_explicit(monkeypatch):
         def __init__(self, **kwargs) -> None:
             calls.append(kwargs)
 
-    monkeypatch.setattr(vision_pipeline.mp.tasks, "BaseOptions", FakeBaseOptions)
+    monkeypatch.setattr(_mp().tasks, "BaseOptions", FakeBaseOptions)
 
     vision_pipeline._base_options(Path("pose.task"), delegate="gpu")
 
@@ -83,9 +84,9 @@ def test_pipeline_falls_back_to_cpu_when_explicit_gpu_fails(tmp_path, monkeypatc
             self.model_asset_path = kwargs["model_asset_path"]
             self.delegate = kwargs.get("delegate")
 
-    monkeypatch.setattr(vision_pipeline.mp.tasks, "BaseOptions", FakeBaseOptions)
+    monkeypatch.setattr(_mp().tasks, "BaseOptions", FakeBaseOptions)
     monkeypatch.setattr(
-        vision_pipeline.mp.tasks,
+        _mp().tasks,
         "vision",
         SimpleNamespace(
             RunningMode=SimpleNamespace(VIDEO="VIDEO", IMAGE="IMAGE"),
@@ -126,12 +127,12 @@ def test_pipeline_closes_pose_landmarker_when_hand_creation_fails(tmp_path, monk
 
     monkeypatch.setattr(vision_pipeline, "_ensure_file", lambda url, path: None)
     monkeypatch.setattr(
-        vision_pipeline.mp.tasks,
+        _mp().tasks,
         "BaseOptions",
         lambda **kwargs: SimpleNamespace(**kwargs),
     )
     monkeypatch.setattr(
-        vision_pipeline.mp.tasks,
+        _mp().tasks,
         "vision",
         SimpleNamespace(
             RunningMode=SimpleNamespace(VIDEO="VIDEO", IMAGE="IMAGE"),
