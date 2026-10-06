@@ -66,7 +66,7 @@ class PoseSequence:
     decoded: np.ndarray         # (T,) bool：本帧确实读到（分段时读不到的尾帧为 False）
     frame_index: np.ndarray     # (T,) int：原视频帧号
     t_ms: np.ndarray            # (T,) int：送入推理的时间戳
-    source_wh: np.ndarray       # (T, 2) int：缩放前的帧尺寸（仅缩放时记录，否则为 0）
+    source_wh: np.ndarray       # (T, 2) int：缩放前的帧尺寸，顺序与分段提取都会记录
     meta: SourceMeta
     segments: tuple[SegmentWarmup, ...] = ()
     _cache: dict = field(default_factory=dict, init=False, repr=False, compare=False)
@@ -79,12 +79,18 @@ class PoseSequence:
         return int(np.count_nonzero(self.decoded))
 
     def prefix(self, end: int) -> "PoseSequence":
-        """前 ``end + 1`` 帧（顺序跟踪的序列，供缓存按前缀复用）。"""
+        """前 ``end + 1`` 帧（供缓存按前缀复用；调用方须先确认 ``start==0`` 且逐帧，见 ``extract._prefix_safe``）。
+
+        这类读法下行号与帧号一一对应，截前缀即少扫了 ``len(self) - stop`` 帧，meta 的
+        ``frames_scanned`` 要跟着减，不能照抄原序列扫到结尾的值。
+        """
         stop = min(len(self), max(0, int(end) + 1))
+        meta = replace(self.meta, frames_scanned=min(self.meta.frames_scanned, stop))
         return replace(
             self,
             landmarks=self.landmarks[:stop], detected=self.detected[:stop], decoded=self.decoded[:stop],
             frame_index=self.frame_index[:stop], t_ms=self.t_ms[:stop], source_wh=self.source_wh[:stop],
+            meta=meta,
         )
 
     # ------------------------------------------------------------------ 原始序列

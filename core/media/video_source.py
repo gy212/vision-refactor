@@ -33,6 +33,11 @@ class VideoOpenError(VideoError):
         super().__init__(f"无法打开视频：{path}")
         self.path = Path(str(path))
 
+    def __reduce__(self):
+        # 默认 __reduce__ 会用 self.args（已拼成的提示文案）重新调用 __init__，
+        # 相当于把 path 又套了一层"无法打开视频："。显式传回构造参数，使 pickle 往返保真。
+        return (self.__class__, (self.path,))
+
 
 class VideoFpsUnavailable(VideoError):
     """严格模式下容器没有给出有效帧率。"""
@@ -116,6 +121,7 @@ class VideoSource:
             self._capture.release()
             raise
         self.frames_scanned = 0   # 实际 grab/read 到的帧数（含抽帧跳过的）
+        self.exhausted = False    # 是否因读不到帧（而非到达 end）结束，供缓存判断"读到结尾"
 
     def __enter__(self) -> "VideoSource":
         return self
@@ -161,10 +167,12 @@ class VideoSource:
         while index <= end:
             if use_grab:
                 if not self._capture.grab():
+                    self.exhausted = True
                     return
             else:
                 ok, frame = self._capture.read()
                 if not ok:
+                    self.exhausted = True
                     return
             self.frames_scanned += 1
             if self._cancel is not None:
@@ -177,6 +185,7 @@ class VideoSource:
                 if not ok or frame is None:
                     if opts.strict:
                         raise UndecodableFrame("视频存在不可解码的帧")
+                    self.exhausted = True
                     return
             if index >= opts.start:
                 shape = getattr(frame, "shape", None)

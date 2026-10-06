@@ -304,7 +304,7 @@ def _string(value: str):
 # 原语 → (匹配器, 允许出现的位置)。位置是相对路径前缀或精确文件。
 PRIMITIVES = {
     "video_capture": (_call_ends("cv2.VideoCapture"), ("core/media/",)),
-    "engine_construct": (_call_ends("MediaPipePipeline"), ("core/pose/engine.py",)),
+    "engine_construct": (_call_ends("MediaPipePipeline", "PoseEngine"), ("core/pose/engine.py",)),
     "np_load": (_call_ends("np.load", "numpy.load"), ("core/evaluation/templates.py",)),
     "subsequence_dtw": (_call_ends("subsequence_dtw"), ("core/evaluation/matching/",)),
     "file_replace": (_is_file_replace, ("core/foundation/atomic_io.py",)),

@@ -54,6 +54,11 @@ class ModelMissing(FileNotFoundError):
         self.model_key = model_key
         self.hint = hint
 
+    def __reduce__(self):
+        # 默认 __reduce__ 只用 self.args（即 hint）重建，缺 model_key 这个必填参数会抛 TypeError。
+        # 显式传回两个构造参数，使 pickle 往返保真。
+        return (self.__class__, (self.model_key, self.hint))
+
 
 @dataclass(frozen=True)
 class EngineSpec:

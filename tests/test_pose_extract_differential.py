@@ -53,16 +53,19 @@ class _GapPipeline(H._FakePipeline):
 
 @pytest.fixture(autouse=True)
 def videos(monkeypatch):
+    """同问题 3：对 ``create_engine`` 的 monkeypatch 必须在 ``replay_context()`` 内部撤销，
+    否则 fixture 级 ``monkeypatch`` 之后才 undo，会把假引擎重新写回 ``extract.create_engine``。
+    """
     H.clear_registry()
     for name in ("student_raw", "front_src_raw", "side_src_raw"):
         raw = np.asarray(np.load(FIX_DIR / f"{name}.npz", allow_pickle=True)["landmarks"], dtype=np.float32)
         key = H.register_video(f"golden://diff_{name}.mp4", _with_gaps(raw), fps=29.97)
         VIDEOS[name] = key
     monkeypatch.setattr(old, "MediaPipePipeline", _GapPipeline)
-    with H.replay_context():
+    with H.replay_context(), pytest.MonkeyPatch.context() as mp:
         from core.pose import extract
 
-        monkeypatch.setattr(extract, "create_engine", lambda spec, **_kw: _GapPipeline(cfg=spec))
+        mp.setattr(extract, "create_engine", lambda spec, **_kw: _GapPipeline(cfg=spec))
         yield
     H.clear_registry()
 

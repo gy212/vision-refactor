@@ -179,6 +179,8 @@ def as_stopped(token: CancelToken) -> Callable[[], bool]:
 
 
 class _PolledToken(CancelToken):
+    _POLL_INTERVAL_S = 0.05
+
     def __init__(self, stopped: Callable[[], bool]) -> None:
         super().__init__()
         self._stopped = stopped
@@ -192,6 +194,22 @@ class _PolledToken(CancelToken):
     def raise_if_cancelled(self) -> None:
         if self.cancelled:
             raise Cancelled(self._reason)
+
+    def wait(self, timeout: float | None = None) -> bool:
+        """按小间隔轮询回调直到取消或超时；父类只等内部 Event，看不到回调置位（问题 4）。"""
+        if self.cancelled:
+            return True
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while True:
+            remaining = self._POLL_INTERVAL_S if deadline is None else min(self._POLL_INTERVAL_S, deadline - time.monotonic())
+            if remaining <= 0:
+                return self.cancelled
+            if self._event.wait(remaining):
+                return True
+            if self.cancelled:
+                return True
+            if deadline is not None and time.monotonic() >= deadline:
+                return False
 
     def child(self) -> "CancelToken":
         # 子 token 也要轮询父回调，否则父的取消只有在被查询时才会级联。

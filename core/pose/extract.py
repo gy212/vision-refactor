@@ -2,8 +2,11 @@
 """唯一的"解码 → 推理"循环 ``extract_pose_sequence``、提取预设 ``ExtractionProfile`` 与作用域缓存 ``pose_cache``（设计文档 §6.3）。
 
 ``workers > 1`` 时沿用旧的分段方案：每段从 ``seg_start - 15`` 定位开始读，前 15 帧只做跟踪预热，
-结果标记 ``tracking="segmented"``。``with pose_cache():`` 内同一视频、同一引擎与预设只推理一次；
-顺序跟踪的请求不会命中分段结果。
+结果标记 ``tracking="segmented"``。分段按分段边界定位读取，保不住 ``profile.decode`` 的
+``start``/``end``/``sample_fps`` 语义，这些选项非默认值时退回顺序跟踪（和帧数未知时一样）。
+``with pose_cache():`` 内同一视频、同一引擎与预设只推理一次；顺序跟踪的请求不会命中分段结果。
+前缀复用只在"第 t 行 = 第 t 帧"成立时发生（``start=0``、不抽帧、不定位、不缩放），其余情形
+只认终点相同的命中；是否读到结尾由 ``VideoSource.exhausted`` 判定，不从行数反推。
 """
 from __future__ import annotations
 
@@ -95,15 +98,30 @@ def _cache_key(video: Path, engine: EngineSpec, profile: ExtractionProfile, work
     return (_file_key(video), engine, profile.name, decode, profile.lazy_engine, tracking)
 
 
+def _prefix_safe(decode) -> bool:
+    """前缀复用只在"第 t 行 = 第 t 帧"成立时安全：从 0 开始、不抽帧、不定位、不缩放（FORMAL 这类读法）。
+
+    其余读法（``start>0``、抽帧、``seek``、缩放）行号与帧号不再一一对应，``prefix(end)`` 截的是
+    "前 end+1 行"而不是"读到第 end 帧"，这类请求只认终点相同的命中（见 ``_cache_lookup``）。
+    """
+    return decode.start == 0 and not decode.sample_fps and not decode.seek and decode.max_edge is None
+
+
 def _cache_lookup(store: dict, key: tuple, end: int | None) -> PoseSequence | None:
-    """顺序跟踪是因果的：读到更远（或读到结尾）的结果截前缀即等于只读到 ``end`` 的结果。"""
-    for cached_end, seq in store.get(key, ()):
-        reached_eof = cached_end is not None and len(seq) <= cached_end
+    """顺序跟踪是因果的：读到更远（或读到结尾）的结果截前缀即等于只读到 ``end`` 的结果。
+
+    ``reached_eof`` 必须由 ``VideoSource.exhausted`` 判定（读不到帧才算结尾），不能从行数反推：
+    分段结果的行数等于容器帧数但末尾可能是未解码的占位行；抽帧结果的行数远小于帧号，行数巧合
+    等于 ``end`` 不代表读到了第 ``end`` 帧。
+    """
+    decode = key[3]  # _cache_key 里 replace(profile.decode, end=None) 之后的 DecodeOptions
+    sequential = key[-1][0] == "sequential"
+    safe_prefix = sequential and _prefix_safe(decode)
+    for cached_end, reached_eof, seq in store.get(key, ()):
         if cached_end == end or (end is None and reached_eof):
             return seq
-        if key[-1][0] == "sequential" and end is not None:
-            if cached_end is None or cached_end >= end or reached_eof:
-                return seq.prefix(end)
+        if safe_prefix and end is not None and (reached_eof or (cached_end is not None and cached_end >= end)):
+            return seq.prefix(end)
     return None
 
 
@@ -130,7 +148,8 @@ def _meta(source_meta, engine: EngineSpec, profile: ExtractionProfile, tracking:
 
 
 def _sequential(video: Path, engine: EngineSpec, profile: ExtractionProfile, factory: EngineFactory,
-                cancel: CancelToken | None, progress: ProgressFn | None) -> PoseSequence:
+                cancel: CancelToken | None, progress: ProgressFn | None) -> tuple[PoseSequence, bool]:
+    """返回 ``(序列, exhausted)``；``exhausted`` 为真表示因读不到帧结束，而非到达 ``decode.end``。"""
     rows: list[np.ndarray] = []
     detected: list[bool] = []
     frame_index: list[int] = []
@@ -164,8 +183,9 @@ def _sequential(video: Path, engine: EngineSpec, profile: ExtractionProfile, fac
                 _close(pipe)
         meta = _meta(source.meta, engine, profile, "sequential", frames_scanned=source.frames_scanned,
                      stride=source.stride(), inference_size=inference_size)
+        exhausted = source.exhausted
     n = len(rows)
-    return PoseSequence(
+    seq = PoseSequence(
         landmarks=np.stack(rows, axis=0) if rows else np.zeros((0, LANDMARK_COUNT, 4)),
         detected=np.asarray(detected, dtype=bool),
         decoded=np.ones((n,), dtype=bool),
@@ -174,6 +194,7 @@ def _sequential(video: Path, engine: EngineSpec, profile: ExtractionProfile, fac
         source_wh=np.asarray(source_wh, dtype=np.int64).reshape(n, 2),
         meta=meta,
     )
+    return seq, exhausted
 
 
 def _segments(total: int, workers: int) -> list[tuple[int, int]]:
@@ -194,6 +215,7 @@ def _segmented(video: Path, engine: EngineSpec, profile: ExtractionProfile, fact
     detected = np.zeros((total,), dtype=bool)
     decoded = np.zeros((total,), dtype=bool)
     t_ms = np.zeros((total,), dtype=np.int64)
+    source_wh = np.zeros((total, 2), dtype=np.int64)
     shared = from_stopped(lambda: cancel is not None and cancel.cancelled)
     errors: list[BaseException] = []
     warmups: dict[int, SegmentWarmup] = {}
@@ -237,6 +259,7 @@ def _segmented(video: Path, engine: EngineSpec, profile: ExtractionProfile, fact
                         detected[frame.index] = hit
                         decoded[frame.index] = True
                         t_ms[frame.index] = frame.t_ms
+                        source_wh[frame.index] = frame.source_size
                         advance()
                     else:
                         warm_rows.append(row)
@@ -268,10 +291,18 @@ def _segmented(video: Path, engine: EngineSpec, profile: ExtractionProfile, fact
     return PoseSequence(
         landmarks=landmarks, detected=detected, decoded=decoded,
         frame_index=np.arange(total, dtype=np.int64), t_ms=t_ms,
-        source_wh=np.zeros((total, 2), dtype=np.int64),
+        source_wh=source_wh,
         meta=_meta(source_meta, engine, profile, "segmented"),
         segments=tuple(warmups[s] for s in sorted(warmups)),
     )
+
+
+def _segmentable(decode) -> bool:
+    """分段方案（每段按 ``seg_start``/``seg_end`` 定位读取）无法保持 ``start``/``end``/``sample_fps``
+    的语义：定位是按分段边界算的，不是按 ``decode.start``；抽帧的步长、保底末帧也是整段才有意义。
+    这些选项非默认值时退回顺序跟踪，和"帧数未知退回顺序"一样处理（§6.3 实现补充）。
+    """
+    return decode.start == 0 and decode.end is None and not decode.sample_fps
 
 
 def extract_pose_sequence(video: Path | str, engine: EngineSpec, profile: ExtractionProfile = FORMAL, *,
@@ -280,8 +311,10 @@ def extract_pose_sequence(video: Path | str, engine: EngineSpec, profile: Extrac
                           engine_factory: EngineFactory | None = None) -> PoseSequence:
     """解码并逐帧推理，返回 ``PoseSequence``。取消时抛 ``Cancelled``；视频打不开抛 ``VideoOpenError``。
 
-    ``workers > 1`` 且容器给出帧数时分段并行（``tracking="segmented"``），否则顺序跟踪。
-    ``engine_factory`` 用于注入假引擎（测试、练习分析的 ``pipeline_factory``）；注入时不走缓存。
+    ``workers > 1`` 且容器给出帧数、且 ``profile.decode`` 的 ``start``/``end``/``sample_fps`` 都是默认值时
+    分段并行（``tracking="segmented"``）；否则顺序跟踪——分段方案按分段边界定位读取，无法保持这些选项
+    的语义（§6.3 实现补充）。``engine_factory`` 用于注入假引擎（测试、练习分析的 ``pipeline_factory``）；
+    注入时不走缓存。
     """
     video = Path(str(video))
     workers = max(1, int(workers))
@@ -289,9 +322,12 @@ def extract_pose_sequence(video: Path | str, engine: EngineSpec, profile: Extrac
     store = _CACHE.get() if engine_factory is None else None
     source_meta = None
     if workers > 1:
-        source_meta = probe_video(video)
-        if source_meta.frame_count <= 0:
-            workers = 1  # 帧数未知无法分段，退回顺序跟踪
+        if not _segmentable(profile.decode):
+            workers = 1  # start/end/sample_fps 非默认值，分段保不住语义，退回顺序跟踪
+        else:
+            source_meta = probe_video(video)
+            if source_meta.frame_count <= 0:
+                workers = 1  # 帧数未知无法分段，退回顺序跟踪
     key = _cache_key(video, engine, profile, workers) if store is not None else None
     if store is not None:
         hit = _cache_lookup(store, key, profile.decode.end)
@@ -299,8 +335,9 @@ def extract_pose_sequence(video: Path | str, engine: EngineSpec, profile: Extrac
             return hit
     if workers > 1:
         seq = _segmented(video, engine, profile, factory, workers, source_meta, cancel, progress)
+        reached_eof = True  # 分段方案要求容器给出帧数，覆盖全部帧即读到结尾
     else:
-        seq = _sequential(video, engine, profile, factory, cancel, progress)
+        seq, reached_eof = _sequential(video, engine, profile, factory, cancel, progress)
     if store is not None:
-        store.setdefault(key, []).append((profile.decode.end, seq))
+        store.setdefault(key, []).append((profile.decode.end, reached_eof, seq))
     return seq
