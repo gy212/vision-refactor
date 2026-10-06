@@ -1,0 +1,125 @@
+# -*- coding: utf-8 -*-
+"""姿态层（L2）的公共 API：推理引擎、提取与 ``PoseSequence``、有效性、归一化、视角分数、布局、渲染、实时标签。
+
+入口层（apps/batch/analysis/scripts）只从这里导入；YOLO 后端（``core.pose.backends.yolo``）不在此导出，
+避免桌面打包把 YOLO 链拉进来。
+"""
+from core.pose.engine import (
+    MISSING_MODEL_HINTS,
+    EngineSpec,
+    ModelMissing,
+    PipelineConfig,
+    PoseEngine,
+    create_engine,
+    missing_model_message,
+    model_available,
+    pose_model_path,
+)
+from core.pose.extract import (
+    FORMAL,
+    PRACTICE_V4,
+    ExtractionProfile,
+    extract_pose_sequence,
+    formal_engine,
+    practice_engine,
+    practice_v4_profile,
+    pose_cache,
+)
+from core.pose.landmarks import landmarks_to_array
+from core.pose.layouts import BODY_CORE_V1, POSE33_V3, FeatureLayoutSpec, get_layout, resolve_layout_by_shape
+from core.pose.live_labels import ACTION_LABELS_ZH, actions_text, classify_pose_actions
+from core.pose.normalize import (
+    mirror_pose_features,
+    normalize_pose_body_core_v1,
+    normalize_pose_xy,
+    normalize_pose_xy_v1,
+    normalize_pose_xy_v3,
+)
+from core.pose.parallel import InferResult, ParallelPoseEngine, default_pipeline_factory
+from core.pose.raw_series import (
+    Pose33RawSeries,
+    extract_pose_raw,
+    extract_pose_raw_series,
+    formal_end_frame,
+    formal_sequence,
+    slice_pose_raw_series,
+)
+from core.pose.render import (
+    BODY_CONNECTIONS,
+    CLI_HINT_TEXT,
+    draw_cli_hud,
+    draw_hands,
+    draw_roi,
+    draw_skeleton,
+    draw_status_lines,
+    draw_text,
+    draw_tk_hud,
+    render_pose,
+)
+from core.pose.sequence import Coords, GapPolicy, PoseSequence, SourceMeta
+from core.pose.smoothing import PreviewLandmarkSmoother, SmoothedLandmark
+from core.pose.validity import DEFAULT_VALID_CONF_THR, MEDIAPIPE_VALIDITY_POLICY, derive_valid_mask
+from core.pose.view_score import pose_view_score
+
+__all__ = [
+    "ACTION_LABELS_ZH",
+    "BODY_CONNECTIONS",
+    "BODY_CORE_V1",
+    "CLI_HINT_TEXT",
+    "Coords",
+    "DEFAULT_VALID_CONF_THR",
+    "EngineSpec",
+    "ExtractionProfile",
+    "FORMAL",
+    "FeatureLayoutSpec",
+    "GapPolicy",
+    "InferResult",
+    "MEDIAPIPE_VALIDITY_POLICY",
+    "MISSING_MODEL_HINTS",
+    "ModelMissing",
+    "POSE33_V3",
+    "PRACTICE_V4",
+    "ParallelPoseEngine",
+    "PipelineConfig",
+    "Pose33RawSeries",
+    "PoseEngine",
+    "PoseSequence",
+    "PreviewLandmarkSmoother",
+    "SmoothedLandmark",
+    "SourceMeta",
+    "actions_text",
+    "classify_pose_actions",
+    "create_engine",
+    "default_pipeline_factory",
+    "derive_valid_mask",
+    "draw_cli_hud",
+    "draw_hands",
+    "draw_roi",
+    "draw_skeleton",
+    "draw_status_lines",
+    "draw_text",
+    "draw_tk_hud",
+    "extract_pose_raw",
+    "extract_pose_raw_series",
+    "extract_pose_sequence",
+    "formal_end_frame",
+    "formal_engine",
+    "formal_sequence",
+    "get_layout",
+    "landmarks_to_array",
+    "mirror_pose_features",
+    "missing_model_message",
+    "model_available",
+    "normalize_pose_body_core_v1",
+    "normalize_pose_xy",
+    "normalize_pose_xy_v1",
+    "normalize_pose_xy_v3",
+    "pose_cache",
+    "pose_model_path",
+    "pose_view_score",
+    "practice_engine",
+    "practice_v4_profile",
+    "render_pose",
+    "resolve_layout_by_shape",
+    "slice_pose_raw_series",
+]
