@@ -13,10 +13,11 @@ import numpy as np
 
 from core.paths import models_dir, repo_root
 from core.pose_features import derive_valid_mask
-from core.rule_scoring import _angle_deg, _rule_feet_parallel, _rule_knee_slight_bend
+from core.foundation.geometry import angle_deg, torso_length
+from core.foundation.signal import contiguous_runs
+from core.rule_scoring import _rule_feet_parallel, _rule_knee_slight_bend
 from core.vision_pipeline import MediaPipePipeline, PipelineConfig
-from core.feedback_phases import (phase_windows, align_views, share_phase_timing, contiguous_runs,
-                                  torso_length as _torso, limb_indices as _indices)
+from core.feedback_phases import phase_windows, align_views, share_phase_timing, limb_indices as _indices
 
 
 def _default_front_weights() -> dict:
@@ -181,12 +182,12 @@ def _measure(check: dict, lm: np.ndarray, mask: np.ndarray, baseline: np.ndarray
     details = details if details is not None else {}
     code = check["code"]
     sh, el, wr, hip, knee, ankle, heel, toe = _indices(check["role"], stance)
-    torso = _torso(lm, mask)
+    torso = torso_length(lm, mask, "visible_side_chain")
     required = []
     if code == "stance_knee":
         bad, valid, _ = _rule_knee_slight_bend(lm, mask)
         for label, joints in (("左膝角", (23, 25, 27)), ("右膝角", (24, 26, 28))):
-            details[label] = (np.array([_angle_deg(p[joints[0], :2], p[joints[1], :2], p[joints[2], :2]) for p in lm]), "度")
+            details[label] = (np.array([angle_deg(p[joints[0], :2], p[joints[1], :2], p[joints[2], :2]) for p in lm]), "度")
         for a, b in ((23, 25), (25, 27), (24, 26), (26, 28)):
             valid &= np.linalg.norm(lm[:, a, :2] - lm[:, b, :2], axis=1) > 1e-4
         return bad, valid
@@ -197,7 +198,7 @@ def _measure(check: dict, lm: np.ndarray, mask: np.ndarray, baseline: np.ndarray
         return bad, valid
     if code == "stance_elbow":
         required += [sh, el, wr]
-        angles = np.array([_angle_deg(p[sh, :2], p[el, :2], p[wr, :2]) for p in lm])
+        angles = np.array([angle_deg(p[sh, :2], p[el, :2], p[wr, :2]) for p in lm])
         details["前手肘角"] = (angles, "度")
         bad = (angles < 90) | (angles > 135)
         mask = mask.copy()
@@ -229,14 +230,14 @@ def _measure(check: dict, lm: np.ndarray, mask: np.ndarray, baseline: np.ndarray
         bad = np.linalg.norm(lm[:, 11, :2] - lm[:, 12, :2], axis=1) > cfg.torso_front_ratio * torso
     elif code == "foot_flexed":
         required += [knee, ankle, toe]
-        angles = np.array([_angle_deg(p[knee, :2], p[ankle, :2], p[toe, :2]) for p in lm])
+        angles = np.array([angle_deg(p[knee, :2], p[ankle, :2], p[toe, :2]) for p in lm])
         details["膝踝脚尖角"] = (angles, "度")
         bad = angles < cfg.foot_angle
         mask = mask.copy()
         mask[:, toe] &= np.linalg.norm(lm[:, toe, :2] - lm[:, ankle, :2], axis=1) > 1e-4
     elif code in {"guard_back", "arm_swing", "hip_turn"}:
         required += [wr, sh, hip, 0] if code == "guard_back" else [wr, sh] if code == "arm_swing" else [23, 24]
-        baseline_torso = _torso(baseline, baseline_mask)
+        baseline_torso = torso_length(baseline, baseline_mask, "visible_side_chain")
         if not baseline_mask[:, required].all() or np.any(baseline_torso < 1e-4):
             return np.zeros(len(lm), bool), np.zeros(len(lm), bool)
         if code == "hip_turn":
@@ -295,7 +296,7 @@ def evaluate_series(action: str, stance: str, views: dict, cfg: FeedbackConfig |
                 c["viewProblems"][view] = "未找到该阶段；" + diagnostics[view].get("reason", "阶段不足")
                 continue
             # 共用的只能是同步时间段；每路仍须独立提供有效人体和规则所需的点。
-            body_valid = _torso(series["landmarks"][indices], series["valid_mask"][indices]) > 1e-4
+            body_valid = torso_length(series["landmarks"][indices], series["valid_mask"][indices], "visible_side_chain") > 1e-4
             if body_valid.mean() >= cfg.valid_ratio and body_valid.sum() >= cfg.min_valid:
                 offset = alignment["sideOffsetSeconds"] if view == "side" else 0
                 ranges[view] = [(float(series["times"][run[0]]) + offset, float(series["times"][run[-1]]) + offset)
@@ -374,7 +375,7 @@ def evaluate_series(action: str, stance: str, views: dict, cfg: FeedbackConfig |
             "fusionMethod": "action_rule_quality_weighted_v1", "inputViews": sorted(views),
             "capture": {view: series.get("capture", {}) for view, series in views.items()}, "alignment": alignment,
             "diagnostics": {view: {**diagnostics[view], "phaseSource": phase_sources[view],
-                                    "bodyValidFrames": int((_torso(s["landmarks"], s["valid_mask"]) > 1e-4).sum()),
+                                    "bodyValidFrames": int((torso_length(s["landmarks"], s["valid_mask"], "visible_side_chain") > 1e-4).sum()),
                                     "totalFrames": len(s["times"]),
                                     "jointValidRatios": s["valid_mask"].mean(axis=0).tolist()}
                             for view, s in views.items()},

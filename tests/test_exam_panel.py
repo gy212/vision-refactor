@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from apps import exam_panel
+from core.foundation import prefs as user_prefs
 from core.exam_roster import ExamCandidate, ExamScorebook, write_import_template
 from core.exam_session import ExamSession
 
@@ -89,8 +90,6 @@ def test_imported_roster_path_is_saved_and_restored(
     monkeypatch, tmp_path: Path
 ) -> None:
     roster_path = write_import_template(tmp_path / "roster.xlsx")
-    saved: list[dict[str, object]] = []
-    monkeypatch.setattr(exam_panel, "save_exam_prefs", saved.append)
     panel = _bare_panel()
 
     count = panel._load_roster_path(roster_path, persist=True)
@@ -98,14 +97,11 @@ def test_imported_roster_path_is_saved_and_restored(
     assert count == 2
     assert panel.session.phase == "ready"
     assert len(panel.session.rows) == 2
-    assert saved == [
-        {exam_panel._EXAM_ROSTER_PATH_PREF_KEY: str(roster_path.resolve())}
-    ]
+    store = user_prefs.PreferenceStore()
+    assert store.get(user_prefs.EXAM_ROSTER_PATH) == str(roster_path.resolve())
 
     restored = _bare_panel()
-    restored._restore_roster(
-        {exam_panel._EXAM_ROSTER_PATH_PREF_KEY: str(roster_path)}
-    )
+    restored._restore_roster(store.get(user_prefs.EXAM_ROSTER_PATH))
 
     assert restored.session.phase == "ready"
     assert len(restored.session.rows) == 2
@@ -115,9 +111,7 @@ def test_imported_roster_path_is_saved_and_restored(
 def test_missing_saved_roster_stays_idle_with_actionable_status(tmp_path: Path) -> None:
     panel = _bare_panel()
 
-    panel._restore_roster(
-        {exam_panel._EXAM_ROSTER_PATH_PREF_KEY: str(tmp_path / "missing.xlsx")}
-    )
+    panel._restore_roster(str(tmp_path / "missing.xlsx"))
 
     assert panel.session.phase == "idle"
     assert panel.session.rows == []

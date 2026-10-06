@@ -1,3 +1,4 @@
+"""动作比对：模板加载与契约校验、姿态特征提取、单/双模板与正侧双流的 DTW 比对和模板生成（P3 按附录 B 拆分）。"""
 from __future__ import annotations
 
 import time
@@ -14,9 +15,7 @@ from .pose_features import (
     DEFAULT_VALID_CONF_THR,
     MEDIAPIPE_VALIDITY_POLICY,
     derive_valid_mask,
-    find_active_range,
     mirror_pose_features,
-    motion_energy,
     normalize_pose_xy,
     normalize_pose_xy_v1,
     normalize_pose_xy_v3,
@@ -24,6 +23,7 @@ from .pose_features import (
     subsequence_dtw,
     subsequence_dtw_with_path,
 )
+from .foundation.signal import find_active_range, longest_segment, motion_energy, smooth_1d, trimmed_mean
 from .feature_layout import POSE33_V3, FeatureLayoutSpec, is_valid_feature_shape
 from .paths import models_dir, templates_dir
 from .rule_scoring import (
@@ -453,53 +453,6 @@ def _extract_pose_features(
     return feat_arr, fps, view_arr
 
 
-def _smooth_1d(x: np.ndarray, k: int) -> np.ndarray:
-    if k <= 1 or x.size == 0:
-        return x.astype(np.float32, copy=True)
-    k = int(k)
-    if k % 2 == 0:
-        k += 1
-    if x.size < k:
-        return x.astype(np.float32, copy=True)
-    kernel = np.ones(k, dtype=np.float32) / float(k)
-    return np.convolve(x.astype(np.float32), kernel, mode="same").astype(np.float32)
-
-
-def _longest_segment(mask: np.ndarray) -> tuple[int, int] | None:
-    """Return the longest contiguous True segment (start,end) inclusive."""
-    if mask.size == 0:
-        return None
-
-    best_s: int | None = None
-    best_e: int | None = None
-    i = 0
-    n = int(mask.size)
-    while i < n:
-        if not bool(mask[i]):
-            i += 1
-            continue
-        s = i
-        i += 1
-        while i < n and bool(mask[i]):
-            i += 1
-        e = i - 1
-        if best_s is None or (e - s) > (best_e - best_s):  # type: ignore[operator]
-            best_s, best_e = s, e
-    if best_s is None or best_e is None:
-        return None
-    return int(best_s), int(best_e)
-
-
-def _trimmed_mean(scores: list[float]) -> float:
-    if not scores:
-        return 0.0
-    if len(scores) >= 3:
-        xs = sorted(float(s) for s in scores)
-        xs = xs[1:-1]  # drop min/max
-        return float(sum(xs) / max(1, len(xs)))
-    return float(sum(scores) / len(scores))
-
-
 def _swap_lr(name: str) -> str:
     if name.startswith("L_"):
         return "R_" + name[2:]
@@ -665,7 +618,7 @@ def _score_view_seq(
                 ]
 
     _raise_if_compare_cancelled(stop_evt)
-    return _trimmed_mean(scores), matches, joint_stats
+    return trimmed_mean(scores), matches, joint_stats
 
 
 def _feature_frame_shape(features: np.ndarray) -> tuple[int, ...]:
@@ -1356,11 +1309,11 @@ def compare_video_to_dual_templates(
     if view_scores is not None and view_scores.size == seq.shape[0] and seq.shape[0] >= 10:
         vs = np.nan_to_num(view_scores.astype(np.float32), nan=0.0, posinf=0.0, neginf=0.0)
         k = int(max(5, min(51, round(float(fps) * 0.5))))
-        vs_s = _smooth_1d(vs, k=k)
+        vs_s = smooth_1d(vs, k=k)
         thr = float(np.median(vs_s))
         front_mask = vs_s >= thr
-        front_seg = _longest_segment(front_mask)
-        side_seg = _longest_segment(~front_mask)
+        front_seg = longest_segment(front_mask)
+        side_seg = longest_segment(~front_mask)
 
         # 去掉临界帧：转身附近往往更模糊，缩短边缘以提升稳定性。
         margin = int(max(5, min(20, round(float(fps) * 0.3))))

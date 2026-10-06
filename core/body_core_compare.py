@@ -32,9 +32,8 @@ import numpy as np
 from .action_compare import _assert_feature_layout_match
 from .feature_layout import BODY_CORE_V1, get_layout
 from .paths import templates_dir
+from .foundation.signal import find_active_range, motion_energy
 from .pose_features import (
-    find_active_range,
-    motion_energy,
     normalize_pose_body_core_v1,
     subsequence_dtw,
 )

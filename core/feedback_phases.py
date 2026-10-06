@@ -5,23 +5,13 @@ import math
 
 import numpy as np
 
-
-def torso_length(lm, mask):
-    """只以可见的同侧肩髋链作尺度；不要求被遮挡的远侧也可见。"""
-    lengths = np.linalg.norm(lm[:, [11, 12], :2] - lm[:, [23, 24], :2], axis=2)
-    valid = mask[:, [11, 12]] & mask[:, [23, 24]] & np.isfinite(lengths) & (lengths > 1e-4)
-    return np.where(valid, lengths, 0).sum(axis=1) / np.maximum(valid.sum(axis=1), 1)
+from core.foundation.geometry import torso_length
+from core.foundation.signal import contiguous_runs
 
 
 def limb_indices(role, stance):
     left = (stance == "left") == (role != "rear")
     return (11, 13, 15, 23, 25, 27, 29, 31) if left else (12, 14, 16, 24, 26, 28, 30, 32)
-
-
-def contiguous_runs(indices):
-    if len(indices) == 0:
-        return []
-    return np.split(indices, np.flatnonzero(np.diff(indices) > 1) + 1)
 
 
 def phase_windows(series: dict, action: str, stance: str, cfg, diagnostics=None) -> dict:
@@ -36,7 +26,7 @@ def phase_windows(series: dict, action: str, stance: str, cfg, diagnostics=None)
     if not math.isfinite(dt) or dt <= 0:
         return {}
     edge = max(cfg.min_valid, int(math.ceil(cfg.stance_window_seconds / dt)))
-    torso = torso_length(lm, mask)
+    torso = torso_length(lm, mask, "visible_side_chain")
     wrists = (lm[:, [15, 16], :2] - lm[:, [11, 12], :2]) / np.maximum(torso[:, None, None], 1e-4)
     stable = []
     for start in range(n - edge + 1):

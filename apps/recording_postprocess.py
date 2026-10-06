@@ -1,9 +1,9 @@
+"""双摄录后处理：片段转码、校验、池级模板比对评分与结果 JSON（P3/P4 按附录 B 拆分）。"""
 from __future__ import annotations
 
 import json
 import os
 import queue
-import tempfile
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -13,10 +13,10 @@ from typing import Any, Callable, Literal
 import cv2
 import numpy as np
 
-from analysis.tech_eval import to_jsonable
 from core import action_compare, model_manager, video_writer
 from core.kick_quality import score_kick_quality
-from core.paths import repo_root, templates_dir
+from core.foundation import atomic_write_json, to_jsonable
+from core.paths import templates_dir
 from core.rule_scoring import extract_pose_raw_series, slice_pose_raw_series
 
 PostprocessStatus = Literal[
@@ -35,11 +35,6 @@ _QUEUE_SENTINEL = object()
 # 黑盒检测（录制后自动比对）统一走精度最高的 heavy + pose33_v3 链路。
 _EXPECTED_TEMPLATE_LAYOUT = "pose33_v3"
 _EXPECTED_TEMPLATE_POSE_VARIANT = "heavy"
-_PREFS_FRONT_KEY = "auto_compare_front_template"
-_PREFS_SIDE_KEY = "auto_compare_side_template"
-# 多模板池（正对正、侧对侧,每边可多个动作模板）。缺省回落旧单值键。
-_PREFS_FRONT_LIST_KEY = "auto_compare_front_templates"
-_PREFS_SIDE_LIST_KEY = "auto_compare_side_templates"
 
 # 踢腿几何质量评分：动作名（模板 stem）→ kick_quality 类型。列出的动作并入几何分。
 # 低鞭腿不列入——实测其低/高鞭高度差不稳定,几何常误判,直接用纯 DTW 分。
@@ -80,99 +75,6 @@ def utc_timestamp() -> str:
 def default_template_paths() -> tuple[Path, Path]:
     root = templates_dir()
     return root / "standard_front_heavy.npz", root / "standard_side_heavy.npz"
-
-
-def _prefs_path() -> Path:
-    return repo_root() / "user_prefs.json"
-
-
-def load_configured_template_paths() -> tuple[Path, Path]:
-    """读取 UI/偏好里填入的正/侧模板路径；缺省回落默认 fixed 路径。"""
-    front_default, side_default = default_template_paths()
-    try:
-        data = json.loads(_prefs_path().read_text(encoding="utf-8"))
-        if not isinstance(data, dict):
-            return front_default, side_default
-        front_raw = str(data.get(_PREFS_FRONT_KEY) or "").strip()
-        side_raw = str(data.get(_PREFS_SIDE_KEY) or "").strip()
-        front = Path(front_raw) if front_raw else front_default
-        side = Path(side_raw) if side_raw else side_default
-        return front, side
-    except (OSError, ValueError):
-        return front_default, side_default
-
-
-def save_configured_template_paths(
-    front: Path | str | None = None,
-    side: Path | str | None = None,
-) -> None:
-    """持久化一条龙模板路径（尽力而为，失败静默）。"""
-    path = _prefs_path()
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(data, dict):
-            data = {}
-    except (OSError, ValueError):
-        data = {}
-    if front is not None:
-        data[_PREFS_FRONT_KEY] = str(front)
-    if side is not None:
-        data[_PREFS_SIDE_KEY] = str(side)
-    try:
-        path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    except OSError:
-        pass
-
-
-def load_configured_template_lists() -> tuple[list[Path], list[Path]]:
-    """读取多模板池；缺复数键则回落旧单值键（有则单元素）。均缺返回空列表。
-
-    返回空列表表示该边未配置任何模板（不再自动回落 default_template_paths()——
-    多模板语义下"未填"应显式为空,由调用方决定是否用默认；单模板旧行为仍由
-    ``load_configured_template_paths()`` 保持）。
-    """
-    try:
-        data = json.loads(_prefs_path().read_text(encoding="utf-8"))
-        if not isinstance(data, dict):
-            data = {}
-    except (OSError, ValueError):
-        data = {}
-
-    def _read(list_key: str, single_key: str) -> list[Path]:
-        raw = data.get(list_key)
-        if isinstance(raw, list):
-            out = [Path(str(p).strip()) for p in raw if str(p).strip()]
-            if out:
-                return out
-        single = str(data.get(single_key) or "").strip()
-        return [Path(single)] if single else []
-
-    return (
-        _read(_PREFS_FRONT_LIST_KEY, _PREFS_FRONT_KEY),
-        _read(_PREFS_SIDE_LIST_KEY, _PREFS_SIDE_KEY),
-    )
-
-
-def save_configured_template_lists(
-    front_list: list[Path | str] | None = None,
-    side_list: list[Path | str] | None = None,
-) -> None:
-    """持久化多模板池（尽力而为，失败静默）。"""
-    path = _prefs_path()
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(data, dict):
-            data = {}
-    except (OSError, ValueError):
-        data = {}
-    if front_list is not None:
-        data[_PREFS_FRONT_LIST_KEY] = [str(p) for p in front_list]
-    if side_list is not None:
-        data[_PREFS_SIDE_LIST_KEY] = [str(p) for p in side_list]
-    try:
-        path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    except OSError:
-        pass
 
 
 @dataclass(frozen=True)
@@ -1012,7 +914,7 @@ class DualRecordingPostProcessor:
                 ):
                     raise InterruptedError("后台比对已取消")
             try:
-                self._write_json_atomic(job.segment_dir / "result.json", payload)
+                self._write_result_json(job.segment_dir / "result.json", payload)
             except Exception as exc:
                 if cancelled_enrichment:
                     return
@@ -1115,28 +1017,9 @@ class DualRecordingPostProcessor:
             )
 
     @staticmethod
-    def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+    def _write_result_json(path: Path, payload: dict[str, Any]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        temporary_path: Path | None = None
-        try:
-            with tempfile.NamedTemporaryFile(
-                mode="w",
-                encoding="utf-8",
-                prefix=f".{path.stem}.",
-                suffix=".tmp",
-                dir=path.parent,
-                delete=False,
-            ) as temporary:
-                json.dump(payload, temporary, ensure_ascii=False, indent=2)
-                temporary.write("\n")
-                temporary_path = Path(temporary.name)
-            temporary_path.replace(path)
-        finally:
-            if temporary_path is not None:
-                try:
-                    temporary_path.unlink(missing_ok=True)
-                except OSError:
-                    pass
+        atomic_write_json(path, payload, trailing_newline=True)
 
     @staticmethod
     def _update_from_payload(payload: dict[str, Any], message: str) -> PostprocessUpdate:

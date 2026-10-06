@@ -1,3 +1,4 @@
+"""批处理入口：正/侧双模板比对、规则评分与原始骨架导出（含 --paired 与 body_core/YOLO 调试）。"""
 from __future__ import annotations
 
 import argparse

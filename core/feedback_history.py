@@ -10,6 +10,7 @@ import threading
 from uuid import uuid4
 
 from core.action_feedback import ACTIONS, STANCES, analyze_feedback, format_report
+from core.foundation.atomic_io import atomic_write_json, atomic_write_text
 
 VIDEO_SUFFIXES = {".mp4", ".avi", ".mkv", ".mov", ".wmv", ".m4v"}
 
@@ -65,10 +66,7 @@ class FeedbackHistory:
         return record
 
     def _write(self, record: dict) -> None:
-        directory = self._directory(record["id"])
-        temp = directory / "record.tmp"
-        temp.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
-        temp.replace(directory / "record.json")
+        atomic_write_json(self._directory(record["id"]) / "record.json", record)
 
     def cleanup(self) -> None:
         """到期时仅清理带合法本模块清单的受管目录；损坏记录显式报错。"""
@@ -192,14 +190,9 @@ class FeedbackHistory:
                 raise ValueError("请将导出报告保存在受管历史目录之外")
             if str(destination) in record["sourcePaths"].values():
                 raise ValueError("不能覆盖原视频")
-            temp = destination.with_name(destination.name + "." + uuid4().hex + ".tmp")
-            try:
-                if ext == ".txt":
-                    temp.write_text(format_report(record), encoding="utf-8-sig")
-                else:
-                    from core.feedback_report import render_html_report
-                    temp.write_text(render_html_report(record, history_root=self.root), encoding="utf-8")
-                temp.replace(destination)
-            finally:
-                temp.unlink(missing_ok=True)
+            if ext == ".txt":
+                atomic_write_text(destination, format_report(record), encoding="utf-8-sig")
+            else:
+                from core.feedback_report import render_html_report
+                atomic_write_text(destination, render_html_report(record, history_root=self.root))
             return destination

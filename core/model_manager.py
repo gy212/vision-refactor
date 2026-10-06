@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from core.foundation.atomic_io import replace_file
 from core.paths import models_dir
 
 # MediaPipe 官方模型资产基址。
@@ -229,7 +230,7 @@ def download_model(
         raise
 
     # 原子替换为正式文件。
-    os.replace(part, dest)
+    replace_file(part, dest)
     return dest
 
 

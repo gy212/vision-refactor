@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+"""批处理入口：批量计算直拳技术指标（重心、回收速度、发力顺序、拳面角度）并导出。"""
 from __future__ import annotations
 
 import argparse
@@ -9,7 +10,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from analysis.tech_eval import evaluate_video_assets, evaluate_video_detail, export_debug_video, to_jsonable
+from analysis.tech_eval import evaluate_video_assets, evaluate_video_detail, export_debug_video
+from core.foundation import to_jsonable
 from core.paths import outputs_dir
 from batch.backend_options import (
     FEATURE_LAYOUT_BODY_CORE,

@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
+"""直拳技术指标评估：重心、回收速度、发力顺序与拳面角度（P3 拆入 evaluation/techeval/，原路径保留为门面）。"""
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, is_dataclass, replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal
 
@@ -16,6 +17,7 @@ from core.pose_features import (
     landmarks_missing_for_capabilities,
     pose_view_score,
 )
+from core.foundation import angle_deg, landmark_xy, longest_segment, smooth_1d, to_jsonable
 from core.paths import models_dir
 from core.vision_pipeline import MediaPipePipeline, PipelineConfig
 
@@ -86,36 +88,6 @@ class TechEvalResult:
     retract_speed: IndicatorResult
     force_sequence: IndicatorResult
     wrist_angle: IndicatorResult
-
-
-def to_jsonable(obj: Any) -> Any:
-    if isinstance(obj, Path):
-        return str(obj)
-    if isinstance(obj, (np.floating, np.integer)):
-        return obj.item()
-    if isinstance(obj, (np.ndarray,)):
-        return obj.tolist()
-    if is_dataclass(obj):
-        return to_jsonable(asdict(obj))
-    if isinstance(obj, dict):
-        return {str(k): to_jsonable(v) for k, v in obj.items()}
-    if isinstance(obj, (list, tuple)):
-        return [to_jsonable(v) for v in obj]
-    return obj
-
-
-def _lm_xy(lm: np.ndarray, idx: int) -> np.ndarray:
-    return lm[idx, :2].astype(np.float32)
-
-
-def _angle_deg(a: np.ndarray, b: np.ndarray, c: np.ndarray) -> float:
-    """Angle ABC in degrees (2D points)."""
-    ba = a - b
-    bc = c - b
-    denom = float(np.linalg.norm(ba) * np.linalg.norm(bc) + 1e-9)
-    cosang = float(np.dot(ba, bc) / denom)
-    cosang = float(np.clip(cosang, -1.0, 1.0))
-    return float(np.degrees(np.arccos(cosang)))
 
 
 def _valid(mask_row: np.ndarray, idxs: tuple[int, ...] | list[int]) -> bool:
@@ -295,43 +267,6 @@ def extract_pose_and_view_scores(
     return np.stack(lms, axis=0), np.asarray(vs, dtype=np.float32), meta
 
 
-def _smooth_1d(x: np.ndarray, k: int) -> np.ndarray:
-    if k <= 1 or x.size == 0:
-        return x.astype(np.float32, copy=True)
-    k = int(k)
-    if k % 2 == 0:
-        k += 1
-    if x.size < k:
-        return x.astype(np.float32, copy=True)
-    kernel = np.ones(k, dtype=np.float32) / float(k)
-    return np.convolve(x.astype(np.float32), kernel, mode="same").astype(np.float32)
-
-
-def _longest_segment(mask: np.ndarray) -> tuple[int, int] | None:
-    if mask.size == 0:
-        return None
-
-    best_s: int | None = None
-    best_e: int | None = None
-    i = 0
-    n = int(mask.size)
-    while i < n:
-        if not bool(mask[i]):
-            i += 1
-            continue
-        s = i
-        i += 1
-        while i < n and bool(mask[i]):
-            i += 1
-        e = i - 1
-        if best_s is None or (e - s) > (best_e - best_s):  # type: ignore[operator]
-            best_s, best_e = s, e
-
-    if best_s is None or best_e is None:
-        return None
-    return int(best_s), int(best_e)
-
-
 def split_front_side_segments(
     view_scores: np.ndarray,
     fps: float,
@@ -357,12 +292,12 @@ def split_front_side_segments(
 
     vs = np.nan_to_num(view_scores.astype(np.float32), nan=0.0, posinf=0.0, neginf=0.0)
     k = int(max(5, min(51, round(float(fps) * 0.5))))
-    vs_s = _smooth_1d(vs, k=k)
+    vs_s = smooth_1d(vs, k=k)
 
     thr = float(np.median(vs_s))
     high_mask = vs_s >= thr
-    high_seg = _longest_segment(high_mask)
-    low_seg = _longest_segment(~high_mask)
+    high_seg = longest_segment(high_mask)
+    low_seg = longest_segment(~high_mask)
 
     margin = int(max(5, min(20, round(float(fps) * 0.3))))
     min_len = int(max(1, round(float(fps) * float(min_len_sec))))
@@ -413,7 +348,7 @@ def _classify_single_view(view_scores: np.ndarray, *, side_thr: float, front_thr
 
 def _center_x(lm: np.ndarray, mask_row: np.ndarray, idx_a: int, idx_b: int) -> float | None:
     va, vb = bool(mask_row[idx_a]), bool(mask_row[idx_b])
-    xa, xb = float(_lm_xy(lm, idx_a)[0]), float(_lm_xy(lm, idx_b)[0])
+    xa, xb = float(landmark_xy(lm, idx_a)[0]), float(landmark_xy(lm, idx_b)[0])
     if va and vb:
         return 0.5 * (xa + xb)
     if va:
@@ -432,12 +367,12 @@ def _frame_dir(lm: np.ndarray, mask_row: np.ndarray) -> float | None:
 
     face_x = None
     if bool(mask_row[NOSE]):
-        face_x = float(_lm_xy(lm, NOSE)[0])
+        face_x = float(landmark_xy(lm, NOSE)[0])
     else:
         cand: list[float] = []
         for idx in (MOUTH_L, MOUTH_R, L_EAR, R_EAR):
             if bool(mask_row[idx]):
-                cand.append(float(_lm_xy(lm, idx)[0]))
+                cand.append(float(landmark_xy(lm, idx)[0]))
         if cand:
             face_x = float(np.mean(np.asarray(cand, dtype=np.float32)))
     if face_x is None:
@@ -456,12 +391,12 @@ def _foot_edges_x(lm: np.ndarray, mask_row: np.ndarray, *, side: str, dir_x: flo
         heel, toe, ankle = R_HEEL, R_FOOT_INDEX, R_ANKLE
 
     if _valid(mask_row, (heel, toe)):
-        hx = float(_lm_xy(lm, heel)[0]) * float(dir_x)
-        tx = float(_lm_xy(lm, toe)[0]) * float(dir_x)
+        hx = float(landmark_xy(lm, heel)[0]) * float(dir_x)
+        tx = float(landmark_xy(lm, toe)[0]) * float(dir_x)
         return (min(hx, tx), max(hx, tx))
 
     if bool(mask_row[ankle]):
-        ax = float(_lm_xy(lm, ankle)[0]) * float(dir_x)
+        ax = float(landmark_xy(lm, ankle)[0]) * float(dir_x)
         return (ax, ax)
 
     return None
@@ -478,8 +413,8 @@ def _infer_front_leg_side(landmarks: np.ndarray, valid_mask: np.ndarray, *, fall
             continue
         if not _valid(mask_row, (L_ANKLE, R_ANKLE)):
             continue
-        xl = float(_lm_xy(lm, L_ANKLE)[0]) * float(d)
-        xr = float(_lm_xy(lm, R_ANKLE)[0]) * float(d)
+        xl = float(landmark_xy(lm, L_ANKLE)[0]) * float(d)
+        xr = float(landmark_xy(lm, R_ANKLE)[0]) * float(d)
         if xl >= xr:
             cnt_l += 1
         else:
@@ -533,7 +468,7 @@ def eval_cog_side(
                 hip, knee, ankle = R_HIP, R_KNEE, R_ANKLE
             if not _valid(mask_row, idxs):
                 return None
-            return _angle_deg(_lm_xy(lm, hip), _lm_xy(lm, knee), _lm_xy(lm, ankle))
+            return angle_deg(landmark_xy(lm, hip), landmark_xy(lm, knee), landmark_xy(lm, ankle))
 
         ang_front = knee_angle(front_leg)
         ang_back = knee_angle(back_leg)
@@ -558,7 +493,7 @@ def eval_cog_side(
             fb, ff = foot_edges
             foot_len = float(ff - fb)
             if foot_len >= 0.02:
-                kx = float(_lm_xy(lm, knee_idx)[0]) * float(d)
+                kx = float(landmark_xy(lm, knee_idx)[0]) * float(d)
                 t = (kx - fb) / (foot_len + 1e-9)
                 if 0.25 <= float(t) <= 0.75:
                     center += 1
@@ -671,9 +606,9 @@ def eval_cog_front(
         knee_ang = None
         ankle_ang = None
         if _valid(mask_row, knee_idxs):
-            knee_ang = _angle_deg(_lm_xy(lm, hip), _lm_xy(lm, knee), _lm_xy(lm, ankle))
+            knee_ang = angle_deg(landmark_xy(lm, hip), landmark_xy(lm, knee), landmark_xy(lm, ankle))
         if _valid(mask_row, ankle_idxs):
-            ankle_ang = _angle_deg(_lm_xy(lm, knee), _lm_xy(lm, ankle), _lm_xy(lm, toe))
+            ankle_ang = angle_deg(landmark_xy(lm, knee), landmark_xy(lm, ankle), landmark_xy(lm, toe))
 
         if knee_ang is None and ankle_ang is None:
             unknown += 1
@@ -764,7 +699,7 @@ def _compute_segment_center(lm: np.ndarray, mask_row: np.ndarray, indices: list[
     points = []
     for idx in indices:
         if bool(mask_row[idx]):
-            points.append(_lm_xy(lm, idx))
+            points.append(landmark_xy(lm, idx))
     if len(points) == 0:
         return None
     return np.mean(points, axis=0)
@@ -791,8 +726,8 @@ def _compute_body_com_single(lm: np.ndarray, mask_row: np.ndarray) -> tuple[np.n
 
     # 躯干：质心约在剑突-肚脐之间（偏下约40%，即肩:髋 = 0.6:0.4）
     if _valid(mask_row, [L_SHOULDER, R_SHOULDER]) and _valid(mask_row, [L_HIP, R_HIP]):
-        shoulder_center = (_lm_xy(lm, L_SHOULDER) + _lm_xy(lm, R_SHOULDER)) / 2
-        hip_center = (_lm_xy(lm, L_HIP) + _lm_xy(lm, R_HIP)) / 2
+        shoulder_center = (landmark_xy(lm, L_SHOULDER) + landmark_xy(lm, R_SHOULDER)) / 2
+        hip_center = (landmark_xy(lm, L_HIP) + landmark_xy(lm, R_HIP)) / 2
         trunk_com = shoulder_center * 0.6 + hip_center * 0.4
         mass = BODY_SEGMENT_MASS_RATIOS["trunk"]
         weighted_sum += trunk_com * mass
@@ -803,8 +738,8 @@ def _compute_body_com_single(lm: np.ndarray, mask_row: np.ndarray) -> tuple[np.n
 
     # 左上臂
     if _valid(mask_row, [L_SHOULDER, L_ELBOW]):
-        shoulder = _lm_xy(lm, L_SHOULDER)
-        elbow = _lm_xy(lm, L_ELBOW)
+        shoulder = landmark_xy(lm, L_SHOULDER)
+        elbow = landmark_xy(lm, L_ELBOW)
         com = (shoulder + elbow) / 2
         mass = BODY_SEGMENT_MASS_RATIOS["upper_arm_l"]
         weighted_sum += com * mass
@@ -815,8 +750,8 @@ def _compute_body_com_single(lm: np.ndarray, mask_row: np.ndarray) -> tuple[np.n
 
     # 右上臂
     if _valid(mask_row, [R_SHOULDER, R_ELBOW]):
-        shoulder = _lm_xy(lm, R_SHOULDER)
-        elbow = _lm_xy(lm, R_ELBOW)
+        shoulder = landmark_xy(lm, R_SHOULDER)
+        elbow = landmark_xy(lm, R_ELBOW)
         com = (shoulder + elbow) / 2
         mass = BODY_SEGMENT_MASS_RATIOS["upper_arm_r"]
         weighted_sum += com * mass
@@ -827,8 +762,8 @@ def _compute_body_com_single(lm: np.ndarray, mask_row: np.ndarray) -> tuple[np.n
 
     # 左前臂
     if _valid(mask_row, [L_ELBOW, L_WRIST]):
-        elbow = _lm_xy(lm, L_ELBOW)
-        wrist = _lm_xy(lm, L_WRIST)
+        elbow = landmark_xy(lm, L_ELBOW)
+        wrist = landmark_xy(lm, L_WRIST)
         com = (elbow + wrist) / 2
         mass = BODY_SEGMENT_MASS_RATIOS["forearm_l"]
         weighted_sum += com * mass
@@ -839,8 +774,8 @@ def _compute_body_com_single(lm: np.ndarray, mask_row: np.ndarray) -> tuple[np.n
 
     # 右前臂
     if _valid(mask_row, [R_ELBOW, R_WRIST]):
-        elbow = _lm_xy(lm, R_ELBOW)
-        wrist = _lm_xy(lm, R_WRIST)
+        elbow = landmark_xy(lm, R_ELBOW)
+        wrist = landmark_xy(lm, R_WRIST)
         com = (elbow + wrist) / 2
         mass = BODY_SEGMENT_MASS_RATIOS["forearm_r"]
         weighted_sum += com * mass
@@ -873,8 +808,8 @@ def _compute_body_com_single(lm: np.ndarray, mask_row: np.ndarray) -> tuple[np.n
 
     # 左大腿
     if _valid(mask_row, [L_HIP, L_KNEE]):
-        hip = _lm_xy(lm, L_HIP)
-        knee = _lm_xy(lm, L_KNEE)
+        hip = landmark_xy(lm, L_HIP)
+        knee = landmark_xy(lm, L_KNEE)
         com = (hip + knee) / 2
         mass = BODY_SEGMENT_MASS_RATIOS["thigh_l"]
         weighted_sum += com * mass
@@ -885,8 +820,8 @@ def _compute_body_com_single(lm: np.ndarray, mask_row: np.ndarray) -> tuple[np.n
 
     # 右大腿
     if _valid(mask_row, [R_HIP, R_KNEE]):
-        hip = _lm_xy(lm, R_HIP)
-        knee = _lm_xy(lm, R_KNEE)
+        hip = landmark_xy(lm, R_HIP)
+        knee = landmark_xy(lm, R_KNEE)
         com = (hip + knee) / 2
         mass = BODY_SEGMENT_MASS_RATIOS["thigh_r"]
         weighted_sum += com * mass
@@ -897,8 +832,8 @@ def _compute_body_com_single(lm: np.ndarray, mask_row: np.ndarray) -> tuple[np.n
 
     # 左小腿
     if _valid(mask_row, [L_KNEE, L_ANKLE]):
-        knee = _lm_xy(lm, L_KNEE)
-        ankle = _lm_xy(lm, L_ANKLE)
+        knee = landmark_xy(lm, L_KNEE)
+        ankle = landmark_xy(lm, L_ANKLE)
         com = (knee + ankle) / 2
         mass = BODY_SEGMENT_MASS_RATIOS["shank_l"]
         weighted_sum += com * mass
@@ -909,8 +844,8 @@ def _compute_body_com_single(lm: np.ndarray, mask_row: np.ndarray) -> tuple[np.n
 
     # 右小腿
     if _valid(mask_row, [R_KNEE, R_ANKLE]):
-        knee = _lm_xy(lm, R_KNEE)
-        ankle = _lm_xy(lm, R_ANKLE)
+        knee = landmark_xy(lm, R_KNEE)
+        ankle = landmark_xy(lm, R_ANKLE)
         com = (knee + ankle) / 2
         mass = BODY_SEGMENT_MASS_RATIOS["shank_r"]
         weighted_sum += com * mass
@@ -1170,9 +1105,9 @@ def _detect_retract_events_side(
                 continue
             if not _valid(mask_row, (sh, el, wr)):
                 continue
-            a = _angle_deg(_lm_xy(lm, sh), _lm_xy(lm, el), _lm_xy(lm, wr))
+            a = angle_deg(landmark_xy(lm, sh), landmark_xy(lm, el), landmark_xy(lm, wr))
             ang[i] = float(a)
-            dx[i] = (float(_lm_xy(lm, wr)[0]) - float(_lm_xy(lm, sh)[0])) * float(d)
+            dx[i] = (float(landmark_xy(lm, wr)[0]) - float(landmark_xy(lm, sh)[0])) * float(d)
 
         return ang, dx
 
@@ -1323,7 +1258,7 @@ def _detect_extension_events(
         for i, lm in enumerate(landmarks):
             if not _valid(mask[i], (sh, el, wr)):
                 continue
-            ang[i] = float(_angle_deg(_lm_xy(lm, sh), _lm_xy(lm, el), _lm_xy(lm, wr)))
+            ang[i] = float(angle_deg(landmark_xy(lm, sh), landmark_xy(lm, el), landmark_xy(lm, wr)))
         return ang
 
     def detect(arm: str) -> list[dict[str, Any]]:
@@ -1507,8 +1442,8 @@ def eval_wrist_angle(
                 el, wr, idx, pk = R_ELBOW, R_WRIST, R_INDEX, R_PINKY
             if not _valid(mask[i], (el, wr, idx, pk)):
                 continue
-            mid = (_lm_xy(lm, idx) + _lm_xy(lm, pk)) * 0.5
-            a = _angle_deg(_lm_xy(lm, el), _lm_xy(lm, wr), mid)
+            mid = (landmark_xy(lm, idx) + landmark_xy(lm, pk)) * 0.5
+            a = angle_deg(landmark_xy(lm, el), landmark_xy(lm, wr), mid)
             if np.isfinite(a):
                 angles.append(float(a))
         if not angles:
@@ -1571,7 +1506,7 @@ def eval_force_sequence(
             heel, toe = R_HEEL, R_FOOT_INDEX
         if not _valid(mask_row, (heel, toe)):
             return None
-        return float((_lm_xy(lm, heel)[0] + _lm_xy(lm, toe)[0]) * 0.5)
+        return float((landmark_xy(lm, heel)[0] + landmark_xy(lm, toe)[0]) * 0.5)
 
     def _foot_angle_deg(lm: np.ndarray, mask_row: np.ndarray, side: str) -> float | None:
         if side.upper() == "L":
@@ -1580,8 +1515,8 @@ def eval_force_sequence(
             heel, toe = R_HEEL, R_FOOT_INDEX
         if not _valid(mask_row, (heel, toe)):
             return None
-        a = _lm_xy(lm, heel)
-        b = _lm_xy(lm, toe)
+        a = landmark_xy(lm, heel)
+        b = landmark_xy(lm, toe)
         return float(np.degrees(np.arctan2(float(b[1] - a[1]), float(b[0] - a[0]))))
 
     def _rotation_fail_front(lms: np.ndarray, lms_mask: np.ndarray) -> tuple[bool, dict[str, Any]]:
@@ -1681,10 +1616,10 @@ def eval_force_sequence(
     def _twist_deg(lm: np.ndarray, mask_row: np.ndarray) -> float | None:
         if not _valid(mask_row, (L_SHOULDER, R_SHOULDER, L_HIP, R_HIP)):
             return None
-        ls = _lm_xy(lm, L_SHOULDER)
-        rs = _lm_xy(lm, R_SHOULDER)
-        lh = _lm_xy(lm, L_HIP)
-        rh = _lm_xy(lm, R_HIP)
+        ls = landmark_xy(lm, L_SHOULDER)
+        rs = landmark_xy(lm, R_SHOULDER)
+        lh = landmark_xy(lm, L_HIP)
+        rh = landmark_xy(lm, R_HIP)
         sa = float(np.degrees(np.arctan2(float(rs[1] - ls[1]), float(rs[0] - ls[0]))))
         ha = float(np.degrees(np.arctan2(float(rh[1] - lh[1]), float(rh[0] - lh[0]))))
         return abs(_wrap_deg(sa - ha))
@@ -1699,8 +1634,8 @@ def eval_force_sequence(
             sh = R_SHOULDER
         if not _valid(mask_row, (sh, L_HIP, R_HIP)):
             return None
-        hip_x = float((_lm_xy(lm, L_HIP)[0] + _lm_xy(lm, R_HIP)[0]) * 0.5)
-        return (float(_lm_xy(lm, sh)[0]) - hip_x) * float(d)
+        hip_x = float((landmark_xy(lm, L_HIP)[0] + landmark_xy(lm, R_HIP)[0]) * 0.5)
+        return (float(landmark_xy(lm, sh)[0]) - hip_x) * float(d)
 
     def _push_off_ok(lm: np.ndarray, mask_row: np.ndarray) -> bool | None:
         """检测蹬地动作：后脚脚跟明显抬高 + 膝盖参与伸展发力。
@@ -1720,8 +1655,8 @@ def eval_force_sequence(
             return None
 
         # 1. 脚跟明显抬高检测
-        heel_xy = _lm_xy(lm, heel)
-        toe_xy = _lm_xy(lm, toe)
+        heel_xy = landmark_xy(lm, heel)
+        toe_xy = landmark_xy(lm, toe)
         dy = float(toe_xy[1] - heel_xy[1])  # 脚尖y - 脚跟y（y向下为正）
         if dy <= 0.0:
             return False  # 脚跟必须高于脚尖（抬脚跟）
@@ -1738,7 +1673,7 @@ def eval_force_sequence(
         heel_lift_ok = pitch_ok and (dy >= 0.03) and (dy_ratio >= 0.5)
 
         # 2. 后腿膝盖角度检测（基于标准动作数据：P20=125°, P90=165°）
-        knee_ang = _angle_deg(_lm_xy(lm, hip), _lm_xy(lm, knee), _lm_xy(lm, ankle))
+        knee_ang = angle_deg(landmark_xy(lm, hip), landmark_xy(lm, knee), landmark_xy(lm, ankle))
         # 蹬地时后腿膝盖通常在 120°-165° 之间
         knee_ok = 120.0 <= knee_ang <= 165.0
 
@@ -1752,8 +1687,8 @@ def eval_force_sequence(
             heel, toe = R_HEEL, R_FOOT_INDEX
         if not _valid(mask_row, (heel, toe)):
             return None
-        heel_xy = _lm_xy(lm, heel)
-        toe_xy = _lm_xy(lm, toe)
+        heel_xy = landmark_xy(lm, heel)
+        toe_xy = landmark_xy(lm, toe)
         dy = float(toe_xy[1] - heel_xy[1])  # y向下为正，脚尖在脚跟下方时dy>0
         dx = float(toe_xy[0] - heel_xy[0])
         if dy <= 0:
@@ -1768,7 +1703,7 @@ def eval_force_sequence(
             hip, knee, ankle = R_HIP, R_KNEE, R_ANKLE
         if not _valid(mask_row, (hip, knee, ankle)):
             return None
-        return _angle_deg(_lm_xy(lm, hip), _lm_xy(lm, knee), _lm_xy(lm, ankle))
+        return angle_deg(landmark_xy(lm, hip), landmark_xy(lm, knee), landmark_xy(lm, ankle))
 
     pre = int(round(0.3 * float(fps)))
     post_step = int(round(float(step_post_sec) * float(fps)))

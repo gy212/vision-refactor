@@ -1,3 +1,4 @@
+"""Tk 桌面主程序：实时预览、双摄录制、考试与学生练习入口（P8 拆为 apps/tk/ 的组合根、控制器和视图）。"""
 from __future__ import annotations
 
 import csv
@@ -17,16 +18,19 @@ import numpy as np
 from PIL import Image, ImageTk
 
 from core.action_compare import compare_video_to_templates, create_template_from_video
-from analysis.tech_eval import to_jsonable
 from core.vision_pipeline import MediaPipePipeline, PipelineConfig, draw_pose_frame
-from core.paths import (
+from core.foundation import (
+    EXAM_ROI,
+    PreferenceStore,
+    to_jsonable,
     load_camera_selection,
     load_record_dir,
-    models_dir,
-    outputs_dir,
+    load_template_pools,
     save_camera_selection,
     save_record_dir,
+    save_template_pools,
 )
+from core.paths import models_dir, outputs_dir
 from core import model_manager, online_matcher, paths, video_writer
 from core import pose_features as pf
 from core.parallel_pose_engine import ParallelPoseEngine, default_pipeline_factory
@@ -47,10 +51,6 @@ from apps.recording_postprocess import (
     DualRecordingPostProcessor,
     PostprocessUpdate,
     default_template_paths,
-    load_configured_template_lists,
-    load_configured_template_paths,
-    save_configured_template_lists,
-    save_configured_template_paths,
     template_action_name,
     try_load_heavy_template,
     validate_auto_compare_template_lists,
@@ -1444,7 +1444,7 @@ class App:
         )
         # 一条龙/考试标准模板：正/侧各一个多模板池（正对正、侧对侧，每边可多个动作模板）。
         # 至少一侧非空即可跑比对。旧单值 StringVar 保留（兼容既有引用），运行时以 Listbox 为准。
-        _front_list, _side_list = load_configured_template_lists()
+        _front_list, _side_list = load_template_pools()
         self.front_template_var = StringVar(
             value=str(_front_list[0]) if _front_list else ""
         )
@@ -1874,7 +1874,7 @@ class App:
         except Exception:
             pass
         try:
-            save_configured_template_lists(front_list=front, side_list=side)
+            save_template_pools(front=front, side=side)
         except Exception:
             pass
 
@@ -2683,20 +2683,11 @@ class App:
             messagebox.showwarning("学生练习", err)
             return
 
-        from apps.exam_panel import load_exam_prefs
-
         lite = next(m for m in model_manager.MEDIAPIPE_MODELS if m.key == "pose_lite")
         if not model_manager.is_installed(lite):
             messagebox.showwarning("学生练习", "缺少 Lite 模型，请先在设置→模型管理中安装。")
             return
-        roi = load_exam_prefs().get("exam_roi_norm", (0.2, 0.1, 0.8, 0.95))
-        try:
-            x0, y0, x1, y1 = (float(v) for v in roi)
-            if not (0 <= x0 < x1 <= 1 and 0 <= y0 < y1 <= 1):
-                raise ValueError("invalid ROI")
-        except (TypeError, ValueError):
-            x0, y0, x1, y1 = (0.2, 0.1, 0.8, 0.95)
-        self._exam_set_roi((x0, y0, x1, y1))
+        self._exam_set_roi(PreferenceStore().get(EXAM_ROI))
 
         # 强制仅录制、无骨架
         self.auto_compare_var.set(False)

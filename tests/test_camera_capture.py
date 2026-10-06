@@ -184,7 +184,7 @@ def test_process_pair_survives_warmup_thread_handoff_and_reopens():
 def test_tk_preview_student_switch_with_process_cameras(monkeypatch, tmp_path):
     tk = pytest.importorskip("tkinter")
     from apps import app_ui, desktop_smoke
-    from core import paths
+    from core.foundation import paths
 
     monkeypatch.setattr(app_ui.App, "_start_enumeration", lambda self: None)
     monkeypatch.setattr(paths, "outputs_dir", lambda: tmp_path)

@@ -28,12 +28,9 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from core.action_compare import (  # noqa: E402
-    _longest_segment,
     _multi_subsequence_matches,
     _normalizer_version_from_layout,
     _select_representative_cycle,
-    _smooth_1d,
-    _trimmed_mean,
     _runtime_feature_layout,
     compare_video_to_dual_templates,
     normalize_template_meta,
@@ -45,12 +42,11 @@ from core.body_core_compare import (  # noqa: E402
     match_body_core_template,
 )
 from core.feature_layout import BODY_CORE_V1, POSE33_V3  # noqa: E402
+from core.foundation import find_active_range, longest_segment, motion_energy, smooth_1d, trimmed_mean  # noqa: E402
 from core.paths import models_dir  # noqa: E402
 from core.pose_features import (  # noqa: E402
     DEFAULT_VALID_CONF_THR,
     derive_valid_mask,
-    find_active_range,
-    motion_energy,
     normalize_pose_body_core_v1,
     normalize_pose_xy,
     normalize_pose_xy_v1,
@@ -263,11 +259,11 @@ def _split_views(seq: np.ndarray, view_scores: np.ndarray, fps: float, stages: S
         if view_scores.size == seq.shape[0] and seq.shape[0] >= 10:
             vs = np.nan_to_num(view_scores.astype(np.float32), nan=0.0, posinf=0.0, neginf=0.0)
             k = int(max(5, min(51, round(float(fps) * 0.5))))
-            vs_s = _smooth_1d(vs, k=k)
+            vs_s = smooth_1d(vs, k=k)
             thr = float(np.median(vs_s))
             front_mask = vs_s >= thr
-            front_seg = _longest_segment(front_mask)
-            side_seg = _longest_segment(~front_mask)
+            front_seg = longest_segment(front_mask)
+            side_seg = longest_segment(~front_mask)
             margin = int(max(5, min(20, round(float(fps) * 0.3))))
 
             def shrink(seg: tuple[int, int] | None) -> tuple[int, int] | None:
@@ -355,7 +351,7 @@ def _profile_multi_view(
                 "end_frame": int(seg_offset + e),
             }
         scores = [m.score for m in matches]
-        return _trimmed_mean(scores), matches, {
+        return trimmed_mean(scores), matches, {
             "query_frames": int(query.shape[0]),
             "segment_frames": int(seg_seq.shape[0]),
             "matches": int(len(matches)),
