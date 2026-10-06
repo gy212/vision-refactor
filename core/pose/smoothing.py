@@ -22,7 +22,7 @@ from dataclasses import dataclass
 @dataclass(frozen=True)
 class SmoothedLandmark:
     """平滑后关键点；属性与 MediaPipe ``NormalizedLandmark`` 对齐（``.x/.y/.z/.visibility``），
-    供 ``_visibility`` / ``_classify_pose_actions`` / ``_draw_pose`` 透明消费。"""
+    供 ``visibility`` / ``classify_pose_actions`` / ``draw_skeleton`` 透明消费。"""
 
     x: float
     y: float
@@ -90,7 +90,7 @@ class PreviewLandmarkSmoother:
         min_cutoff: float = 1.0,
         beta: float = 2.0,
         d_cutoff: float = 1.0,
-        vis_thr: float = 0.3,  # ponytail: 对齐 _draw_pose 的 0.3 绘制门限——画什么就平滑什么
+        vis_thr: float = 0.3,  # ponytail: 对齐 draw_skeleton 的 0.3 绘制门限——画什么就平滑什么
         num_points: int = 33,
     ) -> None:
         self.vis_thr = float(vis_thr)
