@@ -6,4 +6,4 @@ import importlib
 import sys
 
 if "video_writer" not in sys.modules:
-    sys.modules["video_writer"] = importlib.import_module("core.video_writer")
+    sys.modules["video_writer"] = importlib.import_module("core.media.writer")

@@ -77,4 +77,4 @@ def test_apps_main_keeps_mediapipe_only_cli_surface():
 
     assert "YoloPoseAdapter" not in source
     assert "yolo_adapter" not in source
-    assert "MediaPipePipeline" in source
+    assert "create_engine" in source  # P2：MediaPipe 引擎统一经 core.pose.create_engine 构造

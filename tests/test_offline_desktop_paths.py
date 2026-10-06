@@ -29,7 +29,7 @@ def test_offline_bundle_seeds_writable_data_without_overwriting_user_files(tmp_p
 
 
 def test_windows_unicode_model_uses_bytes(tmp_path, monkeypatch):
-    from core import vision_pipeline
+    from core.pose import engine as vision_pipeline  # P2：原 core/vision_pipeline.py
     model = tmp_path / "中文模型.task"
     model.write_bytes(b"model-data")
     monkeypatch.setattr(vision_pipeline.os, "name", "nt")

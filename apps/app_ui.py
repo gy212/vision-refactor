@@ -18,7 +18,8 @@ import numpy as np
 from PIL import Image, ImageTk
 
 from core.action_compare import compare_video_to_templates, create_template_from_video
-from core.vision_pipeline import MediaPipePipeline, PipelineConfig, draw_pose_frame
+from core.pose import EngineSpec, create_engine, draw_roi, draw_tk_hud, missing_model_message, render_pose
+from core.pose import actions_text as format_actions
 from core.foundation import (
     EXAM_ROI,
     PreferenceStore,
@@ -56,15 +57,6 @@ from apps.recording_postprocess import (
     validate_auto_compare_template_lists,
     validate_template_pair,
 )
-
-
-ACTION_LABELS_ZH = {
-    "V_SIGN": "✌（V 手势）",
-    "HANDS_UP": "双手举起",
-    "LEFT_HAND_UP": "左手举起",
-    "RIGHT_HAND_UP": "右手举起",
-    "SQUAT": "下蹲",
-}
 
 
 # Record_Toggle 三态按钮文本映射，供录制回调（任务 7.1/7.2/7.3）与 UI 重构（任务 9.x）复用。
@@ -2685,7 +2677,7 @@ class App:
 
         lite = next(m for m in model_manager.MEDIAPIPE_MODELS if m.key == "pose_lite")
         if not model_manager.is_installed(lite):
-            messagebox.showwarning("学生练习", "缺少 Lite 模型，请先在设置→模型管理中安装。")
+            messagebox.showwarning("学生练习", missing_model_message("student_lite"))
             return
         self._exam_set_roi(PreferenceStore().get(EXAM_ROI))
 
@@ -3195,9 +3187,9 @@ class App:
             None,
         )
         if heavy is None or not model_manager.is_installed(heavy):
-            return False, "缺少 pose_landmarker_heavy.task，请在模型管理中安装。"
+            return False, missing_model_message("exam_heavy")
         if lite is None or not model_manager.is_installed(lite):
-            return False, "缺少 pose_landmarker_lite.task（占用检测需要）。"
+            return False, missing_model_message("exam_occupancy_lite")
         return True, ""
 
     def _drain_exam_occupancy(self) -> None:
@@ -4678,13 +4670,13 @@ class App:
             if draw_skeleton:
                 try:
                     models_dir_path = models_dir()
-                    pipe = MediaPipePipeline(
-                        models_dir=models_dir_path,
-                        cfg=PipelineConfig(
+                    pipe = create_engine(
+                        EngineSpec(
                             pose_variant=state.pose_variant,
                             running_mode="video",
                             enable_hands=state.enable_hands,
                         ),
+                        models_dir=models_dir_path,
                     )
                 except Exception as e:
                     failed = True
@@ -4740,33 +4732,11 @@ class App:
                 if is_file and total > 0 and (frame_count % 5 == 0 or frame_count == total):
                     self._post_progress(frame_count, total)
                 fps = frame_count / max(1e-6, (time.monotonic() - t0))
-                cv2.putText(
-                    annotated,
-                    f"FPS: {fps:.1f}",
-                    (10, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.8,
-                    (255, 255, 255),
-                    2,
-                    cv2.LINE_AA,
-                )
-                cv2.putText(
-                    annotated,
-                    "点击“停止”结束",
-                    (10, annotated.shape[0] - 12),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.6,
-                    (255, 255, 255),
-                    1,
-                    cv2.LINE_AA,
-                )
+                draw_tk_hud(annotated, f"FPS: {fps:.1f}", hint=True)
 
                 self._write_rec_frame(self._rec, annotated)
 
-                if actions:
-                    actions_text = ", ".join(ACTION_LABELS_ZH.get(a, a) for a in actions)
-                else:
-                    actions_text = "-"
+                actions_text = format_actions(actions)
                 self._post_frame(annotated, actions_text)
 
             cv2.destroyAllWindows()
@@ -4923,15 +4893,15 @@ class App:
                 self._post_status("模型加载中…（双摄裸帧预览）")
                 phase = "pipeline"
                 models_dir_path = models_dir()
-                cfg = PipelineConfig(
+                cfg = EngineSpec(
                     pose_variant=state.pose_variant,
                     running_mode="video",
                     enable_hands=state.enable_hands,
                 )
-                pipe = MediaPipePipeline(models_dir=models_dir_path, cfg=cfg)
+                pipe = create_engine(cfg, models_dir=models_dir_path)
                 if self._stop_evt.is_set():
                     raise CameraWarmupStopped("camera warmup was stopped")
-                pipe2 = MediaPipePipeline(models_dir=models_dir_path, cfg=cfg)
+                pipe2 = create_engine(cfg, models_dir=models_dir_path)
                 self._mark_dual_startup_metric(generation, "pipeline_ready")
                 if raw_pump_errors:
                     raise RuntimeError(str(raw_pump_errors[0])) from raw_pump_errors[0]
@@ -5038,13 +5008,13 @@ class App:
                 if occ_armed and not state.record_skeleton:
                     try:
                         if occupancy_pipe is None:
-                            occupancy_pipe = MediaPipePipeline(
-                                models_dir=models_dir(),
-                                cfg=PipelineConfig(
+                            occupancy_pipe = create_engine(
+                                EngineSpec(
                                     pose_variant="lite",
                                     running_mode="video",
                                     enable_hands=False,
                                 ),
+                                models_dir=models_dir(),
                             )
                         if frame_count % max(1, occ_stride) == 0:
                             from core.presence_gate import hip_midpoint_in_roi
@@ -5069,14 +5039,7 @@ class App:
                                 except Exception:
                                     pass
                         # 预览叠 ROI
-                        h0, w0 = annotated.shape[:2]
-                        x0 = int(exam_roi[0] * w0)
-                        y0 = int(exam_roi[1] * h0)
-                        x1 = int(exam_roi[2] * w0)
-                        y1 = int(exam_roi[3] * h0)
-                        cv2.rectangle(
-                            annotated, (x0, y0), (x1, y1), (0, 255, 255), 2
-                        )
+                        draw_roi(annotated, exam_roi)
                     except Exception:
                         pass
                 elif occupancy_pipe is not None and not occ_armed:
@@ -5088,26 +5051,7 @@ class App:
 
                 frame_count += 1
                 fps = frame_count / max(1e-6, (time.monotonic() - t0))
-                cv2.putText(
-                    annotated,
-                    f"FPS: {fps:.1f}",
-                    (10, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.8,
-                    (255, 255, 255),
-                    2,
-                    cv2.LINE_AA,
-                )
-                cv2.putText(
-                    annotated,
-                    "点击“停止”结束",
-                    (10, annotated.shape[0] - 12),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.6,
-                    (255, 255, 255),
-                    1,
-                    cv2.LINE_AA,
-                )
+                draw_tk_hud(annotated, f"FPS: {fps:.1f}", hint=True)
 
                 record_frame, record_frame2 = _select_dual_recording_frames(
                     frame,
@@ -5117,16 +5061,8 @@ class App:
                     record_skeleton=state.record_skeleton,
                 )
                 self._write_recording_pair(record_frame, record_frame2)
-                actions_text = (
-                    ", ".join(ACTION_LABELS_ZH.get(a, a) for a in actions)
-                    if actions
-                    else "-"
-                )
-                actions_text2 = (
-                    ", ".join(ACTION_LABELS_ZH.get(a, a) for a in actions2)
-                    if actions2
-                    else "-"
-                )
+                actions_text = format_actions(actions)
+                actions_text2 = format_actions(actions2)
                 self._post_dual_frame_pair(
                     annotated,
                     actions_text,
@@ -5233,13 +5169,13 @@ class App:
                 frame_q.put(None)
 
         def worker() -> None:
-            pipe = MediaPipePipeline(
-                models_dir=models_dir_path,
-                cfg=PipelineConfig(
+            pipe = create_engine(
+                EngineSpec(
                     pose_variant=state.pose_variant,
                     running_mode="image",
                     enable_hands=state.enable_hands,
                 ),
+                models_dir=models_dir_path,
             )
             while True:
                 item = frame_q.get()
@@ -5277,21 +5213,9 @@ class App:
                         self._post_progress(written, total)
 
                     fps = written / max(1e-6, (time.monotonic() - t0))
-                    cv2.putText(
-                        annotated,
-                        f"FPS: {fps:.1f}",
-                        (10, 30),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.8,
-                        (255, 255, 255),
-                        2,
-                        cv2.LINE_AA,
-                    )
+                    draw_tk_hud(annotated, f"FPS: {fps:.1f}", hint=False)
 
-                    if actions:
-                        actions_text = ", ".join(ACTION_LABELS_ZH.get(a, a) for a in actions)
-                    else:
-                        actions_text = "-"
+                    actions_text = format_actions(actions)
                     self._post_frame(annotated, actions_text)
                     next_idx += 1
                     continue
@@ -5338,7 +5262,7 @@ class App:
             else None
         )
         smoother = PreviewLandmarkSmoother()
-        draw_cfg = PipelineConfig(
+        draw_cfg = EngineSpec(
             pose_variant=state.pose_variant,
             running_mode="image",
             enable_hands=state.enable_hands,
@@ -5458,33 +5382,21 @@ class App:
                     res.index,
                 )
                 smoothed = smoother.feed(res.pose_landmarks, timestamp_ms=timestamp_ms)
-                annotated, actions = draw_pose_frame(
+                annotated, actions = render_pose(
                     res.frame,
                     smoothed,
                     res.hands or [],
                     draw_face=draw_cfg.draw_pose_face,
-                    draw_joint_angles=draw_cfg.draw_joint_angles,
+                    draw_joint_angles_overlay=draw_cfg.draw_joint_angles,
                     action_pose_landmarks=res.pose_landmarks,
                 )
                 rendered += 1
                 fps = rendered / max(1e-6, (time.monotonic() - t0))
-                cv2.putText(
-                    annotated,
-                    f"FPS: {fps:.1f} (x{workers})",
-                    (10, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.8,
-                    (255, 255, 255),
-                    2,
-                    cv2.LINE_AA,
-                )
+                draw_tk_hud(annotated, f"FPS: {fps:.1f} (x{workers})", hint=False)
 
                 self._write_rec_frame(self._rec, annotated)
 
-                if actions:
-                    actions_text = ", ".join(ACTION_LABELS_ZH.get(a, a) for a in actions)
-                else:
-                    actions_text = "-"
+                actions_text = format_actions(actions)
                 self._post_frame(annotated, actions_text)
 
             self._stop_evt.set()

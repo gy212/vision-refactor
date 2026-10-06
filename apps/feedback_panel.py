@@ -336,6 +336,8 @@ class FeedbackControls:
         if not self.current or not self.check_tree.selection():
             return
         import cv2
+
+        from core.media import read_frame_at
         from PIL import Image, ImageTk
         check = next(c for c in self.current["result"]["checks"] if c["id"] == self.check_tree.selection()[0])
         refs = set(check["evidence"])
@@ -354,14 +356,7 @@ class FeedbackControls:
                 name = self.current["videos"].get(view)
                 path = directory / name if name else None
                 if path and path.resolve().parent == directory and path.is_file() and not path.is_symlink():
-                    cap = cv2.VideoCapture(str(path))
-                    try:
-                        cap.set(cv2.CAP_PROP_POS_FRAMES, item["frame"])
-                        ok, frame = cap.read()
-                        if not ok:
-                            frame = None
-                    finally:
-                        cap.release()
+                    frame = read_frame_at(path, item["frame"])
                 title = ("正面" if view == "front" else "侧面") + f" {item['timeSeconds']:.3f}s · 帧{item['frame']}"
                 panel = ttk.Frame(window, padding=5)
                 panel.grid(row=row, column=col)

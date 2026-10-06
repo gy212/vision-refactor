@@ -1,24 +1,25 @@
-"""正式规则评分：Pose33 原始序列提取与 8 条散打规则的逐帧判定、扣分汇总。"""
+"""正式规则评分：8 条散打规则的逐帧判定与扣分汇总（Pose33 原始序列由 ``core.pose.raw_series`` 提取）。"""
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Callable, Literal
 
-import cv2
 import numpy as np
 
 from .pose_features import (
     DEFAULT_VALID_CONF_THR,
-    MEDIAPIPE_VALIDITY_POLICY,
     derive_valid_mask,
     landmark_capabilities,
     landmark_names,
     landmarks_missing_for_capabilities,
 )
 from .foundation.geometry import angle_deg, landmark_xy, torso_length
-from .paths import models_dir
-from .vision_pipeline import MediaPipePipeline, PipelineConfig
+from .pose.raw_series import (  # noqa: F401  （规则的原始序列来自姿态层，旧导入路径保留）
+    Pose33RawSeries,
+    extract_pose_raw,
+    extract_pose_raw_series,
+    slice_pose_raw_series,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -106,12 +107,6 @@ class RuleScore:
     violations: tuple[RuleViolation, ...]
 
 
-@dataclass(frozen=True)
-class Pose33RawSeries:
-    landmarks: np.ndarray
-    meta: dict
-
-
 def _valid_frame(mask_row: np.ndarray, idxs: tuple[int, ...]) -> bool:
     """该帧给定关键点是否全部可用。
 
@@ -124,169 +119,6 @@ def _valid_frame(mask_row: np.ndarray, idxs: tuple[int, ...]) -> bool:
 def _valid_frames(valid_mask: np.ndarray, idxs: tuple[int, ...]) -> np.ndarray:
     """Vectorized equivalent of applying ``_valid_frame`` to every row."""
     return np.asarray(valid_mask[:, idxs], dtype=bool).all(axis=1)
-
-
-def _raw_meta(
-    *,
-    video_path: Path,
-    pose_variant: str,
-    fps: float,
-    frame_count: int,
-    width: int,
-    height: int,
-    start_frame: int,
-    landmarks: np.ndarray,
-) -> dict:
-    valid_mask = derive_valid_mask(landmarks, DEFAULT_VALID_CONF_THR)
-    return {
-        "video": str(video_path),
-        "fps": float(fps),
-        "frame_count": int(frame_count),
-        "width": int(width),
-        "height": int(height),
-        "pose_variant": str(pose_variant),
-        "start_frame": int(start_frame),
-        "end_frame": int(start_frame + landmarks.shape[0] - 1),
-        "landmark_layout": "pose33_normalized_xyzw(visibility)",
-        # valid_mask 契约（YOLO 迁移 Issue #5）：MediaPipe 侧 0.5 视为已标定。
-        "validity_policy": MEDIAPIPE_VALIDITY_POLICY,
-        "valid_conf_thr": float(DEFAULT_VALID_CONF_THR),
-        "valid_mask": valid_mask,
-    }
-
-
-def _extract_pose_raw_prefix(
-    video_path: Path,
-    *,
-    pose_variant: str,
-    end_frame: int | None = None,
-) -> Pose33RawSeries:
-    cap = cv2.VideoCapture(str(video_path))
-    if not cap.isOpened():
-        raise RuntimeError(f"无法打开视频：{video_path}")
-
-    fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0) or 30.0
-    n_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
-    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
-
-    end_i = int(end_frame) if end_frame is not None else (n_frames - 1 if n_frames > 0 else 10**9)
-    end_i = max(0, end_i)
-
-    models_dir_path = models_dir()
-    pipe = MediaPipePipeline(
-        models_dir=models_dir_path,
-        cfg=PipelineConfig(pose_variant=pose_variant, running_mode="video", enable_hands=False),
-    )
-
-    out: list[np.ndarray] = []
-    last: np.ndarray | None = None
-
-    i = 0
-    while True:
-        ok, frame = cap.read()
-        if not ok:
-            break
-        ts = int(i * 1000.0 / fps)
-        pose_landmarks, _hands = pipe.infer(frame, timestamp_ms=ts)
-        if pose_landmarks is None:
-            arr = last.copy() if last is not None else np.zeros((33, 4), dtype=np.float32)
-        else:
-            arr = np.zeros((33, 4), dtype=np.float32)
-            for j in range(min(33, len(pose_landmarks))):
-                lm = pose_landmarks[j]
-                arr[j, 0] = float(getattr(lm, "x", 0.0))
-                arr[j, 1] = float(getattr(lm, "y", 0.0))
-                arr[j, 2] = float(getattr(lm, "z", 0.0))
-                arr[j, 3] = float(getattr(lm, "visibility", 0.0))
-            last = arr
-
-        out.append(arr)
-        if i >= end_i:
-            break
-        i += 1
-
-    cap.release()
-    if not out:
-        raise RuntimeError(f"未能从视频提取姿态：{video_path}")
-
-    landmarks = np.stack(out, axis=0).astype(np.float32, copy=False)
-    meta = _raw_meta(
-        video_path=video_path,
-        pose_variant=pose_variant,
-        fps=fps,
-        frame_count=n_frames,
-        width=w,
-        height=h,
-        start_frame=0,
-        landmarks=landmarks,
-    )
-    return Pose33RawSeries(landmarks=landmarks, meta=meta)
-
-
-def slice_pose_raw_series(
-    series: Pose33RawSeries,
-    *,
-    start_frame: int | None = None,
-    end_frame: int | None = None,
-) -> tuple[np.ndarray, dict]:
-    """Return an ``extract_pose_raw``-compatible slice from a pre-extracted series."""
-    base = np.asarray(series.landmarks, dtype=np.float32)
-    if base.ndim != 3 or base.shape[1:] != (33, 4):
-        raise ValueError(f"Pose33RawSeries.landmarks 形状必须为 (T,33,4)，实际 {base.shape}")
-    if base.shape[0] == 0:
-        raise RuntimeError(f"未能从视频提取姿态：{series.meta.get('video', '')}")
-
-    start_i = int(start_frame) if start_frame is not None else 0
-    end_i = int(end_frame) if end_frame is not None else int(base.shape[0] - 1)
-    start_i = max(0, start_i)
-    end_i = max(start_i, end_i)
-    end_i = min(end_i, int(base.shape[0] - 1))
-    if start_i >= int(base.shape[0]):
-        raise RuntimeError(f"未能从视频提取姿态：{series.meta.get('video', '')}")
-
-    landmarks = base[start_i : end_i + 1].astype(np.float32, copy=False)
-    meta = dict(series.meta)
-    meta["start_frame"] = int(start_i)
-    meta["end_frame"] = int(start_i + landmarks.shape[0] - 1)
-    meta["valid_mask"] = derive_valid_mask(landmarks, float(meta.get("valid_conf_thr") or DEFAULT_VALID_CONF_THR))
-    return landmarks, meta
-
-
-def extract_pose_raw_series(
-    video_path: Path,
-    *,
-    pose_variant: str,
-) -> Pose33RawSeries:
-    """Extract full-video raw Pose33 once for downstream read-only slicing."""
-    return _extract_pose_raw_prefix(Path(video_path), pose_variant=pose_variant, end_frame=None)
-
-
-def extract_pose_raw(
-    video_path: Path,
-    *,
-    pose_variant: str,
-    start_frame: int | None = None,
-    end_frame: int | None = None,
-) -> tuple[np.ndarray, dict]:
-    """
-    提取原始 Pose33 关键点（标准化坐标）。
-    返回 (landmarks[T,33,4], meta)。
-    """
-    start_i = int(start_frame) if start_frame is not None else 0
-    if end_frame is None:
-        n_frames_probe = cv2.VideoCapture(str(video_path))
-        try:
-            n_frames = int(n_frames_probe.get(cv2.CAP_PROP_FRAME_COUNT) or 0) if n_frames_probe.isOpened() else 0
-        finally:
-            n_frames_probe.release()
-        end_i = n_frames - 1 if n_frames > 0 else 10**9
-    else:
-        end_i = int(end_frame)
-    start_i = max(0, start_i)
-    end_i = max(start_i, end_i)
-    series = _extract_pose_raw_prefix(Path(video_path), pose_variant=pose_variant, end_frame=end_i)
-    return slice_pose_raw_series(series, start_frame=start_i, end_frame=end_i)
 
 
 def _rule_elbow_front_arm_range(landmarks: np.ndarray, valid_mask: np.ndarray) -> tuple[np.ndarray, np.ndarray, str]:

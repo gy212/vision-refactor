@@ -34,7 +34,7 @@ if str(_REPO_ROOT) not in sys.path:
 
 from core.paths import models_dir as repo_models_dir  # noqa: E402
 from core.body_core_compare import DEFAULT_YOLO26L_MODEL_NAME  # noqa: E402
-from core.vision_pipeline import MediaPipePipeline, PipelineConfig  # noqa: E402
+from core.pose import EngineSpec, create_engine, draw_hands  # noqa: E402
 from core.yolo_adapter import (  # noqa: E402
     BODY_CORE_V1_VALID_INDICES,
     DEFAULT_YOLO_VALID_CONF_THR,
@@ -394,7 +394,7 @@ class YoloPreviewAnnotator:
             mp_image = self._mp.Image(image_format=self._mp.ImageFormat.SRGB, data=rgb)
             hand_res = self.hand_landmarker.detect_for_video(mp_image, int(timestamp_ms))
             hands = hand_res.hand_landmarks if getattr(hand_res, "hand_landmarks", None) else []
-            MediaPipePipeline._draw_hands(out, hands, out.shape[1], out.shape[0])
+            draw_hands(out, hands)
         return out
 
     def reset_metrics(self) -> None:
@@ -581,14 +581,14 @@ def _make_runner(
     valid_conf_thr: float,
 ) -> Any:
     if case.backend == "mediapipe":
-        return MediaPipePipeline(
-            models_dir=models_dir,
-            cfg=PipelineConfig(
+        return create_engine(
+            EngineSpec(
                 pose_variant=pose_variant,
                 running_mode="video",
                 enable_hands=case.enable_hands,
                 delegate=case.delegate,
             ),
+            models_dir=models_dir,
         )
     if case.backend == "yolo":
         return YoloPreviewAnnotator(

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from core import video_writer
+from core.media import writer as video_writer  # P2：原 core/video_writer.py
 
 
 class _FakeWriter:

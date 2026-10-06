@@ -249,7 +249,9 @@ def test_mediapipe_runner_passes_delegate_to_pipeline(tmp_path, monkeypatch):
         def __init__(self, *, models_dir, cfg) -> None:
             captured_cfgs.append(cfg)
 
-    monkeypatch.setattr(bench_annotate_fps, "MediaPipePipeline", FakePipeline)
+    from core.pose import engine  # P2：构造统一经 create_engine
+
+    monkeypatch.setattr(engine, "PoseEngine", FakePipeline)
 
     runner = bench_annotate_fps._make_runner(
         bench_annotate_fps.BenchCase("mediapipe_gpu_pose_only", "mediapipe", False, "gpu", "gpu"),

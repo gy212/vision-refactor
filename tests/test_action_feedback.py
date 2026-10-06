@@ -223,11 +223,18 @@ def test_feedback_pipeline_uses_selected_cpu_model_without_hands(monkeypatch, tm
     (tmp_path / f"pose_landmarker_{variant}.task").write_bytes(b"fixture")
     monkeypatch.setattr(fg, "models_dir", lambda: tmp_path)
     captured = []
-    monkeypatch.setattr(fg, "MediaPipePipeline", lambda **kw: captured.append(kw))
+    from core.pose import engine  # P2：构造统一经 create_engine
+    monkeypatch.setattr(engine, "PoseEngine", lambda **kw: captured.append(kw))
     fg._pipeline(fg.FeedbackConfig(pose_variant=variant))
     config = captured[0]["cfg"]
     assert config.pose_variant == variant and config.delegate == "cpu" and not config.enable_hands
     assert fg.FeedbackConfig().pose_variant == "full"
+
+
+def test_feedback_pipeline_missing_model_keeps_message(monkeypatch, tmp_path):
+    monkeypatch.setattr(fg, "models_dir", lambda: tmp_path)
+    with pytest.raises(FileNotFoundError, match="缺少 MediaPipe heavy，请在设置的模型管理中安装。"):
+        fg._pipeline(fg.FeedbackConfig(pose_variant="heavy"))
 
 
 def test_completed_hip_turn_and_arm_swing_are_not_missing_actions():

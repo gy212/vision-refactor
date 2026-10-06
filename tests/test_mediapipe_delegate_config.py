@@ -13,7 +13,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from core import vision_pipeline  # noqa: E402
+from core.pose import engine as vision_pipeline  # noqa: E402  P2：引擎迁入 core/pose/engine.py
 
 
 def test_base_options_keeps_legacy_cpu_default(monkeypatch):

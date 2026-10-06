@@ -25,7 +25,7 @@ from typing import Any
 
 import cv2
 
-from core.vision_pipeline import MediaPipePipeline, PipelineConfig
+from core.pose import EngineSpec, create_engine, draw_cli_hud
 from core.paths import models_dir
 from apps.camera_enum import open_camera
 from core.parallel_pose_engine import ParallelPoseEngine, default_pipeline_factory
@@ -194,14 +194,14 @@ def _process_video_multithread(
             frame_q.put(None)
 
     def worker(worker_id: int) -> None:
-        pipe = MediaPipePipeline(
-            models_dir=models_dir_path,
-            cfg=PipelineConfig(
+        pipe = create_engine(
+            EngineSpec(
                 pose_variant=pose_variant,
                 running_mode="image",
                 enable_hands=enable_hands,
                 delegate=delegate,
             ),
+            models_dir=models_dir_path,
         )
         while True:
             item = frame_q.get()
@@ -230,21 +230,8 @@ def _process_video_multithread(
         if next_idx in pending:
             annotated, actions = pending.pop(next_idx)
             # Overlay labels + fps
-            y = 30
-            for a in actions[:5]:
-                cv2.putText(annotated, a, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (20, 20, 240), 2, cv2.LINE_AA)
-                y += 30
             fps = written / max(1e-6, (time.monotonic() - t0))
-            cv2.putText(annotated, f"FPS: {fps:.1f}", (10, y + 5), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 1)
-            cv2.putText(
-                annotated,
-                "Press 'q' to quit",
-                (10, annotated.shape[0] - 15),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.6,
-                (255, 255, 255),
-                1,
-            )
+            draw_cli_hud(annotated, actions, f"FPS: {fps:.1f}")
 
             if writer is not None:
                 writer.write(annotated)
@@ -347,14 +334,14 @@ def run_realtime_latest_frame_smoke(
     def infer_loop() -> None:
         nonlocal infer_started, infer_ended
         try:
-            pipe = MediaPipePipeline(
-                models_dir=models_dir(),
-                cfg=PipelineConfig(
+            pipe = create_engine(
+                EngineSpec(
                     pose_variant=pose_variant,
                     running_mode="video",
                     enable_hands=enable_hands,
                     delegate=delegate,
                 ),
+                models_dir=models_dir(),
             )
             infer_started = time.monotonic()
             while not stop_evt.is_set():
@@ -395,18 +382,11 @@ def run_realtime_latest_frame_smoke(
                 latency_sec.append(now - captured_at)
                 counts["rendered"] += 1
 
-                y = 30
-                for action in actions[:5]:
-                    cv2.putText(annotated, action, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (20, 20, 240), 2, cv2.LINE_AA)
-                    y += 30
-                cv2.putText(
+                draw_cli_hud(
                     annotated,
+                    actions,
                     f"Latest-frame smoke FPS: {counts['rendered'] / max(1e-6, now - (render_started or now)):.1f}",
-                    (10, y + 5),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.7,
-                    (255, 255, 255),
-                    1,
+                    hint=False,
                 )
                 if show:
                     cv2.imshow("MediaPipe (Latest Frame Smoke)", annotated)
@@ -460,14 +440,14 @@ def run(
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0) if is_file else 0
 
     models_dir_path = models_dir()
-    pipe = MediaPipePipeline(
-        models_dir=models_dir_path,
-        cfg=PipelineConfig(
+    pipe = create_engine(
+        EngineSpec(
             pose_variant=pose_variant,
             running_mode="video",
             enable_hands=enable_hands,
             delegate=delegate,
         ),
+        models_dir=models_dir_path,
     )
 
     writer: cv2.VideoWriter | None = None
@@ -490,16 +470,9 @@ def run(
         annotated, actions = pipe.annotate(frame, timestamp_ms=timestamp_ms)
 
         # Overlay labels
-        h, w = annotated.shape[:2]
-        y = 30
-        for a in actions[:5]:
-            cv2.putText(annotated, a, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (20, 20, 240), 2, cv2.LINE_AA)
-            y += 30
-
         frame_count += 1
         fps = frame_count / max(1e-6, (time.monotonic() - t0))
-        cv2.putText(annotated, f"FPS: {fps:.1f}", (10, y + 5), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 1)
-        cv2.putText(annotated, "Press 'q' to quit", (10, h - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+        draw_cli_hud(annotated, actions, f"FPS: {fps:.1f}")
 
         if writer is not None:
             writer.write(annotated)
@@ -584,15 +557,9 @@ def run_realtime_parallel(
                     break
                 continue
             annotated = res.annotated
-            h, w = annotated.shape[:2]
-            y = 30
-            for a in res.actions[:5]:
-                cv2.putText(annotated, a, (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (20, 20, 240), 2, cv2.LINE_AA)
-                y += 30
             rendered += 1
             fps = rendered / max(1e-6, (time.monotonic() - t0))
-            cv2.putText(annotated, f"FPS: {fps:.1f} (x{workers})", (10, y + 5), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 1)
-            cv2.putText(annotated, "Press 'q' to quit", (10, h - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+            draw_cli_hud(annotated, res.actions, f"FPS: {fps:.1f} (x{workers})")
 
             if writer is not None:
                 writer.write(annotated)

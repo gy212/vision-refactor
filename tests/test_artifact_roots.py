@@ -104,13 +104,13 @@ def test_representative_modules_use_core_paths():
     import batch.batch_export_skeleton as bes
 
     # 这些模块都绑定了 core.paths 暴露的解析函数（models_dir/templates_dir/outputs_dir）。
-    assert ac.models_dir is paths.models_dir
+    # P2：action_compare/rule_scoring/tech_eval 不再自己构造引擎，models_dir 由 core.pose.engine 统一解析。
+    from core.pose import engine
+
+    assert engine.default_models_dir is paths.models_dir
     assert ac.templates_dir is paths.templates_dir
-    assert rs.models_dir is paths.models_dir
-    assert te.models_dir is paths.models_dir
-    assert mt.models_dir is paths.models_dir
+    assert rs is not None and te is not None
     assert mt.templates_dir is paths.templates_dir
-    assert mat.models_dir is paths.models_dir
     assert mat.templates_dir is paths.templates_dir
-    assert bes.models_dir is paths.models_dir
+
     assert bes.outputs_dir is paths.outputs_dir

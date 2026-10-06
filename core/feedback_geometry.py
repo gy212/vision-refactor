@@ -8,15 +8,18 @@ import time
 from pathlib import Path
 from typing import Callable
 
-import cv2
 import numpy as np
 
-from core.paths import models_dir, repo_root
-from core.pose_features import derive_valid_mask
+from core.foundation.paths import models_dir, repo_root
+from core.foundation.tasks import Cancelled, from_stopped
+from core.media.video_source import UndecodableFrame, VideoFpsUnavailable, VideoOpenError
+from core.pose.engine import create_engine
+from core.pose.extract import extract_pose_sequence, practice_engine, practice_v4_profile
+from core.pose.sequence import Coords, GapPolicy
+from core.pose.validity import derive_valid_mask
 from core.foundation.geometry import angle_deg, torso_length
 from core.foundation.signal import contiguous_runs
 from core.rule_scoring import _rule_feet_parallel, _rule_knee_slight_bend
-from core.vision_pipeline import MediaPipePipeline, PipelineConfig
 from core.feedback_phases import phase_windows, align_views, share_phase_timing, limb_indices as _indices
 
 
@@ -112,69 +115,43 @@ def _view_weights(check: dict, cfg: FeedbackConfig) -> dict[str, float]:
 
 def _pipeline(cfg: FeedbackConfig | None = None):
     cfg = cfg or FeedbackConfig()
-    directory = models_dir()
-    if not (directory / f"pose_landmarker_{cfg.pose_variant}.task").is_file():
-        raise FileNotFoundError(f"缺少 MediaPipe {cfg.pose_variant}，请在设置的模型管理中安装。")
-    return MediaPipePipeline(models_dir=directory, cfg=PipelineConfig(
-        pose_variant=cfg.pose_variant, enable_hands=False, delegate="cpu", running_mode="video"))
+    return create_engine(practice_engine(cfg.pose_variant), models_dir=models_dir(), download=False)
 
 
 def extract_series(path: Path, cfg: FeedbackConfig, stopped: Callable[[], bool], pipeline_factory=None) -> dict:
-    """默认原帧率逐帧推理，只保留关键点。丢失帧全无效，绝不复用上一帧。"""
-    started = time.monotonic()
-    cap = cv2.VideoCapture(str(path))
-    pipe = None
-    try:
-        if not cap.isOpened():
-            raise ValueError(f"视频无法读取，请重新录制：{path.name}")
-        fps = float(cap.get(cv2.CAP_PROP_FPS))
-        if not math.isfinite(fps) or fps <= 0:
-            raise ValueError("视频帧率不可用，请重新录制")
-        total = cap.get(cv2.CAP_PROP_FRAME_COUNT)
-        total = int(total) if math.isfinite(total) else 0
-        stride = max(1, math.ceil(fps / cfg.sample_fps)) if cfg.sample_fps else 1
-        points, frames, times = [], [], []
-        index = 0
-        timestamp = -1
-        while cap.grab():
-            if stopped():
-                raise InterruptedError("分析已取消")
-            if index % stride == 0 or index == total - 1:
-                ok, frame = cap.retrieve()
-                if not ok or frame is None:
-                    raise ValueError("视频存在不可解码的帧，请重新录制")
-                h, w = frame.shape[:2]
-                if max(h, w) > cfg.max_edge:
-                    scale = cfg.max_edge / max(h, w)
-                    frame = cv2.resize(frame, (max(1, round(w * scale)), max(1, round(h * scale))))
-                if pipe is None:
-                    pipe = pipeline_factory() if pipeline_factory else _pipeline(cfg)
-                timestamp = max(timestamp + 1, round(index * 1000 / fps))
-                landmarks, _ = pipe.infer(frame, timestamp_ms=timestamp)
-                arr = np.zeros((33, 4), dtype=np.float32)
-                if landmarks is not None:
-                    for j, lm in enumerate(landmarks[:33]):
-                        # x和z统一为图像高度单位，防止非正方形画面把角度算歪。
-                        arr[j] = (lm.x * w / h, lm.y, lm.z * w / h, getattr(lm, "visibility", 0))
-                points.append(arr)
-                frames.append(index)
-                times.append(index / fps)
-            index += 1
-        if not points:
-            raise ValueError("视频没有可读取的帧，请重新录制")
-        lm = np.stack(points)
-        mask = derive_valid_mask(lm) & np.isfinite(lm[:, :, :3]).all(axis=2)
-        mask &= (lm[:, :, 0] >= 0) & (lm[:, :, 0] <= w / h) & (lm[:, :, 1] >= 0) & (lm[:, :, 1] <= 1)
-        return {"landmarks": lm, "valid_mask": mask, "frames": frames, "times": times,
-                "capture": {"sourceFps": fps, "sourceFrames": index, "analyzedFrames": len(frames),
-                            "stride": stride, "width": w, "height": h,
-                            "inferenceWidth": frame.shape[1], "inferenceHeight": frame.shape[0],
-                            "analysisSeconds": round(time.monotonic() - started, 3)}}
-    finally:
-        cap.release()
-        if pipe is not None:
-            pipe.close()
+    """默认原帧率逐帧推理，只保留关键点。丢失帧全无效，绝不复用上一帧。
 
+    ``PRACTICE_V4`` 提取（长边上限、抽帧取自 ``cfg``）+ ``raw(ZERO, ASPECT_CORRECTED)``：x、z 统一为图像高度单位。
+    """
+    started = time.monotonic()
+    profile = practice_v4_profile(sample_fps=cfg.sample_fps, max_edge=cfg.max_edge)
+    try:
+        seq = extract_pose_sequence(
+            path, practice_engine(cfg.pose_variant), profile, cancel=from_stopped(stopped),
+            engine_factory=pipeline_factory or (lambda: _pipeline(cfg)),
+        )
+    except VideoOpenError:
+        raise ValueError(f"视频无法读取，请重新录制：{path.name}") from None
+    except VideoFpsUnavailable:
+        raise ValueError("视频帧率不可用，请重新录制") from None
+    except UndecodableFrame:
+        raise ValueError("视频存在不可解码的帧，请重新录制") from None
+    except Cancelled:
+        raise InterruptedError("分析已取消") from None
+    if len(seq) == 0:
+        raise ValueError("视频没有可读取的帧，请重新录制")
+    lm = seq.raw(GapPolicy.ZERO, Coords.ASPECT_CORRECTED).copy()
+    w, h = (int(v) for v in seq.source_wh[-1])
+    fps = seq.meta.fps_reported
+    frames = [int(i) for i in seq.frame_index]
+    mask = derive_valid_mask(lm) & np.isfinite(lm[:, :, :3]).all(axis=2)
+    mask &= (lm[:, :, 0] >= 0) & (lm[:, :, 0] <= w / h) & (lm[:, :, 1] >= 0) & (lm[:, :, 1] <= 1)
+    inference_w, inference_h = seq.meta.inference_size
+    return {"landmarks": lm, "valid_mask": mask, "frames": frames, "times": [i / fps for i in frames],
+            "capture": {"sourceFps": fps, "sourceFrames": seq.meta.frames_scanned, "analyzedFrames": len(frames),
+                        "stride": seq.meta.stride, "width": w, "height": h,
+                        "inferenceWidth": inference_w, "inferenceHeight": inference_h,
+                        "analysisSeconds": round(time.monotonic() - started, 3)}}
 
 
 def _measure(check: dict, lm: np.ndarray, mask: np.ndarray, baseline: np.ndarray, baseline_mask: np.ndarray,

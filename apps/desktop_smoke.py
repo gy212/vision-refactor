@@ -194,10 +194,10 @@ def run(report_path: Path) -> int:
             # 窗口版没有 stdout/stderr；保留可读诊断日志。
             with report_path.with_suffix(".log").open("w", encoding="utf-8", buffering=1) as log:
                 sys.stdout = sys.stderr = log
-                import cv2
                 import numpy as np
                 from core import paths, model_manager, online_matcher, video_writer
-                from core.vision_pipeline import MediaPipePipeline, PipelineConfig
+                from core.media import first_frame_ok
+                from core.pose import EngineSpec, create_engine
                 from core.feedback_history import FeedbackHistory
                 from core.action_feedback import ACTIONS, STANCES
 
@@ -218,8 +218,9 @@ def run(report_path: Path) -> int:
                 report["checks"].append("four_bundled_models_seeded")
                 frame = np.zeros((240, 320, 3), dtype=np.uint8)
                 for variant in ("lite", "full", "heavy"):
-                    pipeline = MediaPipePipeline(models_dir=model_dir, cfg=PipelineConfig(
-                        pose_variant=variant, enable_hands=True, delegate="cpu", running_mode="image"))
+                    pipeline = create_engine(EngineSpec(
+                        pose_variant=variant, enable_hands=True, delegate="cpu", running_mode="image"),
+                        models_dir=model_dir)
                     try:
                         pipeline.infer(frame)
                     finally:
@@ -243,11 +244,7 @@ def run(report_path: Path) -> int:
                     writer.release()
                 video = video_writer.transcode_to_h264(video)
                 assert video.suffix == ".mp4", "内置 FFmpeg 转码失败"
-                cap = cv2.VideoCapture(str(video))
-                try:
-                    assert cap.read()[0], "录制文件不能解码"
-                finally:
-                    cap.release()
+                assert first_frame_ok(video), "录制文件不能解码"
                 report["checks"].append("video_record_transcode_decode")
 
                 history = FeedbackHistory()

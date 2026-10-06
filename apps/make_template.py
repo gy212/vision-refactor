@@ -5,23 +5,25 @@ import argparse
 from dataclasses import asdict
 from pathlib import Path
 
-import cv2
 import numpy as np
 
-from core.vision_pipeline import MediaPipePipeline, PipelineConfig
-from core.pose_features import (
-    DEFAULT_VALID_CONF_THR,
-    MEDIAPIPE_VALIDITY_POLICY,
-    normalize_pose_xy_v3,
-)
 from core.foundation import motion_energy
 from core.action_compare import (
     TemplateAutoCropReviewRequired,
     analyze_template_auto_crop,
+    write_pose_preview,
 )
-from core.feature_layout import POSE33_V3
-from core.paths import models_dir, templates_dir
-from core.video_writer import open_video_writer
+from core.media import VideoOpenError
+from core.paths import templates_dir
+from core.pose import (
+    DEFAULT_VALID_CONF_THR,
+    FORMAL,
+    MEDIAPIPE_VALIDITY_POLICY,
+    POSE33_V3,
+    extract_pose_sequence,
+    formal_engine,
+    normalize_pose_xy_v3,
+)
 
 
 #
@@ -86,43 +88,17 @@ def _make_body_core_template(args) -> None:
 
 def _make_pose33_v3_template(args) -> None:
     video_path = Path(args.video)
-    cap = cv2.VideoCapture(str(video_path))
-    if not cap.isOpened():
-        raise RuntimeError(f"Cannot open video: {video_path}")
-
-    fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0) or 30.0
-    n_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-
-    models_dir_path = models_dir()
-    pipe = MediaPipePipeline(
-        models_dir=models_dir_path,
-        cfg=PipelineConfig(pose_variant=args.pose, running_mode="video", enable_hands=False),
-    )
-
-    feats: list[np.ndarray] = []
-    frame_idx = 0
-    while True:
-        ok, frame = cap.read()
-        if not ok:
-            break
-        ts = int(frame_idx * 1000.0 / fps)
-        pose_landmarks, _hands = pipe.infer(frame, timestamp_ms=ts)
-        f = normalize_pose_xy_v3(pose_landmarks)
-        if f is None:
-            # Keep alignment: repeat last valid if available, else zeros.
-            if feats:
-                f = feats[-1].copy()
-            else:
-                f = np.zeros((22, 2), dtype=np.float32)
-        feats.append(f)
-        frame_idx += 1
-
-    cap.release()
-
-    if not feats:
+    try:
+        pose_seq = extract_pose_sequence(video_path, formal_engine(args.pose), FORMAL)
+    except VideoOpenError:
+        raise RuntimeError(f"Cannot open video: {video_path}") from None
+    if len(pose_seq) == 0:
         raise RuntimeError("No frames read from video")
+    fps, n_frames = pose_seq.meta.fps, pose_seq.meta.frame_count
+    # 未检出帧沿用上一帧特征、首帧前补零，保持与视频帧对齐。
+    feats = pose_seq.features(normalize_pose_xy_v3, tuple(POSE33_V3.shape))
 
-    feat_arr = np.stack(feats, axis=0)  # (T, 22, 2)
+    feat_arr = feats  # (T, 22, 2)
     seq = feat_arr.reshape(feat_arr.shape[0], -1)  # (T, 44)
     energy = motion_energy(seq)
     auto_crop = analyze_template_auto_crop(energy, fps=fps)
@@ -148,7 +124,7 @@ def _make_pose33_v3_template(args) -> None:
         "pose_variant": args.pose,
         "feature_layout": POSE33_V3.name,
         "running_mode": "video",
-        "cfg": asdict(PipelineConfig(pose_variant=args.pose, running_mode="video", enable_hands=False)),
+        "cfg": asdict(formal_engine(args.pose)),
         # 模板 metadata 扩展（YOLO 迁移 S1 / Issue #6）：增量字段，向后兼容。
         "backend": "mediapipe",
         "model_name": f"pose_landmarker_{args.pose}",
@@ -173,36 +149,10 @@ def _make_pose33_v3_template(args) -> None:
 
     if args.preview:
         preview_path = out_path.with_suffix(".preview.mp4")
-        cap2 = cv2.VideoCapture(str(video_path))
-        if not cap2.isOpened():
-            raise RuntimeError(f"Cannot reopen video: {video_path}")
-        w = int(cap2.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
-        h = int(cap2.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
-        vw, actual_path, codec = open_video_writer(preview_path, fps=fps, size=(w, h))
-
-        pipe2 = MediaPipePipeline(
-            models_dir=models_dir_path,
-            cfg=PipelineConfig(pose_variant=args.pose, running_mode="video", enable_hands=False),
+        actual_path, codec = write_pose_preview(
+            video_path, out_path=preview_path, start_frame=start, end_frame=end, pose_variant=args.pose,
         )
-        i = 0
-        while True:
-            ok, frame = cap2.read()
-            if not ok:
-                break
-            if i < start:
-                i += 1
-                continue
-            if i > end:
-                break
-            ts = int(i * 1000.0 / fps)
-            annotated, _actions = pipe2.annotate(frame, timestamp_ms=ts)
-            vw.write(annotated)
-            i += 1
-
-        cap2.release()
-        vw.release()
         print(f"Saved preview: {actual_path} (codec={codec})")
-
 
 if __name__ == "__main__":
     main()
