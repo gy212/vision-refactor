@@ -92,7 +92,6 @@ CLONES: dict[str, tuple[int, str]] = {}
 
 MODULE_SIZE: dict[str, tuple[int, str]] = {
     'analysis/bench_annotate_fps.py': (1018, 'P9'),
-    'analysis/tech_eval.py': (2070, 'P9'),
     'apps/app_ui.py': (5875, 'P8'),
     'apps/camera_warmup.py': (1125, 'P9'),
     'apps/exam_panel.py': (844, 'P8'),
@@ -108,13 +107,6 @@ FUNCTION_SIZE: dict[str, tuple[int, str]] = {
     'analysis/bench_annotate_fps.py::main': (131, 'P9'),
     'analysis/calibrate_body_core.py::run': (166, 'P9'),
     'analysis/offline_matching_profile.py::run_fixture_profile': (112, 'P9'),
-    'analysis/tech_eval.py::_compute_body_com_single': (176, 'P9'),
-    'analysis/tech_eval.py::_detect_retract_events_side': (103, 'P9'),
-    'analysis/tech_eval.py::_evaluate_from_arrays': (124, 'P9'),
-    'analysis/tech_eval.py::eval_cog_com': (128, 'P9'),
-    'analysis/tech_eval.py::eval_cog_front': (101, 'P9'),
-    'analysis/tech_eval.py::eval_cog_side': (139, 'P9'),
-    'analysis/tech_eval.py::eval_force_sequence': (514, 'P9'),
     'apps/app_ui.py::App.__init__': (174, 'P8'),
     'apps/app_ui.py::App._begin_recording_segment': (119, 'P8'),
     'apps/app_ui.py::App._build_ui': (398, 'P8'),
@@ -140,6 +132,11 @@ FUNCTION_SIZE: dict[str, tuple[int, str]] = {
     'batch/batch_export_skeleton.py::main': (120, 'P9'),
     'batch/batch_tech_eval.py::main': (190, 'P9'),
     'core/body_core_compare.py::match_body_core_template': (162, 'P3'),
+    'core/evaluation/techeval/cog.py::eval_cog_front': (101, 'P9'),  # 原 analysis/tech_eval.py，P3 迁入
+    'core/evaluation/techeval/cog.py::eval_cog_side': (139, 'P9'),
+    'core/evaluation/techeval/com.py::_compute_body_com_single': (176, 'P9'),
+    'core/evaluation/techeval/com.py::eval_cog_com': (128, 'P9'),
+    'core/evaluation/techeval/events.py::detect_retract_events_side': (103, 'P9'),
     'core/exam_clip.py::prepare_exam_pair': (114, 'P4'),
     'core/feedback_report.py::build_report_model': (280, 'P8'),
     'core/feedback_report.py::generate_phase_timeline_svg': (142, 'P8'),
@@ -152,4 +149,4 @@ DEFENSIVE_GETATTR: dict[str, tuple[int, str]] = {
     'apps/app_ui.py': (169, 'P8'),
 }
 
-ENTRY_CEILING = 89
+ENTRY_CEILING = 86
