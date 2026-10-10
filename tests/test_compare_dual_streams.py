@@ -28,6 +28,8 @@ if str(_REPO_ROOT) not in sys.path:
 
 import core.action_compare as ac  # noqa: E402
 import core.pose_features as pf  # noqa: E402
+from core.evaluation.matching import dtw as dtw_mod  # noqa: E402
+from core.evaluation.matching import dual as dual_mod  # noqa: E402
 from tests import golden_harness as H  # noqa: E402
 
 FIX_DIR = Path(__file__).resolve().parent / "fixtures" / "pose33_v3"
@@ -148,7 +150,7 @@ def test_cancelled_extraction_closes_resources_without_scoring(tracked_extractio
     def unexpected_score(*_args, **_kwargs):
         pytest.fail("cancelled partial features must not reach scoring")
 
-    monkeypatch.setattr(ac, "_score_view_seq", unexpected_score)
+    monkeypatch.setattr(dual_mod, "score_view", unexpected_score)
 
     with pytest.raises(InterruptedError, match="姿态特征提取已取消"):
         ac.compare_dual_streams(
@@ -173,7 +175,7 @@ def test_cancel_during_front_scoring_skips_side_and_returns_no_result(monkeypatc
     extracted = iter(((front_seq, 30.0, None), (side_seq, 30.0, None)))
     score_calls: list[np.ndarray] = []
 
-    monkeypatch.setattr(ac, "_extract_pose_features", lambda *_args, **_kwargs: next(extracted))
+    monkeypatch.setattr(dual_mod, "extract_features", lambda *_args, **_kwargs: next(extracted))  # P3：双流比对迁入 matching.dual
 
     def score_once_then_cancel(seq, *_args, **_kwargs):
         score_calls.append(seq)
@@ -182,7 +184,7 @@ def test_cancel_during_front_scoring_skips_side_and_returns_no_result(monkeypatc
             return 0.9, [], None
         pytest.fail("side scoring must not run after front scoring cancels")
 
-    monkeypatch.setattr(ac, "_score_view_seq", score_once_then_cancel)
+    monkeypatch.setattr(dual_mod, "score_view", score_once_then_cancel)
 
     with pytest.raises(InterruptedError, match="动作比对已取消"):
         ac.compare_dual_streams(
@@ -219,14 +221,14 @@ def test_dtw_cancel_callback_is_checked_during_dynamic_programming(dtw):
 @pytest.mark.parametrize("dtw", [pf.subsequence_dtw, pf.subsequence_dtw_with_path])
 def test_dtw_cancel_event_is_checked_after_local_cost(monkeypatch, dtw):
     stop_evt = Event()
-    original_local_cost = pf._dtw_local_cost
+    original_local_cost = dtw_mod._dtw_local_cost  # P3：DTW 迁入 evaluation.matching.dtw
 
     def local_cost_then_cancel(query, seq):
         result = original_local_cost(query, seq)
         stop_evt.set()
         return result
 
-    monkeypatch.setattr(pf, "_dtw_local_cost", local_cost_then_cancel)
+    monkeypatch.setattr(dtw_mod, "_dtw_local_cost", local_cost_then_cancel)
     query = np.arange(24, dtype=np.float32).reshape(3, 4, 2)
     seq = np.arange(40, dtype=np.float32).reshape(5, 4, 2)
 
@@ -346,13 +348,13 @@ def test_swapped_streams_score_worse_than_correct_pairing(registered_videos):
 def test_raw_series_extracted_once_per_stream_no_cross_contamination(registered_videos, monkeypatch):
     """独立 raw_series 闭包必须分别绑定各自视频路径：各调用一次、路径不串流。"""
     calls: list[Path] = []
-    orig = ac.extract_pose_raw_series
+    orig = dual_mod.extract_pose_raw_series
 
     def spy(video_path, *, pose_variant):
         calls.append(Path(video_path))
         return orig(video_path, pose_variant=pose_variant)
 
-    monkeypatch.setattr(ac, "extract_pose_raw_series", spy)
+    monkeypatch.setattr(dual_mod, "extract_pose_raw_series", spy)
 
     with H.replay_context():
         ac.compare_dual_streams(

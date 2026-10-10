@@ -57,7 +57,10 @@ def _templates(rec, t) -> None:
     rec("tpl/auto/one_side", lambda: rp.validate_auto_compare_templates(t["pool:直拳"], t["bad:shape"]))
     rec("tpl/auto/none", lambda: rp.validate_auto_compare_templates(None, t["bad:garbage"]))
     rec("tpl/auto/layout", lambda: rp.validate_auto_compare_templates(t["pool:直拳"], t["bad:layout"]))
-    rec("tpl/merge", lambda: rp.merge_view_weighted_actions([
+    merge = getattr(rp, "merge_view_weighted_actions", None)
+    if merge is None:  # P3 起迁入 evaluation.scoring.exam_pool
+        from core.evaluation.scoring.exam_pool import merge_view_weighted_actions as merge
+    rec("tpl/merge", lambda: merge([
         {"name": "两手攀足_侧面", "score": 0.4, "start": 1, "end": 9}, {"name": "直拳", "score": 0.7, "start": 2, "end": 5},
         {"name": "两手攀足_正面", "score": 0.9, "start": 3, "end": 8}, {"name": "攒拳怒目_正面", "score": 0.5, "start": 0, "end": 4}]))
 

@@ -18,7 +18,7 @@ MediaPipe 也能生成同一布局模板（供 #10 三方对比）。它是 ``bo
   ``feature_layout.BODY_CORE_V1.default_baseline``），YOLO 侧 ``valid_conf_thr``=0.6。
   但跨视频预注册判据未通过，结论为「仅预览 / 内部标定参考」，因此本模块分数 meta
   仍标 ``calibration_status="unvalidated"``，不得进入用户报告 / 正式评分。
-- **不同 layout 比对报清晰错误**：复用 ``action_compare._assert_feature_layout_match``，
+- **不同 layout 比对报清晰错误**：复用 ``matching.engine.assert_feature_layout_match``，
   绝不静默把 ``body_core_v1`` 模板与 ``pose33_v3`` 序列比对。
 """
 
@@ -29,11 +29,11 @@ from pathlib import Path
 
 import numpy as np
 
-from .action_compare import _assert_feature_layout_match
+from .evaluation.matching.engine import assert_feature_layout_match as _assert_feature_layout_match
 from .pose.layouts import BODY_CORE_V1, get_layout
 from .paths import templates_dir
 from .foundation.signal import find_active_range, motion_energy
-from .pose_features import subsequence_dtw
+from .evaluation.matching.dtw import subsequence_dtw
 from .pose.backends.body_core import (  # noqa: F401  （提取已迁入姿态层，旧导入路径保留）
     BACKEND_MEDIAPIPE,
     BACKEND_YOLO,

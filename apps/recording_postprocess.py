@@ -1,4 +1,4 @@
-"""双摄录后处理：片段转码、校验、池级模板比对评分与结果 JSON（P3/P4 按附录 B 拆分）。"""
+"""双摄录后处理：片段转码、录像与模板校验、调用考试池计分并写结果 JSON（P4 迁入 recording/finalizer）。"""
 from __future__ import annotations
 
 import json
@@ -10,15 +10,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Literal
 
-import numpy as np
 
 from core import action_compare, model_manager, video_writer
 from core.media import first_frame_ok
 from core.pose import missing_model_message
-from core.kick_quality import score_kick_quality
 from core.foundation import atomic_write_json, to_jsonable
 from core.paths import templates_dir
-from core.rule_scoring import extract_pose_raw_series, slice_pose_raw_series
+from core.evaluation import TemplateError, exam_pool
+from core.pose import extract_pose_raw_series
 
 PostprocessStatus = Literal[
     "queued",
@@ -33,42 +32,6 @@ PostprocessStatus = Literal[
 
 _TERMINAL_STATUSES = frozenset({"completed", "failed", "skipped", "cancelled"})
 _QUEUE_SENTINEL = object()
-# 黑盒检测（录制后自动比对）统一走精度最高的 heavy + pose33_v3 链路。
-_EXPECTED_TEMPLATE_LAYOUT = "pose33_v3"
-_EXPECTED_TEMPLATE_POSE_VARIANT = "heavy"
-
-# 踢腿几何质量评分：动作名（模板 stem）→ kick_quality 类型。列出的动作并入几何分。
-# 低鞭腿不列入——实测其低/高鞭高度差不稳定,几何常误判,直接用纯 DTW 分。
-_KICK_KINDS = {
-    "高鞭腿": "high_whip",
-    "侧踹腿": "kick_up",
-    "正蹬腿": "kick_up",
-}
-# 踢腿动作子分 = 几何高度分 × w + DTW 相似度分 × (1-w)。校准旋钮。
-KICK_GEOM_WEIGHT = 0.5
-
-# DTW 分压缩映射（opt-in）：动作名（模板 stem）→ (下限, 上限)。
-# 实测某些动作 DTW 定位不可靠（如背后七颠：低位移提踵,归一化特征抹掉高度,
-# subsequence_dtw 开放边界退化匹配极短片段,虚高分与动作质量无关）。这类动作
-# 考察不严「是人就过」,把 DTW 分线性压到高分窄区间：人人及格偏上,但保留同一条
-# 视频恒定、可复现的微弱区分度(比固定分好、比随机数可复现且公平)。
-# 未登记动作不受影响(散打零回归)。
-_SCORE_SQUEEZE: dict[str, tuple[float, float]] = {
-    "背后七颠": (0.75, 0.90),  # DTW 不可靠,压到 [0.75,0.90] 人人过、弱区分、可复现
-}
-
-# 同一动作多视角（正面/侧面）按权重合并成一个动作子分（opt-in，八段锦用）。
-# key = 合并后动作名；value = {"front": 正面权重, "side": 侧面权重}（自动归一）。
-# 未登记的动作保持池级各自出分（散打行为不变：模板 stem 无 _正面/_侧面 后缀、不在表内）。
-# 触发条件：正池存在 "<key>_正面"、侧池存在 "<key>_侧面"，两者都在才合并。
-_VIEW_WEIGHTS: dict[str, dict[str, float]] = {
-    "两手攀足": {"side": 0.75, "front": 0.25},  # 实测正面看不清前俯深度,侧面为主
-    "攒拳怒目": {"side": 0.50, "front": 0.50},  # 正侧分接近,合并去重双计数
-}
-_VIEW_FRONT_SUFFIX = "_正面"
-_VIEW_SIDE_SUFFIX = "_侧面"
-
-
 def utc_timestamp() -> str:
     return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
 
@@ -200,78 +163,28 @@ def _segment_directory_key(path: Path) -> SegmentDirectoryKey:
     return _segment_directory_keys(path)[-1]
 
 
-def _load_heavy_template(path: Path) -> tuple[np.ndarray, dict[str, Any]]:
-    """加载并校验 heavy + pose33_v3 单模板；失败抛 PostprocessError。"""
-    path = Path(path)
-    if not path.is_file() or path.stat().st_size <= 0:
-        raise PostprocessError("template_missing", f"固定模板不存在：{path}")
-    try:
-        with np.load(path, allow_pickle=True) as data:
-            if "features" not in data or "meta" not in data:
-                raise ValueError("缺少 features/meta")
-            features = np.asarray(data["features"], dtype=np.float32)
-            meta = dict(data["meta"].item() or {})
-    except PostprocessError:
-        raise
-    except Exception as exc:
-        raise PostprocessError("template_invalid", f"无法读取固定模板 {path}：{exc}") from exc
-    if features.ndim != 3 or features.shape[0] <= 0 or features.shape[1:] != (22, 2):
-        raise PostprocessError(
-            "template_invalid",
-            f"固定模板特征形状无效：{path} -> {tuple(features.shape)}",
-        )
-    if not np.isfinite(features).all():
-        raise PostprocessError("template_invalid", f"固定模板包含非有限特征：{path}")
-    if str(meta.get("pose_variant") or "") != _EXPECTED_TEMPLATE_POSE_VARIANT:
-        raise PostprocessError(
-            "template_invalid",
-            f"固定模板必须使用 {_EXPECTED_TEMPLATE_POSE_VARIANT} 模型：{path}",
-        )
-    layout = str(meta.get("feature_layout") or "")
-    if layout and layout != _EXPECTED_TEMPLATE_LAYOUT:
-        raise PostprocessError(
-            "template_incompatible",
-            f"固定模板布局必须为 {_EXPECTED_TEMPLATE_LAYOUT}：{path} -> {layout}",
-        )
-    return features, meta
+def _postprocess_error(exc: TemplateError) -> PostprocessError:
+    return PostprocessError(exc.code, str(exc))
 
 
 def try_load_heavy_template(path: Path | str | None) -> Path | None:
     """模板路径可用则返回规范化 Path，否则 None（缺文件/无效均视为未填入）。"""
-    if path is None:
-        return None
-    raw = str(path).strip()
-    if not raw:
-        return None
-    try:
-        _load_heavy_template(Path(raw))
-    except PostprocessError:
-        return None
-    return Path(raw)
+    return exam_pool.usable_template(path)
 
 
 def validate_template_pair(front_path: Path, side_path: Path) -> None:
     """考试等正式路径：正/侧模板必须同时可用且布局一致。"""
-    _front_features, front_meta = _load_heavy_template(Path(front_path))
-    _side_features, side_meta = _load_heavy_template(Path(side_path))
-    front_layout = str(front_meta.get("feature_layout") or "") or _EXPECTED_TEMPLATE_LAYOUT
-    side_layout = str(side_meta.get("feature_layout") or "") or _EXPECTED_TEMPLATE_LAYOUT
-    if front_layout != side_layout or front_layout != _EXPECTED_TEMPLATE_LAYOUT:
-        raise PostprocessError(
-            "template_incompatible",
-            f"正侧模板布局不兼容：front={front_layout or '?'} side={side_layout or '?'}",
-        )
+    try:
+        exam_pool.check_pair(Path(front_path), Path(side_path))
+    except TemplateError as exc:
+        raise _postprocess_error(exc) from exc
 
 
 def validate_auto_compare_templates(
     front_path: Path | str | None,
     side_path: Path | str | None,
 ) -> tuple[Path | None, Path | None]:
-    """一条龙自动比对：至少一侧可用即可；两侧都缺才 ``template_missing``。
-
-    返回 ``(usable_front_or_None, usable_side_or_None)``。
-    两侧都可用时额外校验布局一致。
-    """
+    """一条龙自动比对：至少一侧可用即可；两侧都缺才 ``template_missing``，两侧都可用时校验布局一致。"""
     front = try_load_heavy_template(front_path)
     side = try_load_heavy_template(side_path)
     if front is None and side is None:
@@ -290,93 +203,15 @@ def template_action_name(path: Path | str) -> str:
     return Path(path).stem
 
 
-def merge_view_weighted_actions(action_details: list[dict]) -> list[dict]:
-    """把 ``_VIEW_WEIGHTS`` 登记的动作的正/侧子分按权重合并成单个动作子分。
-
-    - 仅当正面 ``<key>_正面`` 与侧面 ``<key>_侧面`` **都存在**时合并；缺一则原样保留
-      （不误合、不丢分）。
-    - 合并项 ``name`` = 无后缀的动作名（成绩表出一列）；``score`` = 归一权重加权和。
-    - 未登记动作与不成对的视角原样透传，保序（散打零影响：stem 无后缀/不在表内）。
-    """
-    by_name = {d.get("name"): d for d in action_details}
-    merged: list[dict] = []
-    consumed: set[int] = set()
-    for idx, d in enumerate(action_details):
-        if idx in consumed:
-            continue
-        name = str(d.get("name") or "")
-        base = None
-        if name.endswith(_VIEW_FRONT_SUFFIX):
-            base = name[: -len(_VIEW_FRONT_SUFFIX)]
-        elif name.endswith(_VIEW_SIDE_SUFFIX):
-            base = name[: -len(_VIEW_SIDE_SUFFIX)]
-        weights = _VIEW_WEIGHTS.get(base) if base else None
-        front_d = by_name.get(f"{base}{_VIEW_FRONT_SUFFIX}") if base else None
-        side_d = by_name.get(f"{base}{_VIEW_SIDE_SUFFIX}") if base else None
-        if weights is None or front_d is None or side_d is None:
-            merged.append(d)
-            continue
-        w_front = float(weights.get("front", 0.0))
-        w_side = float(weights.get("side", 0.0))
-        total = w_front + w_side
-        if total <= 0:
-            merged.append(d)
-            continue
-        w_front, w_side = w_front / total, w_side / total
-        score = w_front * float(front_d["score"]) + w_side * float(side_d["score"])
-        merged.append(
-            {
-                "name": base,
-                "view": "combined",
-                "score": float(score),
-                "front_score": float(front_d["score"]),
-                "side_score": float(side_d["score"]),
-                "view_weights": {"front": w_front, "side": w_side},
-                "front_start": int(front_d["start"]),
-                "front_end": int(front_d["end"]),
-                "side_start": int(side_d["start"]),
-                "side_end": int(side_d["end"]),
-            }
-        )
-        consumed.add(idx)
-        for j, o in enumerate(action_details):
-            if o is front_d or o is side_d:
-                consumed.add(j)
-    return merged
-
-
 def validate_auto_compare_template_lists(
     front_list: list[Path | str] | None,
     side_list: list[Path | str] | None,
 ) -> tuple[list[Path], list[Path]]:
-    """多模板池校验：过滤出可用的 heavy+pose33_v3 模板；两池都空才报错。
-
-    返回 ``(usable_front_list, usable_side_list)``，每个元素为规范化 Path，同序去重。
-    单个模板不可用则跳过（不整体失败），保证部分模板损坏不阻断其余动作评分。
-    """
-    def _filter(lst: list[Path | str] | None) -> list[Path]:
-        out: list[Path] = []
-        seen: set[str] = set()
-        for raw in lst or []:
-            usable = try_load_heavy_template(raw)
-            if usable is None:
-                continue
-            key = str(usable.resolve(strict=False))
-            if key in seen:
-                continue
-            seen.add(key)
-            out.append(usable)
-        return out
-
-    front = _filter(front_list)
-    side = _filter(side_list)
-    if not front and not side:
-        raise PostprocessError(
-            "template_missing",
-            "正/侧模板池均为空或不可用（需 heavy + pose33_v3）。"
-            "请在主界面「录制」区至少为一侧添加模板。",
-        )
-    return front, side
+    """多模板池校验：各自过滤出可用的 heavy+pose33_v3 模板（单个坏模板跳过）；两池都空才报错。"""
+    try:
+        return exam_pool.usable_pools(front_list, side_list)
+    except TemplateError as exc:
+        raise _postprocess_error(exc) from exc
 
 
 class DualRecordingPostProcessor:
@@ -713,108 +548,10 @@ class DualRecordingPostProcessor:
         side_video: Path,
         stop_evt: threading.Event,
     ) -> Any:
-        """正对正池、侧对侧池：每个模板各跑一次 subsequence DTW 出一个动作子分。
-
-        # ponytail: 弃用 compare_dual_streams 自动正侧拆分——考试双机位视角固定
-        # （正机位只拍正、侧机位只拍侧），逐模板 subsequence DTW 更直接,正对正/侧对侧天然成立。
-        每边综合 = 该池子分平均（供成绩表正/侧列）；combined = 所有动作子分直接平均。
-        """
-        from types import SimpleNamespace
-
-        def _run_pool(tpls: list[Path], video: Path, view: str) -> tuple[list[dict], float | None]:
-            if not tpls:
-                return [], None
-            self._raise_if_cancelled(stop_evt)
-            # 视频姿态只提取一次,复用给池内每个模板做 DTW（避免逐模板重复提取）。
-            results = self._compare_pool(
-                tpls,
-                video,
-                pose_variant=_EXPECTED_TEMPLATE_POSE_VARIANT,
-                workers=1,
-                stop_evt=stop_evt,
-            )
-            names = [template_action_name(tpl) for tpl in tpls]
-
-            # 踢腿几何质量分：仅当池内含踢腿动作时,对该视频提一次 raw Pose33 复用。
-            raw_series = None
-            if any(n in _KICK_KINDS for n in names):
-                self._raise_if_cancelled(stop_evt)
-                raw_series = extract_pose_raw_series(
-                    video, pose_variant=_EXPECTED_TEMPLATE_POSE_VARIANT
-                )
-
-            details: list[dict] = []
-            for name, res in zip(names, results):
-                dtw_score = float(res.score)
-                start, end = int(res.start_frame), int(res.end_frame)
-                geom_score: float | None = None
-                geom_detail = ""
-                if raw_series is not None and name in _KICK_KINDS:
-                    lm_win, meta_win = slice_pose_raw_series(
-                        raw_series, start_frame=start, end_frame=end
-                    )
-                    geom_score, geom_detail = score_kick_quality(
-                        lm_win,
-                        meta_win["valid_mask"],
-                        _KICK_KINDS[name],
-                        width=meta_win.get("width"),
-                        height=meta_win.get("height"),
-                    )
-                if geom_score is not None:
-                    final = KICK_GEOM_WEIGHT * geom_score + (1.0 - KICK_GEOM_WEIGHT) * dtw_score
-                else:
-                    final = dtw_score
-                # DTW 不可靠的动作（如背后七颠）：把分线性压到高分窄区间（人人过、
-                # 弱区分、可复现）。只对已登记动作生效,散打/其余八段锦不受影响。
-                squeeze = _SCORE_SQUEEZE.get(name)
-                if squeeze is not None:
-                    lo, hi = squeeze
-                    final = lo + (hi - lo) * float(np.clip(dtw_score, 0.0, 1.0))
-                details.append(
-                    {
-                        "name": name,
-                        "view": view,
-                        "score": float(final),
-                        "dtw_score": dtw_score,
-                        "geom_score": geom_score,
-                        "geom_detail": geom_detail,
-                        "start": start,
-                        "end": end,
-                    }
-                )
-            pool_mean = (
-                float(np.mean([d["score"] for d in details])) if details else None
-            )
-            return details, pool_mean
-
-        front_details, front_score = _run_pool(front_tpls, front_video, "front")
-        side_details, side_score = _run_pool(side_tpls, side_video, "side")
-
-        # 同动作多视角合并（_VIEW_WEIGHTS 登记的按权重合成一个子分；未登记原样透传）。
-        # front_score/side_score 仍为各池原始均值（供成绩表正/侧列），只影响 combined 与
-        # 逐动作 action_scores 列（避免正+侧双模板动作被双重计数）。
-        action_scores = merge_view_weighted_actions(front_details + side_details)
-        # combined：所有动作子分直接平均（正侧模板各自出分,不再套池权重）。
-        all_scores = [d["score"] for d in action_scores]
-        combined = float(np.mean(all_scores)) if all_scores else 0.0
-        pct = int(np.clip(int(round(combined * 100.0)), 0, 100))
-        # 兼容旧字段：front/side_segment 取各池首个匹配窗口（若有）
-        front_seg = (
-            (front_details[0]["start"], front_details[0]["end"]) if front_details else None
-        )
-        side_seg = (
-            (side_details[0]["start"], side_details[0]["end"]) if side_details else None
-        )
-        return SimpleNamespace(
-            front_score=front_score,
-            side_score=side_score,
-            combined_score=combined,
-            combined_percent=pct,
-            front_matches=(),
-            side_matches=(),
-            front_segment=front_seg,
-            side_segment=side_seg,
-            action_scores=tuple(action_scores),
+        """正对正池、侧对侧池逐模板比对（计分方案 ``EXAM_POOL``）；池级比对函数可注入测试。"""
+        return exam_pool.score_exam_pools(
+            front_tpls, side_tpls, front_video, side_video,
+            compare=self._compare_pool, raw_series=extract_pose_raw_series, stop_evt=stop_evt,
         )
 
     @staticmethod

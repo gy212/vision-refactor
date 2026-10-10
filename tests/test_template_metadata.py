@@ -181,7 +181,7 @@ def test_missing_feature_layout_metadata_preserves_legacy_runtime_fallback(tmp_p
         captured["normalizer"] = normalizer.__name__
         return np.zeros((40, 22, 2), dtype=np.float32), FPS, None
 
-    monkeypatch.setattr("core.action_compare._extract_pose_features", fake_extract)
+    monkeypatch.setattr("core.evaluation.matching.engine.extract_features", fake_extract)  # P3：比对迁入 evaluation
     compare_video_to_template(legacy_tpl, STUDENT, pose_variant="full")
 
     # The normalized metadata is filled for downstream visibility, but runtime matching must still

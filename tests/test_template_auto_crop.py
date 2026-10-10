@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from core import action_compare
+from core.services import templates as services_templates
 
 
 def _features_from_energy(energy: np.ndarray) -> np.ndarray:
@@ -67,9 +68,9 @@ def test_create_template_rejects_suspicious_long_auto_crop(
     energy = _multi_activity_energy()
     features = _features_from_energy(energy)
     out_path = tmp_path / "unexpected.npz"
-    monkeypatch.setattr(
-        action_compare,
-        "_extract_pose_features",
+    monkeypatch.setattr(  # P3：模板生成迁入 core.services.templates
+        services_templates,
+        "extract_features",
         lambda *_args, **_kwargs: (features, 30.0, None),
     )
 
@@ -87,9 +88,9 @@ def test_explicit_range_overrides_review_and_records_diagnostics(
     energy = _multi_activity_energy()
     features = _features_from_energy(energy)
     out_path = tmp_path / "manual.npz"
-    monkeypatch.setattr(
-        action_compare,
-        "_extract_pose_features",
+    monkeypatch.setattr(  # P3：模板生成迁入 core.services.templates
+        services_templates,
+        "extract_features",
         lambda *_args, **_kwargs: (features, 30.0, None),
     )
 
