@@ -27,13 +27,14 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from core.action_compare import (  # noqa: E402
-    _multi_subsequence_matches,
-    _normalizer_version_from_layout,
-    _runtime_feature_layout,
-    compare_video_to_dual_templates,
+from core.evaluation import (  # noqa: E402
+    POSE33_BASELINE,
+    multi_subsequence_matches,
     normalize_template_meta,
+    normalizer_version_from_layout,
+    runtime_feature_layout,
 )
+from core.evaluation import compare_dual_templates as compare_video_to_dual_templates  # noqa: E402
 from core.body_core_compare import (  # noqa: E402
     BODY_CORE_V1_CALIBRATED_BASELINE,
     CALIBRATION_STATUS_UNVALIDATED,
@@ -56,8 +57,6 @@ from core.pose_features import (  # noqa: E402
 )
 from core.pose import create_engine, formal_engine  # noqa: E402
 
-
-POSE33_BASELINE = 3.0  # 2026-07-11 校准：2.0 → 3.0（同人自复现 avg_cost≈0.333 锚到 ~0.90 分）
 
 
 @dataclass
@@ -154,10 +153,10 @@ def _normalizer_for_dual_templates(front_template: Path, side_template: Path) ->
         raw_meta_s = dict(tpl_s["meta"].item() or {})
     meta_f = normalize_template_meta(dict(raw_meta_f))
     meta_s = normalize_template_meta(dict(raw_meta_s))
-    layout_f = _runtime_feature_layout(raw_meta_f, meta_f)
-    layout_s = _runtime_feature_layout(raw_meta_s, meta_s)
-    version_f = _normalizer_version_from_layout(layout_f)
-    version_s = _normalizer_version_from_layout(layout_s)
+    layout_f = runtime_feature_layout(raw_meta_f, meta_f)
+    layout_s = runtime_feature_layout(raw_meta_s, meta_s)
+    version_f = normalizer_version_from_layout(layout_f)
+    version_s = normalizer_version_from_layout(layout_s)
     if version_f != version_s:
         raise ValueError("Front/side templates use different normalizer versions; cannot stage-profile as one production path.")
     if version_f == "v3":
@@ -284,7 +283,7 @@ def _profile_multi_view(
         exclusion = max(3, int(round(0.2 * float(query.shape[0]))))
         max_matches = int(min(30, max(1, round(float(seg_seq.shape[0]) / max(1.0, float(query.shape[0]))))))
         with stages.time(f"{name}_multi_subsequence_dtw"):
-            matches = _multi_subsequence_matches(
+            matches = multi_subsequence_matches(
                 query,
                 seg_seq,
                 baseline=float(baseline),

@@ -17,7 +17,8 @@ import cv2
 import numpy as np
 from PIL import Image, ImageTk
 
-from core.action_compare import compare_video_to_templates, create_template_from_video
+from core.evaluation import COMPARE, load_template
+from core.services import compare_templates, create_template_from_video
 from core.pose import EngineSpec, create_engine, draw_roi, draw_tk_hud, missing_model_message, render_pose
 from core.pose import actions_text as format_actions
 from core.foundation import (
@@ -644,8 +645,7 @@ class CompareWindow:
                     stop_evt=self._stop_evt,
                 )
                 self._win.after(0, lambda p=str(tpl_path): self._add_template_path(p))
-                with np.load(tpl_path, allow_pickle=True) as template_data:
-                    template_meta = dict(template_data["meta"].item() or {})
+                template_meta = load_template(tpl_path, COMPARE).raw_meta
                 start_frame = int(template_meta.get("start_frame") or 0)
                 end_frame = int(template_meta.get("end_frame") or start_frame)
                 fps = float(template_meta.get("fps") or 30.0)
@@ -703,7 +703,7 @@ class CompareWindow:
         def _run() -> None:
             payload: dict = {"video_path": vid}
             try:
-                results = compare_video_to_templates(
+                results = compare_templates(
                     tpls,
                     vid,
                     pose_variant=pose_variant,

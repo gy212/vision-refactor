@@ -20,12 +20,13 @@ from core.evaluation.matching.engine import (
 from core.evaluation.scoring.cost import POSE33_BASELINE
 from core.evaluation.scoring.exam_pool import ExamPoolResult, score_exam_pools, usable_pools
 from core.evaluation.scoring.schemes import DUAL_STREAM, DUAL_TEMPLATE, Scheme
+from core.evaluation.techeval.evaluate import evaluate_video_full
 from core.evaluation.templates import COMPARE, load_template
 from core.pose.features import ProgressCb
 from core.pose.raw_series import extract_pose_raw_series
 from core.services.preview import export_match_preview
 
-__all__ = ["compare_dual", "compare_templates", "compare_video", "export_match_preview", "score_segment"]
+__all__ = ["compare_dual", "compare_templates", "compare_video", "export_match_preview", "score_segment", "tech_eval_video"]
 
 
 def compare_video(
@@ -87,3 +88,9 @@ def score_segment(front_video: str | Path, side_video: str | Path, front_templat
     front_ok, side_ok = usable_pools(front_templates, side_templates)
     return score_exam_pools(front_ok, side_ok, Path(front_video), Path(side_video), compare=match_video,
                             raw_series=extract_pose_raw_series, stop_evt=stop_evt or Event())
+
+
+def tech_eval_video(video_path: str | Path, *, pose_variant: str = "full", stance: str = "left",
+                    view_hint: str = "auto") -> dict:
+    """一段视频的直拳技术指标（JSON 字典，与 ``analysis.tech_eval.evaluate_video_full`` 相同）。"""
+    return evaluate_video_full(Path(video_path), pose_variant=pose_variant, stance=stance, view_hint=view_hint)

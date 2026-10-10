@@ -3,11 +3,12 @@
 
 | 方案 | 算法 | 使用者 |
 |---|---|---|
-| ``EXAM_POOL`` | 正对正池、侧对侧池逐模板子序列 DTW；踢腿几何加权；指定动作分数压缩；正侧权重合并 | Tk 考试与普通双摄录后自动比对；``batch --scheme exam_pool`` 离线复算 |
+| ``EXAM_POOL`` | 正对正池、侧对侧池逐模板子序列 DTW；踢腿几何加权；指定动作分数压缩；正侧权重合并 | Tk 考试与普通双摄录后自动比对；``services.score_segment`` 离线复算 |
 | ``DUAL_STREAM`` | 正侧两路各自多次匹配，加规则扣分 | ``batch_dual_compare --paired``（研究用） |
 | ``DUAL_TEMPLATE`` | 单视频按视角自动切分后做双模板比对，加规则扣分 | ``batch_dual_compare``（非 paired）、golden、离线剖析 |
 
-D-4（2026-10-06）：考试以 ``EXAM_POOL`` 为准；三种并存，batch 的默认方案不变。
+D-4 未决：三种方案并存，batch 参数不变（``--paired`` 用 ``DUAL_STREAM``，非 paired 用 ``DUAL_TEMPLATE``，
+不加 ``--scheme``）；建议的 ``--scheme exam_pool`` 等批准后单独提 PR。
 CompareWindow 与 ``match_template`` CLI 直接用 ``match_templates``，不属于这三种方案。
 """
 from __future__ import annotations

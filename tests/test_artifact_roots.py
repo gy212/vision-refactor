@@ -67,8 +67,8 @@ _EDITED_FILES = (
     "analysis/tech_eval.py",
     "apps/main.py",
     "apps/app_ui.py",
-    "apps/make_template.py",
-    "apps/match_template.py",
+    "apps/cli/make_template.py",
+    "apps/cli/match_template.py",
     "batch/batch_export_skeleton.py",
     "batch/batch_tech_eval.py",
     "batch/batch_dual_compare.py",
@@ -99,8 +99,8 @@ def test_representative_modules_use_core_paths():
     import core.action_compare as ac
     import core.rule_scoring as rs
     import analysis.tech_eval as te
-    import apps.make_template as mt
-    import apps.match_template as mat
+    import apps.cli.make_template as mt  # P3：CLI 实现移入 apps/cli，原路径是入口壳
+    import apps.cli.match_template as mat
     import batch.batch_export_skeleton as bes
 
     # 这些模块都绑定了 core.paths 暴露的解析函数（models_dir/templates_dir/outputs_dir）。

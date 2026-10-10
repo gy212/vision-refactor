@@ -19,6 +19,17 @@ if str(_REPO_ROOT) not in sys.path:
 
 from batch import batch_dual_compare, batch_export_skeleton, batch_tech_eval  # noqa: E402
 from batch.backend_options import meta_for_backend, normalize_backend_layout, yolo_batch_meta  # noqa: E402
+from core.evaluation import SCHEMES, DualCompareResult, RepetitionMatch  # noqa: E402
+
+
+def _by_scheme(**fakes):
+    """``compare_dual`` 的替身：按计分方案名分派；用到未登记的方案即失败（如 paired 模式误走 DUAL_TEMPLATE）。"""
+    def compare_dual(scheme, *args, **kwargs):
+        assert scheme in SCHEMES.values()
+        if scheme.name.upper() not in fakes:
+            pytest.fail(f"不应使用计分方案 {scheme.name}")
+        return fakes[scheme.name.upper()](*args, **kwargs)
+    return compare_dual
 
 
 def test_backend_layout_defaults_preserve_pose33_path():
@@ -181,7 +192,7 @@ def test_dual_compare_parallel_video_workers_keep_order_and_inner_workers_one(tm
         calls.append((video_path.name, int(kwargs["workers"])))
         if video_path.name.startswith("a_"):
             time.sleep(0.05)
-        return batch_dual_compare.ac.DualCompareResult(
+        return DualCompareResult(
             front_template_path=Path(front_tpl),
             side_template_path=Path(side_tpl),
             video_path=video_path,
@@ -191,14 +202,14 @@ def test_dual_compare_parallel_video_workers_keep_order_and_inner_workers_one(tm
             side_score=0.8,
             combined_score=0.75,
             combined_percent=75 if video_path.name.startswith("a_") else 85,
-            front_matches=(batch_dual_compare.ac.RepetitionMatch(1, 2, 0.1, 0.9),),
-            side_matches=(batch_dual_compare.ac.RepetitionMatch(3, 4, 0.2, 0.8),),
+            front_matches=(RepetitionMatch(1, 2, 0.1, 0.9),),
+            side_matches=(RepetitionMatch(3, 4, 0.2, 0.8),),
             front_segment=(1, 2),
             side_segment=(3, 4),
         )
 
-    monkeypatch.setattr(batch_dual_compare.ac, "create_template_from_video", fake_template)
-    monkeypatch.setattr(batch_dual_compare.ac, "compare_video_to_dual_templates", fake_compare)
+    monkeypatch.setattr(batch_dual_compare, "create_template_from_video", fake_template)
+    monkeypatch.setattr(batch_dual_compare, "compare_dual", _by_scheme(DUAL_TEMPLATE=fake_compare))
     monkeypatch.setattr(
         sys,
         "argv",
@@ -298,7 +309,7 @@ def test_dual_compare_paired_mode_uses_dual_streams_and_skips_raw_export(tmp_pat
         if front_video.name.startswith("a_"):
             time.sleep(0.05)
         pct = 75 if front_video.name.startswith("a_") else 85
-        return batch_dual_compare.ac.DualCompareResult(
+        return DualCompareResult(
             front_template_path=Path(front_tpl),
             side_template_path=Path(side_tpl),
             video_path=front_video,
@@ -308,19 +319,14 @@ def test_dual_compare_paired_mode_uses_dual_streams_and_skips_raw_export(tmp_pat
             side_score=0.8,
             combined_score=float(pct) / 100.0,
             combined_percent=pct,
-            front_matches=(batch_dual_compare.ac.RepetitionMatch(1, 2, 0.1, 0.9),),
-            side_matches=(batch_dual_compare.ac.RepetitionMatch(3, 4, 0.2, 0.8),),
+            front_matches=(RepetitionMatch(1, 2, 0.1, 0.9),),
+            side_matches=(RepetitionMatch(3, 4, 0.2, 0.8),),
             front_segment=(0, 9),
             side_segment=(0, 11),
         )
 
-    monkeypatch.setattr(batch_dual_compare.ac, "create_template_from_video", fake_template)
-    monkeypatch.setattr(batch_dual_compare.ac, "compare_dual_streams", fake_compare_dual_streams)
-    monkeypatch.setattr(
-        batch_dual_compare.ac,
-        "compare_video_to_dual_templates",
-        lambda *args, **kwargs: pytest.fail("paired mode must use compare_dual_streams"),
-    )
+    monkeypatch.setattr(batch_dual_compare, "create_template_from_video", fake_template)
+    monkeypatch.setattr(batch_dual_compare, "compare_dual", _by_scheme(DUAL_STREAM=fake_compare_dual_streams))
     monkeypatch.setattr(
         batch_dual_compare,
         "extract_pose_raw",

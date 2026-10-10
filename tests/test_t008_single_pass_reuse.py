@@ -13,7 +13,6 @@ if str(_REPO_ROOT) not in sys.path:
 
 from core import action_compare as ac  # noqa: E402
 from core.evaluation.matching import dual as dual_mod  # noqa: E402
-from core import body_core_compare  # noqa: E402
 from core.body_core_compare import (  # noqa: E402
     CALIBRATION_STATUS_UNVALIDATED,
     create_body_core_template,
@@ -110,7 +109,9 @@ def test_body_core_match_accepts_precomputed_features_without_reextract(monkeypa
     def fail_extract(*args, **kwargs):
         raise AssertionError("precomputed body_core features should avoid re-extraction")
 
-    monkeypatch.setattr(body_core_compare, "extract_body_core_features", fail_extract)
+    from core.evaluation.matching import body_core as body_core_matching
+
+    monkeypatch.setattr(body_core_matching, "extract_body_core_features", fail_extract)
     res = match_body_core_template(
         tpl_path,
         STUDENT,

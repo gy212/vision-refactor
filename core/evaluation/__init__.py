@@ -9,6 +9,11 @@ from core.evaluation.body_sides import (
     side_label,
     sides_for_stance,
 )
+from core.evaluation.matching.body_core import (
+    BodyCoreMatchResult,
+    MultiPersonReviewRequiredError,
+    match_body_core_template,
+)
 from core.evaluation.matching.dtw import subsequence_dtw, subsequence_dtw_with_path
 from core.evaluation.matching.dual import DualCompareResult, compare_dual_streams, compare_dual_templates
 from core.evaluation.matching.engine import (
@@ -90,9 +95,12 @@ from core.evaluation.templates import (
     TemplateContract,
     TemplateError,
     TemplateStore,
+    LEGACY_DEFAULT_FEATURE_LAYOUT,
     load_template,
     normalize_template_meta,
     normalizer_for,
+    normalizer_version_from_layout,
+    runtime_feature_layout,
 )
 from core.evaluation.templates import EXAM_POOL as EXAM_POOL_TEMPLATES
 
@@ -100,6 +108,7 @@ __all__ = [
     "ACTIONS",
     "ActionTemplate",
     "BACKEND_MEDIAPIPE",
+    "BodyCoreMatchResult",
     "COG_COM_REQUIRED_INDICES",
     "COG_REQUIRED_INDICES",
     "COMPARE",
@@ -113,8 +122,10 @@ __all__ = [
     "FeedbackConfig",
     "IndicatorResult",
     "JointErrorStat",
+    "LEGACY_DEFAULT_FEATURE_LAYOUT",
     "MatchResult",
     "MatcherConfig",
+    "MultiPersonReviewRequiredError",
     "ONLINE",
     "OnlineActionMatcher",
     "PHASES",
@@ -171,13 +182,16 @@ __all__ = [
     "load_feedback_config",
     "load_template",
     "load_template_library",
+    "match_body_core_template",
     "match_templates",
     "match_video",
     "match_window",
     "multi_subsequence_matches",
     "normalize_template_meta",
     "normalizer_for",
+    "normalizer_version_from_layout",
     "phase_windows",
+    "runtime_feature_layout",
     "scheme",
     "schemes",
     "score_from_avg_cost",

@@ -47,25 +47,17 @@ LAYERING: dict[str, tuple[int, str]] = {}
 CYCLES: dict[str, tuple[int, str]] = {}
 
 PRIVATE: dict[str, tuple[int, str]] = {
-    'analysis/offline_matching_profile.py: core.action_compare._multi_subsequence_matches': (1, 'P9'),
-    'analysis/offline_matching_profile.py: core.action_compare._normalizer_version_from_layout': (1, 'P9'),
-    'analysis/offline_matching_profile.py: core.action_compare._runtime_feature_layout': (1, 'P9'),
     'apps/camera_capture.py: apps.camera_enum._enumerate_media_foundation_names': (1, 'P5'),
 }
 
 PRIMITIVES: dict[str, tuple[int, str]] = {
     'np_load: analysis/calibrate_body_core.py': (1, 'P9'),
     'np_load: analysis/offline_matching_profile.py': (6, 'P9'),
-    'np_load: apps/app_ui.py': (1, 'P3'),
-    'np_load: apps/match_template.py': (2, 'P3'),
     'np_load: batch/batch_dual_compare.py': (1, 'P9'),
     'np_load: batch/batch_export_skeleton.py': (1, 'P9'),
-    'np_load: core/body_core_compare.py': (1, 'P3'),
     'np_load: scripts/match_segments_probe.py': (1, 'P9'),
     'subsequence_dtw: analysis/calibrate_body_core.py': (1, 'P9'),
     'subsequence_dtw: analysis/offline_matching_profile.py': (2, 'P9'),
-    'subsequence_dtw: apps/match_template.py': (1, 'P3'),
-    'subsequence_dtw: core/body_core_compare.py': (1, 'P3'),
     'subsequence_dtw: scripts/match_segments_probe.py': (1, 'P9'),
     'thread: apps/app_ui.py': (12, 'P8'),
     'thread: apps/camera_enum.py': (1, 'P5'),
@@ -128,10 +120,9 @@ FUNCTION_SIZE: dict[str, tuple[int, str]] = {
     'apps/main.py::run_realtime_latest_frame_smoke': (142, 'P6'),
     'apps/recording_postprocess.py::DualRecordingPostProcessor._process': (102, 'P4'),
     'batch/batch_dual_compare.py::_run_body_core_batch': (115, 'P9'),
-    'batch/batch_dual_compare.py::main': (267, 'P9'),
+    'batch/batch_dual_compare.py::main': (237, 'P9'),
     'batch/batch_export_skeleton.py::main': (120, 'P9'),
     'batch/batch_tech_eval.py::main': (190, 'P9'),
-    'core/body_core_compare.py::match_body_core_template': (162, 'P3'),
     'core/evaluation/techeval/cog.py::eval_cog_front': (101, 'P9'),  # 原 analysis/tech_eval.py，P3 迁入
     'core/evaluation/techeval/cog.py::eval_cog_side': (139, 'P9'),
     'core/evaluation/techeval/com.py::_compute_body_com_single': (176, 'P9'),
@@ -149,4 +140,4 @@ DEFENSIVE_GETATTR: dict[str, tuple[int, str]] = {
     'apps/app_ui.py': (169, 'P8'),
 }
 
-ENTRY_CEILING = 86
+ENTRY_CEILING = 77
