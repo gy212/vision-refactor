@@ -1,3 +1,13 @@
+## 2026-10-10（America/Los_Angeles）: [docs] D-4、D-9/V-8 已决：采纳建议，实施另提 PR
+
+- 问题描述：P3 实施时 D-4（考试与 `batch --paired` 计分方案不同）与 D-9/V-8（模板池混用 v2/v3 归一化）未决，按未决做法保持现状。P3 完成后用户决定两项都采纳设计文档的建议。
+- 修改内容：
+  - 设计文档 §11.1 V-8、§11.2 D-4、D-9 划线并写明结论：D-4 是考试以 `EXAM_POOL` 为准，`batch_dual_compare` 新增 `--scheme {dual_stream,dual_template,exam_pool}`，缺省不变，`exam_pool` 只与 `--paired` 搭配、模板须满足考试契约；D-9 是 `match_video` 逐模板按自身归一化版本取特征，CompareWindow 提示混用池。§7.5、§9.2、§12 的相关句子同步。
+  - `重构阶段任务/P3-评估.md`：任务前检查与待决策表更新，新增第 5 节"后续 PR"列出两项的实施与验收；`README.md` 的阶段一览与待决策总表划线。
+  - 只改文档。代码里仍写着"未决"的说明（`core/evaluation/scoring/schemes.py`、`core/evaluation/matching/engine.py`）随各自的实施 PR 一起改，P3 的代码行为不变。
+- 同步依据：用户在本会话确认"采纳 D-4、D-9 的建议，先写进文档"。
+- 验证方法：`grep -n "D-4\|D-9\|V-8"` 核对设计文档、阶段清单、README 三处结论一致；`git diff --check` 无空白错误；只改文档，未运行测试。
+
 ## 2026-10-10（America/Los_Angeles）: [refactor] P3 评估：模板、匹配、计分、规则、练习、技术指标迁入 core.evaluation，入口改走 services
 
 - 问题描述：按 `重构阶段任务/P3-评估.md` 把比对、计分、正式规则、学生练习与技术指标收口到 `core/evaluation`，离线组合流程收口到 `core/services`，删除 apps 层的评分策略和 9 处写死的 baseline，比对、计分、规则输出不变。D-2、D-3、D-5 不动；D-4、D-9 仍未决，按未决做法保持现状（三种计分方案并存、batch 不加 `--scheme`；模板池按首个模板归一化）。
