@@ -53,9 +53,7 @@ PRIVATE: dict[str, tuple[int, str]] = {
 PRIMITIVES: dict[str, tuple[int, str]] = {
     'np_load: analysis/calibrate_body_core.py': (1, 'P9'),
     'np_load: analysis/offline_matching_profile.py': (6, 'P9'),
-    'np_load: batch/batch_dual_compare.py': (1, 'P9'),
     'np_load: batch/batch_export_skeleton.py': (1, 'P9'),
-    'np_load: scripts/match_segments_probe.py': (1, 'P9'),
     'subsequence_dtw: analysis/calibrate_body_core.py': (1, 'P9'),
     'subsequence_dtw: analysis/offline_matching_profile.py': (2, 'P9'),
     'subsequence_dtw: scripts/match_segments_probe.py': (1, 'P9'),
@@ -140,4 +138,4 @@ DEFENSIVE_GETATTR: dict[str, tuple[int, str]] = {
     'apps/app_ui.py': (169, 'P8'),
 }
 
-ENTRY_CEILING = 77
+ENTRY_CEILING = 75

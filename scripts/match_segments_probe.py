@@ -22,7 +22,7 @@ from pathlib import Path
 
 import numpy as np
 
-from core.evaluation import POSE33_BASELINE, score_from_avg_cost
+from core.evaluation import COMPARE, POSE33_BASELINE, load_template, score_from_avg_cost
 from core.media import VideoOpenError
 from core.pose import FORMAL, POSE33_V3, extract_pose_sequence, formal_engine, normalize_pose_xy_v3
 from core.pose_features import subsequence_dtw
@@ -73,7 +73,7 @@ def main() -> None:
 
     rows = []
     for tpl in tpls:
-        q = np.load(tpl, allow_pickle=True)["features"].reshape(-1, 44)
+        q = load_template(tpl, COMPARE).features.reshape(-1, 44)
         cost, s, e = subsequence_dtw(q, seq)
         avg = cost / max(1, q.shape[0])
         score = score_from_avg_cost(avg, POSE33_BASELINE)

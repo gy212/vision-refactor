@@ -13,7 +13,7 @@ from typing import Any
 
 import numpy as np
 
-from core.evaluation import DUAL_STREAM, DUAL_TEMPLATE
+from core.evaluation import COMPARE, DUAL_STREAM, DUAL_TEMPLATE, load_template
 from core.services import compare_dual, create_template_from_video
 from core.rule_scoring import extract_pose_raw
 from core.paths import outputs_dir
@@ -415,8 +415,7 @@ def main() -> None:
 
 
 def _load_npz_meta(path: Path) -> dict[str, Any]:
-    data = np.load(path, allow_pickle=True)
-    return dict(data["meta"].item() or {})
+    return dict(load_template(path, COMPARE).raw_meta)
 
 
 def _body_core_result_dict(res: Any, *, meta: dict[str, Any]) -> dict[str, Any]:
