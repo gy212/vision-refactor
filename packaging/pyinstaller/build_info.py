@@ -20,6 +20,7 @@ CLEAN_PATHS: tuple[str, ...] = (
     "core", "apps", "analysis", "batch", "assets", "templates", "packaging", "app_ui_onefile.spec",
 )
 
+RULE_VERSION_SOURCE = "core/evaluation/rules/practice_v4.py"  # 学生练习规则版本（P3 起由此定义）
 _RULE_VERSION_RE = re.compile(r'^RULE_VERSION\s*=\s*"([^"]+)"', re.MULTILINE)
 
 
@@ -44,11 +45,11 @@ def require_clean(repo: Path, paths: tuple[str, ...] = CLEAN_PATHS) -> None:
 
 
 def read_rule_version(repo: Path) -> str:
-    """从源码读取 ``core/action_feedback.py`` 的 ``RULE_VERSION``，不导入业务模块。"""
-    text = (repo / "core" / "action_feedback.py").read_text(encoding="utf-8")
+    """从源码读取 ``RULE_VERSION_SOURCE`` 的 ``RULE_VERSION``，不导入业务模块。"""
+    text = (repo / RULE_VERSION_SOURCE).read_text(encoding="utf-8")
     match = _RULE_VERSION_RE.search(text)
     if match is None:
-        raise SystemExit("core/action_feedback.py 中找不到 RULE_VERSION")
+        raise SystemExit(f"{RULE_VERSION_SOURCE} 中找不到 RULE_VERSION")
     return match.group(1)
 
 

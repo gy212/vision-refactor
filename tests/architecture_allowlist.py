@@ -25,7 +25,7 @@ LEGACY_TARGETS = {
     "core.body_core_compare": "core.evaluation",
     "core.online_matcher": "core.evaluation",
     "core.kick_quality": "core.evaluation",
-    "core.action_feedback": "core.evaluation",
+    "core.action_feedback": "core.reporting",  # P3 起也转发 reporting.text，按更高的一层归层
     "core.feedback_geometry": "core.evaluation",
     "core.feedback_phases": "core.evaluation",
     "core.recording_controller": "core.recording",
@@ -42,21 +42,15 @@ LEGACY_TARGETS = {
 # 规则模块不得直接写 arccos / linalg.norm（测量走 evaluation.measures）；这些旧模块按规则模块检查。
 LEGACY_RULE_MODULES = {"core.rule_scoring", "core.feedback_geometry", "core.action_feedback"}
 
-LAYERING: dict[str, tuple[int, str]] = {  # feedback_history 渲染报告：P4 改为由调用方注入
-    'core/feedback_history.py -> core.feedback_report': (1, 'P4'),
-}
+LAYERING: dict[str, tuple[int, str]] = {}
 
-CYCLES: dict[str, tuple[int, str]] = {  # v4 规则三件套互相导入：P3 拆入 evaluation 时消除
-    'core.action_feedback <-> core.feedback_geometry': (1, 'P3'),
-}
+CYCLES: dict[str, tuple[int, str]] = {}
 
 PRIVATE: dict[str, tuple[int, str]] = {
     'analysis/offline_matching_profile.py: core.action_compare._multi_subsequence_matches': (1, 'P9'),
     'analysis/offline_matching_profile.py: core.action_compare._normalizer_version_from_layout': (1, 'P9'),
     'analysis/offline_matching_profile.py: core.action_compare._runtime_feature_layout': (1, 'P9'),
     'apps/camera_capture.py: apps.camera_enum._enumerate_media_foundation_names': (1, 'P5'),
-    'core/feedback_geometry.py: core.rule_scoring._rule_feet_parallel': (1, 'P3'),
-    'core/feedback_geometry.py: core.rule_scoring._rule_knee_slight_bend': (1, 'P3'),
 }
 
 PRIMITIVES: dict[str, tuple[int, str]] = {
@@ -68,7 +62,6 @@ PRIMITIVES: dict[str, tuple[int, str]] = {
     'np_load: batch/batch_export_skeleton.py': (1, 'P9'),
     'np_load: core/body_core_compare.py': (1, 'P3'),
     'np_load: scripts/match_segments_probe.py': (1, 'P9'),
-    'rule_math: core/feedback_geometry.py': (11, 'P3'),
     'subsequence_dtw: analysis/calibrate_body_core.py': (1, 'P9'),
     'subsequence_dtw: analysis/offline_matching_profile.py': (2, 'P9'),
     'subsequence_dtw: apps/match_template.py': (1, 'P3'),
@@ -148,8 +141,6 @@ FUNCTION_SIZE: dict[str, tuple[int, str]] = {
     'batch/batch_tech_eval.py::main': (190, 'P9'),
     'core/body_core_compare.py::match_body_core_template': (162, 'P3'),
     'core/exam_clip.py::prepare_exam_pair': (114, 'P4'),
-    'core/feedback_geometry.py::evaluate_series': (124, 'P3'),
-    'core/feedback_phases.py::phase_windows': (109, 'P3'),
     'core/feedback_report.py::build_report_model': (280, 'P8'),
     'core/feedback_report.py::generate_phase_timeline_svg': (142, 'P8'),
     'core/feedback_report.py::get_headline_summary': (131, 'P8'),
@@ -161,4 +152,4 @@ DEFENSIVE_GETATTR: dict[str, tuple[int, str]] = {
     'apps/app_ui.py': (169, 'P8'),
 }
 
-ENTRY_CEILING = 96
+ENTRY_CEILING = 89

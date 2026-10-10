@@ -1,6 +1,7 @@
 """学生练习历史；只管理本模块导入的视频副本，永不删除外部原视频。"""
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping
 from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
@@ -9,7 +10,7 @@ import shutil
 import threading
 from uuid import uuid4
 
-from core.action_feedback import ACTIONS, STANCES, analyze_feedback, format_report
+from core.evaluation import ACTIONS, STANCES, analyze_practice
 from core.foundation.atomic_io import atomic_write_json, atomic_write_text
 
 VIDEO_SUFFIXES = {".mp4", ".avi", ".mkv", ".mov", ".wmv", ".m4v"}
@@ -33,13 +34,16 @@ def validate_identity(student_id: str, student_name: str, action: str, stance: s
 
 
 class FeedbackHistory:
-    def __init__(self, root: Path | None = None, *, clock=None):
+    def __init__(self, root: Path | None = None, *, clock=None,
+                 renderers: Mapping[str, Callable[[dict, Path], str]] | None = None):
+        """``renderers``：导出扩展名 → ``(记录, 历史根目录) -> 报告全文``，由调用方注入（见 ``core.reporting``）。"""
         if root is None:
             from core.paths import outputs_dir
             root = outputs_dir() / "practice_feedback"
         self.root = Path(root).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
         self.clock = clock or (lambda: datetime.now(timezone.utc))
+        self.renderers = dict(renderers or {})
         # ponytail: 一个桌面进程共享此锁；多进程同时使用时改为SQLite事务。
         self._lock = threading.RLock()
 
@@ -96,7 +100,7 @@ class FeedbackHistory:
             return record
 
     def add(self, identity: dict, front: Path | None, side: Path | None, *,
-            stopped=lambda: False, analyzer=analyze_feedback) -> dict:
+            stopped=lambda: False, analyzer=analyze_practice) -> dict:
         identity = validate_identity(identity["studentId"], identity["studentName"], identity["action"], identity["stance"])
         sources = {k: Path(v).resolve() for k, v in (("front", front), ("side", side)) if v is not None}
         if not sources or any(not p.is_file() or p.suffix.lower() not in VIDEO_SUFFIXES for p in sources.values()):
@@ -136,7 +140,7 @@ class FeedbackHistory:
             shutil.rmtree(self._directory(record_id))
             raise
 
-    def reanalyze(self, record_id: str, *, stopped=lambda: False, analyzer=analyze_feedback) -> dict:
+    def reanalyze(self, record_id: str, *, stopped=lambda: False, analyzer=analyze_practice) -> dict:
         record = self.get(record_id)
         directory = self._directory(record_id)
         videos = {}
@@ -190,9 +194,11 @@ class FeedbackHistory:
                 raise ValueError("请将导出报告保存在受管历史目录之外")
             if str(destination) in record["sourcePaths"].values():
                 raise ValueError("不能覆盖原视频")
+            if ext not in self.renderers:
+                raise ValueError(f"未配置 {ext} 报告的生成方式")
+            text = self.renderers[ext](record, self.root)
             if ext == ".txt":
-                atomic_write_text(destination, format_report(record), encoding="utf-8-sig")
+                atomic_write_text(destination, text, encoding="utf-8-sig")
             else:
-                from core.feedback_report import render_html_report
-                atomic_write_text(destination, render_html_report(record, history_root=self.root))
+                atomic_write_text(destination, text)
             return destination

@@ -18,7 +18,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from apps.desktop_smoke import check_feedback_icons, load_build_info  # noqa: E402
-from core.action_feedback import RULE_VERSION  # noqa: E402
+from core.evaluation import RULE_VERSION  # noqa: E402
 from core.feedback_geometry import FeedbackConfig  # noqa: E402
 
 SPEC = _REPO_ROOT / "app_ui_onefile.spec"
@@ -46,8 +46,9 @@ def repo(tmp_path: Path) -> Path:
     _git(tmp_path, "config", "user.email", "test@example.invalid")
     _git(tmp_path, "config", "user.name", "test")
     _git(tmp_path, "config", "core.autocrlf", "false")
-    (tmp_path / "core").mkdir()
-    (tmp_path / "core" / "action_feedback.py").write_text('RULE_VERSION = "rule-v-test"\n', encoding="utf-8")
+    rule_file = tmp_path / build_info.RULE_VERSION_SOURCE
+    rule_file.parent.mkdir(parents=True)
+    rule_file.write_text('RULE_VERSION = "rule-v-test"\n', encoding="utf-8")
     (tmp_path / "tests").mkdir()
     (tmp_path / "tests" / "keep.py").write_text("", encoding="utf-8")
     _git(tmp_path, "add", "-A")
@@ -75,7 +76,7 @@ def test_clean_repo_passes_and_build_info_has_required_fields(repo: Path):
 @pytest.mark.parametrize("make_dirty", ["modified", "untracked"])
 def test_dirty_source_refuses_build(repo: Path, make_dirty: str):
     if make_dirty == "modified":
-        (repo / "core" / "action_feedback.py").write_text('RULE_VERSION = "changed"\n', encoding="utf-8")
+        (repo / build_info.RULE_VERSION_SOURCE).write_text('RULE_VERSION = "changed"\n', encoding="utf-8")
     else:
         (repo / "core" / "new_module.py").write_text("", encoding="utf-8")  # v4 曾从未跟踪源码出包
 

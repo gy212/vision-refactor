@@ -199,7 +199,8 @@ def run(report_path: Path) -> int:
                 from core.media import first_frame_ok
                 from core.pose import EngineSpec, create_engine
                 from core.feedback_history import FeedbackHistory
-                from core.action_feedback import ACTIONS, STANCES
+                from core.reporting import practice_report_renderers
+                from core.evaluation import ACTIONS, RULE_VERSION, STANCES
 
                 model_dir = paths.models_dir()
                 report["dataRoot"] = str(paths.repo_root())
@@ -208,7 +209,6 @@ def run(report_path: Path) -> int:
                 if report["frozen"]:
                     assert build is not None, "包内缺少 build_info.json"
                     assert build["clean"] is True, "EXE 不是从干净的工作区构建的"
-                    from core.action_feedback import RULE_VERSION
                     assert build["ruleVersion"] == RULE_VERSION
                 report["checks"].append("build_info")
                 report["feedbackIcons"] = check_feedback_icons(_package_root())
@@ -247,7 +247,7 @@ def run(report_path: Path) -> int:
                 assert first_frame_ok(video), "录制文件不能解码"
                 report["checks"].append("video_record_transcode_decode")
 
-                history = FeedbackHistory()
+                history = FeedbackHistory(renderers=practice_report_renderers())
                 side_video = video.with_name("侧面 测试.mp4")
                 shutil.copyfile(video, side_video)
                 record = history.add({"studentId": "offline-check", "studentName": "打包检查",

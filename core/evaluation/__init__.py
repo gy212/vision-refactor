@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""评估层（L3）的公共 API：模板、匹配、计分、侧别、时间轴切分（入口层只从这里导入）。"""
+"""评估层（L3）的公共 API：模板、匹配、计分、侧别、时间轴切分、学生练习（入口层只从这里导入）。"""
 from core.evaluation.body_sides import (
     center_x,
     facing_direction,
@@ -34,6 +34,18 @@ from core.evaluation.matching.repetition import (
     score_view,
     valid_mask_from_raw,
 )
+from core.evaluation.phases import align_views, phase_windows, share_phase_timing
+from core.evaluation.practice import analyze_practice, create_practice_engine, evaluate_series, extract_series
+from core.evaluation.rules.practice_v4 import (
+    ACTIONS,
+    PHASES,
+    RULE_VERSION,
+    STANCES,
+    STATE_LABELS,
+    FeedbackConfig,
+    build_checks,
+    load_feedback_config,
+)
 from core.evaluation.scoring import exam_pool, schemes
 from core.evaluation.scoring.cost import POSE33_BASELINE, avg_cost_of, baseline_for, score_from_avg_cost
 from core.evaluation.scoring.kick_quality import score_kick_quality
@@ -61,6 +73,7 @@ from core.evaluation.templates import (
 from core.evaluation.templates import EXAM_POOL as EXAM_POOL_TEMPLATES
 
 __all__ = [
+    "ACTIONS",
     "ActionTemplate",
     "COMPARE",
     "CompareResult",
@@ -69,14 +82,19 @@ __all__ = [
     "DualCompareResult",
     "EXAM_POOL",
     "EXAM_POOL_TEMPLATES",
+    "FeedbackConfig",
     "JointErrorStat",
     "MatchResult",
     "MatcherConfig",
     "ONLINE",
     "OnlineActionMatcher",
+    "PHASES",
     "POSE33_BASELINE",
+    "RULE_VERSION",
     "RepetitionMatch",
     "SCHEMES",
+    "STANCES",
+    "STATE_LABELS",
     "Scheme",
     "Template",
     "TemplateContract",
@@ -84,21 +102,28 @@ __all__ = [
     "TemplateMatch",
     "TemplateStore",
     "active_window",
+    "align_views",
+    "analyze_practice",
     "assert_feature_layout_match",
     "avg_cost_of",
     "baseline_for",
+    "build_checks",
     "center_x",
     "classify_single_view",
     "compare_dual_streams",
     "compare_dual_templates",
+    "create_practice_engine",
     "estimate_action_range",
     "estimate_action_range_from_features",
     "estimate_period_frames",
+    "evaluate_series",
     "exam_pool",
+    "extract_series",
     "facing_direction",
     "foot_edges_x",
     "infer_front_leg",
     "infer_kick_leg",
+    "load_feedback_config",
     "load_template",
     "load_template_library",
     "match_templates",
@@ -107,12 +132,14 @@ __all__ = [
     "multi_subsequence_matches",
     "normalize_template_meta",
     "normalizer_for",
-    "schemes",
+    "phase_windows",
     "scheme",
+    "schemes",
     "score_from_avg_cost",
     "score_kick_quality",
     "score_view",
     "select_representative_cycle",
+    "share_phase_timing",
     "side_label",
     "sides_for_stance",
     "split_front_side",
