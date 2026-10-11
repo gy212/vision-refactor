@@ -729,6 +729,65 @@ def test_cancel_all_returns_during_result_write_and_wins_publication_race(
     assert all(update.status != blocked_status for update in updates)
 
 
+def test_cancel_all_cannot_slip_between_final_check_and_terminal_commit(tmp_path: Path) -> None:
+    """终检之后、终态提交之前插入 cancel_all：要么取消赢（发布 cancelled），要么等发布完成后不再取消。"""
+    in_gap = threading.Event()
+    cancel_done = threading.Event()
+    terminal = threading.Event()
+    updates: list[PostprocessUpdate] = []
+
+    def on_update(update: PostprocessUpdate) -> None:
+        updates.append(update)
+        if update.status in {"completed", "cancelled"}:
+            terminal.set()
+
+    processor = DualRecordingPostProcessor(
+        on_update=on_update,
+        transcode=lambda path, _stop: path,
+        compare=lambda tpls, _video, **_kwargs: _pool_result(tpls),
+        video_validator=lambda _path: True,
+        model_available=lambda: True,
+    )
+    finalizer = processor.finalizer
+    original_check = finalizer._check_publishable
+    completed_checks = 0
+
+    def gated_check(segment_id: str, status: str):
+        nonlocal completed_checks
+        enrichment = original_check(segment_id, status)
+        if status == "completed":
+            completed_checks += 1
+            if completed_checks == 2:
+                in_gap.set()
+                # 修复后 cancel_all 被锁挡住，这里只等到超时；修复前它会在缺口里完成
+                cancel_done.wait(0.3)
+        return enrichment
+
+    finalizer._check_publishable = gated_check
+    job = _job(tmp_path, "record_cancel_in_commit_gap")
+    cancel_thread = threading.Thread(target=lambda: (processor.cancel_all(), cancel_done.set()))
+    try:
+        assert processor.submit(job)
+        _wait(in_gap)
+        cancel_thread.start()
+        _wait(terminal)
+        cancel_thread.join(2.0)
+        processor.wait_idle()
+    finally:
+        processor.close(1.0)
+
+    payload = json.loads((job.segment_dir / "result.json").read_text(encoding="utf-8"))
+    terminal_updates = [u.status for u in updates if u.status in {"completed", "failed", "skipped", "cancelled"}]
+    if job.segment_id in finalizer._closing_cancelled:
+        assert finalizer._terminal[job.segment_id] == "cancelled"
+        assert payload["status"] == "cancelled"
+        assert terminal_updates == ["cancelled"]
+    else:
+        assert finalizer._terminal[job.segment_id] == "completed"
+        assert payload["status"] == "completed"
+        assert terminal_updates == ["completed"]
+
+
 def test_annotated_recording_is_transcoded_then_skipped(tmp_path: Path) -> None:
     terminal = threading.Event()
     calls: list[Path] = []

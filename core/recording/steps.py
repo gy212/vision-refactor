@@ -374,4 +374,3 @@ def dual_segment_steps(
 def single_segment_steps(deps: StepDeps = StepDeps()) -> tuple[Step, ...]:
     """单路片段：只转码（V-4）。"""
     return (Transcode(deps.transcode),)
-

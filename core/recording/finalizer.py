@@ -342,10 +342,10 @@ class SegmentFinalizer:
                 if enrichment:
                     return
                 raise PostprocessError("result_write_failed", f"结果文件写入失败：{exc}") from exc
-            enrichment = self._check_publishable(segment_id, status)
-            if enrichment is None:
-                return
-            with self._lock:
+            with self._lock:  # 终检与终态提交同锁，cancel_all 不能插进中间
+                enrichment = self._check_publishable(segment_id, status)
+                if enrichment is None:
+                    return
                 if status in TERMINAL_STATUSES:
                     self._terminal[segment_id] = status
             if not enrichment:

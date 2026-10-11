@@ -21,6 +21,7 @@ from core.recording import (
     SegmentRecorder,
     SegmentUpdate,
 )
+from core.recording import recorder as recording_recorder
 from core.recording import steps as recording_steps
 from core.workflows import ScorebookRegistry
 
@@ -1302,6 +1303,9 @@ def test_zero_frame_dual_segment_is_submitted_from_explicit_and_main_stop(tmp_pa
 
 def test_second_dual_segment_can_start_before_first_result_finishes(tmp_path, monkeypatch):
     monkeypatch.setattr(app_ui, "save_record_dir", lambda _path: None)
+    # 两个片段的时间戳钉死，不依赖时钟在两次调用之间前进
+    stamps = iter(["20260101_000000_000001", "20260101_000000_000002"])
+    monkeypatch.setattr(recording_recorder, "new_stamp", lambda: next(stamps))
     app, finalizer, _first_dir = _dual_submission_app(tmp_path)
     app_ui.App._on_record_stop(app)
     first = finalizer.jobs[0].segment

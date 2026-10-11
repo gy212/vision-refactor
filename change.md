@@ -1,3 +1,19 @@
+## 2026-10-11（America/Los_Angeles）: [fix] P4 评审修正：终检与终态提交同锁、连续录制测试钉死时间戳
+
+- 问题描述：PR #7 评审指出：
+  1. `SegmentFinalizer._publish` 的第二次 `_check_publishable` 与 `_terminal` 赋值分在两次加锁里，`cancel_all` 插进缺口后，已被取消的片段仍发布 completed、写出 completed 的 `result.json`；
+  2. `test_second_dual_segment_can_start_before_first_result_finishes` 依赖时钟在两次 `new_stamp` 之间前进，Windows 上两次取到同一时间戳而失败；
+  3. `core/recording/steps.py` 末尾多一个空行，`git diff --check` 报错。
+- 修改内容：
+  - `core/recording/finalizer.py`：终检与终态提交放在同一把 `self._lock`（RLock）内。
+  - `tests/test_recording_postprocess.py`：新增 `test_cancel_all_cannot_slip_between_final_check_and_terminal_commit`，在终检后暂停并让 `cancel_all` 尝试插入，断言取消集合、终态、`result.json` 与回调一致；修复前失败，修复后通过。
+  - `tests/test_app_ui_lifecycle.py`：用两个固定时间戳替换 `core.recording.recorder.new_stamp`。
+  - 删除 `steps.py` 末尾空行。
+- 验证方法：
+  - 门禁、架构、录制、生命周期、考试等套件：364 passed；全量 `.\.venv\Scripts\python.exe -m pytest tests -q`：1127 passed。
+  - `scripts/sim_exam_flow.py`：37 passed，`SIMULATION_OK`。
+  - `git diff --check` 通过。
+
 ## 2026-10-11（America/Los_Angeles）: [refactor] P4 录制：SegmentLayout、SegmentRecorder、RecordingService、SegmentFinalizer、ScorebookRegistry
 
 - 问题描述：按 `重构阶段任务/P4-录制.md` 收口录制与录后处理。改动前的分布：
