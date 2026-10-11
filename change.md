@@ -3,10 +3,13 @@
 - 问题描述：设计文档 §0 第 5 条要求架构测试成为 CI 失败条件，但仓库没有任何 Actions 工作流，P4 PR 的 check runs 与 commit statuses 均为 0。
 - 修改内容：
   - 新增 `.github/workflows/gates.yml`：PR 与 `main` 推送时在 `windows-latest`、Python 3.12 上安装 `requirements.txt`，依次跑架构测试、golden 与契约回归（`test_pose33_v3_golden`、`test_valid_mask_migration`、`test_tech_eval_contract`、`test_rule_availability`）和 `git diff --check`；任何一步退出码非 0 即失败。不依赖摄像头和模型缓存。
-  - `AGENTS.md`“测试门禁”：记录 CI 范围、环境、本地复现命令；私有库免费计划下分支保护与规则集均返回 403，`gates` 不能设为必需检查，合并前人工确认。
+  - `AGENTS.md`“测试门禁”：记录 CI 范围、环境、本地复现命令；合入约束。
+  - 仓库设置：私有库免费计划下分支保护与规则集均返回 403；经用户同意把仓库改为公开，新建规则集 `main-gates`（默认分支）：`gates` 为必需检查，只能经 PR 合入，禁止强推和删除。公开前扫描了全部历史，未发现密钥、令牌或口令。
+  - actions 升级到 `checkout@v5`、`setup-python@v6`（消除 Node 20 弃用告警）。
 - 验证方法：
   - 本地移走 `models/` 后跑门禁与架构测试：65 passed（门禁不依赖模型）。
-  - PR 上 `gates` 检查通过；临时提交一个架构违规后检查失败，回退后恢复通过（见 PR 说明）。
+  - PR #13：首个提交 `019f4f6` 的 `gates` 通过；临时提交 `68ef9df`（`core/foundation/geometry.py` 导入 `core.evaluation`）在 Architecture tests 步骤失败（`test_layering`），后续步骤未执行；回退后重新通过。
+  - `gh api repos/gy212/vision-refactor/rules/branches/main` 列出 deletion、non_fast_forward、pull_request、required_status_checks。
 
 ## 2026-10-11（America/Los_Angeles）: [fix] PR #12 评审：侧面写出途中取消时一并删除已写完的正面裁剪产物
 
