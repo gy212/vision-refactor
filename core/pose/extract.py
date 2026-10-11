@@ -78,7 +78,13 @@ _CACHE: contextvars.ContextVar[dict | None] = contextvars.ContextVar("pose_cache
 
 @contextmanager
 def pose_cache() -> Iterator[None]:
-    """作用域内缓存提取结果；离开作用域即丢弃。只对当前线程（上下文）生效。"""
+    """作用域内缓存提取结果；离开作用域即丢弃。只对当前线程（上下文）生效。
+
+    可重入：已在作用域内时沿用外层缓存，评分函数自带的作用域不会切断调用方更大范围的复用。
+    """
+    if _CACHE.get() is not None:
+        yield
+        return
     token = _CACHE.set({})
     try:
         yield
