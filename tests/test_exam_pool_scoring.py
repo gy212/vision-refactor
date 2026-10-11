@@ -102,4 +102,3 @@ def test_score_exam_pools_reuses_one_extraction_per_view_and_merges(tmp_path) ->
     assert names == ["直拳", "两手攀足"]
     assert res.combined_score == pytest.approx((0.5 + 0.25 * 0.6 + 0.75 * 0.5) / 2)
     assert res.front_segment == (0, 3) and res.side_segment == (0, 3)
-

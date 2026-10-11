@@ -191,14 +191,14 @@ ONLINE = TemplateContract(
 )
 
 
-def _read(path: Path, contract: TemplateContract) -> tuple[np.ndarray, Any]:
+def _read(path: Path, contract: TemplateContract) -> tuple[np.ndarray, Any, dict]:
     with np.load(path, allow_pickle=True) as data:
         if contract.require_file and ("features" not in data or "meta" not in data):
             raise ValueError("缺少 features/meta")
         raw = data["features"]
         features = raw if contract.dtype is None else np.asarray(raw, dtype=contract.dtype)
         declared = data["meta"].item() if (not contract.optional_meta or "meta" in data) else None
-    return features, declared
+    return features, declared, dict(declared or {})
 
 
 def load_template(path: str | Path, contract: TemplateContract = COMPARE) -> Template:
@@ -208,12 +208,11 @@ def load_template(path: str | Path, contract: TemplateContract = COMPARE) -> Tem
         if not path.is_file() or path.stat().st_size <= 0:
             raise TemplateError("template_missing", f"{contract.label}不存在：{path}")
         try:
-            features, declared = _read(path, contract)
+            features, declared, raw_meta = _read(path, contract)
         except Exception as exc:
             raise TemplateError("template_invalid", f"无法读取{contract.label} {path}：{exc}") from exc
     else:
-        features, declared = _read(path, contract)
-    raw_meta = dict(declared or {})
+        features, declared, raw_meta = _read(path, contract)
     for check in contract.checks:
         check(contract, path, features, raw_meta)
     meta = normalize_template_meta(dict(raw_meta))

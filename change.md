@@ -1,3 +1,12 @@
+## 2026-10-11（America/Los_Angeles）: [fix] PR #6 评审：meta 非字典的模板在考试池里只跳过
+
+- 问题描述：PR #6 评审指出，`load_template` 把 `dict(declared or {})` 放在了 `require_file` 契约的异常转换之外。`meta` 不是字典（如字符串）的 NPZ 会抛出未转换的 `ValueError`，`TemplateStore.usable()` 只接 `TemplateError`，一个坏模板就会让考试就绪检查和录制后处理的整池失败；迁移前是跳过。另有 `tests/test_exam_pool_scoring.py` 末尾多一个空行，`git diff --check` 报错。
+- 修改内容：
+  - `core/evaluation/templates.py`：`_read` 一并返回 `dict(declared or {})`，转换落在 `EXAM_POOL` 的受保护读取里，失败转为 `template_invalid`；`COMPARE`/`ONLINE` 仍原样抛出读取错误。
+  - `tests/test_recording_postprocess.py` 新增 `test_template_pool_skips_template_with_malformed_meta`：一个可用模板加一个 `meta="not-a-dict"` 的模板，可用模板保留。修复前该用例失败。
+  - 删掉 `tests/test_exam_pool_scoring.py` 末尾空行。
+- 验证方法：全量 `.\.venv\Scripts\python.exe -m pytest tests -q`：1110 passed；门禁四件套与 `test_architecture.py` 通过；`git diff --check` 无空白错误。
+
 ## 2026-10-10（America/Los_Angeles）: [docs] D-4、D-9/V-8 已决：采纳建议，实施另提 PR
 
 - 问题描述：P3 实施时 D-4（考试与 `batch --paired` 计分方案不同）与 D-9/V-8（模板池混用 v2/v3 归一化）未决，按未决做法保持现状。P3 完成后用户决定两项都采纳设计文档的建议。

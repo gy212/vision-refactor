@@ -94,6 +94,17 @@ def test_fixed_templates_default_paths_and_auto_compare_contract(tmp_path: Path)
     assert s == only
 
 
+def test_template_pool_skips_template_with_malformed_meta(tmp_path: Path) -> None:
+    """meta 不是字典的坏模板只跳过，不拖垮同池的可用模板。"""
+    good = tmp_path / "good.npz"
+    _write_template(good, shape=(5, 22, 2))
+    bad = tmp_path / "bad_meta.npz"
+    np.savez(bad, features=np.zeros((5, 22, 2), dtype=np.float32), meta="not-a-dict")
+    front, side = recording_postprocess.validate_auto_compare_template_lists([bad, good], [bad])
+    assert front == [good]
+    assert side == []
+
+
 def test_fifo_single_consumer_and_atomic_completed_results(tmp_path: Path) -> None:
     updates: list[PostprocessUpdate] = []
     terminal = threading.Event()
