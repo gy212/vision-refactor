@@ -84,6 +84,8 @@
 - 受影响模块的套件（见下表）；改动面大时跑全量 `-m pytest tests -q`
 - `git diff --check`：行尾提示可以接受，空白错误不行
 
+CI（`.github/workflows/gates.yml`，检查名 `gates`）在每个 PR 和 `main` 的推送上自动跑上面前两条和空白检查，任何一步退出码非 0 即检查失败。环境：`windows-latest`、Python 3.12，只装 `requirements.txt`；不用摄像头，也不预置 `models/` 下的模型，门禁测试只读 `tests/fixtures/`。受影响模块的套件和全量测试不在 CI 里，仍在本地跑。本地复现 CI 的空白检查：`git -c core.whitespace=cr-at-eol diff --check origin/main HEAD`。合入约束由仓库规则集 `main-gates`（作用于默认分支）强制：`gates` 是必需检查，未通过不能合并；`main` 只能经 PR 合入，禁止强推和删除。
+
 | 改动范围 | 测试（`tests/` 下） |
 |---|---|
 | 考试 | `test_exam_session.py test_exam_roster.py test_exam_clip.py test_presence_gate.py test_recording_postprocess.py test_exam_panel.py`，再跑 `scripts/sim_exam_flow.py` |

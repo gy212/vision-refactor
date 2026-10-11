@@ -1,0 +1,53 @@
+# 测试门禁：架构测试 + golden / 契约回归 + 空白检查（issue #9）。
+# 范围与本地复现命令见 AGENTS.md“测试门禁”。不依赖摄像头与本机模型缓存。
+name: gates
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gates-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gates:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Architecture tests
+        run: python -m pytest tests/test_architecture.py -q
+
+      - name: Golden and contract tests
+        run: python -m pytest tests/test_pose33_v3_golden.py tests/test_valid_mask_migration.py tests/test_tech_eval_contract.py tests/test_rule_availability.py -q
+
+      - name: Whitespace check
+        run: |
+          if ("${{ github.event_name }}" -eq "pull_request") {
+            $base = "${{ github.event.pull_request.base.sha }}"
+          } else {
+            $base = "${{ github.event.before }}"
+          }
+          if ($base -match '^0+$') { $base = "HEAD~1" }
+          git -c core.whitespace=cr-at-eol diff --check "$base" HEAD
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
