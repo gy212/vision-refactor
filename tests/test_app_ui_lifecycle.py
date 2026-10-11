@@ -830,8 +830,8 @@ def test_single_camera_transcode_runs_on_non_daemon_finalizer_lane(monkeypatch, 
     app_ui.App._end_recording_segment(app)
 
     assert entered.wait(timeout=1.0)
-    # V-4：单摄转码进 finalizer 的 io 线；该线程非 daemon，进程退出前跑完
-    assert threads == [("finalizer/segment-finalizer/io", False)]
+    # V-4：单摄转码进 finalizer 单独的 io-finish 线；该线程非 daemon，进程退出前跑完
+    assert threads == [("finalizer/segment-finalizer/io-finish", False)]
     assert not app._recording.finalizer.idle
     finish.set()
     assert app._recording.finalizer.wait_idle(2.0)
