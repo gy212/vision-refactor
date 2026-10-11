@@ -17,6 +17,7 @@ import numpy as np
 from core.evaluation.scoring.kick_quality import score_kick_quality
 from core.evaluation.templates import EXAM_POOL, TemplateError, TemplateStore, load_template
 from core.evaluation.view_weights import normalized_pair
+from core.pose.extract import pose_cache
 from core.pose.raw_series import slice_pose_raw_series
 
 POSE_VARIANT = "heavy"  # 黑盒检测统一走精度最高的 heavy + pose33_v3 链路
@@ -140,9 +141,13 @@ def action_score(name: str, dtw_score: float, geom_score: float | None) -> float
     return float(final)
 
 
+@pose_cache()
 def score_pool(templates: list[Path], video: Path, view: str, *, compare: PoolCompare, raw_series: RawSeriesFn,
                stop_evt: Event) -> tuple[list[dict], float | None]:
-    """一个视角的池：视频姿态只提取一次复用给池内每个模板；含踢腿动作时再提一次原始序列算几何分。"""
+    """一个视角的池：视频姿态只提取一次复用给池内每个模板；含踢腿动作时取原始序列算几何分。
+
+    在 ``pose_cache`` 作用域内执行：模板比对与踢腿几何的顺序提取共用同一次推理。
+    """
     if not templates:
         return [], None
     if stop_evt.is_set():

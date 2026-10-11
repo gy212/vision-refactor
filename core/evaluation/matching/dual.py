@@ -2,7 +2,8 @@
 """正侧双模板比对：单视频按视角自动切分（``compare_dual_templates``）与正侧两路视频（``compare_dual_streams``）（设计文档 §7.5）。
 
 两者都由模板读取、视角切分、``repetition.score_view`` 与正式规则组合而成；计分方案分别是 ``DUAL_TEMPLATE``
-与 ``DUAL_STREAM``（``scoring.schemes``）。
+与 ``DUAL_STREAM``（``scoring.schemes``）。两者都在 ``pose_cache`` 作用域内执行：特征与规则原始序列
+在顺序跟踪下共用同一次推理；分段提取的特征不满足规则的顺序跟踪要求，规则仍独立提取（§6.3）。
 """
 from __future__ import annotations
 
@@ -19,6 +20,7 @@ from core.evaluation.rules.formal_v1 import RuleScore, RuleViolation, score_rule
 from core.evaluation.scoring.cost import POSE33_BASELINE
 from core.evaluation.segmentation import split_front_side
 from core.evaluation.templates import COMPARE, Template, load_template, normalizer_for
+from core.pose.extract import pose_cache
 from core.pose.features import ProgressCb, extract_features
 from core.pose.raw_series import extract_pose_raw_series, slice_pose_raw_series
 
@@ -123,6 +125,7 @@ def _check_video(template: Template, seq: np.ndarray, *, tpl_label: str, video_l
                                 right_label=video_label, left_layout=template.layout, right_layout=template.layout)
 
 
+@pose_cache()
 def compare_dual_templates(
     front_template_path: str | Path,
     side_template_path: str | Path,
@@ -173,6 +176,7 @@ def compare_dual_templates(
     return _result(pair, video_path, fps, (w_front, w_side), front, side, (front_seg, side_seg), rules)
 
 
+@pose_cache()
 def compare_dual_streams(
     front_template_path: str | Path,
     side_template_path: str | Path,

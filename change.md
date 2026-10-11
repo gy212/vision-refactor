@@ -1,3 +1,20 @@
+## 2026-10-11（America/Los_Angeles）: [fix] 双模板比对与考试池接入 `pose_cache`，同一视频只推理一次（issue #11）
+
+- 问题描述：P2 提供了作用域缓存 `pose_cache()`，设计文档 §6.3 要求 P3/P4 在调用方接入，但生产代码没有开启。双模板比对先提取特征、再提取原始序列算规则和误差；考试池含踢腿动作时在模板比对后再提取一次原始序列。180 帧 fixture 上顺序比对（规则 + 误差）调用 `infer()` 360 次。
+- 修改内容：
+  - `core/pose/extract.py`：`pose_cache` 改为可重入，已在作用域内时沿用外层缓存，评分函数自带的作用域不切断调用方更大范围的复用。
+  - `core/evaluation/matching/dual.py`：`compare_dual_templates`、`compare_dual_streams` 加 `@pose_cache()`。
+  - `core/evaluation/scoring/exam_pool.py`：`score_pool` 加 `@pose_cache()`，模板比对与踢腿几何共用一次推理。
+  - 缓存键沿用 P2 的设计（视频、引擎、预设、tracking），分段特征（`workers > 1`）不被规则的顺序提取复用；注入 `engine_factory` 时仍不走缓存。
+  - 设计文档 §6.3 补记接入情况。
+  - 新增 `tests/test_eval_pose_cache.py`（统计假引擎的 `infer()` 次数）：双模板 180 次（不走缓存为 360 次，分数、规则、误差逐项一致）、双流每路一次、分段特征时规则另做一次顺序推理、嵌套作用域、含踢腿考试池每路一次（不走缓存为两次，结果一致）。`tests/test_pose_extract.py` 增加嵌套作用域用例。无被替换的测试。
+- 验证方法：
+  - 撤掉 `core/` 改动时新增用例 5 个失败，恢复后全部通过。
+  - 门禁、架构、`test_pose_extract`、`test_compare_dual_streams`、`test_batch_backend_args`、`test_exam_pool_scoring`、`test_recording_postprocess`、`test_p3_eval_differential`：186 passed。
+  - 全量 `.\.venv\Scripts\python.exe -m pytest tests -q`：1142 passed。
+  - `scripts/sim_exam_flow.py`：37 passed，`SIMULATION_OK`。
+  - `git diff --check` 通过。
+
 ## 2026-10-11（America/Los_Angeles）: [ci] 架构测试与 golden / 契约门禁接入 GitHub Actions（issue #9）
 
 - 问题描述：设计文档 §0 第 5 条要求架构测试成为 CI 失败条件，但仓库没有任何 Actions 工作流，P4 PR 的 check runs 与 commit statuses 均为 0。

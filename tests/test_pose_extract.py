@@ -235,6 +235,18 @@ def test_pose_cache_infers_each_video_once(counted_replay):
     assert len(counted_replay) == 3
 
 
+
+def test_pose_cache_nested_scope_reuses_outer_store(counted_replay):
+    """嵌套作用域沿用外层缓存（评分函数自带作用域，不能切断调用方更大范围的复用）。"""
+    with pose_cache():
+        extract_pose_raw_series(STUDENT, pose_variant="full")
+        with pose_cache():
+            extract_pose_raw_series(STUDENT, pose_variant="full")
+        extract_pose_raw_series(STUDENT, pose_variant="full")
+    assert len(counted_replay) == 1
+    extract_pose_raw_series(STUDENT, pose_variant="full")
+    assert len(counted_replay) == 2
+
 def test_pose_cache_prefix_reuse_is_identical_to_fresh_extraction(counted_replay):
     fresh, _ = extract_pose_raw(STUDENT, pose_variant="full", start_frame=0, end_frame=9)
     with pose_cache():
