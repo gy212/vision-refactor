@@ -1,3 +1,33 @@
+## 2026-10-11（America/Los_Angeles）: [fix] PR #12 评审：侧面写出途中取消时一并删除已写完的正面裁剪产物
+
+- 问题描述：PR #12 评审（P2）指出，`_stream_write_range` 取消时只删除正在写的那一路；正面写完、侧面写出途中取消时，`front_exam.mp4` 残留为孤立产物。评审用 `checks=170` 复现，留下 45 帧的 `front_exam.mp4`。
+- 修改内容：
+  - `core/workflows/exam/clip.py`：在成对写出这一层处理取消。`_write_aligned_pair` 记录本次已写完的产物，`Cancelled` 时全部删除后再抛出；写出与再截齐移入 `_write_pair_outputs`。写了一半的那一路仍由 `_stream_write_range` 删除。
+  - `tests/test_finalizer_close_lifecycle.py`：`test_prepare_exam_pair_stops_on_cancel_and_removes_partial_output` 增加参数 `170`（正面已写完、侧面写出途中取消）。修复前该参数失败，修复后通过。
+- 验证方法：
+  - 门禁与架构：65 passed；全量 `.\.venv\Scripts\python.exe -m pytest tests -q`：1134 passed。
+  - `scripts/sim_exam_flow.py`：37 passed，`SIMULATION_OK`。
+  - `git diff --check` 通过。
+
+## 2026-10-11（America/Los_Angeles）: [fix] 考试裁剪超过关窗预算后，非守护 IO 线程阻止进程退出（issue #10）
+
+- 问题描述：P4 把 finalizer 的整条 io 线设为非守护线程，保证单摄转码在关窗后做完（V-4）；但考试裁剪也跑在这条线上，且 `ExamClipStep` 不响应取消。裁剪超过关窗预算时窗口已销毁，非守护线程仍阻止进程退出。迁移前考试裁剪是守护线程，只有单摄转码要求退出前做完。
+- 修改内容：
+  - `core/recording/finalizer.py`：io 线拆成两条。`finish_on_close` 的计划走非守护的 `io-finish` 线；普通双摄与考试计划走守护的 `io` 线；analysis 线不变（守护）。线的选择集中在 `_lane_for`。
+  - `core/workflows/exam/clip.py`：`prepare_exam_pair` 及其流式读写增加 `cancel` 参数，逐帧检查，取消时抛 `Cancelled` 并删除写了一半的裁剪产物。`ExamClipStep` 传入任务 token，`Cancelled` 不再当作裁剪失败吞掉，由 finalizer 发布唯一的 `app_closing` 取消终态，后续比对步骤不再执行。
+  - `整体架构重构设计.md` §P4 计划一段同步上述线程划分。
+  - 测试：新增 `tests/test_finalizer_close_lifecycle.py`：
+    - 子进程里只提交一个完全不响应取消的慢考试裁剪，`close(0.05)` 返回 False 后进程必须退出（修复前子进程挂起直到超时）；
+    - 子进程里单摄转码在 `close(0.0)` 后仍做完，进程等它结束，线程名为 `io-finish`；
+    - 可取消的考试裁剪在关窗后只发布一次 `cancelled/app_closing`，不出现 completed，不记 `exam_clip_failed`；
+    - `prepare_exam_pair` 在扫描、正面写出途中取消时抛 `Cancelled`，不留下 `*_exam.*`。
+  - `tests/test_app_ui_lifecycle.py::test_single_camera_transcode_runs_on_non_daemon_finalizer_lane` 的线程名断言改为 `io-finish`（同一用例，未替换测试）。
+- 验证方法：
+  - 门禁与架构：`pytest tests/test_pose33_v3_golden.py tests/test_valid_mask_migration.py tests/test_tech_eval_contract.py tests/test_rule_availability.py tests/test_architecture.py -q`：65 passed。
+  - 全量 `.\.venv\Scripts\python.exe -m pytest tests -q`：1133 passed。
+  - `scripts/sim_exam_flow.py`：37 passed，`SIMULATION_OK`。
+  - `git diff --check` 通过。
+
 ## 2026-10-11（America/Los_Angeles）: [fix] P4 评审修正：终检与终态提交同锁、连续录制测试钉死时间戳
 
 - 问题描述：PR #7 评审指出：

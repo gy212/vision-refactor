@@ -2,10 +2,11 @@
 """录后处理执行器 ``SegmentFinalizer``：按处理计划在 io 线与 analysis 线上执行步骤，保证终态唯一、可取消。
 
 一个任务 = 已结束的片段 + ``ProcessingPlan``。io 线做裁剪、转码、可读性校验；analysis 线串行做比对评分；
-两条线各自 FIFO，可以并行（一个片段在比对时，下一个片段可以转码）。计划带 ``result`` 时，每次状态变化都原子写
+各条线各自 FIFO，可以并行（一个片段在比对时，下一个片段可以转码）。计划带 ``result`` 时，每次状态变化都原子写
 ``<片段目录>/result.json`` 并通知订阅者；同一片段只发布一次终态，取消后的再次取消只补写路径不再通知。
 ``cancel_all`` 取消尚未终态的任务并拒绝新提交，发布 ``app_closing`` 取消终态；``finish_on_close`` 的任务
-（单摄转码，V-4）不取消，io 线是非守护线程，进程退出前会做完。由 ``DualRecordingPostProcessor`` 演化而来（P4）。
+（单摄转码，V-4）不取消，走单独的非守护 io 线 ``io-finish``，进程退出前会做完；其余任务（普通双摄、考试裁剪）的
+io 线与 analysis 线都是守护线程，超出关窗预算也不拖住进程退出（issue #10）。由 ``DualRecordingPostProcessor`` 演化而来（P4）。
 """
 from __future__ import annotations
 
@@ -148,9 +149,11 @@ class SegmentFinalizer:
         self._on_update = on_update
         self._write_result = write_result
         tasks = tasks or TaskGroup("finalizer")
+        # 键是 (步骤所在的线, 是否 finish_on_close)；只有 finish_on_close 的 io 线是非守护线程（V-4）
         self._lanes = {
-            "io": _Lane("io", tasks, lambda job: self._advance(job, "io"), daemon=False),
-            "analysis": _Lane("analysis", tasks, lambda job: self._advance(job, "analysis"), daemon=True),
+            ("io", False): _Lane("io", tasks, lambda job: self._advance(job, "io"), daemon=True),
+            ("io", True): _Lane("io-finish", tasks, lambda job: self._advance(job, "io"), daemon=False),
+            ("analysis", False): _Lane("analysis", tasks, lambda job: self._advance(job, "analysis"), daemon=True),
         }
         self._lock = threading.RLock()
         self._persistence_lock = threading.Lock()
@@ -179,7 +182,7 @@ class SegmentFinalizer:
             for key in keys:
                 self._dir_owners[key] = segment.segment_id
             self._jobs[segment.segment_id] = job
-            self._lanes["io"].put(job)
+            self._lane_for(job, "io").put(job)
         return True
 
     def cancel_all(self) -> None:
@@ -233,7 +236,7 @@ class SegmentFinalizer:
             while job.index < len(steps):
                 step = steps[job.index]
                 if step.lane != lane:
-                    self._lanes[step.lane].put(job)
+                    self._lane_for(job, step.lane).put(job)
                     return
                 if job.token.cancelled or job.stop_evt.is_set():
                     raise Cancelled(job.token.reason)
@@ -256,6 +259,11 @@ class SegmentFinalizer:
                 self._publish_cancelled(job)
             else:
                 self._publish_terminal_safely(job, "failed", f"后台比对失败：{exc}", "compare_failed")
+
+    def _lane_for(self, job: _Job, lane: str) -> _Lane:
+        if lane == "io":
+            return self._lanes[("io", job.plan.finish_on_close)]
+        return self._lanes[(lane, False)]
 
     def _context(self, job: _Job) -> StepContext:
         segment = job.segment

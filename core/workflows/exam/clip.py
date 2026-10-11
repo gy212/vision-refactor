@@ -6,6 +6,7 @@
 
 内存约束：禁止把整段双路帧装进 list（1080p×30fps×60s 双路可达数十 GiB）。
 一律流式：先扫 front 估能量/区间，再二次流式写出裁剪结果。P4 从 ``core/exam_clip.py`` 迁入。
+取消：逐帧检查 ``cancel``，取消时抛 ``Cancelled`` 并删除写了一半的裁剪产物（关窗不再等裁剪做完，issue #10）。
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ import numpy as np
 
 from core.evaluation.segmentation import estimate_action_range  # 动作区间迁入 segmentation，考试裁剪与旧导入继续从这里取
 from core.evaluation.segmentation import estimate_action_range_from_features as estimate_action_range_from_feature_seq  # noqa: F401
-from core.foundation.tasks import CancelToken
+from core.foundation.tasks import Cancelled, CancelToken
 from core.media.video_source import DecodeOptions, open_video
 from core.recording import StepContext
 
@@ -71,8 +72,13 @@ def energy_from_gray_frames(frames: list[np.ndarray]) -> np.ndarray:
     return np.asarray(diffs, dtype=np.float32)
 
 
+def _check_cancel(cancel: CancelToken | None) -> None:
+    if cancel is not None:
+        cancel.raise_if_cancelled()
+
+
 def _stream_energy_first_n(
-    path: Path, n: int
+    path: Path, n: int, cancel: CancelToken | None = None
 ) -> tuple[np.ndarray, int, float, tuple[int, int]]:
     """流式读取前 n 帧，只保留上一灰度帧算能量；返回 energy、实际帧数、fps、尺寸。"""
     diffs: list[float] = []
@@ -82,6 +88,7 @@ def _stream_energy_first_n(
     with open_video(path, DecodeOptions(end=n - 1)) as source:
         fps = source.meta.fps
         for frame in source:
+            _check_cancel(cancel)
             fr = frame.bgr
             if fr is None:
                 break
@@ -97,13 +104,16 @@ def _stream_energy_first_n(
     return np.asarray(diffs, dtype=np.float32), count, fps, size
 
 
-def _count_frames_up_to(path: Path, n: int) -> tuple[int, float, tuple[int, int]]:
+def _count_frames_up_to(
+    path: Path, n: int, cancel: CancelToken | None = None
+) -> tuple[int, float, tuple[int, int]]:
     """流式计数，不保留像素。"""
     count = 0
     size = (0, 0)
     with open_video(path, DecodeOptions(end=n - 1)) as source:
         fps = source.meta.fps
         for frame in source:
+            _check_cancel(cancel)
             if frame.bgr is None:
                 break
             if count == 0:
@@ -121,8 +131,9 @@ def _stream_write_range(
     end: int,
     fps: float,
     size_hint: tuple[int, int] | None = None,
+    cancel: CancelToken | None = None,
 ) -> tuple[Path, int]:
-    """流式写出 [start, end) 帧到 out_path；返回实际路径与写出帧数。"""
+    """流式写出 [start, end) 帧到 out_path；返回实际路径与写出帧数。取消时删除写了一半的文件。"""
     if end <= start:
         raise RuntimeError("裁剪区间为空")
     writer = None
@@ -132,6 +143,7 @@ def _stream_write_range(
     source = open_video(path, DecodeOptions(start=start, end=end - 1, seek="verified"))
     try:
         for frame in source:
+            _check_cancel(cancel)
             fr = frame.bgr
             if fr is None:
                 break
@@ -151,6 +163,12 @@ def _stream_write_range(
             writer.write(fr)
             written += 1
             del fr
+    except Cancelled:
+        if writer is not None:
+            writer.release()
+            writer = None
+            out.unlink(missing_ok=True)
+        raise
     finally:
         if writer is not None:
             writer.release()
@@ -169,14 +187,15 @@ def _aligned_range(
     trim_head_s: float,
     trim_tail_s: float,
     use_pixel_energy: bool,
+    cancel: CancelToken | None = None,
 ) -> tuple[int, int, int, float, tuple[int, int], tuple[int, int]]:
     """读出两路实际可读帧数并估计动作区间；返回 (start, end, 截齐帧数, fps, 正面尺寸, 侧面尺寸)。"""
     if use_pixel_energy:
-        energy, front_n, fps_f, size_f = _stream_energy_first_n(front_source, n)
+        energy, front_n, fps_f, size_f = _stream_energy_first_n(front_source, n, cancel)
     else:
-        front_n, fps_f, size_f = _count_frames_up_to(front_source, n)
+        front_n, fps_f, size_f = _count_frames_up_to(front_source, n, cancel)
         energy = None
-    side_n, fps_s, size_s = _count_frames_up_to(side_source, n)
+    side_n, fps_s, size_s = _count_frames_up_to(side_source, n, cancel)
     if front_n <= 0 or side_n <= 0:
         raise RuntimeError("无法读取录制帧")
 
@@ -212,16 +231,46 @@ def _write_aligned_pair(
     end: int,
     fps: float,
     warnings: list[str],
+    cancel: CancelToken | None = None,
 ) -> tuple[Path, Path, int]:
-    """写出两路 [start, end) 并保证写出帧数一致（不一致时按较短一路重写），返回 (正面, 侧面, 帧数)。"""
+    """写出两路 [start, end) 并保证写出帧数一致（不一致时按较短一路重写），返回 (正面, 侧面, 帧数)。
+
+    取消时删除本次已写完的两路产物（写了一半的那一路由 ``_stream_write_range`` 删除），不留半套裁剪结果。
+    """
+    created: list[Path] = []
+    try:
+        return _write_pair_outputs(
+            sources, out_dir, sizes, created, start=start, end=end, fps=fps, warnings=warnings, cancel=cancel,
+        )
+    except Cancelled:
+        for path in created:
+            path.unlink(missing_ok=True)
+        raise
+
+
+def _write_pair_outputs(
+    sources: tuple[Path, Path],
+    out_dir: Path,
+    sizes: tuple[tuple[int, int], tuple[int, int]],
+    created: list[Path],
+    *,
+    start: int,
+    end: int,
+    fps: float,
+    warnings: list[str],
+    cancel: CancelToken | None,
+) -> tuple[Path, Path, int]:
+    """``_write_aligned_pair`` 的写出与再截齐；每写完一路把产物路径记进 ``created``。"""
     names = ("front_exam.mp4", "side_exam.mp4")
 
     def write(i: int, stop: int) -> tuple[Path, int]:
         size = sizes[i]
-        return _stream_write_range(
+        out, count = _stream_write_range(
             sources[i], out_dir / names[i], start=start, end=stop, fps=fps,
-            size_hint=size if size[0] > 0 else None,
+            size_hint=size if size[0] > 0 else None, cancel=cancel,
         )
+        created.append(out)
+        return out, count
 
     (front_out, front_written), (side_out, side_written) = write(0, end), write(1, end)
     # 再次截齐：元数据与文件必须一致，禁止「假帧数 + 完整长文件」绕过 postprocess 校验
@@ -253,8 +302,9 @@ def prepare_exam_pair(
     trim_head_s: float = 0.5,
     trim_tail_s: float = 0.8,
     use_pixel_energy: bool = True,
+    cancel: CancelToken | None = None,
 ) -> ClipResult:
-    """截齐 + 裁剪，写出 front_exam / side_exam（流式，峰值内存 O(1 帧)）。"""
+    """截齐 + 裁剪，写出 front_exam / side_exam（流式，峰值内存 O(1 帧)）。``cancel`` 取消时抛 ``Cancelled``。"""
     front_source = Path(front_source)
     side_source = Path(side_source)
     out_dir = Path(out_dir)
@@ -265,11 +315,11 @@ def prepare_exam_pair(
         raise RuntimeError("录制帧数为 0，无法派发")
     start, end, n2, fps, size_f, size_s = _aligned_range(
         front_source, side_source, n, warnings,
-        trim_head_s=trim_head_s, trim_tail_s=trim_tail_s, use_pixel_energy=use_pixel_energy,
+        trim_head_s=trim_head_s, trim_tail_s=trim_tail_s, use_pixel_energy=use_pixel_energy, cancel=cancel,
     )
     front_out, side_out, written = _write_aligned_pair(
         (front_source, side_source), out_dir, (size_f, size_s),
-        start=start, end=end, fps=fps, warnings=warnings,
+        start=start, end=end, fps=fps, warnings=warnings, cancel=cancel,
     )
     return ClipResult(
         front_path=front_out,
@@ -293,8 +343,8 @@ def prepare_exam_pair(
 class ExamClipStep:
     """考试计划的第一步（io 线）：截齐并裁剪正侧录像，后续步骤改用裁剪产物。
 
-    裁剪不响应取消：关窗时也先做完裁剪，再由后续步骤发布取消终态（与迁移前关窗先等裁剪线程、再取消队列一致）。
-    考试计划的关窗预算 ``EXAM_CLOSE_BUDGET_S`` 覆盖这段时间。
+    裁剪逐帧响应取消：关窗取消时抛 ``Cancelled``，由 finalizer 发布唯一的取消终态（issue #10）。
+    ``EXAM_CLOSE_BUDGET_S`` 是关窗等待的上限；考试任务跑在守护执行线上，超出预算也不会拖住进程退出。
     """
 
     clip: Callable[..., ClipResult] = prepare_exam_pair
@@ -310,7 +360,10 @@ class ExamClipStep:
                 front_frames=ctx.frames.get("front", 0),
                 side_frames=ctx.frames.get("side", 0),
                 out_dir=ctx.segment_dir,
+                cancel=cancel,
             )
+        except Cancelled:
+            raise
         except Exception as exc:  # noqa: BLE001 - 裁剪失败时退回原始录像，由后续步骤校验
             ctx.notes.append(f"exam_clip_failed: {exc}")
             return None
