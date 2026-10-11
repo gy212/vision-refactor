@@ -5,7 +5,7 @@
 
 本文件以**不依赖真实 Tk 窗口**的方式验证两类错误处理路径：
   1. 无有效输入源点击「开始」：``_collect_state`` 抛 ``ValueError``，``_start`` 弹框、
-     不启动会话（不调用 ``_rec.begin_session``）。（需求 4.2）
+     不启动会话（不调用 ``_recording.begin_session``）。（需求 4.2）
   2. 比对窗口创建失败：``_open_compare`` 捕获异常、弹「打开失败」，主窗口状态不变
      （``_compare_win`` 保持原值）。（需求 6.3）
 
@@ -106,7 +106,7 @@ def test_start_with_no_source_shows_error_and_does_not_begin_session(monkeypatch
     stub = types.SimpleNamespace(
         _worker=None,
         _collect_state=_raise_no_source,
-        _rec=rec_spy,
+        _recording=rec_spy,
     )
 
     App._start(stub)

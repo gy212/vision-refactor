@@ -361,7 +361,7 @@ def test_app_judges_identity_bound_at_recording_start(waiting):
     identity = validate_identity("recorded_student", "", "rear_low_kick", "right")
     app = SimpleNamespace(_student_practice_active=True, _student_judging=False, _student_segment_ready=True,
         _student_pending_record=waiting,
-        _rec=SimpleNamespace(state="idle"), _student_feedback_identity=identity, _student_feedback_record_id=None,
+        _recording=SimpleNamespace(state="idle"), _student_feedback_identity=identity, _student_feedback_record_id=None,
         _student_front_video=Path("front.mp4"), _student_side_video=Path("side.mp4"),
         feedback_controls=SimpleNamespace(analyze_recording=lambda *args, **kw: captured.append((args, kw))))
     App._student_judge(app)

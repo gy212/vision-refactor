@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from apps import exam_panel
 from core.foundation import prefs as user_prefs
 from core.exam_roster import ExamCandidate, ExamScorebook, write_import_template
+from core.workflows import ScorebookRegistry
 from core.exam_session import ExamSession
 
 
@@ -143,7 +144,7 @@ def test_import_roster_is_blocked_while_exam_is_active(monkeypatch) -> None:
     assert "先中止当前考试" in errors[0]
 
 
-def test_replacing_roster_hands_processing_scorebook_to_app_sink() -> None:
+def test_replacing_roster_hands_processing_scorebook_to_registry() -> None:
     class _Book:
         def __init__(self) -> None:
             self.rows = [SimpleNamespace(status="processing")]
@@ -163,7 +164,7 @@ def test_replacing_roster_hands_processing_scorebook_to_app_sink() -> None:
     panel.scorebook = book
     panel.run_dir = Path("old-run")
     panel.app = SimpleNamespace(
-        _register_exam_scorebook_sink=registered.append,
+        exam_scorebooks=SimpleNamespace(detach=registered.append),
         _exam_arm_occupancy=lambda active: lifecycle.append(("armed", active)),
         _exam_set_active=lambda active: lifecycle.append(("active", active)),
         _exam_lock_manual_record=lambda active: lifecycle.append(("locked", active)),
@@ -255,11 +256,13 @@ def test_aborted_retest_becomes_startable_without_skipping_remaining_roster(
     panel._refresh_tree()
     panel.tree.selection_set(first.row_id)
     active_calls: list[tuple[bool, str, Path]] = []
+    registry = ScorebookRegistry()
     panel.app = SimpleNamespace(
         _exam_preflight=lambda: (True, ""),
         _exam_set_active=lambda active, *, run_id, run_dir: active_calls.append(
             (active, run_id, run_dir)
         ),
+        exam_scorebooks=registry,
     )
     panel._save_roi = lambda: True
     commands = []
@@ -283,6 +286,9 @@ def test_aborted_retest_becomes_startable_without_skipping_remaining_roster(
     assert panel.session.pointer == 1
     assert panel.session.current is panel.session.rows[1]
     assert active_calls == [(True, "run-existing", tmp_path)]
+    # 沿用的台账登记到新场次，录后结果按 run_id 回填到它
+    assert registry.apply(SimpleNamespace(segment_id="none", exam_run_id="run-existing", status="queued")) is None
+    assert registry._by_run["run-existing"] is book
     assert any(command.kind == "ANNOUNCE" for command in commands)
     book.close()
 
@@ -315,6 +321,7 @@ def test_completed_retest_can_auto_start_when_confirmed(
     panel.app = SimpleNamespace(
         _exam_preflight=lambda: (True, ""),
         _exam_set_active=lambda *a, **k: None,
+        exam_scorebooks=ScorebookRegistry(),
     )
     panel._save_roi = lambda: True
     commands: list = []

@@ -38,43 +38,6 @@ if TYPE_CHECKING:
     from apps.app_ui import App
 
 
-def apply_postprocess_update_to_scorebook(
-    scorebook: ExamScorebook, update: Any
-) -> ExamResultRow | None:
-    """把后处理更新写入台账（面板存活或关窗后 sink 共用）。"""
-    row = scorebook.get_by_segment(str(update.segment_id))
-    if row is None:
-        return None
-    if update.status == "completed":
-        # 逐动作子分：{name: 0..1}（同名后者覆盖前者，正常不重名）
-        action_scores = {
-            str(d.get("name")): float(d.get("score") or 0.0)
-            for d in getattr(update, "action_scores", ()) or ()
-            if d.get("name")
-        }
-        scorebook.update_row(
-            row,
-            status="completed",
-            front_score=float(update.front_score or 0.0),
-            side_score=float(update.side_score or 0.0),
-            combined_percent=int(update.combined_percent or 0),
-            combined_score=float(update.combined_percent or 0) / 100.0,
-            action_scores=action_scores,
-            error_code=None,
-            error_message=None,
-        )
-    elif update.status in {"failed", "skipped", "cancelled"}:
-        scorebook.update_row(
-            row,
-            status="failed" if update.status == "failed" else update.status,
-            error_code=update.error_code,
-            error_message=update.message,
-        )
-    elif update.status in {"queued", "transcoding", "validating", "comparing"}:
-        scorebook.update_row(row, status="processing")
-    return row
-
-
 class ExamPanel:
     def __init__(self, app: "App") -> None:
         self.app = app
@@ -259,14 +222,7 @@ class ExamPanel:
                 row.status == "processing" for row in old_scorebook.rows
             )
             if has_processing:
-                try:
-                    self.app._register_exam_scorebook_sink(old_scorebook)  # type: ignore[attr-defined]
-                except Exception:
-                    sinks = getattr(self.app, "_exam_scorebook_sinks", None)
-                    if sinks is None:
-                        self.app._exam_scorebook_sinks = [old_scorebook]  # type: ignore[attr-defined]
-                    elif old_scorebook not in sinks:
-                        sinks.append(old_scorebook)
+                self.app.exam_scorebooks.detach(old_scorebook)
             else:
                 try:
                     old_scorebook.close()
@@ -378,6 +334,7 @@ class ExamPanel:
             # 保持 session 与 scorebook 同一批 row 对象
             self.session.rows = self.scorebook.rows
             self._row_by_id = {r.row_id: r for r in self.session.rows}
+        self.app.exam_scorebooks.register(run_id, self.scorebook)
         self.app._exam_set_active(True, run_id=run_id, run_dir=self.run_dir)  # type: ignore[attr-defined]
         self._dispatch(self.session.handle("start_exam", now=time.monotonic(), run_id=run_id))
         self._refresh_tree()
@@ -663,19 +620,13 @@ class ExamPanel:
                 self._dispatch(self.session.handle("empty_stable", now=now))
         self._refresh_tree()
 
-    def on_postprocess_update(self, update: Any) -> ExamResultRow | None:
-        """回填当前面板台账；未匹配返回 None（App 会继续尝试旧 sinks）。"""
-        if self.scorebook is None:
-            return None
-        row = apply_postprocess_update_to_scorebook(self.scorebook, update)
-        if row is None:
-            return None
+    def refresh_rows(self) -> None:
+        """台账被录后结果回填后刷新表格（由 App 在回填当前面板的台账后调用）。"""
         try:
             if self.win.winfo_exists():
                 self._refresh_tree()
         except Exception:
             pass
-        return row
 
     def on_session_stop(self) -> None:
         """主窗口「停止」：同步中止考试状态机并解除占用/手动锁。"""
@@ -725,15 +676,8 @@ class ExamPanel:
                 self.scorebook.flush()
             except Exception:
                 pass
-            # 一律登记 sink：应用关闭末段统一再 flush/close；processing 行仍可回填
-            try:
-                self.app._register_exam_scorebook_sink(self.scorebook)  # type: ignore[attr-defined]
-            except Exception:
-                sinks = getattr(self.app, "_exam_scorebook_sinks", None)
-                if sinks is None:
-                    self.app._exam_scorebook_sinks = [self.scorebook]  # type: ignore[attr-defined]
-                elif self.scorebook not in sinks:
-                    sinks.append(self.scorebook)
+            # 一律移交台账登记表：应用关闭末段统一再 flush/close；processing 行仍可回填
+            self.app.exam_scorebooks.detach(self.scorebook)
             self.scorebook = None
         try:
             delattr(self.app, "_exam_panel")
@@ -822,15 +766,7 @@ class ExamPanel:
                 r.status == "processing" for r in self.scorebook.rows
             )
             if has_processing:
-                try:
-                    self.app._register_exam_scorebook_sink(self.scorebook)  # type: ignore[attr-defined]
-                except Exception:
-                    # 兼容旧桩
-                    sinks = getattr(self.app, "_exam_scorebook_sinks", None)
-                    if sinks is None:
-                        self.app._exam_scorebook_sinks = [self.scorebook]  # type: ignore[attr-defined]
-                    elif self.scorebook not in sinks:
-                        sinks.append(self.scorebook)
+                self.app.exam_scorebooks.detach(self.scorebook)
             else:
                 try:
                     self.scorebook.close()

@@ -183,8 +183,7 @@ def test_scorebook_close_stops_writer_when_file_locked(tmp_path: Path) -> None:
     assert elapsed < 5.0
     worker = book._worker
     if worker is not None:
-        worker.join(timeout=1.0)
-        assert not worker.is_alive()
+        assert worker.join(timeout=1.0)
     # close 周期有限次尝试，不会无限涨
     n_after = calls["n"]
     time.sleep(0.6)

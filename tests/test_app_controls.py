@@ -6,8 +6,8 @@
 
 本文件以**不依赖真实 Tk 窗口**的方式验证：
   1. ``RECORD_BTN_TEXT`` 三态文本映射（纯数据断言）。
-  2. ``App._on_record_toggle`` 通过真实 ``RecordingController`` 驱动按钮文本循环演进，
-     使用轻量 stub self（真实控制器 + 假 record_btn），无需 Tk。
+  2. ``App._on_record_toggle`` 通过真实 ``RecordingService``（假 writer）驱动按钮文本循环演进，
+     使用轻量 stub self（真实录制服务 + 假 record_btn），无需 Tk。
   3. ``App._set_running_controls`` 运行态 enable/disable 联动，使用 stub self 与捕获
      ``configure`` 调用的假控件，无需 Tk。
 
@@ -26,7 +26,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from apps.app_ui import App, RECORD_BTN_TEXT  # noqa: E402
-from core.recording_controller import RecordingController  # noqa: E402
+from core.recording import RecordingService, SegmentFinalizer, SegmentRecorder  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -122,105 +122,97 @@ def test_record_btn_text_has_exactly_three_states():
 # ---------------------------------------------------------------------------
 
 
-def _make_toggle_stub():
+def _make_toggle_stub(tmp_path: Path):
     """构造承载 _on_record_toggle 所需最小属性的 stub self。
 
-    - ``_rec``：真实 RecordingController（注入假 writer 工厂，begin_session 后可 toggle）。
+    - ``_recording``：真实 RecordingService（假 writer 工厂；不提交后处理）。
     - ``record_btn``：捕获 configure(text=...) 的假控件。
     """
     factory, _created = _make_fake_writer_factory()
-    factory2, _created2 = _make_fake_writer_factory()
-    rec = RecordingController(
-        writer_factory=factory,
-        path_provider=lambda: Path("unused.mp4"),
-    )
-    rec2 = RecordingController(
-        writer_factory=factory2,
-        path_provider=lambda: Path("unused-side.mp4"),
-    )
     stub = types.SimpleNamespace(
-        _rec=rec,
-        _rec2=rec2,
-        _record_pair_lock=threading.Lock(),
-        _record_stamp=None,
+        _recording=RecordingService(
+            SegmentFinalizer(),
+            plan_for=lambda _segment: None,
+            recorder=SegmentRecorder(writer_factory=factory),
+        ),
+        _record_base_dir=tmp_path,
         _exam_manual_locked=False,
         _dual_recording_ready=True,
         _closing=False,
         record_btn=FakeWidget(text=RECORD_BTN_TEXT["idle"]),
         _sync_record_stop_enabled=lambda _state: None,
-        _current_auto_compare=lambda prefer_ui=False: True,
     )
     return stub
 
 
-def test_on_record_toggle_drives_button_text_cycle():
-    """_on_record_toggle 随控制器状态推进按钮文本：
+def _states(stub) -> list[str]:
+    return [snap.state for snap in stub._recording.snapshot().views.values()]
+
+
+def test_on_record_toggle_drives_button_text_cycle(tmp_path):
+    """_on_record_toggle 随录制状态推进按钮文本：
     开始录制→暂停录制→继续录制→暂停录制（需求 5.2、5.4、5.6）。"""
-    stub = _make_toggle_stub()
-    stub._rec.begin_session(fps=30.0, size=(640, 480))
+    stub = _make_toggle_stub(tmp_path)
+    stub._recording.begin_session({"front": (640, 480)}, 30.0)
 
     # 初始（会话已启动、懒创建）：idle，文本「开始录制」。
-    assert stub._rec.state == "idle"
+    assert stub._recording.state == "idle"
     assert stub.record_btn.cget("text") == RECORD_BTN_TEXT["idle"]
 
     # 第一次 toggle：idle→recording → 文本「暂停录制」。
     App._on_record_toggle(stub)
-    assert stub._rec.state == "recording"
+    assert stub._recording.state == "recording"
     assert stub.record_btn.cget("text") == RECORD_BTN_TEXT["recording"] == "暂停录制"
 
     # 第二次 toggle：recording→paused → 文本「继续录制」。
     App._on_record_toggle(stub)
-    assert stub._rec.state == "paused"
+    assert stub._recording.state == "paused"
     assert stub.record_btn.cget("text") == RECORD_BTN_TEXT["paused"] == "继续录制"
 
     # 第三次 toggle：paused→recording → 文本「暂停录制」。
     App._on_record_toggle(stub)
-    assert stub._rec.state == "recording"
+    assert stub._recording.state == "recording"
     assert stub.record_btn.cget("text") == RECORD_BTN_TEXT["recording"] == "暂停录制"
 
 
-def test_on_record_toggle_matches_controller_state_each_step():
-    """每次 toggle 后，按钮文本恒等于控制器当前状态对应的 RECORD_BTN_TEXT。"""
-    stub = _make_toggle_stub()
-    stub._rec.begin_session(fps=30.0, size=(640, 480))
+def test_on_record_toggle_matches_controller_state_each_step(tmp_path):
+    """每次 toggle 后，按钮文本恒等于录制当前状态对应的 RECORD_BTN_TEXT。"""
+    stub = _make_toggle_stub(tmp_path)
+    stub._recording.begin_session({"front": (640, 480)}, 30.0)
 
     for _ in range(6):  # 多轮循环，覆盖 recording⇄paused 反复切换
         App._on_record_toggle(stub)
-        assert stub.record_btn.cget("text") == RECORD_BTN_TEXT[stub._rec.state]
+        assert stub.record_btn.cget("text") == RECORD_BTN_TEXT[stub._recording.state]
 
 
-def test_on_record_toggle_keeps_both_camera_controllers_in_sync():
-    stub = _make_toggle_stub()
-    stub._rec.begin_session(fps=30.0, size=(640, 480))
-    stub._rec2.begin_session(fps=30.0, size=(480, 640))
+def test_on_record_toggle_keeps_both_camera_controllers_in_sync(tmp_path):
+    stub = _make_toggle_stub(tmp_path)
+    stub._recording.begin_session({"front": (640, 480), "side": (480, 640)}, 30.0)
 
     for expected in ("recording", "paused", "recording"):
         App._on_record_toggle(stub)
-        assert stub._rec.state == expected
-        assert stub._rec2.state == expected
+        assert _states(stub) == [expected, expected]
 
 
-def test_on_record_toggle_noop_before_session():
+def test_on_record_toggle_noop_before_session(tmp_path):
     """会话未运行时 toggle 为 no-op：状态保持 idle、文本保持「开始录制」（需求 5.1）。"""
-    stub = _make_toggle_stub()
+    stub = _make_toggle_stub(tmp_path)
     # 未调用 begin_session
     App._on_record_toggle(stub)
-    assert stub._rec.state == "idle"
+    assert stub._recording.state == "idle"
     assert stub.record_btn.cget("text") == RECORD_BTN_TEXT["idle"]
 
 
-def test_on_record_toggle_noop_after_stop_requested():
-    stub = _make_toggle_stub()
-    stub._rec.begin_session(fps=30.0, size=(640, 480))
-    stub._rec2.begin_session(fps=30.0, size=(480, 640))
+def test_on_record_toggle_noop_after_stop_requested(tmp_path):
+    stub = _make_toggle_stub(tmp_path)
+    stub._recording.begin_session({"front": (640, 480), "side": (480, 640)}, 30.0)
     stub._stop_evt = threading.Event()
     stub._stop_evt.set()
 
     App._on_record_toggle(stub)
 
-    assert stub._record_stamp is None
-    assert stub._rec.state == "idle"
-    assert stub._rec2.state == "idle"
+    assert stub._recording.snapshot().segment is None
+    assert _states(stub) == ["idle", "idle"]
     assert stub.record_btn.cget("text") == RECORD_BTN_TEXT["idle"]
 
 
@@ -307,18 +299,16 @@ def test_dual_loading_keeps_record_control_disabled():
     assert stub.record_btn.cget("state") == "disabled"
 
 
-def test_record_toggle_rejects_dual_loading_even_when_called_directly():
-    stub = _make_toggle_stub()
-    stub._rec.begin_session(fps=30.0, size=(640, 480))
-    stub._rec2.begin_session(fps=30.0, size=(480, 640))
+def test_record_toggle_rejects_dual_loading_even_when_called_directly(tmp_path):
+    stub = _make_toggle_stub(tmp_path)
+    stub._recording.begin_session({"front": (640, 480), "side": (480, 640)}, 30.0)
     stub._stop_evt = threading.Event()
     stub._active_dual_generation = 7
     stub._dual_recording_ready = False
 
     App._on_record_toggle(stub)
 
-    assert stub._rec.state == "idle"
-    assert stub._rec2.state == "idle"
+    assert _states(stub) == ["idle", "idle"]
     assert stub.record_btn.cget("text") == RECORD_BTN_TEXT["idle"]
 
 

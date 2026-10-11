@@ -13,7 +13,17 @@ import pytest
 
 from apps import app_ui
 from apps.camera_warmup import CameraWarmupError
-from core.recording_controller import RecordingController
+from core.recording import (
+    ProcessingPlan,
+    RecordingService,
+    SegmentFinalizer,
+    SegmentMeta,
+    SegmentRecorder,
+    SegmentUpdate,
+)
+from core.recording import recorder as recording_recorder
+from core.recording import steps as recording_steps
+from core.workflows import ScorebookRegistry
 
 
 class _Var:
@@ -132,10 +142,12 @@ def _warmup_app(*, second_label: str = "摄像头 1"):
     return app
 
 
-def _closing_app():
+def _closing_app(finalizer=None):
     app = _camera_app()
-    app._transcode_lock = threading.Lock()
-    app._transcode_workers = set()
+    app._recording = RecordingService(
+        finalizer or _FinalizerDouble(), plan_for=lambda _segment: None
+    )
+    app.exam_scorebooks = ScorebookRegistry()
     app._closing = False
     app._close_deadline = None
     app._stop_evt = threading.Event()
@@ -593,58 +605,6 @@ def test_recording_ready_callback_requires_current_live_generation():
     assert app.record_btn.config["state"] == "normal"
 
 
-def test_transcode_worker_is_non_daemon_tracked_and_removed(monkeypatch):
-    app = _closing_app()
-    entered = threading.Event()
-    finish = threading.Event()
-
-    def _transcode(_path: Path) -> None:
-        entered.set()
-        assert finish.wait(timeout=2.0)
-
-    monkeypatch.setattr(app_ui.video_writer, "transcode_to_h264", _transcode)
-
-    app_ui.App._transcode_async(app, Path("record.avi"))
-    assert entered.wait(timeout=1.0)
-    with app._transcode_lock:
-        worker = next(iter(app._transcode_workers))
-    assert worker.daemon is False
-
-    finish.set()
-    worker.join(timeout=1.0)
-    assert not worker.is_alive()
-    with app._transcode_lock:
-        assert app._transcode_workers == set()
-
-
-def test_close_waits_for_transcode_without_blocking_tk_loop(monkeypatch):
-    app = _closing_app()
-    entered = threading.Event()
-    finish = threading.Event()
-
-    def _transcode(_path: Path) -> None:
-        entered.set()
-        assert finish.wait(timeout=2.0)
-
-    monkeypatch.setattr(app_ui.video_writer, "transcode_to_h264", _transcode)
-    app_ui.App._transcode_async(app, Path("record.avi"))
-    assert entered.wait(timeout=1.0)
-    with app._transcode_lock:
-        worker = next(iter(app._transcode_workers))
-
-    app_ui.App._on_close(app)
-
-    assert app._stop_evt.is_set()
-    assert app.root.destroy_calls == 0
-    assert app.root.after_calls[0][0] == app_ui._CLOSE_POLL_MS
-
-    finish.set()
-    worker.join(timeout=1.0)
-    _delay, poll = app.root.after_calls.pop(0)
-    poll()
-    assert app.root.destroy_calls == 1
-
-
 def test_close_permanently_closes_dual_camera_warmup_pool():
     app = _closing_app()
     pool = _SyncPool()
@@ -655,72 +615,6 @@ def test_close_permanently_closes_dual_camera_warmup_pool():
 
     assert not app._close_prepare_worker.is_alive()
     assert pool.close_calls == 1
-
-
-def test_close_destroys_window_after_bounded_deadline(monkeypatch):
-    app = _closing_app()
-    clock = [0.0]
-
-    class _NeverEndingWorker:
-        def __init__(self) -> None:
-            self.join_timeouts: list[float] = []
-
-        def is_alive(self) -> bool:
-            return True
-
-        def join(self, timeout=None) -> None:
-            self.join_timeouts.append(timeout)
-
-    worker = _NeverEndingWorker()
-    app._transcode_workers.add(worker)
-    monkeypatch.setattr(app_ui.time, "monotonic", lambda: clock[0])
-
-    app_ui.App._on_close(app)
-    assert app.root.destroy_calls == 0
-    assert worker.join_timeouts == [app_ui._CLOSE_JOIN_SLICE_S]
-
-    clock[0] = app_ui._CLOSE_JOIN_TIMEOUT_S + 0.1
-    _delay, poll = app.root.after_calls.pop(0)
-    poll()
-    assert app.root.destroy_calls == 1
-
-
-def test_close_resnapshots_transcode_spawned_by_capture_finally(monkeypatch):
-    app = _closing_app()
-    transcode_entered = threading.Event()
-    transcode_finish = threading.Event()
-
-    def _transcode(_path: Path) -> None:
-        transcode_entered.set()
-        assert transcode_finish.wait(timeout=2.0)
-
-    monkeypatch.setattr(app_ui.video_writer, "transcode_to_h264", _transcode)
-
-    class _CaptureFinishingWorker:
-        def __init__(self) -> None:
-            self.alive = True
-
-        def is_alive(self) -> bool:
-            return self.alive
-
-        def join(self, timeout=None) -> None:
-            self.alive = False
-            app_ui.App._transcode_async(app, Path("capture-finally.avi"))
-
-    app._worker = _CaptureFinishingWorker()
-    app_ui.App._on_close(app)
-
-    assert transcode_entered.wait(timeout=1.0)
-    assert app.root.destroy_calls == 0
-    assert app.root.after_calls[0][0] == app_ui._CLOSE_POLL_MS
-
-    with app._transcode_lock:
-        transcode_worker = next(iter(app._transcode_workers))
-    transcode_finish.set()
-    transcode_worker.join(timeout=1.0)
-    _delay, poll = app.root.after_calls.pop(0)
-    poll()
-    assert app.root.destroy_calls == 1
 
 
 def test_start_resets_stale_match_text(monkeypatch):
@@ -762,488 +656,6 @@ def test_start_resets_stale_match_text(monkeypatch):
     assert app._worker.started is True
 
 
-def test_second_camera_recording_failure_stops_pair_without_polluting_single_mode(
-    monkeypatch, tmp_path
-):
-    class _Writer:
-        def __init__(self) -> None:
-            self.released = False
-
-        def write(self, _frame) -> None:
-            pass
-
-        def release(self) -> None:
-            self.released = True
-
-    primary_writer = _Writer()
-
-    def _primary_factory(path, _fps, _size):
-        return primary_writer, Path(path), "fake"
-
-    def _failing_factory(_path, _fps, _size):
-        raise RuntimeError("side writer unavailable")
-
-    rec = RecordingController(
-        writer_factory=_primary_factory,
-        path_provider=lambda: tmp_path / "front.mp4",
-    )
-    rec2 = RecordingController(
-        writer_factory=_failing_factory,
-        path_provider=lambda: tmp_path / "side.mp4",
-    )
-    for controller in (rec, rec2):
-        controller.begin_session(fps=30.0, size=(4, 3))
-        assert controller.request_toggle() == "recording"
-    rec.write_frame(object())
-    rec2.write_frame(object())
-    assert rec.state == "recording"
-    assert rec2.state == "idle"
-
-    errors: list[tuple] = []
-    transcodes: list[Path | None] = []
-    app = SimpleNamespace(
-        _rec=rec,
-        _rec2=rec2,
-        _record_pair_lock=threading.Lock(),
-        _pending_record_errors=[],
-        _record_error_shown=False,
-        _dual_active=True,
-        _transcode_async=lambda path: transcodes.append(path) if path is not None else None,
-        _sync_record_stop_enabled=lambda _state: None,
-        recording_status_var=_Var("录制中"),
-        record_btn=_Widget(),
-    )
-    monkeypatch.setattr(
-        app_ui.messagebox,
-        "showerror",
-        lambda *args, **kwargs: errors.append((args, kwargs)),
-    )
-
-    app_ui.App._refresh_recording_status(app)
-
-    assert rec.state == "idle"
-    assert rec2.state == "idle"
-    assert rec.snapshot().last_error is None
-    assert rec2.snapshot().last_error is None
-    assert primary_writer.released is True
-    assert transcodes == [tmp_path / "front.mp4"]
-    assert len(errors) == 1
-    assert "第二路：side writer unavailable" in errors[0][0][1]
-
-    # 错误已被 stop_recording 消费；下一次刷新只复位弹框守卫，不重复提示。
-    app_ui.App._refresh_recording_status(app)
-    assert app._record_error_shown is False
-    assert len(errors) == 1
-
-    # 双摄会话结束后只启动主路，旧侧路错误不得误停或污染单摄录制状态。
-    rec.close_session()
-    rec2.close_session()
-    app._dual_active = False
-    rec.begin_session(fps=30.0, size=(4, 3))
-    assert rec.request_toggle() == "recording"
-
-    app_ui.App._refresh_recording_status(app)
-
-    assert rec.state == "recording"
-    assert len(errors) == 1
-    assert app.recording_status_var.get().startswith("录制中：")
-
-
-class _ObservedPairLock:
-    """真实互斥锁包装：第二个线程开始等待时发信号，避免靠 sleep 猜时序。"""
-
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._count_lock = threading.Lock()
-        self._enter_count = 0
-        self.waiter_entered = threading.Event()
-
-    def __enter__(self):
-        with self._count_lock:
-            self._enter_count += 1
-            if self._enter_count >= 2:
-                self.waiter_entered.set()
-        self._lock.acquire()
-        return self
-
-    def __exit__(self, exc_type, exc, traceback) -> None:
-        self._lock.release()
-
-
-def _run_captured(target, errors: list[BaseException]) -> None:
-    try:
-        target()
-    except BaseException as exc:  # noqa: BLE001 - 子线程异常必须回传给测试线程
-        errors.append(exc)
-
-
-def test_record_toggle_waits_for_pair_write_and_publishes_stamp_before_both_toggles():
-    order: list[str] = []
-    first_write_entered = threading.Event()
-    allow_first_write = threading.Event()
-    observed_stamps: dict[str, str | None] = {}
-    observed_bases: dict[str, Path] = {}
-    old_base = Path("old-base")
-    new_base = Path("new-base")
-
-    class _Recorder:
-        def __init__(self, name: str, *, block_write: bool = False) -> None:
-            self.name = name
-            self.block_write = block_write
-            self.state = "idle"
-
-        def write_frame(self, _frame) -> None:
-            observed_bases[self.name] = app._record_base_dir
-            order.append(f"{self.name}:write:start")
-            if self.block_write:
-                first_write_entered.set()
-                if not allow_first_write.wait(timeout=2.0):
-                    raise TimeoutError("测试未释放第一路 write")
-            order.append(f"{self.name}:write:end")
-
-        def request_toggle(self) -> str:
-            observed_stamps[self.name] = app._record_stamp
-            order.append(f"{self.name}:toggle")
-            self.state = "recording"
-            return self.state
-
-    lock = _ObservedPairLock()
-    primary = _Recorder("primary", block_write=True)
-    secondary = _Recorder("secondary")
-    app = SimpleNamespace(
-        _rec=primary,
-        _rec2=secondary,
-        _record_pair_lock=lock,
-        _record_stamp="old-stamp",
-        _record_base_dir=old_base,
-        record_dir_var=_Var(str(new_base)),
-        record_btn=_Widget(),
-        _sync_record_stop_enabled=lambda _state: None,
-    )
-    errors: list[BaseException] = []
-    write_thread = threading.Thread(
-        target=lambda: _run_captured(
-            lambda: app_ui.App._write_recording_pair(app, object(), object()), errors
-        )
-    )
-    toggle_thread = threading.Thread(
-        target=lambda: _run_captured(lambda: app_ui.App._on_record_toggle(app), errors)
-    )
-
-    write_thread.start()
-    assert first_write_entered.wait(timeout=1.0)
-    toggle_thread.start()
-    assert lock.waiter_entered.wait(timeout=1.0)
-    assert not any(item.endswith(":toggle") for item in order)
-    assert app._record_base_dir == old_base
-
-    allow_first_write.set()
-    write_thread.join(timeout=2.0)
-    toggle_thread.join(timeout=2.0)
-
-    assert not write_thread.is_alive()
-    assert not toggle_thread.is_alive()
-    assert errors == []
-    assert order == [
-        "primary:write:start",
-        "primary:write:end",
-        "secondary:write:start",
-        "secondary:write:end",
-        "primary:toggle",
-        "secondary:toggle",
-    ]
-    assert observed_stamps["primary"] != "old-stamp"
-    assert observed_stamps["secondary"] == observed_stamps["primary"]
-    assert observed_bases == {"primary": old_base, "secondary": old_base}
-    assert app._record_base_dir == new_base
-
-
-def test_record_stop_waits_until_both_writes_finish():
-    order: list[str] = []
-    first_write_entered = threading.Event()
-    allow_first_write = threading.Event()
-
-    class _Recorder:
-        def __init__(self, name: str, *, block_write: bool = False) -> None:
-            self.name = name
-            self.block_write = block_write
-
-        def write_frame(self, _frame) -> None:
-            order.append(f"{self.name}:write:start")
-            if self.block_write:
-                first_write_entered.set()
-                if not allow_first_write.wait(timeout=2.0):
-                    raise TimeoutError("测试未释放第一路 write")
-            order.append(f"{self.name}:write:end")
-
-        def stop_recording(self) -> Path:
-            order.append(f"{self.name}:stop")
-            return Path(f"{self.name}.mp4")
-
-        def snapshot(self):
-            return SimpleNamespace(
-                state="recording",
-                result_path=Path(f"{self.name}.mp4"),
-                frames_written=1,
-                last_error=None,
-            )
-
-    lock = _ObservedPairLock()
-    app = SimpleNamespace(
-        _rec=_Recorder("primary", block_write=True),
-        _rec2=_Recorder("secondary"),
-        _record_pair_lock=lock,
-        _transcode_async=lambda _path: None,
-        _sync_record_stop_enabled=lambda _state: None,
-        record_btn=_Widget(),
-    )
-    errors: list[BaseException] = []
-    write_thread = threading.Thread(
-        target=lambda: _run_captured(
-            lambda: app_ui.App._write_recording_pair(app, object(), object()), errors
-        )
-    )
-    stop_thread = threading.Thread(
-        target=lambda: _run_captured(lambda: app_ui.App._on_record_stop(app), errors)
-    )
-
-    write_thread.start()
-    assert first_write_entered.wait(timeout=1.0)
-    stop_thread.start()
-    assert lock.waiter_entered.wait(timeout=1.0)
-    assert not any(item.endswith(":stop") for item in order)
-
-    allow_first_write.set()
-    write_thread.join(timeout=2.0)
-    stop_thread.join(timeout=2.0)
-
-    assert not write_thread.is_alive()
-    assert not stop_thread.is_alive()
-    assert errors == []
-    assert order == [
-        "primary:write:start",
-        "primary:write:end",
-        "secondary:write:start",
-        "secondary:write:end",
-        "primary:stop",
-        "secondary:stop",
-    ]
-
-
-def test_dual_close_preserves_unseen_side_error_for_next_tk_tick(monkeypatch, tmp_path):
-    rec = RecordingController(
-        writer_factory=lambda path, _fps, _size: (object(), Path(path), "fake"),
-        path_provider=lambda: tmp_path / "front.mp4",
-    )
-
-    def _failing_factory(_path, _fps, _size):
-        raise RuntimeError("side failed on final frame")
-
-    rec2 = RecordingController(
-        writer_factory=_failing_factory,
-        path_provider=lambda: tmp_path / "side.mp4",
-    )
-    for controller in (rec, rec2):
-        controller.begin_session(fps=30.0, size=(4, 3))
-        controller.request_toggle()
-    rec2.write_frame(object())
-
-    errors: list[str] = []
-    app = SimpleNamespace(
-        _rec=rec,
-        _rec2=rec2,
-        _record_pair_lock=threading.Lock(),
-        _pending_record_errors=[],
-        _record_error_shown=False,
-        _dual_active=True,
-        _transcode_async=lambda _path: None,
-        _sync_record_stop_enabled=lambda _state: None,
-        recording_status_var=_Var(""),
-        record_btn=_Widget(),
-    )
-    monkeypatch.setattr(
-        app_ui.messagebox,
-        "showerror",
-        lambda _title, message: errors.append(message),
-    )
-
-    app_ui.App._close_recording_pair(app)
-    assert app._dual_active is False
-    assert rec2.snapshot().last_error is None
-
-    app_ui.App._refresh_recording_status(app)
-
-    assert errors == ["录制发生错误：\n第二路：side failed on final frame"]
-    assert app._pending_record_errors == []
-
-
-def _dual_submission_app(tmp_path: Path, *, write_frames: bool = True):
-    stamp = "20260709_120000_123456"
-    segment_dir = tmp_path / stamp[:8] / f"record_{stamp}"
-
-    class _Writer:
-        def __init__(self) -> None:
-            self.frames: list[object] = []
-
-        def write(self, frame) -> None:
-            self.frames.append(frame)
-
-        def release(self) -> None:
-            pass
-
-    def _controller(name: str):
-        return RecordingController(
-            writer_factory=lambda path, _fps, _size: (_Writer(), Path(path), "fake"),
-            path_provider=lambda: segment_dir / f"{name}.mp4",
-        )
-
-    rec = _controller("front")
-    rec2 = _controller("side")
-    for controller in (rec, rec2):
-        controller.begin_session(fps=30.0, size=(4, 3))
-        controller.request_toggle()
-        if write_frames:
-            controller.write_frame(object())
-
-    class _Processor:
-        def __init__(self) -> None:
-            self.jobs = []
-            self.close_calls: list[float] = []
-            self.cancel_calls = 0
-
-        def submit(self, job) -> bool:
-            self.jobs.append(job)
-            return True
-
-        def close(self, timeout: float) -> None:
-            self.close_calls.append(timeout)
-
-        def cancel_all(self) -> None:
-            self.cancel_calls += 1
-
-    processor = _Processor()
-    app = SimpleNamespace(
-        _closing=False,
-        _stop_evt=None,
-        _exam_manual_locked=False,
-        _exam_pending_row=None,
-        _exam_discard_next=False,
-        _exam_run_id=None,
-        _rec=rec,
-        _rec2=rec2,
-        _record_pair_lock=threading.Lock(),
-        _record_finalize_lock=threading.RLock(),
-        _pending_record_errors=[],
-        _dual_active=True,
-        _dual_record_skeleton=False,
-        _dual_auto_compare=True,
-        _record_stamp=stamp,
-        _record_base_dir=tmp_path,
-        _record_postprocessor=processor,
-        _submitted_record_segments=set(),
-        _latest_compare_segment_id=None,
-        _transcode_async=lambda _path: (_ for _ in ()).throw(
-            AssertionError("dual recording must use the postprocessor")
-        ),
-        _sync_record_stop_enabled=lambda _state: None,
-        record_btn=_Widget(),
-    )
-    # 提交路径读取模板池；这些测试只验证提交机制，不涉及模板内容，返回空池即可。
-    app._current_template_lists = lambda: ([], [])
-    # SimpleNamespace 需显式绑定 unbound 方法，供 _on_record_stop 调用
-    app._end_recording_segment = (
-        lambda discard=False, exam_row=None: app_ui.App._end_recording_segment(
-            app, discard=discard, exam_row=exam_row
-        )
-    )
-    return app, processor, segment_dir
-
-
-def test_dual_record_stop_submits_exactly_once_and_allows_next_segment(tmp_path):
-    app, processor, segment_dir = _dual_submission_app(tmp_path)
-
-    app_ui.App._on_record_stop(app)
-
-    assert app._rec.state == "idle"
-    assert app._rec2.state == "idle"
-    assert len(processor.jobs) == 1
-    job = processor.jobs[0]
-    assert job.segment_id == segment_dir.name
-    assert job.front_source == segment_dir / "front.mp4"
-    assert job.side_source == segment_dir / "side.mp4"
-    assert job.front_frames == job.side_frames == 1
-    assert job.record_skeleton is False
-    assert job.auto_compare is True
-
-    app_ui.App._close_recording_pair(app)
-    assert len(processor.jobs) == 1
-    assert app._dual_active is False
-
-
-def test_dual_record_stop_submits_auto_compare_disabled_when_only_recording(tmp_path):
-    app, processor, segment_dir = _dual_submission_app(tmp_path)
-    app._dual_auto_compare = False
-
-    app_ui.App._on_record_stop(app)
-
-    assert len(processor.jobs) == 1
-    job = processor.jobs[0]
-    assert job.segment_id == segment_dir.name
-    assert job.auto_compare is False
-
-
-def test_begin_recording_segment_rolls_back_when_side_not_idle(tmp_path, monkeypatch):
-    """主路 idle、侧路仍 recording 时不得只 toggle 主路导致分叉。"""
-    stamp_dir = tmp_path / "20260709" / "record_x"
-    stamp_dir.mkdir(parents=True)
-
-    class _Writer:
-        def write(self, frame) -> None:
-            pass
-
-        def release(self) -> None:
-            pass
-
-    rec = RecordingController(
-        writer_factory=lambda path, _fps, _size: (_Writer(), Path(path), "fake"),
-        path_provider=lambda: stamp_dir / "front.mp4",
-    )
-    rec2 = RecordingController(
-        writer_factory=lambda path, _fps, _size: (_Writer(), Path(path), "fake"),
-        path_provider=lambda: stamp_dir / "side.mp4",
-    )
-    rec.begin_session(fps=30.0, size=(4, 3))
-    rec2.begin_session(fps=30.0, size=(4, 3))
-    # 仅侧路进入 recording（模拟主路写失败复位 idle、侧路仍 recording）
-    rec2.request_toggle()
-    assert rec.state == "idle"
-    assert rec2.state == "recording"
-
-    app = SimpleNamespace(
-        _closing=False,
-        _stop_evt=None,
-        _dual_recording_ready=True,
-        _dual_active=True,
-        _rec=rec,
-        _rec2=rec2,
-        _record_pair_lock=threading.Lock(),
-        _record_base_dir=tmp_path,
-        record_dir_var=_Var(str(tmp_path)),
-        _exam_pending_row=None,
-        _exam_discard_next=False,
-        record_btn=_Widget(),
-        _sync_record_stop_enabled=lambda _s: None,
-    )
-    monkeypatch.setattr(app_ui, "save_record_dir", lambda _p: None)
-
-    ok = app_ui.App._begin_recording_segment(app)
-    # stop_recording 会把侧路拉回 idle；两边都 idle 后应能成功开录
-    # 若无法对齐则返回 False。此处 stop 可对齐，期望成功且两侧 recording
-    assert ok is True
-    assert rec.state == "recording"
-    assert rec2.state == "recording"
-
-
 def test_exam_preflight_rejects_skeleton_session():
     app = SimpleNamespace(
         _dual_active=True,
@@ -1254,190 +666,6 @@ def test_exam_preflight_rejects_skeleton_session():
     ok, msg = app_ui.App._exam_preflight(app)
     assert ok is False
     assert "骨架" in msg
-
-
-def test_app_close_registers_open_panel_scorebook_for_flush_close(tmp_path):
-    """主窗关闭时，仍打开的考试面板成绩簿必须进入 sinks 并被 flush/close。"""
-    from apps.exam_panel import ExamPanel
-    from core.exam_roster import ExamCandidate, ExamScorebook
-
-    flushes: list[str] = []
-    closes: list[str] = []
-
-    class _Book(ExamScorebook):
-        def flush(self, *, timeout: float = 5.0) -> None:  # type: ignore[override]
-            flushes.append("flush")
-            # 不写盘，避免 openpyxl 依赖路径干扰
-            return
-
-        def close(self) -> None:  # type: ignore[override]
-            closes.append("close")
-            return
-
-    book = _Book(path=tmp_path / "scores.xlsx")
-    book.load_candidates([ExamCandidate(1, "S1", "甲")])
-    book.update_row(book.rows[0], status="processing")
-
-    app = SimpleNamespace(
-        _exam_scorebook_sinks=[],
-        _exam_panel="sentinel",
-    )
-    app._register_exam_scorebook_sink = (
-        lambda sb: app_ui.App._register_exam_scorebook_sink(app, sb)
-    )
-    app._exam_arm_occupancy = lambda *_a, **_k: None
-    app._exam_set_active = lambda *_a, **_k: None
-    app._exam_lock_manual_record = lambda *_a, **_k: None
-
-    announcer_closed: list[str] = []
-
-    panel = SimpleNamespace(
-        app=app,
-        scorebook=book,
-        session=SimpleNamespace(phase="completed"),
-        _tick_id="x",
-        win=SimpleNamespace(
-            after_cancel=lambda _i: None,
-            destroy=lambda: None,
-        ),
-        phase_var=_Var(""),
-        status_var=_Var(""),
-        on_session_stop=lambda: None,
-        _announcer=SimpleNamespace(close=lambda: announcer_closed.append("close")),
-    )
-
-    ExamPanel.prepare_for_app_close(panel)  # type: ignore[arg-type]
-
-    assert flushes == ["flush"]
-    assert announcer_closed == ["close"], "主窗关闭路径必须停 exam-announcer"
-    assert panel.scorebook is None
-    assert book in app._exam_scorebook_sinks
-    assert not hasattr(app, "_exam_panel") or getattr(app, "_exam_panel", None) is None
-
-    # 模拟主窗末段：drain 后 flush/close sinks
-    for sink in list(app._exam_scorebook_sinks):
-        sink.flush()
-        sink.close()
-    app._exam_scorebook_sinks = []
-    assert closes == ["close"]
-    assert flushes == ["flush", "flush"]
-
-
-def test_compare_update_ignores_old_segment_and_formats_latest_score():
-    exam_updates: list = []
-
-    class _ExamPanel:
-        def on_postprocess_update(self, update):
-            exam_updates.append(update.segment_id)
-
-    app = SimpleNamespace(
-        _closing=False,
-        _latest_compare_segment_id="record_new",
-        _compare_update_queue=Queue(),
-        root=_QueuedRoot(),
-        compare_segment_var=_Var("片段：record_new"),
-        compare_status_var=_Var("自动比对：排队中"),
-        compare_score_var=_Var("unchanged"),
-        compare_error_var=_Var(""),
-        _exam_panel=_ExamPanel(),
-    )
-
-    old = app_ui.PostprocessUpdate(
-        segment_id="record_old",
-        status="completed",
-        message="done",
-        front_score=0.1,
-        side_score=0.2,
-        combined_percent=15,
-    )
-    app_ui.App._post_recording_compare_update(app, old)
-    assert app.root.after_calls == []
-    app_ui.App._drain_recording_compare_updates(app)
-    # 主界面比对条只跟最新片段；考试面板仍须收到旧片段终态
-    assert app.compare_score_var.get() == "unchanged"
-    assert exam_updates == ["record_old"]
-
-    latest = app_ui.PostprocessUpdate(
-        segment_id="record_new",
-        status="completed",
-        message="done",
-        front_score=0.823,
-        side_score=0.891,
-        combined_percent=86,
-    )
-    app_ui.App._post_recording_compare_update(app, latest)
-    assert app.root.after_calls == []
-    app_ui.App._drain_recording_compare_updates(app)
-
-    assert app.compare_status_var.get() == "自动比对：已完成"
-    assert app.compare_score_var.get() == "正面：82.3%　侧面：89.1%　综合：86%"
-    assert app.compare_error_var.get() == ""
-    assert exam_updates == ["record_old", "record_new"]
-
-    app._closing = True
-    app_ui.App._post_recording_compare_update(app, latest)
-    app_ui.App._drain_recording_compare_updates(app)
-    assert app.root.after_calls == []
-
-
-def test_compare_update_formats_failed_skipped_and_cancelled_states():
-    app = SimpleNamespace(
-        _closing=False,
-        _latest_compare_segment_id="record_terminal",
-        _compare_update_queue=Queue(),
-        compare_segment_var=_Var("片段：record_terminal"),
-        compare_status_var=_Var("自动比对：排队中"),
-        compare_score_var=_Var("stale score"),
-        compare_error_var=_Var(""),
-    )
-    cases = (
-        ("failed", "失败", "video_unreadable", "录像无法读取"),
-        ("skipped", "已跳过", "annotated_recording", "带骨架录像未自动比对"),
-        ("cancelled", "已取消", "app_closing", "应用关闭"),
-    )
-
-    for status, label, code, message in cases:
-        app_ui.App._post_recording_compare_update(
-            app,
-            app_ui.PostprocessUpdate(
-                "record_terminal",
-                status,
-                message,
-                error_code=code,
-            ),
-        )
-        app_ui.App._drain_recording_compare_updates(app)
-        assert app.compare_status_var.get() == f"自动比对：{label}"
-        assert app.compare_score_var.get() == "正面：-　侧面：-　综合：-"
-        assert app.compare_error_var.get() == f"{code}：{message}"
-
-
-def test_compare_update_already_queued_is_discarded_after_close_starts():
-    app = SimpleNamespace(
-        _closing=False,
-        _latest_compare_segment_id="record_latest",
-        _compare_update_queue=Queue(),
-        compare_segment_var=_Var("片段：record_latest"),
-        compare_status_var=_Var("自动比对：排队中"),
-        compare_score_var=_Var("unchanged"),
-        compare_error_var=_Var(""),
-    )
-    app_ui.App._post_recording_compare_update(
-        app,
-        app_ui.PostprocessUpdate(
-            "record_latest",
-            "completed",
-            "done",
-            front_score=0.9,
-            side_score=0.9,
-            combined_percent=90,
-        ),
-    )
-
-    app._closing = True
-    app_ui.App._drain_recording_compare_updates(app)
-
-    assert app.compare_score_var.get() == "unchanged"
 
 
 def test_dual_layout_update_uses_queue_and_never_touches_tk_after_close():
@@ -1457,239 +685,6 @@ def test_dual_layout_update_uses_queue_and_never_touches_tk_after_close():
     app_ui.App._post_dual_preview_layout(app, "stacked")
     app_ui.App._drain_dual_preview_layout(app)
     assert applied == ["side_by_side"]
-
-
-def test_main_stop_finally_submits_current_dual_segment_once(tmp_path):
-    app, processor, _segment_dir = _dual_submission_app(tmp_path)
-    app._stop_evt = threading.Event()
-    app.stop_btn = _Widget()
-    app.status_var = _Var()
-
-    app_ui.App._stop(app)
-    app_ui.App._close_recording_pair(app)
-    app_ui.App._close_recording_pair(app)
-
-    assert app._stop_evt.is_set()
-    assert app.status_var.get() == "正在停止…"
-    assert len(processor.jobs) == 1
-
-
-def test_zero_frame_dual_segment_is_submitted_from_explicit_and_main_stop(tmp_path):
-    for mode in ("explicit", "main_stop"):
-        app, processor, _segment_dir = _dual_submission_app(
-            tmp_path / mode, write_frames=False
-        )
-        if mode == "explicit":
-            app_ui.App._on_record_stop(app)
-        else:
-            app._stop_evt = threading.Event()
-            app.stop_btn = _Widget()
-            app.status_var = _Var()
-            app_ui.App._stop(app)
-            app_ui.App._close_recording_pair(app)
-
-        assert len(processor.jobs) == 1
-        assert processor.jobs[0].front_frames == 0
-        assert processor.jobs[0].side_frames == 0
-
-
-def test_second_dual_segment_can_start_before_first_result_finishes(tmp_path):
-    app, processor, _first_dir = _dual_submission_app(tmp_path)
-    app_ui.App._on_record_stop(app)
-    first_job = processor.jobs[0]
-
-    app_ui.App._on_record_toggle(app)
-    second_stamp = app._record_stamp
-    second_dir = tmp_path / second_stamp[:8] / f"record_{second_stamp}"
-    app._rec._path_provider = lambda: second_dir / "front.mp4"
-    app._rec2._path_provider = lambda: second_dir / "side.mp4"
-    app_ui.App._write_recording_pair(app, object(), object())
-    app_ui.App._on_record_stop(app)
-
-    assert len(processor.jobs) == 2
-    second_job = processor.jobs[1]
-    assert second_job.segment_id != first_job.segment_id
-    assert second_job.front_source == second_dir / "front.mp4"
-    assert second_job.side_source == second_dir / "side.mp4"
-    assert second_job.front_frames == second_job.side_frames == 1
-
-
-def test_dual_submit_runs_outside_record_pair_lock(tmp_path):
-    app, processor, _segment_dir = _dual_submission_app(tmp_path)
-    original_submit = processor.submit
-    pair_lock_was_free: list[bool] = []
-
-    def submit(job) -> bool:
-        acquired = app._record_pair_lock.acquire(blocking=False)
-        pair_lock_was_free.append(acquired)
-        if acquired:
-            app._record_pair_lock.release()
-        return original_submit(job)
-
-    processor.submit = submit
-    app_ui.App._on_record_stop(app)
-
-    assert pair_lock_was_free == [True]
-
-
-def test_writer_error_submits_formal_job_once_without_modal(tmp_path, monkeypatch):
-    app, processor, _segment_dir = _dual_submission_app(tmp_path)
-    app._record_error_shown = False
-    app.recording_status_var = _Var("录制中")
-    errors: list[str] = []
-    monkeypatch.setattr(
-        app_ui.messagebox,
-        "showerror",
-        lambda _title, message: errors.append(message),
-    )
-    with app._rec2._lock:
-        app._rec2._last_error = "side writer unavailable"
-        app._rec2._state = "idle"
-
-    app_ui.App._refresh_recording_status(app)
-    app_ui.App._close_recording_pair(app)
-
-    assert errors == []
-    assert len(processor.jobs) == 1
-    assert processor.jobs[0].side_error == "side writer unavailable"
-
-
-def test_toggle_after_primary_writer_failure_finalizes_old_pair_before_new_stamp(
-    tmp_path,
-):
-    app, processor, segment_dir = _dual_submission_app(tmp_path)
-    old_stamp = app._record_stamp
-    with app._rec._lock:
-        app._rec._last_error = "front writer unavailable"
-        app._rec._state = "idle"
-
-    app_ui.App._on_record_toggle(app)
-
-    assert app._record_stamp == old_stamp
-    assert app._rec.state == "idle"
-    assert app._rec2.state == "idle"
-    assert len(processor.jobs) == 1
-    job = processor.jobs[0]
-    assert job.segment_id == segment_dir.name
-    assert job.front_source == segment_dir / "front.mp4"
-    assert job.side_source == segment_dir / "side.mp4"
-    assert job.front_error == "front writer unavailable"
-
-
-def test_submit_callback_sees_segment_as_latest_before_submit_returns(tmp_path):
-    app, _processor, _segment_dir = _dual_submission_app(tmp_path)
-    app._compare_update_queue = Queue()
-    app.compare_segment_var = _Var("片段：-")
-    app.compare_status_var = _Var("自动比对：待机")
-    app.compare_score_var = _Var("正面：-　侧面：-　综合：-")
-    app.compare_error_var = _Var("")
-    observed_latest: list[str | None] = []
-
-    class _ImmediateProcessor:
-        def submit(self, job) -> bool:
-            update = app_ui.PostprocessUpdate(job.segment_id, "queued", "queued")
-            app_ui.App._post_recording_compare_update(app, update)
-            app_ui.App._drain_recording_compare_updates(app)
-            observed_latest.append(app._latest_compare_segment_id)
-            return True
-
-    app._record_postprocessor = _ImmediateProcessor()
-    app_ui.App._on_record_stop(app)
-
-    processor_job_id = app._latest_compare_segment_id
-    assert observed_latest == [processor_job_id]
-    assert processor_job_id is not None
-    assert app.compare_segment_var.get() == f"片段：{processor_job_id}"
-
-
-def test_close_finalizes_current_dual_segment_then_cancels_postprocessor(tmp_path):
-    app, processor, _segment_dir = _dual_submission_app(tmp_path)
-    app._closing = False
-    app._stop_evt = threading.Event()
-    app._poll_close_workers = lambda: None
-    app._close_deadline = None
-
-    app_ui.App._on_close(app)
-    app._close_prepare_worker.join(1.0)
-
-    assert app._closing is True
-    assert app._stop_evt.is_set()
-    assert len(processor.jobs) == 1
-    assert processor.cancel_calls == 1
-
-
-def test_close_returns_while_inflight_finalize_finishes_before_cancelling(tmp_path):
-    app, processor, _segment_dir = _dual_submission_app(tmp_path)
-    app._closing = False
-    app._stop_evt = threading.Event()
-    app._poll_close_workers = lambda: None
-    app._close_deadline = None
-    submit_started = threading.Event()
-    release_submit = threading.Event()
-    original_submit = processor.submit
-    errors: list[BaseException] = []
-
-    def submit(job) -> bool:
-        accepted = original_submit(job)
-        submit_started.set()
-        assert release_submit.wait(2.0)
-        return accepted
-
-    processor.submit = submit
-
-    def run(target) -> None:
-        try:
-            target()
-        except BaseException as exc:  # noqa: BLE001 - thread failures must reach test
-            errors.append(exc)
-
-    finalize_thread = threading.Thread(
-        target=lambda: run(lambda: app_ui.App._close_recording_pair(app))
-    )
-    finalize_thread.start()
-    assert submit_started.wait(1.0)
-
-    app_ui.App._on_close(app)
-
-    assert processor.cancel_calls == 0
-    assert app._close_deadline is not None
-    assert app._close_prepare_worker.is_alive()
-    release_submit.set()
-    finalize_thread.join(2.0)
-    app._close_prepare_worker.join(2.0)
-
-    assert not finalize_thread.is_alive()
-    assert not app._close_prepare_worker.is_alive()
-    assert errors == []
-    assert len(processor.jobs) == 1
-    assert processor.cancel_calls == 1
-
-
-def test_close_deadline_is_set_before_blocking_cancel_work(tmp_path):
-    app, processor, _segment_dir = _dual_submission_app(tmp_path)
-    app._closing = False
-    app._stop_evt = threading.Event()
-    app._poll_close_workers = lambda: None
-    app._close_deadline = None
-    cancel_started = threading.Event()
-    release_cancel = threading.Event()
-    original_cancel = processor.cancel_all
-
-    def cancel_all() -> None:
-        cancel_started.set()
-        assert release_cancel.wait(2.0)
-        original_cancel()
-
-    processor.cancel_all = cancel_all
-
-    app_ui.App._on_close(app)
-
-    assert app._close_deadline is not None
-    assert cancel_started.wait(1.0)
-    assert app._close_prepare_worker.is_alive()
-    release_cancel.set()
-    app._close_prepare_worker.join(2.0)
-    assert not app._close_prepare_worker.is_alive()
 
 
 def test_close_poll_window_disables_recording_controls_and_rejects_toggle():
@@ -1734,8 +729,769 @@ def test_close_poll_window_disables_recording_controls_and_rejects_toggle():
     assert not app._close_prepare_worker.is_alive()
 
 
-def test_recording_status_refresh_returns_without_pair_lock_during_close(tmp_path):
-    app, processor, _segment_dir = _dual_submission_app(tmp_path)
+# ---------------------------------------------------------------- 录制服务（P4：RecordingService + SegmentFinalizer）
+
+
+class _FakeWriter:
+    def __init__(self) -> None:
+        self.frames: list[object] = []
+        self.released = False
+
+    def write(self, frame) -> None:
+        self.frames.append(frame)
+
+    def release(self) -> None:
+        self.released = True
+
+
+def _writer_factory(failing: frozenset[str] = frozenset()):
+    """按视角决定 writer 是否创建失败；单路文件（record_<stamp>.mp4）算 front。"""
+
+    def factory(path, _fps, _size):
+        path = Path(path)
+        view = "front" if path.stem.startswith("record_") else path.stem
+        if view in failing:
+            raise RuntimeError(f"{view} writer unavailable")
+        return _FakeWriter(), path, "fake"
+
+    return factory
+
+
+class _FinalizerDouble:
+    """只记录提交的片段与计划，不执行步骤。"""
+
+    def __init__(self) -> None:
+        self.jobs: list[SimpleNamespace] = []
+        self.cancel_calls = 0
+        self.busy = False
+
+    def submit(self, segment, plan) -> bool:
+        self.jobs.append(SimpleNamespace(segment=segment, plan=plan))
+        return True
+
+    def cancel_all(self) -> None:
+        self.cancel_calls += 1
+
+    def close_budget_s(self) -> float:
+        return 0.0
+
+    @property
+    def idle(self) -> bool:
+        return not self.busy
+
+
+def _frame() -> np.ndarray:
+    return np.zeros((3, 4, 3), dtype=np.uint8)
+
+
+def _bind_recording(app, finalizer, *, failing: frozenset[str] = frozenset()) -> None:
+    app._recording = RecordingService(
+        finalizer,
+        plan_for=lambda segment: app_ui.App._recording_plan(app, segment),
+        recorder=SegmentRecorder(_writer_factory(failing)),
+    )
+
+
+def _single_recording_app(tmp_path: Path, *, failing: frozenset[str] = frozenset()):
+    """单摄会话中、已开录并写入一帧；finalizer 是真实的。"""
+    app = _closing_app()
+    _bind_recording(app, SegmentFinalizer(), failing=failing)
+    app._pending_record_errors = []
+    app._record_error_shown = False
+    app._dual_active = False
+    app.record_btn = _Widget()
+    app.recording_status_var = _Var("")
+    app._recording.begin_session({"front": (4, 3)}, 30.0)
+    assert app._recording.start(SegmentMeta(tmp_path))
+    app._recording.write({"front": _frame()})
+    return app
+
+
+def _blocking_transcode(monkeypatch):
+    entered = threading.Event()
+    finish = threading.Event()
+    threads: list[tuple[str, bool]] = []
+
+    def _transcode(path: Path, stop_evt=None) -> Path:
+        current = threading.current_thread()
+        threads.append((current.name, current.daemon))
+        entered.set()
+        assert finish.wait(timeout=2.0)
+        return Path(path)
+
+    monkeypatch.setattr(recording_steps, "transcode_to_h264", _transcode)
+    return entered, finish, threads
+
+
+def test_single_camera_transcode_runs_on_non_daemon_finalizer_lane(monkeypatch, tmp_path):
+    entered, finish, threads = _blocking_transcode(monkeypatch)
+    app = _single_recording_app(tmp_path)
+
+    app_ui.App._end_recording_segment(app)
+
+    assert entered.wait(timeout=1.0)
+    # V-4：单摄转码进 finalizer 的 io 线；该线程非 daemon，进程退出前跑完
+    assert threads == [("finalizer/segment-finalizer/io", False)]
+    assert not app._recording.finalizer.idle
+    finish.set()
+    assert app._recording.finalizer.wait_idle(2.0)
+
+
+def test_close_waits_for_single_camera_transcode_without_blocking_tk_loop(monkeypatch, tmp_path):
+    entered, finish, _threads = _blocking_transcode(monkeypatch)
+    app = _single_recording_app(tmp_path)
+    app_ui.App._end_recording_segment(app)
+    assert entered.wait(timeout=1.0)
+
+    app_ui.App._on_close(app)
+
+    assert app._stop_evt.is_set()
+    assert app.root.destroy_calls == 0
+    assert app.root.after_calls[0][0] == app_ui._CLOSE_POLL_MS
+
+    # 关窗的 cancel_all 不取消 finish_on_close 的单摄转码
+    finish.set()
+    assert app._recording.finalizer.wait_idle(2.0)
+    app._close_prepare_worker.join(1.0)
+    _delay, poll = app.root.after_calls.pop(0)
+    poll()
+    assert app.root.destroy_calls == 1
+
+
+def test_close_destroys_window_after_bounded_deadline(monkeypatch):
+    finalizer = _FinalizerDouble()
+    finalizer.busy = True
+    app = _closing_app(finalizer)
+    clock = [0.0]
+
+    class _NeverEndingWorker:
+        def __init__(self) -> None:
+            self.join_timeouts: list[float] = []
+
+        def is_alive(self) -> bool:
+            return True
+
+        def join(self, timeout=None) -> None:
+            self.join_timeouts.append(timeout)
+
+    worker = _NeverEndingWorker()
+    app._worker = worker
+    monkeypatch.setattr(app_ui.time, "monotonic", lambda: clock[0])
+
+    app_ui.App._on_close(app)
+    app._close_prepare_worker.join(1.0)
+    assert app.root.destroy_calls == 0
+    assert worker.join_timeouts == [app_ui._CLOSE_JOIN_SLICE_S]
+
+    clock[0] = app_ui._CLOSE_JOIN_TIMEOUT_S + 0.1
+    _delay, poll = app.root.after_calls.pop(0)
+    poll()
+    assert app.root.destroy_calls == 1
+
+
+def test_close_waits_for_transcode_submitted_by_capture_finally(monkeypatch, tmp_path):
+    entered, finish, _threads = _blocking_transcode(monkeypatch)
+    app = _single_recording_app(tmp_path)
+
+    class _CaptureFinishingWorker:
+        def __init__(self) -> None:
+            self.alive = True
+
+        def is_alive(self) -> bool:
+            return self.alive
+
+        def join(self, timeout=None) -> None:
+            self.alive = False
+            app_ui.App._close_recording_session(app)
+
+    app._worker = _CaptureFinishingWorker()
+    app_ui.App._on_close(app)
+
+    # 采集线程 finally 在关窗后才提交单摄片段：finish_on_close 仍被接受，poll 必须等它
+    assert entered.wait(timeout=1.0)
+    assert app.root.destroy_calls == 0
+    assert app.root.after_calls[0][0] == app_ui._CLOSE_POLL_MS
+
+    finish.set()
+    assert app._recording.finalizer.wait_idle(2.0)
+    app._close_prepare_worker.join(1.0)
+    _delay, poll = app.root.after_calls.pop(0)
+    poll()
+    assert app.root.destroy_calls == 1
+
+
+def test_close_poll_waits_for_finalizer_idle(monkeypatch):
+    finalizer = _FinalizerDouble()
+    finalizer.busy = True
+    app = _closing_app(finalizer)
+    app._close_deadline = app_ui._CLOSE_JOIN_TIMEOUT_S
+    monkeypatch.setattr(app_ui.time, "monotonic", lambda: 0.0)
+
+    app_ui.App._poll_close_workers(app)
+
+    assert app.root.destroy_calls == 0
+    assert app.root.after_calls[0][0] == app_ui._CLOSE_POLL_MS
+
+    finalizer.busy = False
+    _delay, poll = app.root.after_calls.pop(0)
+    poll()
+    assert app.root.destroy_calls == 1
+
+
+def test_close_poll_closes_scorebooks_after_deadline_even_if_finalizer_busy(monkeypatch):
+    finalizer = _FinalizerDouble()
+    finalizer.busy = True
+    app = _closing_app(finalizer)
+    closed: list[bool] = []
+    app.exam_scorebooks = SimpleNamespace(close_all=lambda: closed.append(True))
+    app._close_deadline = 1.0
+    monkeypatch.setattr(app_ui.time, "monotonic", lambda: 2.0)
+
+    app_ui.App._poll_close_workers(app)
+
+    assert closed == [True]
+    assert app.root.destroy_calls == 1
+
+
+def test_side_writer_failure_submits_pair_once_without_modal_and_single_session_unaffected(
+    monkeypatch, tmp_path
+):
+    finalizer = _FinalizerDouble()
+    app = SimpleNamespace(
+        _pending_record_errors=[],
+        _record_error_shown=False,
+        _sync_record_stop_enabled=lambda _state: None,
+        recording_status_var=_Var("录制中"),
+        record_btn=_Widget(),
+    )
+    app._recording = RecordingService(
+        finalizer,
+        plan_for=lambda _segment: ProcessingPlan(()),
+        recorder=SegmentRecorder(_writer_factory(frozenset({"side"}))),
+    )
+    app._recording.begin_session({"front": (4, 3), "side": (4, 3)}, 30.0)
+    assert app._recording.start(SegmentMeta(tmp_path))
+    app._recording.write({"front": _frame(), "side": _frame()})
+    views = app._recording.snapshot().views
+    assert (views["front"].state, views["side"].state) == ("recording", "idle")
+
+    errors: list[str] = []
+    monkeypatch.setattr(
+        app_ui.messagebox, "showerror", lambda _title, message: errors.append(message)
+    )
+
+    app_ui.App._refresh_recording_status(app)
+
+    # 双摄的写失败由结果 JSON 与比对状态栏承载，不弹框；两路一起结束并只提交一次
+    assert app._recording.state == "idle"
+    assert errors == []
+    assert len(finalizer.jobs) == 1
+    assert finalizer.jobs[0].segment.errors == {"side": "side writer unavailable"}
+    app_ui.App._refresh_recording_status(app)
+    assert app._record_error_shown is False
+    assert len(finalizer.jobs) == 1
+
+    # 双摄会话结束后只开主路，旧侧路错误不得误停或污染单摄录制
+    app._recording.close_session()
+    app._recording.begin_session({"front": (4, 3)}, 30.0)
+    assert app._recording.start(SegmentMeta(tmp_path))
+
+    app_ui.App._refresh_recording_status(app)
+
+    assert app._recording.state == "recording"
+    assert errors == []
+    assert app.recording_status_var.get().startswith("录制中：")
+
+
+def test_close_recording_session_keeps_single_camera_error_for_next_tk_tick(
+    monkeypatch, tmp_path
+):
+    app = _single_recording_app(tmp_path, failing=frozenset({"front"}))
+    errors: list[str] = []
+    monkeypatch.setattr(
+        app_ui.messagebox, "showerror", lambda _title, message: errors.append(message)
+    )
+
+    app_ui.App._close_recording_session(app)
+    assert app._dual_active is False
+    assert app._recording.snapshot().errors == {}
+
+    app_ui.App._refresh_recording_status(app)
+
+    assert errors == ["录制发生错误：\n第一路：front writer unavailable"]
+    assert app._pending_record_errors == []
+
+
+def _dual_submission_app(
+    tmp_path: Path, *, write_frames: bool = True, failing: frozenset[str] = frozenset()
+):
+    finalizer = _FinalizerDouble()
+    app = SimpleNamespace(
+        _closing=False,
+        _stop_evt=None,
+        _exam_manual_locked=False,
+        _exam_pending_row=None,
+        _exam_run_id=None,
+        _student_practice_active=False,
+        _pending_record_errors=[],
+        _record_error_shown=False,
+        _dual_active=True,
+        _dual_recording_ready=True,
+        _dual_record_skeleton=False,
+        _dual_auto_compare=True,
+        _record_base_dir=tmp_path,
+        _latest_compare_segment_id=None,
+        exam_scorebooks=ScorebookRegistry(),
+        _sync_record_stop_enabled=lambda _state: None,
+        record_btn=_Widget(),
+    )
+    # 计划构建读取模板池；这些测试只验证提交机制，返回空池即可。
+    app._current_template_lists = lambda: ([], [])
+    _bind_recording(app, finalizer, failing=failing)
+    app._recording.begin_session({"front": (4, 3), "side": (4, 3)}, 30.0)
+    segment = app._recording.start(SegmentMeta(tmp_path))
+    assert segment
+    if write_frames:
+        app._recording.write({"front": _frame(), "side": _frame()})
+    return app, finalizer, segment.directory
+
+
+def test_dual_record_stop_submits_exactly_once_and_allows_next_segment(tmp_path):
+    app, finalizer, segment_dir = _dual_submission_app(tmp_path)
+
+    app_ui.App._on_record_stop(app)
+
+    assert app._recording.state == "idle"
+    assert len(finalizer.jobs) == 1
+    job = finalizer.jobs[0]
+    assert job.segment.segment_id == segment_dir.name
+    assert job.segment.source("front") == segment_dir / "front.mp4"
+    assert job.segment.source("side") == segment_dir / "side.mp4"
+    assert [job.segment.views[v].frames for v in ("front", "side")] == [1, 1]
+    assert job.plan.result.record_skeleton is False
+    assert job.plan.result.auto_compare is True
+
+    app_ui.App._close_recording_session(app)
+    assert len(finalizer.jobs) == 1
+    assert app._dual_active is False
+
+
+def test_dual_record_stop_submits_auto_compare_disabled_when_only_recording(tmp_path):
+    app, finalizer, segment_dir = _dual_submission_app(tmp_path)
+    app._dual_auto_compare = False
+
+    app_ui.App._on_record_stop(app)
+
+    assert len(finalizer.jobs) == 1
+    job = finalizer.jobs[0]
+    assert job.segment.segment_id == segment_dir.name
+    assert job.plan.result.auto_compare is False
+
+
+def test_record_toggle_starts_dual_segment_under_selected_base_dir(tmp_path, monkeypatch):
+    app, finalizer, _segment_dir = _dual_submission_app(tmp_path / "old")
+    app_ui.App._on_record_stop(app)
+    new_base = tmp_path / "new"
+    app.record_dir_var = _Var(str(new_base))
+    saved: list[Path] = []
+    monkeypatch.setattr(app_ui, "save_record_dir", lambda path: saved.append(Path(path)))
+
+    app_ui.App._on_record_toggle(app)
+
+    snapshot = app._recording.snapshot()
+    assert snapshot.state == "recording"
+    assert snapshot.segment.directory.parent.parent == new_base
+    assert app._record_base_dir == new_base
+    assert saved == [new_base]
+    assert len(finalizer.jobs) == 1
+
+
+def test_app_close_registers_open_panel_scorebook_for_flush_close(tmp_path):
+    """主窗关闭时，仍打开的考试面板成绩簿必须移交登记表，并在最后 flush/close。"""
+    from apps.exam_panel import ExamPanel
+    from core.workflows import ExamCandidate, ExamScorebook
+
+    flushes: list[str] = []
+    closes: list[str] = []
+
+    class _Book(ExamScorebook):
+        def flush(self, *, timeout: float = 5.0) -> None:  # type: ignore[override]
+            flushes.append("flush")
+
+        def close(self) -> None:  # type: ignore[override]
+            closes.append("close")
+
+    book = _Book(path=tmp_path / "scores.xlsx")
+    book.load_candidates([ExamCandidate(1, "S1", "甲")])
+    book.update_row(book.rows[0], status="processing")
+
+    registry = ScorebookRegistry()
+    app = SimpleNamespace(exam_scorebooks=registry, _exam_panel="sentinel")
+    announcer_closed: list[str] = []
+    panel = SimpleNamespace(
+        app=app,
+        scorebook=book,
+        session=SimpleNamespace(phase="completed"),
+        _tick_id="x",
+        win=SimpleNamespace(after_cancel=lambda _i: None, destroy=lambda: None),
+        phase_var=_Var(""),
+        status_var=_Var(""),
+        on_session_stop=lambda: None,
+        _announcer=SimpleNamespace(close=lambda: announcer_closed.append("close")),
+    )
+
+    ExamPanel.prepare_for_app_close(panel)  # type: ignore[arg-type]
+
+    assert announcer_closed == ["close"], "主窗关闭路径必须停 exam-announcer"
+    assert panel.scorebook is None
+    assert registry.has_detached
+    assert registry.has_processing
+    assert getattr(app, "_exam_panel", None) is None
+    assert closes == []
+
+    registry.close_all()
+    assert closes == ["close"]
+    # 面板 flush、移交登记表时 flush、最后关闭前 flush
+    assert flushes == ["flush", "flush", "flush"]
+
+
+def test_compare_update_ignores_old_segment_and_formats_latest_score():
+    exam_updates: list = []
+    app = SimpleNamespace(
+        _closing=False,
+        _latest_compare_segment_id="record_new",
+        _compare_update_queue=Queue(),
+        root=_QueuedRoot(),
+        compare_segment_var=_Var("片段：record_new"),
+        compare_status_var=_Var("自动比对：排队中"),
+        compare_score_var=_Var("unchanged"),
+        compare_error_var=_Var(""),
+        exam_scorebooks=SimpleNamespace(
+            apply=lambda update: exam_updates.append(update.segment_id),
+            has_detached=False,
+        ),
+    )
+
+    old = SegmentUpdate(
+        segment_id="record_old",
+        status="completed",
+        message="done",
+        front_score=0.1,
+        side_score=0.2,
+        combined_percent=15,
+    )
+    app_ui.App._post_recording_compare_update(app, old)
+    assert app.root.after_calls == []
+    app_ui.App._drain_recording_compare_updates(app)
+    # 主界面比对条只跟最新片段；考试台账仍须收到旧片段终态
+    assert app.compare_score_var.get() == "unchanged"
+    assert exam_updates == ["record_old"]
+
+    latest = SegmentUpdate(
+        segment_id="record_new",
+        status="completed",
+        message="done",
+        front_score=0.823,
+        side_score=0.891,
+        combined_percent=86,
+    )
+    app_ui.App._post_recording_compare_update(app, latest)
+    assert app.root.after_calls == []
+    app_ui.App._drain_recording_compare_updates(app)
+
+    assert app.compare_status_var.get() == "自动比对：已完成"
+    assert app.compare_score_var.get() == "正面：82.3%　侧面：89.1%　综合：86%"
+    assert app.compare_error_var.get() == ""
+    assert exam_updates == ["record_old", "record_new"]
+
+    app._closing = True
+    app_ui.App._post_recording_compare_update(app, latest)
+    app_ui.App._drain_recording_compare_updates(app)
+    assert app.root.after_calls == []
+    assert exam_updates == ["record_old", "record_new"]
+
+
+def test_compare_update_formats_failed_skipped_and_cancelled_states():
+    app = SimpleNamespace(
+        _closing=False,
+        _latest_compare_segment_id="record_terminal",
+        _compare_update_queue=Queue(),
+        compare_segment_var=_Var("片段：record_terminal"),
+        compare_status_var=_Var("自动比对：排队中"),
+        compare_score_var=_Var("stale score"),
+        compare_error_var=_Var(""),
+        exam_scorebooks=ScorebookRegistry(),
+    )
+    cases = (
+        ("failed", "失败", "video_unreadable", "录像无法读取"),
+        ("skipped", "已跳过", "annotated_recording", "带骨架录像未自动比对"),
+        ("cancelled", "已取消", "app_closing", "应用关闭"),
+    )
+
+    for status, label, code, message in cases:
+        app_ui.App._post_recording_compare_update(
+            app, SegmentUpdate("record_terminal", status, message, error_code=code)
+        )
+        app_ui.App._drain_recording_compare_updates(app)
+        assert app.compare_status_var.get() == f"自动比对：{label}"
+        assert app.compare_score_var.get() == "正面：-　侧面：-　综合：-"
+        assert app.compare_error_var.get() == f"{code}：{message}"
+
+
+def test_compare_update_already_queued_is_discarded_after_close_starts():
+    app = SimpleNamespace(
+        _closing=False,
+        _latest_compare_segment_id="record_latest",
+        _compare_update_queue=Queue(),
+        compare_segment_var=_Var("片段：record_latest"),
+        compare_status_var=_Var("自动比对：排队中"),
+        compare_score_var=_Var("unchanged"),
+        compare_error_var=_Var(""),
+        exam_scorebooks=ScorebookRegistry(),
+    )
+    app_ui.App._post_recording_compare_update(
+        app,
+        SegmentUpdate(
+            "record_latest",
+            "completed",
+            "done",
+            front_score=0.9,
+            side_score=0.9,
+            combined_percent=90,
+        ),
+    )
+
+    app._closing = True
+    app_ui.App._drain_recording_compare_updates(app)
+
+    assert app.compare_score_var.get() == "unchanged"
+
+
+def test_main_stop_finally_submits_current_dual_segment_once(tmp_path):
+    app, finalizer, _segment_dir = _dual_submission_app(tmp_path)
+    app._stop_evt = threading.Event()
+    app.stop_btn = _Widget()
+    app.status_var = _Var()
+
+    app_ui.App._stop(app)
+    app_ui.App._close_recording_session(app)
+    app_ui.App._close_recording_session(app)
+
+    assert app._stop_evt.is_set()
+    assert app.status_var.get() == "正在停止…"
+    assert len(finalizer.jobs) == 1
+
+
+def test_zero_frame_dual_segment_is_submitted_from_explicit_and_main_stop(tmp_path):
+    for mode in ("explicit", "main_stop"):
+        app, finalizer, _segment_dir = _dual_submission_app(
+            tmp_path / mode, write_frames=False
+        )
+        if mode == "explicit":
+            app_ui.App._on_record_stop(app)
+        else:
+            app._stop_evt = threading.Event()
+            app.stop_btn = _Widget()
+            app.status_var = _Var()
+            app_ui.App._stop(app)
+            app_ui.App._close_recording_session(app)
+
+        assert len(finalizer.jobs) == 1
+        segment = finalizer.jobs[0].segment
+        assert [segment.views[v].frames for v in ("front", "side")] == [0, 0]
+
+
+def test_second_dual_segment_can_start_before_first_result_finishes(tmp_path, monkeypatch):
+    monkeypatch.setattr(app_ui, "save_record_dir", lambda _path: None)
+    # 两个片段的时间戳钉死，不依赖时钟在两次调用之间前进
+    stamps = iter(["20260101_000000_000001", "20260101_000000_000002"])
+    monkeypatch.setattr(recording_recorder, "new_stamp", lambda: next(stamps))
+    app, finalizer, _first_dir = _dual_submission_app(tmp_path)
+    app_ui.App._on_record_stop(app)
+    first = finalizer.jobs[0].segment
+
+    app_ui.App._on_record_toggle(app)
+    app._recording.write({"front": _frame(), "side": _frame()})
+    app_ui.App._on_record_stop(app)
+
+    assert len(finalizer.jobs) == 2
+    second = finalizer.jobs[1].segment
+    assert second.segment_id != first.segment_id
+    assert second.source("front") == second.directory / "front.mp4"
+    assert second.source("side") == second.directory / "side.mp4"
+    assert [second.views[v].frames for v in ("front", "side")] == [1, 1]
+
+
+def test_dual_submit_does_not_block_capture_writes(tmp_path):
+    app, finalizer, _segment_dir = _dual_submission_app(tmp_path)
+    original_submit = finalizer.submit
+    write_returned: list[bool] = []
+
+    def submit(segment, plan) -> bool:
+        # 提交在服务锁内，但采集线程写帧不经这把锁，不被提交阻塞
+        writer = threading.Thread(
+            target=lambda: app._recording.write({"front": _frame(), "side": _frame()})
+        )
+        writer.start()
+        writer.join(1.0)
+        write_returned.append(not writer.is_alive())
+        return original_submit(segment, plan)
+
+    finalizer.submit = submit
+    app_ui.App._on_record_stop(app)
+
+    assert write_returned == [True]
+
+
+def test_writer_error_submits_formal_job_once_without_modal(tmp_path, monkeypatch):
+    app, finalizer, _segment_dir = _dual_submission_app(
+        tmp_path, failing=frozenset({"side"})
+    )
+    app.recording_status_var = _Var("录制中")
+    errors: list[str] = []
+    monkeypatch.setattr(
+        app_ui.messagebox, "showerror", lambda _title, message: errors.append(message)
+    )
+
+    app_ui.App._refresh_recording_status(app)
+    app_ui.App._close_recording_session(app)
+
+    assert errors == []
+    assert len(finalizer.jobs) == 1
+    assert finalizer.jobs[0].segment.errors == {"side": "side writer unavailable"}
+
+
+def test_toggle_after_primary_writer_failure_finalizes_old_pair_before_new_segment(tmp_path):
+    app, finalizer, segment_dir = _dual_submission_app(
+        tmp_path, failing=frozenset({"front"})
+    )
+
+    app_ui.App._on_record_toggle(app)
+
+    assert app._recording.state == "idle"
+    assert app._recording.snapshot().segment is None
+    assert len(finalizer.jobs) == 1
+    segment = finalizer.jobs[0].segment
+    assert segment.segment_id == segment_dir.name
+    assert segment.source("front") == segment_dir / "front.mp4"
+    assert segment.source("side") == segment_dir / "side.mp4"
+    assert segment.errors == {"front": "front writer unavailable"}
+    assert app.record_btn.config["text"] == app_ui.RECORD_BTN_TEXT["idle"]
+
+
+def test_submit_callback_sees_segment_as_latest_before_submit_returns(tmp_path):
+    app, finalizer, _segment_dir = _dual_submission_app(tmp_path)
+    app._compare_update_queue = Queue()
+    app.compare_segment_var = _Var("片段：-")
+    app.compare_status_var = _Var("自动比对：待机")
+    app.compare_score_var = _Var("正面：-　侧面：-　综合：-")
+    app.compare_error_var = _Var("")
+    observed_latest: list[str | None] = []
+
+    def submit(segment, _plan) -> bool:
+        update = SegmentUpdate(segment.segment_id, "queued", "queued")
+        app_ui.App._post_recording_compare_update(app, update)
+        app_ui.App._drain_recording_compare_updates(app)
+        observed_latest.append(app._latest_compare_segment_id)
+        return True
+
+    finalizer.submit = submit
+    app_ui.App._on_record_stop(app)
+
+    latest = app._latest_compare_segment_id
+    assert observed_latest == [latest]
+    assert latest is not None
+    assert app.compare_segment_var.get() == f"片段：{latest}"
+
+
+def test_close_finalizes_current_dual_segment_then_cancels_postprocessor(tmp_path):
+    app, finalizer, _segment_dir = _dual_submission_app(tmp_path)
+    app._stop_evt = threading.Event()
+    app._poll_close_workers = lambda: None
+    app._close_deadline = None
+
+    app_ui.App._on_close(app)
+    app._close_prepare_worker.join(1.0)
+
+    assert app._closing is True
+    assert app._stop_evt.is_set()
+    assert len(finalizer.jobs) == 1
+    assert finalizer.cancel_calls == 1
+
+
+def test_close_returns_while_inflight_finalize_finishes_before_cancelling(tmp_path):
+    app, finalizer, _segment_dir = _dual_submission_app(tmp_path)
+    app._stop_evt = threading.Event()
+    app._poll_close_workers = lambda: None
+    app._close_deadline = None
+    submit_started = threading.Event()
+    release_submit = threading.Event()
+    original_submit = finalizer.submit
+    errors: list[BaseException] = []
+
+    def submit(segment, plan) -> bool:
+        accepted = original_submit(segment, plan)
+        submit_started.set()
+        assert release_submit.wait(2.0)
+        return accepted
+
+    finalizer.submit = submit
+
+    def run() -> None:
+        try:
+            app_ui.App._close_recording_session(app)
+        except BaseException as exc:  # noqa: BLE001 - thread failures must reach test
+            errors.append(exc)
+
+    finalize_thread = threading.Thread(target=run)
+    finalize_thread.start()
+    assert submit_started.wait(1.0)
+
+    app_ui.App._on_close(app)
+
+    # 结束+提交与 cancel_all 在同一把锁里串行：提交返回前不取消
+    assert finalizer.cancel_calls == 0
+    assert app._close_deadline is not None
+    assert app._close_prepare_worker.is_alive()
+    release_submit.set()
+    finalize_thread.join(2.0)
+    app._close_prepare_worker.join(2.0)
+
+    assert not finalize_thread.is_alive()
+    assert not app._close_prepare_worker.is_alive()
+    assert errors == []
+    assert len(finalizer.jobs) == 1
+    assert finalizer.cancel_calls == 1
+
+
+def test_close_deadline_is_set_before_blocking_cancel_work(tmp_path):
+    app, finalizer, _segment_dir = _dual_submission_app(tmp_path)
+    app._stop_evt = threading.Event()
+    app._poll_close_workers = lambda: None
+    app._close_deadline = None
+    cancel_started = threading.Event()
+    release_cancel = threading.Event()
+    original_cancel = finalizer.cancel_all
+
+    def cancel_all() -> None:
+        cancel_started.set()
+        assert release_cancel.wait(2.0)
+        original_cancel()
+
+    finalizer.cancel_all = cancel_all
+
+    app_ui.App._on_close(app)
+
+    assert app._close_deadline is not None
+    assert cancel_started.wait(1.0)
+    assert app._close_prepare_worker.is_alive()
+    release_cancel.set()
+    app._close_prepare_worker.join(2.0)
+    assert not app._close_prepare_worker.is_alive()
+
+
+def test_recording_status_refresh_returns_without_recording_locks_during_close(tmp_path):
+    app, finalizer, _segment_dir = _dual_submission_app(tmp_path)
     app._closing = True
     app._stop_evt = threading.Event()
     app.record_btn.configure(state="disabled")
@@ -1753,7 +1509,8 @@ def test_recording_status_refresh_returns_without_pair_lock_during_close(tmp_pat
         except BaseException as exc:  # noqa: BLE001 - surface thread failures
             errors.append(exc)
 
-    app._record_pair_lock.acquire()
+    app._recording._lock.acquire()
+    app._recording._recorder._lock.acquire()
     worker = threading.Thread(target=refresh)
     try:
         worker.start()
@@ -1761,22 +1518,21 @@ def test_recording_status_refresh_returns_without_pair_lock_during_close(tmp_pat
         worker.join(0.2)
         assert not worker.is_alive()
     finally:
-        app._record_pair_lock.release()
+        app._recording._recorder._lock.release()
+        app._recording._lock.release()
         worker.join(1.0)
 
     assert errors == []
-    assert processor.jobs == []
+    assert finalizer.jobs == []
     assert app.recording_status_var.get() == "closing"
     assert app.record_btn.config["state"] == "disabled"
     assert app.record_stop_btn.config["state"] == "disabled"
 
 
 def test_recording_status_refresh_clears_worker_finalized_main_stop_state(tmp_path):
-    app, processor, _segment_dir = _dual_submission_app(tmp_path)
-    app._closing = False
+    app, finalizer, _segment_dir = _dual_submission_app(tmp_path)
     app._stop_evt = threading.Event()
     app._stop_evt.set()
-    app._record_error_shown = False
     app.recording_status_var = _Var("录制中：旧片段")
     app.record_stop_btn = _Widget()
     app.record_stop_btn.configure(state="normal")
@@ -1784,20 +1540,18 @@ def test_recording_status_refresh_clears_worker_finalized_main_stop_state(tmp_pa
         app, state
     )
 
-    app_ui.App._close_recording_pair(app)
-    assert app._rec.state == "idle"
-    assert app._rec2.state == "idle"
+    app_ui.App._close_recording_session(app)
+    assert app._recording.state == "idle"
 
     app_ui.App._refresh_recording_status(app)
 
-    assert len(processor.jobs) == 1
+    assert len(finalizer.jobs) == 1
     assert app.recording_status_var.get() == ""
     assert app.record_stop_btn.config["state"] == "disabled"
 
 
-def test_record_stop_returns_without_finalize_lock_after_stop_requested(tmp_path):
-    app, processor, _segment_dir = _dual_submission_app(tmp_path)
-    app._closing = False
+def test_record_stop_returns_without_recording_lock_after_stop_requested(tmp_path):
+    app, finalizer, _segment_dir = _dual_submission_app(tmp_path)
     app._stop_evt = threading.Event()
     app._stop_evt.set()
     app.record_btn.configure(state="disabled")
@@ -1814,7 +1568,7 @@ def test_record_stop_returns_without_finalize_lock_after_stop_requested(tmp_path
         except BaseException as exc:  # noqa: BLE001 - surface thread failures
             errors.append(exc)
 
-    app._record_finalize_lock.acquire()
+    app._recording._lock.acquire()
     worker = threading.Thread(target=stop_recording)
     try:
         worker.start()
@@ -1822,74 +1576,11 @@ def test_record_stop_returns_without_finalize_lock_after_stop_requested(tmp_path
         worker.join(0.2)
         assert not worker.is_alive()
     finally:
-        app._record_finalize_lock.release()
+        app._recording._lock.release()
         worker.join(1.0)
 
     assert errors == []
-    assert processor.jobs == []
-    assert app._rec.state == "recording"
-    assert app._rec2.state == "recording"
+    assert finalizer.jobs == []
+    assert app._recording.state == "recording"
     assert app.record_btn.config["state"] == "disabled"
     assert app.record_stop_btn.config["state"] == "disabled"
-
-
-def test_close_poll_waits_for_postprocessor_worker(monkeypatch):
-    app = _closing_app()
-    clock = [0.0]
-
-    class _Worker:
-        def __init__(self) -> None:
-            self.alive = True
-
-        def is_alive(self) -> bool:
-            return self.alive
-
-    class _Processor:
-        def __init__(self) -> None:
-            self._worker = _Worker()
-            self.close_calls: list[float] = []
-
-        def close(self, timeout: float) -> None:
-            self.close_calls.append(timeout)
-
-    processor = _Processor()
-    app._record_postprocessor = processor
-    app._close_deadline = app_ui._CLOSE_JOIN_TIMEOUT_S
-    monkeypatch.setattr(app_ui.time, "monotonic", lambda: clock[0])
-
-    app_ui.App._poll_close_workers(app)
-
-    assert processor.close_calls == [app_ui._CLOSE_JOIN_SLICE_S]
-    assert app.root.destroy_calls == 0
-    assert app.root.after_calls[0][0] == app_ui._CLOSE_POLL_MS
-
-    processor._worker.alive = False
-    _delay, poll = app.root.after_calls.pop(0)
-    poll()
-    assert app.root.destroy_calls == 1
-
-
-def test_close_poll_enqueues_postprocessor_sentinel_after_deadline(monkeypatch):
-    app = _closing_app()
-
-    class _Worker:
-        def is_alive(self) -> bool:
-            return False
-
-    class _Processor:
-        def __init__(self) -> None:
-            self._worker = _Worker()
-            self.close_calls: list[float] = []
-
-        def close(self, timeout: float) -> None:
-            self.close_calls.append(timeout)
-
-    processor = _Processor()
-    app._record_postprocessor = processor
-    app._close_deadline = 1.0
-    monkeypatch.setattr(app_ui.time, "monotonic", lambda: 2.0)
-
-    app_ui.App._poll_close_workers(app)
-
-    assert processor.close_calls == [0.0]
-    assert app.root.destroy_calls == 1
