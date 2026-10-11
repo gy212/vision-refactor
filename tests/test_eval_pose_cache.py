@@ -154,4 +154,3 @@ def test_exam_pool_scores_match_per_consumer_extraction(infer_calls, tmp_path, m
     fresh = run()
     assert infer_calls[0] == 180  # 不走缓存时比对与踢腿几何各推理一次
     assert cached == fresh
-
