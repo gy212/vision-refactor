@@ -1,3 +1,14 @@
+## 2026-10-11（America/Los_Angeles）: [fix] PR #12 评审：侧面写出途中取消时一并删除已写完的正面裁剪产物
+
+- 问题描述：PR #12 评审（P2）指出，`_stream_write_range` 取消时只删除正在写的那一路；正面写完、侧面写出途中取消时，`front_exam.mp4` 残留为孤立产物。评审用 `checks=170` 复现，留下 45 帧的 `front_exam.mp4`。
+- 修改内容：
+  - `core/workflows/exam/clip.py`：在成对写出这一层处理取消。`_write_aligned_pair` 记录本次已写完的产物，`Cancelled` 时全部删除后再抛出；写出与再截齐移入 `_write_pair_outputs`。写了一半的那一路仍由 `_stream_write_range` 删除。
+  - `tests/test_finalizer_close_lifecycle.py`：`test_prepare_exam_pair_stops_on_cancel_and_removes_partial_output` 增加参数 `170`（正面已写完、侧面写出途中取消）。修复前该参数失败，修复后通过。
+- 验证方法：
+  - 门禁与架构：65 passed；全量 `.\.venv\Scripts\python.exe -m pytest tests -q`：1134 passed。
+  - `scripts/sim_exam_flow.py`：37 passed，`SIMULATION_OK`。
+  - `git diff --check` 通过。
+
 ## 2026-10-11（America/Los_Angeles）: [fix] 考试裁剪超过关窗预算后，非守护 IO 线程阻止进程退出（issue #10）
 
 - 问题描述：P4 把 finalizer 的整条 io 线设为非守护线程，保证单摄转码在关窗后做完（V-4）；但考试裁剪也跑在这条线上，且 `ExamClipStep` 不响应取消。裁剪超过关窗预算时窗口已销毁，非守护线程仍阻止进程退出。迁移前考试裁剪是守护线程，只有单摄转码要求退出前做完。

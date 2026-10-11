@@ -233,15 +233,44 @@ def _write_aligned_pair(
     warnings: list[str],
     cancel: CancelToken | None = None,
 ) -> tuple[Path, Path, int]:
-    """写出两路 [start, end) 并保证写出帧数一致（不一致时按较短一路重写），返回 (正面, 侧面, 帧数)。"""
+    """写出两路 [start, end) 并保证写出帧数一致（不一致时按较短一路重写），返回 (正面, 侧面, 帧数)。
+
+    取消时删除本次已写完的两路产物（写了一半的那一路由 ``_stream_write_range`` 删除），不留半套裁剪结果。
+    """
+    created: list[Path] = []
+    try:
+        return _write_pair_outputs(
+            sources, out_dir, sizes, created, start=start, end=end, fps=fps, warnings=warnings, cancel=cancel,
+        )
+    except Cancelled:
+        for path in created:
+            path.unlink(missing_ok=True)
+        raise
+
+
+def _write_pair_outputs(
+    sources: tuple[Path, Path],
+    out_dir: Path,
+    sizes: tuple[tuple[int, int], tuple[int, int]],
+    created: list[Path],
+    *,
+    start: int,
+    end: int,
+    fps: float,
+    warnings: list[str],
+    cancel: CancelToken | None,
+) -> tuple[Path, Path, int]:
+    """``_write_aligned_pair`` 的写出与再截齐；每写完一路把产物路径记进 ``created``。"""
     names = ("front_exam.mp4", "side_exam.mp4")
 
     def write(i: int, stop: int) -> tuple[Path, int]:
         size = sizes[i]
-        return _stream_write_range(
+        out, count = _stream_write_range(
             sources[i], out_dir / names[i], start=start, end=stop, fps=fps,
             size_hint=size if size[0] > 0 else None, cancel=cancel,
         )
+        created.append(out)
+        return out, count
 
     (front_out, front_written), (side_out, side_written) = write(0, end), write(1, end)
     # 再次截齐：元数据与文件必须一致，禁止「假帧数 + 完整长文件」绕过 postprocess 校验

@@ -163,9 +163,10 @@ class _CancelAfter(CancelToken):
         super().raise_if_cancelled()
 
 
-@pytest.mark.parametrize("checks", [1, 40, 140])
+@pytest.mark.parametrize("checks", [1, 40, 140, 170])
 def test_prepare_exam_pair_stops_on_cancel_and_removes_partial_output(tmp_path, checks):
-    # 两路各 60 帧：能量扫描 60 次 + 侧路计数 60 次检查后进入写出阶段；140 落在正面写出途中
+    # 两路各 60 帧：能量扫描 60 次 + 侧路计数 60 次检查后进入写出阶段；
+    # 140 落在正面写出途中，170 落在正面已写完、侧面写出途中（正面产物也须删除）
     front, side = tmp_path / "front.mp4", tmp_path / "side.mp4"
     _write_video(front, 60, 10)
     _write_video(side, 60, 20)
