@@ -11,9 +11,9 @@ from typing import Iterable
 import cv2
 import numpy as np
 
-from core.media import open_video, probe_video
+from core.media import probe_video
 from core.paths import outputs_dir
-from core.pose import FORMAL, GapPolicy, PoseSequence, draw_skeleton, extract_pose_sequence, formal_engine
+from core.pose import FORMAL, GapPolicy, draw_skeleton, extract_pose_sequence, formal_engine
 from batch.backend_options import (
     FEATURE_LAYOUT_BODY_CORE,
     add_backend_layout_args,
@@ -69,22 +69,24 @@ def _unique_name(base: str, used: set[str]) -> str:
         idx += 1
 
 
-def _write_skeleton_video(seq: PoseSequence, video_path: Path, out_video: Path, *, draw_face: bool) -> None:
-    """按提取结果在原视频上画骨架写出（mp4v）；未检出帧不画骨架。"""
-    out_video.parent.mkdir(parents=True, exist_ok=True)
-    writer = cv2.VideoWriter(str(out_video), cv2.VideoWriter_fourcc(*"mp4v"), seq.meta.fps,
-                             (seq.meta.width, seq.meta.height))
-    try:
-        with open_video(video_path) as source:
-            for frame in source:
-                if frame.index >= len(seq):
-                    break
-                annotated = frame.bgr.copy()
-                if seq.detected[frame.index]:
-                    draw_skeleton(annotated, seq.landmarks[frame.index], draw_face=draw_face)
-                writer.write(annotated)
-    finally:
-        writer.release()
+class _SkeletonVideoWriter:
+    """边提取边写骨架视频（mp4v）：每帧推理后在原帧上画骨架，未检出帧不画；只解码一遍。"""
+
+    def __init__(self, video_path: Path, out_video: Path, *, draw_face: bool) -> None:
+        meta = probe_video(video_path)
+        out_video.parent.mkdir(parents=True, exist_ok=True)
+        self._draw_face = draw_face
+        self._writer = cv2.VideoWriter(str(out_video), cv2.VideoWriter_fourcc(*"mp4v"), meta.fps,
+                                       (meta.width, meta.height))
+
+    def __call__(self, frame, pose_landmarks) -> None:
+        annotated = frame.bgr.copy()
+        if pose_landmarks is not None:
+            draw_skeleton(annotated, pose_landmarks, draw_face=self._draw_face)
+        self._writer.write(annotated)
+
+    def release(self) -> None:
+        self._writer.release()
 
 
 def _extract_pose_and_video(
@@ -94,12 +96,15 @@ def _extract_pose_and_video(
     pose_variant: str,
     draw_face: bool,
 ) -> tuple[np.ndarray, dict]:
-    """``FORMAL`` 顺序提取，原始序列按 ``HOLD_LAST_LEGACY`` 补未检出帧；可选导出骨架视频。"""
-    seq = extract_pose_sequence(video_path, formal_engine(pose_variant), FORMAL)
+    """``FORMAL`` 顺序提取，原始序列按 ``HOLD_LAST_LEGACY`` 补未检出帧；可选同时导出骨架视频。"""
+    writer = None if out_video is None else _SkeletonVideoWriter(video_path, out_video, draw_face=draw_face)
+    try:
+        seq = extract_pose_sequence(video_path, formal_engine(pose_variant), FORMAL, on_frame=writer)
+    finally:
+        if writer is not None:
+            writer.release()
     if len(seq) == 0:
         raise RuntimeError(f"未能从视频提取姿态：{video_path}")
-    if out_video is not None:
-        _write_skeleton_video(seq, video_path, out_video, draw_face=draw_face)
 
     m = seq.meta
     meta = {

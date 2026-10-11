@@ -10,6 +10,7 @@ from tkinter import StringVar, Text, Toplevel, filedialog, messagebox, ttk
 from core.action_feedback import ACTIONS, STANCES, STATE_LABELS, format_report, format_fusion, analyze_feedback
 from core.feedback_geometry import load_feedback_config
 from core.feedback_history import FeedbackHistory, validate_identity
+from core.reporting import practice_report_renderers
 
 
 class FeedbackControls:
@@ -74,7 +75,7 @@ class FeedbackControls:
 
     def history(self):
         if self.store is None:
-            self.store = FeedbackHistory()
+            self.store = FeedbackHistory(renderers=practice_report_renderers())
         return self.store
 
     def identity(self):

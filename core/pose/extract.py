@@ -19,6 +19,7 @@ from pathlib import Path
 
 import numpy as np
 
+from core.foundation.paths import models_dir as default_models_dir
 from core.foundation.tasks import CancelToken, Cancelled, TaskGroup, from_stopped
 from core.media.video_source import DecodeOptions, VideoOpenError, open_video, probe_video
 from core.pose.engine import EngineSpec, create_engine
@@ -29,6 +30,7 @@ from core.pose.validity import DEFAULT_VALID_CONF_THR, MEDIAPIPE_VALIDITY_POLICY
 SEGMENT_WARMUP_FRAMES = 15
 ProgressFn = Callable[[int, int], None]
 EngineFactory = Callable[[], object]
+FrameHook = Callable[[object, object], None]  # (media.Frame, pose_landmarks 或 None)，顺序跟踪时逐帧回调
 
 
 @dataclass(frozen=True)
@@ -148,7 +150,8 @@ def _meta(source_meta, engine: EngineSpec, profile: ExtractionProfile, tracking:
 
 
 def _sequential(video: Path, engine: EngineSpec, profile: ExtractionProfile, factory: EngineFactory,
-                cancel: CancelToken | None, progress: ProgressFn | None) -> tuple[PoseSequence, bool]:
+                cancel: CancelToken | None, progress: ProgressFn | None,
+                on_frame: FrameHook | None = None) -> tuple[PoseSequence, bool]:
     """返回 ``(序列, exhausted)``；``exhausted`` 为真表示因读不到帧结束，而非到达 ``decode.end``。"""
     rows: list[np.ndarray] = []
     detected: list[bool] = []
@@ -172,6 +175,8 @@ def _sequential(video: Path, engine: EngineSpec, profile: ExtractionProfile, fac
                 frame_index.append(frame.index)
                 t_ms.append(frame.t_ms)
                 source_wh.append(frame.source_size)
+                if on_frame is not None:
+                    on_frame(frame, pose_landmarks)
                 shape = getattr(frame.bgr, "shape", None)
                 if shape is not None:
                     inference_size = (int(shape[1]), int(shape[0]))
@@ -308,18 +313,25 @@ def _segmentable(decode) -> bool:
 def extract_pose_sequence(video: Path | str, engine: EngineSpec, profile: ExtractionProfile = FORMAL, *,
                           workers: int = 1, cancel: CancelToken | None = None,
                           progress: ProgressFn | None = None,
-                          engine_factory: EngineFactory | None = None) -> PoseSequence:
+                          engine_factory: EngineFactory | None = None,
+                          on_frame: FrameHook | None = None) -> PoseSequence:
     """解码并逐帧推理，返回 ``PoseSequence``。取消时抛 ``Cancelled``；视频打不开抛 ``VideoOpenError``。
 
     ``workers > 1`` 且容器给出帧数、且 ``profile.decode`` 的 ``start``/``end``/``sample_fps`` 都是默认值时
     分段并行（``tracking="segmented"``）；否则顺序跟踪——分段方案按分段边界定位读取，无法保持这些选项
     的语义（§6.3 实现补充）。``engine_factory`` 用于注入假引擎（测试、练习分析的 ``pipeline_factory``）；
-    注入时不走缓存。
+    注入时不走缓存。``on_frame`` 在每帧推理后拿到解码帧与关键点（如边提取边写骨架视频，免得再解码一遍）；
+    给了它就顺序跟踪、不走缓存，保证每帧都回调。模型目录只解析一次再交给各段的引擎（冻结包首次运行时
+    避免多个分段线程各自解析、同时播种模型）。
     """
     video = Path(str(video))
-    workers = max(1, int(workers))
-    factory = engine_factory or (lambda: create_engine(engine, download=profile.download_models))
-    store = _CACHE.get() if engine_factory is None else None
+    workers = 1 if on_frame is not None else max(1, int(workers))
+    if engine_factory is None:
+        directory = default_models_dir()
+        factory = lambda: create_engine(engine, models_dir=directory, download=profile.download_models)  # noqa: E731
+    else:
+        factory = engine_factory
+    store = _CACHE.get() if engine_factory is None and on_frame is None else None
     source_meta = None
     if workers > 1:
         if not _segmentable(profile.decode):
@@ -337,7 +349,7 @@ def extract_pose_sequence(video: Path | str, engine: EngineSpec, profile: Extrac
         seq = _segmented(video, engine, profile, factory, workers, source_meta, cancel, progress)
         reached_eof = True  # 分段方案要求容器给出帧数，覆盖全部帧即读到结尾
     else:
-        seq, reached_eof = _sequential(video, engine, profile, factory, cancel, progress)
+        seq, reached_eof = _sequential(video, engine, profile, factory, cancel, progress, on_frame)
     if store is not None:
         store.setdefault(key, []).append((profile.decode.end, reached_eof, seq))
     return seq

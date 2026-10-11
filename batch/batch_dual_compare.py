@@ -13,7 +13,8 @@ from typing import Any
 
 import numpy as np
 
-from core import action_compare as ac
+from core.evaluation import COMPARE, DUAL_STREAM, DUAL_TEMPLATE, load_template
+from core.services import compare_dual, create_template_from_video
 from core.rule_scoring import extract_pose_raw
 from core.paths import outputs_dir
 from batch.backend_options import (
@@ -134,6 +135,46 @@ def _jsonable(obj: Any) -> Any:
     return obj
 
 
+def _compare_pose33(item, paired_mode: bool, front_tpl: Path, side_tpl: Path, args, enable_error_analysis: bool):
+    """一个学员的 pose33_v3 正侧比对：paired 用 ``DUAL_STREAM``（正、侧两段视频），否则 ``DUAL_TEMPLATE``（单视频切分）。"""
+    if paired_mode:
+        student_id, front_student_video, side_student_video = item
+        res = compare_dual(
+            DUAL_STREAM,
+            front_tpl,
+            side_tpl,
+            front_student_video,
+            side_student_video,
+            workers=1,
+            enable_rules=bool(args.rules),
+            action_scope=str(args.action),
+            enable_error_analysis=enable_error_analysis,
+        )
+        video_label = str(student_id)
+        error_video_label = str(student_id)
+        payload_extra = {
+            "student_id": str(student_id),
+            "front_video_path": str(front_student_video),
+            "side_video_path": str(side_student_video),
+        }
+    else:
+        v = item
+        res = compare_dual(
+            DUAL_TEMPLATE,
+            front_tpl,
+            side_tpl,
+            v,
+            workers=1,
+            enable_rules=bool(args.rules),
+            action_scope=str(args.action),
+            enable_error_analysis=enable_error_analysis,
+        )
+        video_label = str(v)
+        error_video_label = str(v.name)
+        payload_extra = None
+    return res, video_label, error_video_label, payload_extra
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Dual-template compare (front+side) + raw skeleton export.")
     ap.add_argument("--standard_dir", type=str, default=None, help="Folder containing standard front/side videos")
@@ -195,8 +236,8 @@ def main() -> None:
     # 1) Create templates from the two standard videos.
     front_tpl = out_dir / "templates" / f"standard_front_{args.pose}.npz"
     side_tpl = out_dir / "templates" / f"standard_side_{args.pose}.npz"
-    front_tpl = ac.create_template_from_video(front_video, pose_variant=args.pose, out_path=front_tpl)
-    side_tpl = ac.create_template_from_video(side_video, pose_variant=args.pose, out_path=side_tpl)
+    front_tpl = create_template_from_video(front_video, pose_variant=args.pose, out_path=front_tpl)
+    side_tpl = create_template_from_video(side_video, pose_variant=args.pose, out_path=side_tpl)
 
     # 2) Batch compare all student videos.
     student_videos = sorted([p for p in student_dir.iterdir() if p.is_file() and p.suffix.lower() in _VIDEO_SUFFIXES])
@@ -223,39 +264,9 @@ def main() -> None:
     video_workers = max(1, int(args.workers))
 
     def _process_pose33_video(idx: int, item) -> tuple[int, Any, dict[str, Any], list[dict[str, Any]], list[dict[str, Any]], dict[str, Any] | None]:
-        if paired_mode:
-            student_id, front_student_video, side_student_video = item
-            res = ac.compare_dual_streams(
-                front_tpl,
-                side_tpl,
-                front_student_video,
-                side_student_video,
-                workers=1,
-                enable_rules=bool(args.rules),
-                action_scope=str(args.action),
-                enable_error_analysis=enable_error_analysis,
-            )
-            video_label = str(student_id)
-            error_video_label = str(student_id)
-            payload_extra = {
-                "student_id": str(student_id),
-                "front_video_path": str(front_student_video),
-                "side_video_path": str(side_student_video),
-            }
-        else:
-            v = item
-            res = ac.compare_video_to_dual_templates(
-                front_tpl,
-                side_tpl,
-                v,
-                workers=1,
-                enable_rules=bool(args.rules),
-                action_scope=str(args.action),
-                enable_error_analysis=enable_error_analysis,
-            )
-            video_label = str(v)
-            error_video_label = str(v.name)
-            payload_extra = None
+        res, video_label, error_video_label, payload_extra = _compare_pose33(
+            item, paired_mode, front_tpl, side_tpl, args, enable_error_analysis
+        )
 
         per_video_rule_rows: list[dict[str, Any]] = []
         per_video_joint_rows: list[dict[str, Any]] = []
@@ -404,8 +415,7 @@ def main() -> None:
 
 
 def _load_npz_meta(path: Path) -> dict[str, Any]:
-    data = np.load(path, allow_pickle=True)
-    return dict(data["meta"].item() or {})
+    return dict(load_template(path, COMPARE).raw_meta)
 
 
 def _body_core_result_dict(res: Any, *, meta: dict[str, Any]) -> dict[str, Any]:

@@ -11,6 +11,9 @@ import pytest
 
 from core import action_feedback as af
 from core import feedback_geometry as fg
+from core.evaluation import practice as practice_mod
+from core.evaluation.rules import practice_v4
+from core.reporting import practice_report_renderers
 from core.feedback_history import FeedbackHistory, validate_identity
 
 
@@ -117,7 +120,7 @@ def test_quality_reduces_weight_and_equal_conflict_stays_undecided(monkeypatch):
     front, side = pose_series(), pose_series()
     side["landmarks"][:, 15, :2] = (.4, .6)
     side["valid_mask"][[1, 3, 5, 7], 13] = False
-    monkeypatch.setattr(fg, "phase_windows", lambda *args: {("stance", "start"): np.arange(10)})
+    monkeypatch.setattr(practice_mod, "phase_windows", lambda *args: {("stance", "start"): np.arange(10)})
     weights = fg._default_front_weights()
     weights["stance"]["stance_elbow"] = .3
     cfg = fg.FeedbackConfig(front_weights=weights)
@@ -150,7 +153,7 @@ def test_action_profiles_and_primary_view_limit_are_explicit():
 
 
 def test_weight_configuration_validation_and_report(tmp_path, monkeypatch):
-    monkeypatch.setattr(fg, "repo_root", lambda: tmp_path)
+    monkeypatch.setattr(practice_v4, "repo_root", lambda: tmp_path)
     weights = fg._default_front_weights()
     weights["stance"]["stance_elbow"] = .25
     path = tmp_path / "feedback_config.json"
@@ -173,7 +176,7 @@ def test_weight_configuration_validation_and_report(tmp_path, monkeypatch):
 def test_same_video_cannot_be_used_as_both_cameras(tmp_path):
     source = tmp_path / "recording.mp4"
     source.write_bytes(b"fixture")
-    store = FeedbackHistory(tmp_path / "history")
+    store = FeedbackHistory(tmp_path / "history", renderers=practice_report_renderers())
     with pytest.raises(ValueError, match="同一个视频"):
         store.add(validate_identity("001", "", "stance", "left"), source, source)
     assert list(store.root.iterdir()) == []
@@ -221,7 +224,7 @@ def test_actual_video_sampling_uses_pipeline_and_does_not_repeat_lost_pose(tmp_p
 @pytest.mark.parametrize("variant", ["lite", "full", "heavy"])
 def test_feedback_pipeline_uses_selected_cpu_model_without_hands(monkeypatch, tmp_path, variant):
     (tmp_path / f"pose_landmarker_{variant}.task").write_bytes(b"fixture")
-    monkeypatch.setattr(fg, "models_dir", lambda: tmp_path)
+    monkeypatch.setattr(practice_mod, "models_dir", lambda: tmp_path)
     captured = []
     from core.pose import engine  # P2：构造统一经 create_engine
     monkeypatch.setattr(engine, "PoseEngine", lambda **kw: captured.append(kw))
@@ -232,7 +235,7 @@ def test_feedback_pipeline_uses_selected_cpu_model_without_hands(monkeypatch, tm
 
 
 def test_feedback_pipeline_missing_model_keeps_message(monkeypatch, tmp_path):
-    monkeypatch.setattr(fg, "models_dir", lambda: tmp_path)
+    monkeypatch.setattr(practice_mod, "models_dir", lambda: tmp_path)
     with pytest.raises(FileNotFoundError, match="缺少 MediaPipe heavy，请在设置的模型管理中安装。"):
         fg._pipeline(fg.FeedbackConfig(pose_variant="heavy"))
 
@@ -249,7 +252,7 @@ def test_completed_hip_turn_and_arm_swing_are_not_missing_actions():
 
 def test_personal_history_review_export_reanalysis_and_retention(tmp_path):
     now = [datetime(2026, 9, 18, tzinfo=timezone.utc)]
-    store = FeedbackHistory(tmp_path / "history", clock=lambda: now[0])
+    store = FeedbackHistory(tmp_path / "history", clock=lambda: now[0], renderers=practice_report_renderers())
     source = tmp_path / "source.avi"
     source.write_bytes(b"mock video, inference is injected")
     identity = validate_identity("001", "张同学", "front_straight", "left")
@@ -273,7 +276,7 @@ def test_personal_history_review_export_reanalysis_and_retention(tmp_path):
 
 
 def test_cancel_failure_and_invalid_path_never_publish_history(tmp_path):
-    store = FeedbackHistory(tmp_path / "history")
+    store = FeedbackHistory(tmp_path / "history", renderers=practice_report_renderers())
     source = tmp_path / "source.mp4"
     source.write_bytes(b"mock")
     identity = validate_identity("001", "", "stance", "right")
@@ -302,7 +305,7 @@ def test_real_tk_panel_background_analysis_history_and_identity_switch(tmp_path)
     busy = []
     controls = FeedbackControls(root, root=root, set_busy=busy.append, show_result=messages.append,
                                 set_status=statuses.append, can_analyze=lambda: True)
-    controls.store = FeedbackHistory(tmp_path / "history")
+    controls.store = FeedbackHistory(tmp_path / "history", renderers=practice_report_renderers())
     controls.student_id.set("001")
     source = tmp_path / "source.mp4"
     source.write_bytes(b"mock")
@@ -329,7 +332,7 @@ def test_real_tk_panel_background_analysis_history_and_identity_switch(tmp_path)
 
 
 def test_late_cancel_does_not_write_or_replace_result(tmp_path):
-    store = FeedbackHistory(tmp_path / "history")
+    store = FeedbackHistory(tmp_path / "history", renderers=practice_report_renderers())
     source = tmp_path / "source.mp4"
     source.write_bytes(b"mock")
     identity = validate_identity("001", "", "stance", "left")
@@ -371,7 +374,7 @@ def test_app_judges_identity_bound_at_recording_start(waiting):
 
 
 def test_corrupt_record_is_reported_without_deleting_unmanaged_files(tmp_path):
-    store = FeedbackHistory(tmp_path / "history")
+    store = FeedbackHistory(tmp_path / "history", renderers=practice_report_renderers())
     folder = store.root / ("a" * 32)
     folder.mkdir()
     (folder / "record.json").write_text("[]", encoding="utf-8")
@@ -483,7 +486,7 @@ def test_real_tk_evidence_frames_and_model_choice(tmp_path, monkeypatch):
     root.withdraw()
     controls = panel.FeedbackControls(root, root=root, set_busy=lambda _: None, show_result=lambda _: None,
                                       set_status=lambda _: None, can_analyze=lambda: True)
-    controls.store = FeedbackHistory(tmp_path / "history")
+    controls.store = FeedbackHistory(tmp_path / "history", renderers=practice_report_renderers())
     controls.student_id.set("evidence-test")
     controls.action.set(af.ACTIONS["stance"])
     try:
@@ -510,3 +513,13 @@ def test_real_tk_evidence_frames_and_model_choice(tmp_path, monkeypatch):
     finally:
         controls.close()
         root.destroy()
+
+
+def test_history_export_uses_injected_renderers_only(tmp_path):
+    store = FeedbackHistory(tmp_path / "history", renderers={".txt": lambda record, root: f"{record['studentId']}|{root.name}"})
+    source = tmp_path / "source.avi"
+    source.write_bytes(b"mock video, inference is injected")
+    saved = store.add(validate_identity("001", "张同学", "front_straight", "left"), source, None, analyzer=fake_analyzer)
+    assert store.export(saved["id"], tmp_path / "r.txt").read_text(encoding="utf-8-sig") == "001|history"
+    with pytest.raises(ValueError, match="未配置 .html 报告的生成方式"):
+        store.export(saved["id"], tmp_path / "r.html")

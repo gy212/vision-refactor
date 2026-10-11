@@ -1,3 +1,46 @@
+## 2026-10-11（America/Los_Angeles）: [fix] PR #6 评审：meta 非字典的模板在考试池里只跳过
+
+- 问题描述：PR #6 评审指出，`load_template` 把 `dict(declared or {})` 放在了 `require_file` 契约的异常转换之外。`meta` 不是字典（如字符串）的 NPZ 会抛出未转换的 `ValueError`，`TemplateStore.usable()` 只接 `TemplateError`，一个坏模板就会让考试就绪检查和录制后处理的整池失败；迁移前是跳过。另有 `tests/test_exam_pool_scoring.py` 末尾多一个空行，`git diff --check` 报错。
+- 修改内容：
+  - `core/evaluation/templates.py`：`_read` 一并返回 `dict(declared or {})`，转换落在 `EXAM_POOL` 的受保护读取里，失败转为 `template_invalid`；`COMPARE`/`ONLINE` 仍原样抛出读取错误。
+  - `tests/test_recording_postprocess.py` 新增 `test_template_pool_skips_template_with_malformed_meta`：一个可用模板加一个 `meta="not-a-dict"` 的模板，可用模板保留。修复前该用例失败。
+  - 删掉 `tests/test_exam_pool_scoring.py` 末尾空行。
+- 验证方法：全量 `.\.venv\Scripts\python.exe -m pytest tests -q`：1110 passed；门禁四件套与 `test_architecture.py` 通过；`git diff --check` 无空白错误。
+
+## 2026-10-10（America/Los_Angeles）: [docs] D-4、D-9/V-8 已决：采纳建议，实施另提 PR
+
+- 问题描述：P3 实施时 D-4（考试与 `batch --paired` 计分方案不同）与 D-9/V-8（模板池混用 v2/v3 归一化）未决，按未决做法保持现状。P3 完成后用户决定两项都采纳设计文档的建议。
+- 修改内容：
+  - 设计文档 §11.1 V-8、§11.2 D-4、D-9 划线并写明结论：D-4 是考试以 `EXAM_POOL` 为准，`batch_dual_compare` 新增 `--scheme {dual_stream,dual_template,exam_pool}`，缺省不变，`exam_pool` 只与 `--paired` 搭配、模板须满足考试契约；D-9 是 `match_video` 逐模板按自身归一化版本取特征，CompareWindow 提示混用池。§7.5、§9.2、§12 的相关句子同步。
+  - `重构阶段任务/P3-评估.md`：任务前检查与待决策表更新，新增第 5 节"后续 PR"列出两项的实施与验收；`README.md` 的阶段一览与待决策总表划线。
+  - 只改文档。代码里仍写着"未决"的说明（`core/evaluation/scoring/schemes.py`、`core/evaluation/matching/engine.py`）随各自的实施 PR 一起改，P3 的代码行为不变。
+- 同步依据：用户在本会话确认"采纳 D-4、D-9 的建议，先写进文档"。
+- 验证方法：`grep -n "D-4\|D-9\|V-8"` 核对设计文档、阶段清单、README 三处结论一致；`git diff --check` 无空白错误；只改文档，未运行测试。
+
+## 2026-10-10（America/Los_Angeles）: [refactor] P3 评估：模板、匹配、计分、规则、练习、技术指标迁入 core.evaluation，入口改走 services
+
+- 问题描述：按 `重构阶段任务/P3-评估.md` 把比对、计分、正式规则、学生练习与技术指标收口到 `core/evaluation`，离线组合流程收口到 `core/services`，删除 apps 层的评分策略和 9 处写死的 baseline，比对、计分、规则输出不变。D-2、D-3、D-5 不动；D-4、D-9 仍未决，按未决做法保持现状（三种计分方案并存、batch 不加 `--scheme`；模板池按首个模板归一化）。
+- 修改内容（分支 `refactor/p3-evaluation`，按清单分批提交）：
+  1. 迁移前先录基准（`d6711f5`）：`tests/eval_diff/` 用 fixture 回放与合成视频跑比对入口、`score_rules`、`evaluate_series`、考试池评分、技术指标与 CLI，结果存 `tests/fixtures/p3_eval_baseline.json.gz`，`tests/test_p3_eval_differential.py` 逐项比对（分数、匹配区间、规则状态、证据帧，不设容差）。
+  2. 模板与成本、匹配、规则、计分方案（`72ff213`）：`evaluation/templates.py`（`TemplateContract` 的 `COMPARE`/`EXAM_POOL`/`ONLINE`、`load_template`、`TemplateStore`）；`scoring/cost.py`（baseline 只来自布局注册表）；`matching/`（`dtw`、`engine.match_templates`、`repetition`、`dual`、`online`）；`measures/` 与 `rules/{spec,engine,adapters,formal_v1}`；`scoring/{schemes,exam_pool,kick_quality}`、`view_weights.py`。`recording_postprocess` 的 `_KICK_KINDS`、`KICK_GEOM_WEIGHT`、`_SCORE_SQUEEZE`、`_VIEW_WEIGHTS` 与正侧合并移入 `scoring/exam_pool.py`。切分与侧别（`segmentation.py`、`body_sides.py`）在 `24fd6d3`。
+  3. 学生练习（`c033a5a`）：`rules/practice_v4.py`（检查项目录、`build_checks`、`FeedbackConfig`、`load_feedback_config`、`measure_check`，几何量经 `measures`）、`evaluation/practice.py`（`extract_series`、`evaluate_series` 按观测/融合/汇总拆分、`analyze_practice`）、`evaluation/phases.py`（`phase_windows` 拆出稳定护位窗口与事件检测）、`reporting/text.py`。`FeedbackHistory` 的导出渲染器改由调用方注入（`reporting.practice_report_renderers()`），消除 `feedback_history → feedback_report` 的分层登记；`build_info` 改从 `practice_v4.py` 读规则版本。
+  4. 技术指标（`a747fb3`）：`analysis/tech_eval.py`（2070 行）拆入 `evaluation/techeval/`（`contract`、`events`、`cog`、`com`、`retract`、`wrist`、`force_sequence`、`evaluate`、`debug_video`），原路径保留为门面。`eval_force_sequence`（514 行）按"事件检测 → 时序 → 判定"拆成每个不超过 100 行的步骤；`core.pose` 导出 BlazePose33 索引常量；`batch_tech_eval` 改用 `core.evaluation`。
+  5. 入口（`9802b8c` 及其后）：`make_template`、`match_template` 的实现移入 `apps/cli/`，原路径是入口壳；`match_template` 改用 `load_template` + `match_templates`；`body_core_v1` 匹配迁入 `matching/body_core.py`；CompareWindow 改用 `services.compare_templates` 与 `load_template`；`batch_dual_compare` 经 `services.compare_dual(DUAL_STREAM/DUAL_TEMPLATE)`，并把逐个学员的比对拆成 `_compare_pose33`；`offline_matching_profile`、`match_segments_probe` 改取 `POSE33_BASELINE`，并改用 evaluation 的公共函数与 `load_template`；新增 `services.tech_eval_video`。`schemes.py` 的说明原先写成"D-4 已决"，更正为未决。
+  6. 同分支上的 `1833124`（PR #4 评审遗留，未单独记录）：mediapipe 改为首次推理或绘制时才导入；`batch_export_skeleton` 边提取边写骨架视频，只解码一遍；分段提取只解析一次 `models_dir`；`render_pose`、`draw_joint_angles` 接受 `(33,4)` 数组。新增 `tests/test_p2_followups.py`。
+  - 旧模块（`action_compare`、`rule_scoring`、`online_matcher`、`kick_quality`、`action_feedback`、`feedback_geometry`、`feedback_phases`、`pose_features` 的 DTW 部分、`analysis/tech_eval.py`）都保留为只做转发的门面，P9 删除。
+  - 被替换的测试（D-13）：`test_recording_postprocess.py` 里 4 个评分常量用例移到 `test_exam_pool_scoring.py`（另加 3 个考试池用例）；`test_action_feedback.py`、`test_compare_dual_streams.py`、`test_t008_single_pass_reuse.py`、`test_s5_offline_profile.py`、`test_template_auto_crop.py`、`test_template_metadata.py` 的 monkeypatch 目标随实现改到新模块；`test_batch_backend_args.py` 的替身改为按计分方案分派的 `compare_dual`；`test_artifact_roots.py` 改查 `apps/cli/`；`test_packaging_build_info.py` 改用 `RULE_VERSION_SOURCE`；`test_feedback_report.py`、`test_action_feedback.py` 构造 `FeedbackHistory` 时注入渲染器。新增 `test_history_export_uses_injected_renderers_only`。
+  - 与设计文档的出入写在 §7.2、§7.5、§7.7、§7.8 的"实现补充（P3）"：`practice_v4` 没有套进 `evaluate_rules`（聚合方式不同，随 D-3 再定），`to_practice_checks()` 未实现；`analyze_practice` 沿用旧 `analyze_feedback` 的签名；质心指标单列 `com.py`；`match_template` CLI 保留自己的 `FORMAL` 提取。
+  - 错误路径保持原样：`match_template` 遇到 `meta=None` 的模板，仍和迁移前一样抛 `AttributeError`（差分用例 `cli/match/no_meta`）。
+  - allowlist 从 114 条降到 75 条（体量 48 条：模块 8、函数 40），登记在 P3 的条目全部消除。`eval_cog_side`、`eval_cog_front`、`eval_cog_com`、`_compute_body_com_single`、`detect_retract_events_side` 的体量条目随文件迁到 `core/evaluation/techeval/`，上限不变，P9 处理。
+- 同步依据：设计文档 §7、§12（P3 行与工作量说明）；`重构阶段任务/P3-评估.md` 与 `README.md` 的状态。原约定 P4 先于 P3 合入，实际 P3 先完成，§12 已注明。
+- 验证方法：
+  - 全量 `.\.venv\Scripts\python.exe -m pytest tests -q -p no:cacheprovider`：1109 passed。
+  - 门禁 `test_pose33_v3_golden.py test_valid_mask_migration.py test_tech_eval_contract.py test_rule_availability.py` 通过；`test_architecture.py` 16 passed。
+  - P3 门禁 `test_action_feedback.py test_compare_dual_streams.py test_batch_backend_args.py test_recording_postprocess.py` 通过；差分 `test_p3_eval_differential.py` 0 差异。
+  - 考试套件（`test_exam_session.py test_exam_roster.py test_exam_clip.py test_presence_gate.py test_recording_postprocess.py test_exam_panel.py`）118 passed；`scripts/sim_exam_flow.py` 37 passed、0 failed。
+  - 搜索：`subsequence_dtw(`、`np.load(` 在 `core/`、`apps/` 中只出现在 `core/evaluation/matching/` 与 `core/evaluation/templates.py`；`baseline\s*[:=].*\b3\.0\b` 只匹配布局注册表 `core/pose/layouts.py` 的 `default_baseline=3.0`；`apps/` 下没有 4 个评分常量；规则模块不含 `arccos`、`linalg.norm`。
+  - `git diff --check` 无空白错误。真实录像的评分差分仍是 README"待办"第 3 项。
+
 ## 2026-10-06（America/Los_Angeles）: [docs] PR #4 合并后的评审补充：参数名笔误与过时注释
 
 - 问题描述：PR #4 合并后，渲染部分的评审完成，又发现 3 处文字问题：

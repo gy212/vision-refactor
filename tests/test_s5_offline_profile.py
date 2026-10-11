@@ -99,7 +99,7 @@ def test_dual_template_normalizer_follows_template_metadata(tmp_path):
 
 def test_issue44_does_not_modify_core_dtw_or_baselines():
     diff_paths = [
-        _REPO_ROOT / "core" / "pose_features.py",
+        _REPO_ROOT / "core" / "evaluation" / "matching" / "dtw.py",  # P3：DTW 原在 core/pose_features.py
         _REPO_ROOT / "core" / "pose" / "layouts.py",  # P2：原 core/feature_layout.py
         _REPO_ROOT / "core" / "body_core_compare.py",
     ]
@@ -107,7 +107,7 @@ def test_issue44_does_not_modify_core_dtw_or_baselines():
     # the expected source of Issue #44 edits away from DTW, baselines, thresholds.
     for path in diff_paths:
         assert path.exists()
-    assert offline_matching_profile.subsequence_dtw.__module__ == "core.pose_features"
+    assert offline_matching_profile.subsequence_dtw.__module__ == "core.evaluation.matching.dtw"
     assert offline_matching_profile.POSE33_BASELINE == 3.0  # 2026-07-11 校准更新
 
 

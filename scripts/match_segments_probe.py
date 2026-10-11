@@ -6,8 +6,8 @@
 第2个参数起可只指定实际录了的动作名(不带.npz),缺省则用 templates/segments 下全部模板。
 
 对每个模板跑一次 subsequence DTW,打印得分与锁定窗口。视频姿态**只提取一次**并复用给所有模板
-(避免上次 724帧×N 模板逐个重复提取导致的超时)。评分公式与 core.action_compare.compare_video_to_template
-保持一致(baseline=3.0)。
+(避免上次 724帧×N 模板逐个重复提取导致的超时)。评分公式与比对入口一致
+(``core.evaluation.score_from_avg_cost``,baseline 取布局注册表的 pose33_v3 值)。
 
 开头会打印视频分辨率与模板源分辨率——**画幅方向(横/竖)必须一致**,否则归一化畸变导致匹配全垮
 (见记忆 sanda-aspect-ratio-normalize-bug)。
@@ -22,12 +22,12 @@ from pathlib import Path
 
 import numpy as np
 
+from core.evaluation import COMPARE, POSE33_BASELINE, load_template, score_from_avg_cost
 from core.media import VideoOpenError
 from core.pose import FORMAL, POSE33_V3, extract_pose_sequence, formal_engine, normalize_pose_xy_v3
 from core.pose_features import subsequence_dtw
 
 TEMPL_DIR = Path("templates/segments")
-BASELINE = 3.0  # 与 compare_video_to_template 一致
 
 # 视角分组：侧面路(横拍)配这7个;正面路(竖拍)配摇闪。画幅+视角须与视频一致。
 SIDE_ACTIONS = ["直拳", "摆拳", "勾拳", "高鞭腿", "低鞭腿", "侧踹腿", "正蹬腿"]
@@ -73,10 +73,10 @@ def main() -> None:
 
     rows = []
     for tpl in tpls:
-        q = np.load(tpl, allow_pickle=True)["features"].reshape(-1, 44)
+        q = load_template(tpl, COMPARE).features.reshape(-1, 44)
         cost, s, e = subsequence_dtw(q, seq)
         avg = cost / max(1, q.shape[0])
-        score = float(BASELINE / (BASELINE + avg))
+        score = score_from_avg_cost(avg, POSE33_BASELINE)
         rows.append((tpl.stem, score, s, e, q.shape[0]))
 
     rows.sort(key=lambda x: (x[2] if x[2] is not None else 1 << 30))

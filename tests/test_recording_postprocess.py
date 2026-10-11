@@ -16,56 +16,10 @@ from apps.recording_postprocess import (
     DualRecordingPostProcessor,
     PostprocessError,
     PostprocessUpdate,
-    _SCORE_SQUEEZE,
     default_template_paths,
-    merge_view_weighted_actions,
     validate_auto_compare_templates,
     validate_template_pair,
 )
-
-
-def _d(name: str, score: float, start: int = 0, end: int = 10) -> dict:
-    return {"name": name, "view": "x", "score": score, "start": start, "end": end}
-
-
-def test_merge_view_weighted_actions_paired_uses_registered_weights() -> None:
-    # 两手攀足：侧 0.75 + 正 0.25（实测正面看不清前俯深度）。
-    out = merge_view_weighted_actions([_d("两手攀足_正面", 0.708), _d("两手攀足_侧面", 0.855)])
-    assert len(out) == 1
-    assert out[0]["name"] == "两手攀足"
-    assert out[0]["score"] == pytest.approx(0.75 * 0.855 + 0.25 * 0.708)
-    # 攒拳怒目：50/50 去重双计数。
-    out = merge_view_weighted_actions([_d("攒拳怒目_正面", 0.812), _d("攒拳怒目_侧面", 0.807)])
-    assert len(out) == 1 and out[0]["score"] == pytest.approx(0.8095)
-
-
-def test_merge_view_weighted_actions_is_noop_for_sanda() -> None:
-    # 散打模板 stem 无 _正面/_侧面 后缀、不在权重表内 → 原样透传、保序（零回归）。
-    sanda = [_d("直拳", 0.8), _d("高鞭腿", 0.7), _d("front", 0.86), _d("side", 0.86)]
-    assert merge_view_weighted_actions(sanda) == sanda
-
-
-def test_merge_view_weighted_actions_keeps_unpaired_view() -> None:
-    # 缺侧面则不合并，正面原样保留（不误合、不丢分）。
-    out = merge_view_weighted_actions([_d("两手攀足_正面", 0.708)])
-    assert len(out) == 1 and out[0]["name"] == "两手攀足_正面"
-
-
-def test_score_squeeze_backhand_keeps_range_and_reproducible() -> None:
-    # 背后七颠：DTW 不可靠 → 压到 [0.75,0.90]（人人过、弱区分、可复现）。
-    lo, hi = _SCORE_SQUEEZE["背后七颠"]
-
-    def sq(d: float) -> float:
-        return lo + (hi - lo) * min(max(d, 0.0), 1.0)
-
-    # 任意 DTW 输入都落在窄区间内（人人及格偏上）。
-    for dtw in (0.0, 0.3, 0.7, 0.936, 0.942, 1.0):
-        assert lo - 1e-9 <= sq(dtw) <= hi + 1e-9
-    # 单调保留微弱区分度：认真 > 敷衍 > 没做。
-    assert sq(0.942) > sq(0.70) > sq(0.30)
-    # 可复现：同输入同输出（无随机）。
-    assert sq(0.936) == sq(0.936)
-
 
 
 def _job(
@@ -138,6 +92,17 @@ def test_fixed_templates_default_paths_and_auto_compare_contract(tmp_path: Path)
     f, s = validate_auto_compare_templates(tmp_path / "no_front.npz", only)
     assert f is None
     assert s == only
+
+
+def test_template_pool_skips_template_with_malformed_meta(tmp_path: Path) -> None:
+    """meta 不是字典的坏模板只跳过，不拖垮同池的可用模板。"""
+    good = tmp_path / "good.npz"
+    _write_template(good, shape=(5, 22, 2))
+    bad = tmp_path / "bad_meta.npz"
+    np.savez(bad, features=np.zeros((5, 22, 2), dtype=np.float32), meta="not-a-dict")
+    front, side = recording_postprocess.validate_auto_compare_template_lists([bad, good], [bad])
+    assert front == [good]
+    assert side == []
 
 
 def test_fifo_single_consumer_and_atomic_completed_results(tmp_path: Path) -> None:

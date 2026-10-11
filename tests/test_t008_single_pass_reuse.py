@@ -12,7 +12,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from core import action_compare as ac  # noqa: E402
-from core import body_core_compare  # noqa: E402
+from core.evaluation.matching import dual as dual_mod  # noqa: E402
 from core.body_core_compare import (  # noqa: E402
     CALIBRATION_STATUS_UNVALIDATED,
     create_body_core_template,
@@ -65,14 +65,14 @@ def test_pose33_raw_series_slice_matches_legacy_extract_pose_raw(registered_vide
 
 
 def test_dual_compare_reuses_one_raw_series_for_rules_and_joint_errors(monkeypatch, registered_videos):
-    real_extract_series = ac.extract_pose_raw_series
+    real_extract_series = dual_mod.extract_pose_raw_series  # P3：双模板比对迁入 matching.dual
     calls: list[str] = []
 
     def counted_extract(video_path, *, pose_variant):
         calls.append(str(video_path))
         return real_extract_series(video_path, pose_variant=pose_variant)
 
-    monkeypatch.setattr(ac, "extract_pose_raw_series", counted_extract)
+    monkeypatch.setattr(dual_mod, "extract_pose_raw_series", counted_extract)
 
     with H.replay_context():
         res = ac.compare_video_to_dual_templates(
@@ -109,7 +109,9 @@ def test_body_core_match_accepts_precomputed_features_without_reextract(monkeypa
     def fail_extract(*args, **kwargs):
         raise AssertionError("precomputed body_core features should avoid re-extraction")
 
-    monkeypatch.setattr(body_core_compare, "extract_body_core_features", fail_extract)
+    from core.evaluation.matching import body_core as body_core_matching
+
+    monkeypatch.setattr(body_core_matching, "extract_body_core_features", fail_extract)
     res = match_body_core_template(
         tpl_path,
         STUDENT,

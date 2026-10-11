@@ -12,6 +12,7 @@ from PIL import Image
 import pytest
 
 from core.action_feedback import ACTIONS, STANCES, build_checks
+from core.reporting import practice_report_renderers
 from core.feedback_history import FeedbackHistory
 from core.feedback_report import (
     StatusCounts,
@@ -532,7 +533,7 @@ def test_html_escaping_and_path_desensitization():
 def test_feedback_history_export_html(tmp_path):
     """Test FeedbackHistory.export() supporting .html alongside .txt with atomic safety."""
     history_root = tmp_path / "history"
-    store = FeedbackHistory(history_root)
+    store = FeedbackHistory(history_root, renderers=practice_report_renderers())
 
     source_path = tmp_path / "source.mp4"
     make_dummy_video(source_path, width=80, height=80, frames=4)
