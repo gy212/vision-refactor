@@ -1,3 +1,15 @@
+## 2026-10-11（America/Los_Angeles）: [docs] 练习 profile 接入统一规则引擎登记为 D-16 并移交 P9，同步 P3 完成范围（issue #8）
+
+- 问题描述：设计 §7.2 要求正式扣分与学生练习经同一个 `evaluate_rules` 执行，但 P3 只让 `formal_v1` 接入；`practice_v4` 仍在 `evaluation/practice.py` 逐项遍历检查项，`PhaseVerdict`、`RuleOutcome` 六态、`to_practice_checks()` 未实现。§7.2 的实现补充已写明这一点，P3 清单却保留原任务并标记阶段完成；执行框架统一被推给 D-3，而 D-3 处理的是规则语义。设计首页仍写"P3 起尚未开始"，README 与 §12 仍要求 P4 先于 P3 合入。
+- 修改内容（只改文档，无代码改动）：
+  - 用户决定（2026-10-11）：延期到 P9 补齐，设计目标不变。设计文档 §11.2 新增已决项 D-16"练习 profile 的技术执行框架统一"，与 D-3（规则语义）分开，写明范围与零漂移验收。
+  - 设计文档：首页状态改为 P2–P4 已完成、P5 起未开始；§0、§7.2（目录表说明与实现补充）、§7.8 标注 D-16；§12 的 P3 行写明移交项，P9 行加入 D-16 的内容、删除项和门禁；"P4 先于 P3 合入"的约定标注作废（实际 P3 先合入），风险表同步。
+  - `重构阶段任务/P3-评估.md`：状态行注明未完成部分；第 3 节第 4、6 项加完成情况；新增第 6 节"移交 P9 的未完成项（D-16）"，说明第 4 节验收不覆盖这项框架目标。
+  - `重构阶段任务/P9-收尾.md`：依据加 §7.2、D-16；任务前检查、第 3 节第 8 项（具体任务）、第 4 节（验收：`evaluate_rules` 是两个 profile 唯一执行入口，golden、P3 差分、练习配置测试零漂移，不含规则调整）。
+  - `重构阶段任务/README.md`：P3 状态、待决策总表加 D-16（已决）、P4/P3 合并顺序说明改为实际顺序。
+- 同步依据：`core/evaluation/rules/spec.py`（`RuleOutcome` 仅 `evaluated`/`skipped`，`aggregation` 仅 `RatioDeduction`）、`core/evaluation/rules/adapters.py`（无 `to_practice_checks`）、`core/evaluation/practice.py` 的 `evaluate_series`/`_evaluate_check`。
+- 验证方法：`grep` 确认文档中不再有"P3 起尚未开始""约定 P4 先于 P3"，D-16 在设计 §11.2、README 总表、P3 第 6 节、P9 第 3、4 节一致出现；门禁与架构测试通过；`git diff --check` 通过。
+
 ## 2026-10-11（America/Los_Angeles）: [fix] 双模板比对与考试池接入 `pose_cache`，同一视频只推理一次（issue #11）
 
 - 问题描述：P2 提供了作用域缓存 `pose_cache()`，设计文档 §6.3 要求 P3/P4 在调用方接入，但生产代码没有开启。双模板比对先提取特征、再提取原始序列算规则和误差；考试池含踢腿动作时在模板比对后再提取一次原始序列。180 帧 fixture 上顺序比对（规则 + 误差）调用 `infer()` 360 次。
