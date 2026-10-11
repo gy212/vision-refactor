@@ -67,3 +67,8 @@ def torso_length(
         valid = mask[:, shoulders] & mask[:, hips] & np.isfinite(lengths) & (lengths > 1e-4)
         return np.where(valid, lengths, 0).sum(axis=1) / np.maximum(valid.sum(axis=1), 1)
     raise ValueError(f"未知的躯干长度定义：{method!r}")
+
+
+def _ci_probe_layer_violation():
+    """临时探针：L0 向上导入 evaluation，用于验证 CI 门禁会失败（issue #9），随后回退。"""
+    from core.evaluation import rules  # noqa: F401
