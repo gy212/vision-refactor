@@ -27,6 +27,7 @@ import pytest
 
 from apps import app_ui
 from apps.feedback_result_panel import FeedbackResultPanel
+from core.recording import RecordingService, SegmentFinalizer
 
 
 # ---------------------------------------------------------------------------
@@ -122,7 +123,7 @@ def make_test_app(student_id="001"):
     app._student_segment_ready = True
     app._closing = False
     app._stop_evt = threading.Event()
-    app._rec = SimpleNamespace(state="idle")
+    app._recording = SimpleNamespace(state="idle")
     app._worker = SimpleNamespace(is_alive=lambda: True)
 
     app._feedback_task_token = 0
@@ -506,7 +507,6 @@ def test_camera_loop_150_ticks_in_result_view():
         app._dual_preview_lock = threading.Lock()
         app._dual_render_lock = threading.Lock()
         app._dual_metrics_lock = threading.Lock()
-        app._record_pair_lock = threading.Lock()  # App.__init__ 自 2026-07-10 起创建，_refresh_recording_status 使用
         # _refresh_recording_status 每 tick 读取的录制状态（取 App.__init__ 的空闲默认值）
         app._dual_active = False
         app._record_error_shown = False
@@ -518,18 +518,7 @@ def test_camera_loop_150_ticks_in_result_view():
         app._pending_record_errors = []
 
         # 录制与会话替身
-        app._rec = SimpleNamespace(
-            state="idle",
-            snapshot=lambda: SimpleNamespace(state="idle", result_path=None, last_error=None),
-            close_session=lambda: None,
-            write_frame=lambda fr: None,
-        )
-        app._rec2 = SimpleNamespace(
-            state="idle",
-            snapshot=lambda: SimpleNamespace(state="idle", result_path=None, last_error=None),
-            close_session=lambda: None,
-            write_frame=lambda fr: None,
-        )
+        app._recording = RecordingService(SegmentFinalizer(), plan_for=lambda _segment: None)
 
         app.feedback_result_panel = FeedbackResultPanel(root)
         app.feedback_result_panel.grid(row=0, column=0, columnspan=2, sticky="nsew")
@@ -626,7 +615,7 @@ def test_presence_gate_completely_disarmed_on_practice_again(monkeypatch):
     # 验证防线初始状态
     assert app._student_presence_gate is None
     assert app._student_pending_record is False
-    assert app._rec.state == "idle"
+    assert app._recording.state == "idle"
 
     # 3. 对抗压力：模拟学生直接站立在镜头前（连续 100 次检测到人，持续 10.0 秒）
     base_time = time.monotonic()
@@ -638,7 +627,7 @@ def test_presence_gate_completely_disarmed_on_practice_again(monkeypatch):
     # 4. 严苛断言：
     # 闸门未装载，开录未被触发！
     begin_record_mock.assert_not_called()
-    assert app._rec.state == "idle"
+    assert app._recording.state == "idle"
     assert app._student_presence_gate is None
 
     # 5. 模拟通过 _exam_occupancy_queue 管道投递事件
@@ -648,7 +637,7 @@ def test_presence_gate_completely_disarmed_on_practice_again(monkeypatch):
 
     app._drain_exam_occupancy()
     begin_record_mock.assert_not_called()
-    assert app._rec.state == "idle"
+    assert app._recording.state == "idle"
 
     # 6. 正向对照：只有当用户明确点击「开始」后，才激活等待到位
     # _student_start 的前置检查（正/侧双摄选择、Lite 模型）按真实启动条件补齐；

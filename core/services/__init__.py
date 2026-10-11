@@ -1,6 +1,7 @@
-"""离线组合流程（L4）的公共 API：比对、模板生成与自动裁剪复核、匹配预览导出。"""
+"""离线组合流程（L4）的公共 API：比对、模板生成与自动裁剪复核、匹配预览导出、学生练习历史。"""
 from core.services import analyze
 from core.services.analyze import compare_dual, compare_templates, compare_video, score_segment, tech_eval_video
+from core.services.practice_history import HistoryStore, validate_identity
 from core.services.preview import export_match_preview, write_pose_preview
 from core.services.templates import (
     TemplateAutoCropAnalysis,
@@ -10,6 +11,7 @@ from core.services.templates import (
 )
 
 __all__ = [
+    "HistoryStore",
     "TemplateAutoCropAnalysis",
     "TemplateAutoCropReviewRequired",
     "analyze",
@@ -21,5 +23,6 @@ __all__ = [
     "export_match_preview",
     "score_segment",
     "tech_eval_video",
+    "validate_identity",
     "write_pose_preview",
 ]

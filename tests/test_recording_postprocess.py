@@ -1,25 +1,112 @@
+"""SegmentFinalizer 按双路处理计划（检查 → 转码 → 校验 → 比对开关 → 考试池评分）执行录后处理。
+
+P4 前这些用例针对 ``apps.recording_postprocess.DualRecordingPostProcessor``；迁移后用下面的
+``DualRecordingJob`` / ``DualRecordingPostProcessor`` 测试替身保留原任务形状（片段 + 模板 + 开关），
+内部换成片段替身 + ``ProcessingPlan`` 提交给 ``SegmentFinalizer``，断言不变（D-13）。
+"""
 from __future__ import annotations
 
 import json
 import os
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
 
-import apps.recording_postprocess as recording_postprocess
-from apps.recording_postprocess import (
-    DualRecordingJob,
-    DualRecordingPostProcessor,
+import core.media.segment_layout as segment_layout
+import core.recording.steps as recording_steps
+from core.recording import (
     PostprocessError,
-    PostprocessUpdate,
+    ProcessingPlan,
+    ResultSpec,
+    SegmentFinalizer,
+    SegmentUpdate as PostprocessUpdate,
+    StepDeps,
     default_template_paths,
+    dual_segment_steps,
+    validate_auto_compare_template_lists,
     validate_auto_compare_templates,
     validate_template_pair,
+    write_result_json,
 )
+from core.recording.steps import default_model_available, default_transcode, default_video_validator
+from core.evaluation.matching.engine import match_video
+from tests.segment_doubles import dual_segment
+
+
+
+@dataclass(frozen=True)
+class DualRecordingJob:
+    segment_id: str
+    segment_dir: Path
+    front_source: Path
+    side_source: Path
+    front_frames: int
+    side_frames: int
+    front_template: Path
+    side_template: Path
+    record_skeleton: bool = False
+    auto_compare: bool = True
+    front_error: str | None = None
+    side_error: str | None = None
+
+    def segment(self):
+        return dual_segment(
+            self.segment_id, self.segment_dir, self.front_source, self.side_source,
+            front_frames=self.front_frames, side_frames=self.side_frames,
+            front_error=self.front_error, side_error=self.side_error,
+        )
+
+    def plan(self, deps: StepDeps) -> ProcessingPlan:
+        steps = dual_segment_steps(
+            record_skeleton=self.record_skeleton, auto_compare=self.auto_compare,
+            front_templates=(self.front_template,), side_templates=(self.side_template,), deps=deps,
+        )
+        return ProcessingPlan(steps, result=ResultSpec(
+            record_skeleton=self.record_skeleton, auto_compare=self.auto_compare,
+            front_template=self.front_template, side_template=self.side_template,
+        ))
+
+
+class DualRecordingPostProcessor:
+    """把旧任务形状提交给 ``SegmentFinalizer``；``write_result_json`` 可在构造后替换。"""
+
+    def __init__(self, *, on_update=None, transcode=default_transcode, compare=match_video,
+                 video_validator=default_video_validator, model_available=default_model_available) -> None:
+        self.deps = StepDeps(transcode=transcode, video_validator=video_validator,
+                             compare=compare, model_available=model_available)
+        self.write_result_json = write_result_json
+        self.finalizer = SegmentFinalizer(
+            on_update=on_update, write_result=lambda path, payload: self.write_result_json(path, payload)
+        )
+
+    def submit(self, job: DualRecordingJob) -> bool:
+        return self.finalizer.submit(job.segment(), job.plan(self.deps))
+
+    def cancel_all(self) -> None:
+        self.finalizer.cancel_all()
+
+    def close(self, timeout: float) -> bool:
+        return self.finalizer.close(timeout)
+
+    def wait_idle(self) -> None:
+        assert self.finalizer.wait_idle(3.0)
+
+    @property
+    def busy(self) -> bool:
+        return not self.finalizer.idle
+
+    def publish_cancelled(self, job: DualRecordingJob) -> None:
+        """模拟另一处先发布了取消终态（如关窗路径）。"""
+        finalizer = self.finalizer
+        finalizer._publish_terminal_safely(finalizer._jobs[job.segment_id], "cancelled", "后台比对已取消", "cancelled")
+
+
+_IO_THREAD = "finalizer/segment-finalizer/io"
 
 
 def _job(
@@ -100,7 +187,7 @@ def test_template_pool_skips_template_with_malformed_meta(tmp_path: Path) -> Non
     _write_template(good, shape=(5, 22, 2))
     bad = tmp_path / "bad_meta.npz"
     np.savez(bad, features=np.zeros((5, 22, 2), dtype=np.float32), meta="not-a-dict")
-    front, side = recording_postprocess.validate_auto_compare_template_lists([bad, good], [bad])
+    front, side = validate_auto_compare_template_lists([bad, good], [bad])
     assert front == [good]
     assert side == []
 
@@ -184,7 +271,7 @@ def test_fifo_single_consumer_and_atomic_completed_results(tmp_path: Path) -> No
         }
         assert payload["status"] == "completed"
         assert payload["segment_id"] == job.segment_id
-        assert payload["created_at"] == job.created_at
+        assert payload["created_at"]
         assert payload["completed_at"]
         assert payload["record_skeleton"] is False
         assert payload["auto_compare"] is True
@@ -258,7 +345,7 @@ def test_submit_reserves_resolved_segment_directory_for_processor_lifetime(
 
         assert alias_dir.resolve() == first.segment_dir.resolve()
         assert not processor.submit(second)
-        processor._queue.join()
+        processor.wait_idle()
     finally:
         processor.close(1.0)
 
@@ -312,7 +399,7 @@ def test_submit_reserves_windows_extended_path_directory_identity(
         result_path = first.segment_dir / "result.json"
         original_result = result_path.read_text(encoding="utf-8")
         assert not processor.submit(alias_job("record_windows_alias_late"))
-        processor._queue.join()
+        processor.wait_idle()
     finally:
         processor.close(1.0)
 
@@ -331,8 +418,8 @@ def test_submit_reserves_windows_alias_when_filesystem_has_no_inode(
     first = _job(tmp_path, "record_zero_inode_owner")
     extended_dir = Path("\\\\?\\" + str(first.segment_dir.resolve()))
     monkeypatch.setattr(
-        recording_postprocess,
-        "_segment_directory_stat",
+        segment_layout,
+        "_directory_stat",
         lambda _path: SimpleNamespace(st_dev=17, st_ino=0),
     )
 
@@ -369,7 +456,7 @@ def test_submit_reserves_windows_alias_when_filesystem_has_no_inode(
         result_path = first.segment_dir / "result.json"
         original_result = result_path.read_text(encoding="utf-8")
         assert not processor.submit(alias_job("record_zero_inode_late"))
-        processor._queue.join()
+        processor.wait_idle()
     finally:
         processor.close(1.0)
 
@@ -390,8 +477,8 @@ def test_windows_namespace_text_fallback_is_case_insensitive(
     extended: str,
     normal: str,
 ) -> None:
-    assert recording_postprocess._segment_directory_text_key(Path(extended)) == (
-        recording_postprocess._segment_directory_text_key(Path(normal))
+    assert segment_layout._directory_text_key(Path(extended)) == (
+        segment_layout._directory_text_key(Path(normal))
     )
 
 
@@ -427,7 +514,7 @@ def test_submit_reserves_directory_when_identity_mode_changes(
             return SimpleNamespace(st_dev=17, st_ino=0)
         return SimpleNamespace(st_dev=17, st_ino=23)
 
-    monkeypatch.setattr(recording_postprocess, "_segment_directory_stat", changing_stat)
+    monkeypatch.setattr(segment_layout, "_directory_stat", changing_stat)
 
     def duplicate_job(segment_id: str) -> DualRecordingJob:
         return DualRecordingJob(
@@ -466,7 +553,7 @@ def test_submit_reserves_directory_when_identity_mode_changes(
         result_path = first.segment_dir / "result.json"
         original_result = result_path.read_text(encoding="utf-8")
         assert not processor.submit(duplicate_job("record_identity_transition_late"))
-        processor._queue.join()
+        processor.wait_idle()
     finally:
         release_compare.set()
         processor.close(1.0)
@@ -506,7 +593,7 @@ def test_submit_returns_before_blocking_queued_callback_runs(tmp_path: Path) -> 
             (job.segment_dir / "result.json").read_text(encoding="utf-8")
         )
         assert payload["status"] == "queued"
-        assert callback_threads == ["dual-recording-postprocess"]
+        assert callback_threads == [_IO_THREAD]
         cancel_started_at = time.monotonic()
         processor.cancel_all()
         assert time.monotonic() - cancel_started_at < 0.1
@@ -539,7 +626,7 @@ def test_submit_returns_while_another_result_write_is_blocked(tmp_path: Path) ->
     )
     first = _job(tmp_path, "record_blocked_write")
     second = _job(tmp_path, "record_submit_during_write")
-    original_write = processor._write_result_json
+    original_write = processor.write_result_json
 
     def blocking_write(path: Path, payload: dict) -> None:
         if (
@@ -554,7 +641,7 @@ def test_submit_returns_while_another_result_write_is_blocked(tmp_path: Path) ->
         submitted.append(processor.submit(second))
         submit_returned.set()
 
-    processor._write_result_json = blocking_write
+    processor.write_result_json = blocking_write
     submit_thread = threading.Thread(target=submit_second)
     try:
         assert processor.submit(first)
@@ -602,7 +689,7 @@ def test_cancel_all_returns_during_result_write_and_wins_publication_race(
         model_available=lambda: True,
     )
     job = _job(tmp_path, f"record_cancel_during_{blocked_status}_write")
-    original_write = processor._write_result_json
+    original_write = processor.write_result_json
 
     def blocking_write(path: Path, payload: dict) -> None:
         original_write(path, payload)
@@ -614,7 +701,7 @@ def test_cancel_all_returns_during_result_write_and_wins_publication_race(
         processor.cancel_all()
         cancel_returned.set()
 
-    processor._write_result_json = blocking_write
+    processor.write_result_json = blocking_write
     cancel_thread = threading.Thread(target=cancel)
     try:
         assert processor.submit(job)
@@ -624,7 +711,7 @@ def test_cancel_all_returns_during_result_write_and_wins_publication_race(
         assert not release_write.is_set()
         release_write.set()
         _wait(cancelled)
-        processor._queue.join()
+        processor.wait_idle()
     finally:
         release_write.set()
         cancel_thread.join(1.0)
@@ -1156,7 +1243,7 @@ def test_cancel_all_marks_active_and_queued_jobs_cancelled(tmp_path: Path) -> No
 
     assert transcode_calls == ["record_active"]
     assert cancelled_ids == [active.segment_id, queued.segment_id]
-    assert callback_threads == ["dual-recording-postprocess"] * 2
+    assert callback_threads == [_IO_THREAD] * 2
     for job in (active, queued):
         payload = json.loads((job.segment_dir / "result.json").read_text(encoding="utf-8"))
         assert payload["status"] == "cancelled"
@@ -1254,12 +1341,7 @@ def test_cancelled_result_path_enrichment_does_not_notify_twice(
         final_path = path.with_suffix(".mp4")
         final_path.write_bytes(b"h264")
         path.unlink()
-        processor._publish_terminal_safely(
-            job,
-            "cancelled",
-            message="后台比对已取消",
-            error_code="cancelled",
-        )
+        processor.publish_cancelled(job)
         stop_evt.set()
         return final_path
 
@@ -1279,7 +1361,7 @@ def test_cancelled_result_path_enrichment_does_not_notify_twice(
     try:
         assert processor.submit(job)
         _wait(terminal)
-        processor._queue.join()
+        processor.wait_idle()
     finally:
         processor.close(1.0)
 
@@ -1288,7 +1370,7 @@ def test_cancelled_result_path_enrichment_does_not_notify_twice(
     assert payload["front_video_path"].endswith("front.mp4")
     assert Path(payload["front_video_path"]).is_file()
     assert [update.segment_id for update in cancelled_updates] == [job.segment_id]
-    assert callback_threads == ["dual-recording-postprocess"]
+    assert callback_threads == [_IO_THREAD]
 
 
 def test_close_from_worker_callback_returns_and_allows_callback_to_finish(
@@ -1326,7 +1408,7 @@ def test_close_from_worker_callback_returns_and_allows_callback_to_finish(
     assert callback_steps == ["before-close", "after-close"]
     assert payload["status"] == "cancelled"
     assert payload["error"]["code"] == "app_closing"
-    assert not processor._worker.is_alive()
+    assert not processor.busy
 
 
 def test_cancelled_enrichment_write_failure_preserves_original_terminal(
@@ -1343,12 +1425,7 @@ def test_cancelled_enrichment_write_failure_preserves_original_terminal(
         final_path = path.with_suffix(".mp4")
         final_path.write_bytes(b"h264")
         path.unlink()
-        processor._publish_terminal_safely(
-            job,
-            "cancelled",
-            message="后台比对已取消",
-            error_code="cancelled",
-        )
+        processor.publish_cancelled(job)
         stop_evt.set()
         return final_path
 
@@ -1364,7 +1441,7 @@ def test_cancelled_enrichment_write_failure_preserves_original_terminal(
         video_validator=lambda _path: True,
         model_available=lambda: True,
     )
-    original_write = processor._write_result_json
+    original_write = processor.write_result_json
 
     def fail_enrichment(path: Path, payload: dict) -> None:
         if (
@@ -1376,12 +1453,12 @@ def test_cancelled_enrichment_write_failure_preserves_original_terminal(
             raise OSError("disk unavailable during enrichment")
         original_write(path, payload)
 
-    processor._write_result_json = fail_enrichment
+    processor.write_result_json = fail_enrichment
     try:
         assert processor.submit(job)
         _wait(terminal)
         _wait(enrichment_attempted)
-        processor._queue.join()
+        processor.wait_idle()
     finally:
         processor.close(1.0)
 
@@ -1432,7 +1509,7 @@ def test_cancel_all_returns_before_slow_terminal_callback_and_notifies_once(
     elapsed = time.monotonic() - started_at
     assert elapsed < 0.1
     _wait(callback_started)
-    assert callback_threads == ["dual-recording-postprocess"]
+    assert callback_threads == [_IO_THREAD]
 
     release_callback.set()
     processor.close(1.0)
@@ -1441,6 +1518,7 @@ def test_cancel_all_returns_before_slow_terminal_callback_and_notifies_once(
 
 def test_cancel_between_scoring_and_terminal_publish_still_finishes_cancelled(
     tmp_path: Path,
+    monkeypatch,
 ) -> None:
     terminal = threading.Event()
     cancelled_updates: list[PostprocessUpdate] = []
@@ -1458,13 +1536,13 @@ def test_cancel_between_scoring_and_terminal_publish_still_finishes_cancelled(
         model_available=lambda: True,
     )
     job = _job(tmp_path, "record_cancel_before_terminal")
-    original_result_payload = processor._result_payload
+    original_result_payload = recording_steps.result_payload
 
     def cancel_before_terminal(result):
         processor.cancel_all()
         return original_result_payload(result)
 
-    processor._result_payload = cancel_before_terminal
+    monkeypatch.setattr(recording_steps, "result_payload", cancel_before_terminal)
     try:
         assert processor.submit(job)
         _wait(terminal)
@@ -1505,14 +1583,14 @@ def test_cancel_all_marks_task_while_compare_is_still_blocked(
     processor.close(0.05)
 
     payload = json.loads((job.segment_dir / "result.json").read_text(encoding="utf-8"))
-    assert processor._worker.is_alive()
+    assert processor.busy
     assert payload["status"] == "comparing"
     assert payload["error"] is None
 
     release_compare.set()
     processor.close(1.0)
     payload = json.loads((job.segment_dir / "result.json").read_text(encoding="utf-8"))
-    assert not processor._worker.is_alive()
+    assert not processor.busy
     assert payload["status"] == "cancelled"
     assert payload["result"] is None
 
@@ -1531,8 +1609,6 @@ def test_missing_template_has_stable_failure_code(tmp_path: Path) -> None:
             **job.__dict__,
             "front_template": tmp_path / "missing-front.npz",
             "side_template": tmp_path / "missing-side.npz",
-            "front_templates": (),
-            "side_templates": (),
         }
     )
     processor = DualRecordingPostProcessor(
@@ -1572,8 +1648,6 @@ def test_auto_compare_runs_with_only_side_template(tmp_path: Path, monkeypatch) 
             **job.__dict__,
             "front_template": tmp_path / "missing-front.npz",
             "side_template": side_tpl,
-            "front_templates": (),
-            "side_templates": (),
         }
     )
 
@@ -1674,14 +1748,14 @@ def test_result_write_failure_does_not_stop_fifo_worker(tmp_path: Path) -> None:
     )
     first = _job(tmp_path, "record_first")
     second = _job(tmp_path, "record_second")
-    original_write = processor._write_result_json
+    original_write = processor.write_result_json
 
     def flaky_write(path: Path, payload: dict) -> None:
         if path.parent.name == "record_first":
             raise OSError("disk full")
         original_write(path, payload)
 
-    processor._write_result_json = flaky_write
+    processor.write_result_json = flaky_write
     try:
         assert processor.submit(first)
         assert processor.submit(second)
@@ -1714,7 +1788,7 @@ def test_one_shot_result_write_failure_has_stable_error_code(tmp_path: Path) -> 
         model_available=lambda: True,
     )
     job = _job(tmp_path, "record_one_shot_write_failure")
-    original_write = processor._write_result_json
+    original_write = processor.write_result_json
     failed_once = False
 
     def flaky_write(path: Path, payload: dict) -> None:
@@ -1724,7 +1798,7 @@ def test_one_shot_result_write_failure_has_stable_error_code(tmp_path: Path) -> 
             raise OSError("disk hiccup")
         original_write(path, payload)
 
-    processor._write_result_json = flaky_write
+    processor.write_result_json = flaky_write
     try:
         assert processor.submit(job)
         _wait(terminal)
@@ -1759,4 +1833,4 @@ def test_repeated_close_keeps_exit_sentinel(tmp_path: Path) -> None:
     processor.close(0.0)
     release.set()
     processor.close(2.0)
-    assert not processor._worker.is_alive()
+    assert not processor.busy

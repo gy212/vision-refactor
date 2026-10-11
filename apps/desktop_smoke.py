@@ -118,7 +118,7 @@ def _check_camera_mode_switch(app, root):
         return not app._worker.is_alive() and app._current_session_generation == 0
 
     def ready():
-        return app._dual_recording_ready and app._rec.session_size is not None
+        return app._dual_recording_ready and bool(app._recording.session_sizes)
 
     def capture(index, **kwargs):
         return ProcessCamera(index, _factory=_CameraSmokePreview, **kwargs)
@@ -136,7 +136,7 @@ def _check_camera_mode_switch(app, root):
             for _ in range(2):
                 app._start()
                 pump_until(ready)
-                assert app._rec.session_size == app._rec2.session_size == (1280, 720)
+                assert app._recording.session_sizes == {"front": (1280, 720), "side": (1280, 720)}
                 app._stop()
                 pump_until(stopped)
                 pump_until(lambda: pool.snapshot_pair(*preview) is not None)
@@ -144,8 +144,8 @@ def _check_camera_mode_switch(app, root):
                 app._enter_student_practice()
                 app._student_start()
                 pump_until(lambda: ready() and app._student_presence_gate is not None)
-                assert app._rec.session_size == app._rec2.session_size == (1920, 1080)
-                assert app._rec.state == "idle"  # Blank frames cannot start a recording.
+                assert app._recording.session_sizes == {"front": (1920, 1080), "side": (1920, 1080)}
+                assert app._recording.state == "idle"  # Blank frames cannot start a recording.
                 app._exit_student_practice()
                 pump_until(stopped)
                 pump_until(lambda: pool.snapshot_pair(*preview) is not None)
@@ -162,7 +162,7 @@ def _check_camera_mode_switch(app, root):
             app._on_camera_2_selected()
             pump_until(lambda: not pool.device_busy(1))
             app._start()
-            pump_until(lambda: app._rec.session_size == (1280, 720))
+            pump_until(lambda: app._recording.session_sizes == {"front": (1280, 720)})
             app._stop()
             pump_until(stopped)
         finally:
@@ -198,7 +198,7 @@ def run(report_path: Path) -> int:
                 from core import paths, model_manager, online_matcher, video_writer
                 from core.media import first_frame_ok
                 from core.pose import EngineSpec, create_engine
-                from core.feedback_history import FeedbackHistory
+                from core.services import HistoryStore
                 from core.reporting import practice_report_renderers
                 from core.evaluation import ACTIONS, RULE_VERSION, STANCES
 
@@ -247,7 +247,7 @@ def run(report_path: Path) -> int:
                 assert first_frame_ok(video), "录制文件不能解码"
                 report["checks"].append("video_record_transcode_decode")
 
-                history = FeedbackHistory(renderers=practice_report_renderers())
+                history = HistoryStore(renderers=practice_report_renderers())
                 side_video = video.with_name("侧面 测试.mp4")
                 shutil.copyfile(video, side_video)
                 record = history.add({"studentId": "offline-check", "studentName": "打包检查",

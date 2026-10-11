@@ -19,7 +19,6 @@ def practice_app(monkeypatch, *, ready=True):
     app._student_judging = False
     app._student_segment_ready = True
     app._student_last_segment_dir = None
-    app._record_stamp = None
     app._closing = False
     app._stop_evt = Event()
     app._dual_recording_ready = ready
@@ -37,14 +36,14 @@ def practice_app(monkeypatch, *, ready=True):
     app.feedback_controls = SimpleNamespace(identity=lambda: {"studentId": "001"}, set_recording=Mock())
     app._student_announcer = Mock()
     app._student_dual_cameras_ready = lambda: (True, "")
-    app._rec = SimpleNamespace(state="idle")
+    app._recording = SimpleNamespace(state="idle")
 
     def begin(_self):
-        app._rec.state = "recording"
+        app._recording.state = "recording"
         return True
 
     def end(_self, **_kwargs):
-        app._rec.state = "idle"
+        app._recording.state = "idle"
 
     monkeypatch.setattr(app_ui.App, "_begin_recording_segment", begin)
     monkeypatch.setattr(app_ui.App, "_end_recording_segment", end)
@@ -80,7 +79,7 @@ def test_wait_enter_record_leave_and_rearm(monkeypatch):
     app = practice_app(monkeypatch)
     app._student_start()
     assert app._exam_roi == (.3, .2, .7, .9)
-    assert app._rec.state == "idle"
+    assert app._recording.state == "idle"
     app.student_start_btn.configure.assert_called_with(state="disabled")
     app.student_end_btn.configure.assert_called_with(state="normal")
     app.student_judge_btn.configure.assert_called_with(state="disabled")
@@ -93,7 +92,7 @@ def test_wait_enter_record_leave_and_rearm(monkeypatch):
     occupancy(app, True, 101.7)
     app._student_announcer.announce.assert_not_called()
     occupancy(app, True, 101.9)
-    assert app._rec.state == "recording"
+    assert app._recording.state == "recording"
     assert app._student_feedback_identity == {"studentId": "001"}
     occupancy(app, True, 102.0)
     app._student_announcer.announce.assert_called_once_with("开始")
@@ -102,9 +101,9 @@ def test_wait_enter_record_leave_and_rearm(monkeypatch):
     occupancy(app, True, 103.0)
     occupancy(app, False, 103.5)
     occupancy(app, False, 105.49)
-    assert app._rec.state == "recording"
+    assert app._recording.state == "recording"
     occupancy(app, False, 105.5)
-    assert app._rec.state == "idle"
+    assert app._recording.state == "idle"
     assert app._student_presence_gate is None
     occupancy(app, False, 108.0)
     occupancy(app, True, 109.0)
@@ -117,7 +116,7 @@ def test_wait_enter_record_leave_and_rearm(monkeypatch):
     occupancy(app, True, 110.9)
     occupancy(app, False, 111.0)
     occupancy(app, False, 113.0)
-    assert app._rec.state == "idle"  # 离场2秒，不受考试最短录制3秒限制
+    assert app._recording.state == "idle"  # 离场2秒，不受考试最短录制3秒限制
     assert app._student_announcer.announce.call_count == 4
 
 
@@ -129,7 +128,7 @@ def test_camera_ready_only_arms_detection_and_cancel_blocks_late_callback(monkey
     if cancel:
         app._student_end()
     app._post_dual_recording_ready(1)
-    assert app._rec.state == "idle"
+    assert app._recording.state == "idle"
     assert (app._student_presence_gate is None) == cancel
     app._student_announcer.announce.assert_not_called()
 
@@ -147,7 +146,7 @@ def test_manual_end_and_stop_do_not_allow_late_detection(monkeypatch):
     app._stop_evt.set()
     occupancy(app, True, 104.0)
     occupancy(app, True, 105.0)
-    assert app._rec.state == "idle"
+    assert app._recording.state == "idle"
 
 
 def test_failed_recording_does_not_announce_or_retry(monkeypatch):

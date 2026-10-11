@@ -1,3 +1,82 @@
+## 2026-10-11（America/Los_Angeles）: [refactor] P4 录制：SegmentLayout、SegmentRecorder、RecordingService、SegmentFinalizer、ScorebookRegistry
+
+- 问题描述：按 `重构阶段任务/P4-录制.md` 收口录制与录后处理。改动前的分布：
+  - App 用 `_rec`/`_rec2` 两个控制器、两把录制锁和十余个方法管理双摄片段。
+  - 单摄转码另起线程（`_transcode_async`）；考试裁剪另起线程，由 `_exam_clip_threads` 管理。
+  - 台账回填靠 `_exam_scorebook_sinks` 逐个尝试。
+  - 片段路径在 app_ui 内多处拼接，另有 4 处各自解析。
+  V-4、D-13 于开工时决定（接受建议）。
+- 修改内容（分支 `refactor/p4-recording`）：
+  - `core/media/segment_layout.py`：`SegmentLayout` 是片段路径生成与解析的唯一实现，包括：
+    - 单路与多路路径；
+    - `segment_id`、`resolve_videos`（优先 .mp4）；
+    - `child`、`resolve_contained`（逐级、拒绝越界与符号链接）；
+    - `directory_keys`、`view_for_role`。
+    `feedback_history`、`feedback_report`、`feedback_result_panel`、`recording_postprocess` 的解析都改用它。
+  - `core/recording/`：
+    - `controller.py`：`RecordingController` 原样迁入，旧路径保留为门面。
+    - `recorder.py`：`SegmentRecorder`，各路一把锁，片段边界一致；开录时任一路失败则全部复位。
+    - `service.py`：`RecordingService.finish` 在同一把锁内结束片段并提交，与关窗的 `cancel_all` 串行。
+    - `finalizer.py`：`SegmentFinalizer`，由 `DualRecordingPostProcessor` 演化。io 线与 analysis 线各自 FIFO，终态唯一，关窗发布 `app_closing` 取消终态。`finish_on_close` 的单摄转码在非守护的 io 线上跑完（V-4）。
+    - `steps.py`：`Step` 协议和通用步骤（检查、转码、校验、比对开关、考试池评分），以及双摄与单摄的计划。
+    - `core/foundation/tasks.py`：`TaskGroup.spawn` 增加 `daemon` 参数。
+  - `core/workflows/exam/`：
+    - `clip.py`：由 `core/exam_clip.py` 迁入，实现 `ExamClipStep`；`prepare_exam_pair` 拆成对齐与写出两步。
+    - `scorebook.py`：`exam_roster` 的台账部分迁入，写盘线程改走 `TaskGroup`；新增 `ScorebookRegistry`，按 `exam_run_id` 回填，面板关闭后仍能回填。
+  - `core/services/practice_history.py`：由 `feedback_history` 迁入，类名改为 `HistoryStore`。
+  - `apps/app_ui.py`：接入 `RecordingService` 与 `ScorebookRegistry`，计划由 `_recording_plan` 临时构建（P7 移交工作流）。旧 worker 循环改用 `begin_session`、`update_sizes`、`write`、`_close_recording_session`。删除清单全部删除，见 P4 清单第 5 节。
+  - `apps/exam_panel.py`：去掉 `on_postprocess_update` 与 sinks，改用登记表的 `register`/`detach`，回填后由 App 调 `refresh_rows`。
+  - `apps/desktop_smoke.py`：改读 `RecordingService.session_sizes`。
+  - `apps/recording_postprocess.py`：成为纯门面。
+  - 与旧实现的细微差别（不改变产物）记在设计文档 §8.4"实现补充（P4）"。
+  - 文档：设计文档 §8.4、§12；P4 清单状态与第 5 节；README 阶段状态。
+- 被替换的测试与对应的新测试（D-13）：
+  - `test_app_ui_lifecycle.py`：
+    - 转码线程：`test_transcode_worker_is_non_daemon_tracked_and_removed` → `test_single_camera_transcode_runs_on_non_daemon_finalizer_lane`。
+    - 关窗等待转码：`test_close_waits_for_transcode_without_blocking_tk_loop` → `test_close_waits_for_single_camera_transcode_without_blocking_tk_loop`。
+    - 采集 finally 里提交的转码：`test_close_resnapshots_transcode_spawned_by_capture_finally` → `test_close_waits_for_transcode_submitted_by_capture_finally`。
+    - 关窗有界期限：`test_close_destroys_window_after_bounded_deadline` 改为采集线程不退出、finalizer 忙。
+    - 后处理器 worker：`test_close_poll_waits_for_postprocessor_worker` → `test_close_poll_waits_for_finalizer_idle`。
+    - 后处理器哨兵：`test_close_poll_enqueues_postprocessor_sentinel_after_deadline` → `test_close_poll_closes_scorebooks_after_deadline_even_if_finalizer_busy`。执行线空闲自退，不再需要哨兵。
+    - 侧路写失败：`test_second_camera_recording_failure_stops_pair_without_polluting_single_mode` → `test_side_writer_failure_submits_pair_once_without_modal_and_single_session_unaffected`。旧用例的弹框断言源于测试替身缺少后处理器，真实 App 双摄不弹框。
+    - 关会话时的错误：`test_dual_close_preserves_unseen_side_error_for_next_tk_tick` → `test_close_recording_session_keeps_single_camera_error_for_next_tk_tick`。双摄错误由结果 JSON 承载，另由 `test_writer_error_submits_formal_job_once_without_modal` 覆盖。
+    - 写帧与开始/结束的互斥：`test_record_toggle_waits_for_pair_write_and_publishes_stamp_before_both_toggles`、`test_record_stop_waits_until_both_writes_finish` → `test_segment_recording.py::test_three_views_share_segment_boundaries_with_inflight_write`，加上 `test_record_toggle_starts_dual_segment_under_selected_base_dir`。
+    - 一路未复位：`test_begin_recording_segment_rolls_back_when_side_not_idle` → `test_segment_recording.py::test_start_realigns_views_when_one_is_still_recording`。
+    - 提交不阻塞写帧：`test_dual_submit_runs_outside_record_pair_lock` → `test_dual_submit_does_not_block_capture_writes`。
+    - 同名改写（断言片段与计划，不再断言私有属性）：
+      - `test_dual_record_stop_*`、`test_main_stop_finally_*`、`test_zero_frame_*`、`test_second_dual_segment_*`；
+      - `test_writer_error_*`、`test_toggle_after_primary_writer_failure_*`（改名 `..._before_new_segment`）、`test_submit_callback_*`；
+      - `test_close_finalizes_*`、`test_close_returns_while_inflight_*`、`test_close_deadline_*`；
+      - `test_recording_status_refresh_*`、`test_record_stop_returns_*`（锁改为服务锁和录制器锁）；
+      - `test_compare_update_*`（考试回填改经 `exam_scorebooks.apply`）；
+      - `test_app_close_registers_open_panel_scorebook_for_flush_close`（改用登记表）。
+  - `test_app_ui_dual_camera.py`：
+    - `test_fit_frame_to_size_*` 改测 `core.recording.fit_frame_to_size`。
+    - `test_dual_worker_finally_always_closes_recording_pair` → `..._closes_recording_session`。
+    - AST 用例改查 `self._recording.write({...})` 与 `update_sizes`；运行时替身改为 `_recording`。
+  - `test_recording_postprocess.py`：改用 `SegmentFinalizer` 与测试内的旧接口适配器，断言不变；差分基线 `tests/eval_diff/cases_rules.py` 改走 finalizer，结果不变。
+  - `test_exam_panel.py`：sinks 用例改为 `..._to_registry`。
+  - `test_exam_roster.py`：写盘线程的 join 断言改为 TaskGroup。
+  - `test_app_controls.py`：录制开关改用真实 `RecordingService`。
+  - `test_student_presence.py`、`test_m2_adversarial_stress.py`、`test_action_feedback.py`、`test_error_handling.py`：替身 `_rec` 改为 `_recording`。
+  - 新增 `tests/test_segment_recording.py`（18 项）：
+    - `SegmentLayout` 生成与解析互逆，越界名拒绝；
+    - 三路片段边界一致，一路写失败时整段一致收尾；
+    - finalizer 取消后终态唯一，关窗发布取消终态，重复提交拒绝；
+    - 单摄转码关窗后仍接受并在非守护线程跑完；
+    - 结束与关窗取消不交错；
+    - 面板脱离后台账仍能回填。
+  - 新增 `tests/segment_doubles.py`：片段替身。
+- 验证方法：
+  - 全量 `.\.venv\Scripts\python.exe -m pytest tests -q`：1126 passed（基线 1110）。
+  - `test_architecture.py` 通过；allowlist 75 → 66（体量 41 条：模块 6、函数 35；线程登记 app_ui 12 → 10，删 `recording_postprocess`、`exam_roster` 两条）。
+  - 门禁四件套通过。
+  - 考试套件与 `scripts/sim_exam_flow.py`：37/37，SIMULATION_OK。
+  - 真实 Tk + spawn 的 `test_camera_capture.py::test_tk_preview_student_switch_with_process_cameras` 通过。
+  - 删除清单搜索 `_record_pair_lock|_record_finalize_lock|_exam_clip_threads|_exam_scorebook_sinks|_transcode_async` 在 `apps/` 无匹配。
+  - `git diff --check` 只有行尾提示。
+  - 真实摄像头录制的片段产物比对仍记为 README"待办"第 4 项。
+
 ## 2026-10-11（America/Los_Angeles）: [fix] PR #6 评审：meta 非字典的模板在考试池里只跳过
 
 - 问题描述：PR #6 评审指出，`load_template` 把 `dict(declared or {})` 放在了 `require_file` 契约的异常转换之外。`meta` 不是字典（如字符串）的 NPZ 会抛出未转换的 `ValueError`，`TemplateStore.usable()` 只接 `TemplateError`，一个坏模板就会让考试就绪检查和录制后处理的整池失败；迁移前是跳过。另有 `tests/test_exam_pool_scoring.py` 末尾多一个空行，`git diff --check` 报错。

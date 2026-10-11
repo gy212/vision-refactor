@@ -21,6 +21,7 @@ if str(_REPO_ROOT) not in sys.path:
 
 from apps import app_ui  # noqa: E402
 from apps.camera_enum import CameraEntry  # noqa: E402
+from core.recording import fit_frame_to_size  # noqa: E402
 
 
 class _Var:
@@ -244,13 +245,13 @@ def test_degrees_to_rotate_label(degrees, expected):
 
 def test_fit_frame_to_size_resizes_when_mismatch():
     frame = np.zeros((4, 6, 3), dtype=np.uint8)
-    fitted = app_ui._fit_frame_to_size(frame, (3, 2))
+    fitted = fit_frame_to_size(frame, (3, 2))
     assert fitted.shape[:2] == (2, 3)
 
 
 def test_fit_frame_to_size_returns_same_when_match():
     frame = np.zeros((4, 6, 3), dtype=np.uint8)
-    assert app_ui._fit_frame_to_size(frame, (6, 4)) is frame
+    assert fit_frame_to_size(frame, (6, 4)) is frame
 
 
 def test_runtime_rotate_primary_and_secondary_are_isolated():
@@ -850,7 +851,7 @@ def test_parallel_video_path_does_not_apply_camera_rotation():
 
     assert _named_calls(worker, "_apply_rotation") == []
     assert _named_calls(worker, "_rotated_size") == []
-    assert _named_calls(worker, "update_session_size") == []
+    assert _named_calls(worker, "update_sizes") == []
 
 
 def test_dual_recording_frame_selector_defaults_to_raw_frames():
@@ -892,7 +893,11 @@ def test_dual_recording_frame_selector_can_write_annotated_frames():
 def test_dual_worker_writes_selected_frames_but_previews_annotated_frames():
     worker = _function_node("_worker_loop_dual_camera")
     select_calls = _named_calls(worker, "_select_dual_recording_frames")
-    write_calls = _named_calls(worker, "_write_recording_pair")
+    write_calls = [
+        call
+        for call in _named_calls(worker, "write")
+        if ast.unparse(call.func) == "self._recording.write"
+    ]
     preview_calls = [
         call
         for call in _named_calls(worker, "_post_dual_frame_pair")
@@ -906,10 +911,10 @@ def test_dual_worker_writes_selected_frames_but_previews_annotated_frames():
         "annotated",
         "annotated2",
     ]
-    assert [ast.unparse(arg) for arg in write_calls[0].args] == [
-        "record_frame",
-        "record_frame2",
-    ]
+    assert len(write_calls) == 1
+    assert ast.unparse(write_calls[0].args[0]) == (
+        "{'front': record_frame, 'side': record_frame2}"
+    )
     assert len(preview_calls) == 1
     assert [ast.unparse(arg) for arg in preview_calls[0].args[:4]] == [
         "annotated",
@@ -919,14 +924,14 @@ def test_dual_worker_writes_selected_frames_but_previews_annotated_frames():
     ]
 
 
-def test_dual_worker_finally_always_closes_recording_pair():
+def test_dual_worker_finally_always_closes_recording_session():
     worker = _function_node("_worker_loop_dual_camera")
     finally_calls = [
         call
         for node in ast.walk(worker)
         if isinstance(node, ast.Try)
         for statement in node.finalbody
-        for call in _named_calls(statement, "_close_recording_pair")
+        for call in _named_calls(statement, "_close_recording_session")
     ]
 
     assert len(finally_calls) == 1
@@ -956,25 +961,19 @@ def _exercise_dual_runtime_failure(monkeypatch, *, record_skeleton: bool, phase:
         def release(self) -> None:
             self.release_calls += 1
 
-    class _RecordingSession:
-        def __init__(self) -> None:
-            self._size = (6, 4)
+    class _Recording:
+        state = "idle"
 
-        def begin_session(self, **kwargs) -> None:
-            if "size" in kwargs:
-                self._size = kwargs["size"]
+        def begin_session(self, sizes, fps) -> None:
+            assert set(sizes) == {"front", "side"}
 
-        def update_session_size(self, **kwargs) -> None:
-            if "size" in kwargs:
-                self._size = kwargs["size"]
-            return True
+        def update_sizes(self, sizes) -> None:
+            assert set(sizes) == {"front", "side"}
 
-        @property
-        def session_size(self):
-            return self._size
-
-        def write_frame(self, _frame) -> None:
-            pass
+        def write(self, frames) -> None:
+            assert set(frames) == {"front", "side"}
+            if phase == "write":
+                raise RuntimeError("write failed")
 
     class _Pipeline:
         def __init__(self, *, fail_annotate: bool = False) -> None:
@@ -1038,17 +1037,11 @@ def _exercise_dual_runtime_failure(monkeypatch, *, record_skeleton: bool, phase:
     close_pair_calls: list[bool] = []
     done_calls: list[bool] = []
 
-    def write_pair(_front, _side) -> None:
-        if phase == "write":
-            raise RuntimeError("write failed")
-
     app = SimpleNamespace(
         _camera_warmup_pool=_Pool(),
         _student_practice_active=student,
         _current_session_generation=1,
-        _record_pair_lock=threading.Lock(),
-        _rec=_RecordingSession(),
-        _rec2=_RecordingSession(),
+        _recording=_Recording(),
         _stop_evt=threading.Event(),
         _runtime_rotate_lock=threading.Lock(),
         _runtime_rotate=0,
@@ -1058,9 +1051,6 @@ def _exercise_dual_runtime_failure(monkeypatch, *, record_skeleton: bool, phase:
         _exam_pending_row=None,
         _get_runtime_rotate=lambda which="primary": 0,
         _current_auto_compare=lambda prefer_ui=False: True,
-        _write_rec_frame=lambda rec, frame: rec.write_frame(frame)
-        if hasattr(rec, "write_frame")
-        else None,
         _post_dual_preview_layout=lambda _layout: None,
         _post_status=lambda _status: None,
         _post_progress=lambda _current, _total: None,
@@ -1072,8 +1062,7 @@ def _exercise_dual_runtime_failure(monkeypatch, *, record_skeleton: bool, phase:
         _post_dual_recording_ready=lambda _generation: None,
         _invalidate_dual_preview=lambda _generation: None,
         _finish_dual_startup_metrics=lambda *_args, **_kwargs: None,
-        _write_recording_pair=write_pair,
-        _close_recording_pair=lambda: close_pair_calls.append(True),
+        _close_recording_session=lambda: close_pair_calls.append(True),
     )
     state = SimpleNamespace(
         source="0",
@@ -1179,25 +1168,17 @@ def test_pipeline_loading_keeps_raw_pair_flowing_without_writes(monkeypatch):
         def cancel(self, _role):
             pass
 
-    class _RecordingSession:
-        def __init__(self) -> None:
-            self._size = (6, 4)
+    class _Recording:
+        state = "idle"
 
-        def begin_session(self, **kwargs) -> None:
-            if "size" in kwargs:
-                self._size = kwargs["size"]
-
-        def update_session_size(self, **kwargs) -> None:
-            if "size" in kwargs:
-                self._size = kwargs["size"]
-            return True
-
-        @property
-        def session_size(self):
-            return self._size
-
-        def write_frame(self, _frame) -> None:
+        def begin_session(self, sizes, fps) -> None:
             pass
+
+        def update_sizes(self, sizes) -> None:
+            pass
+
+        def write(self, frames) -> None:
+            write_calls.append(True)
 
     class _Pipeline:
         def __init__(self) -> None:
@@ -1226,9 +1207,7 @@ def test_pipeline_loading_keeps_raw_pair_flowing_without_writes(monkeypatch):
     app._camera_warmup_pool = _Pool()
     app._current_session_generation = 1
     app._stop_evt = threading.Event()
-    app._record_pair_lock = threading.Lock()
-    app._rec = _RecordingSession()
-    app._rec2 = _RecordingSession()
+    app._recording = _Recording()
     app._dual_active = False
     app._post_dual_preview_layout = lambda _layout: None
     app._post_status = lambda _status: None
@@ -1243,8 +1222,7 @@ def test_pipeline_loading_keeps_raw_pair_flowing_without_writes(monkeypatch):
         )
     )
     app._post_dual_recording_ready = ready_calls.append
-    app._write_recording_pair = lambda *_frames: write_calls.append(True)
-    app._close_recording_pair = lambda: None
+    app._close_recording_session = lambda: None
     app._post_done = lambda **kwargs: done_calls.append(
         kwargs.get("session_generation")
     )
@@ -1329,8 +1307,8 @@ def test_second_pipeline_failure_closes_first_without_starting_recording(monkeyp
         def cancel(self, role, *, generation=None):
             cancel_calls.append((role, generation))
 
-    class _RecordingSession:
-        def begin_session(self, **_kwargs) -> None:
+    class _Recording:
+        def begin_session(self, *_args, **_kwargs) -> None:
             begin_calls.append(True)
 
     class _Pipeline:
@@ -1354,17 +1332,15 @@ def test_second_pipeline_failure_closes_first_without_starting_recording(monkeyp
     app._camera_warmup_pool = _Pool()
     app._current_session_generation = 1
     app._stop_evt = threading.Event()
-    app._record_pair_lock = threading.Lock()
-    app._rec = _RecordingSession()
-    app._rec2 = _RecordingSession()
+    app._recording = _Recording()
     app._post_dual_preview_layout = lambda _layout: None
     app._post_status = lambda _status: None
     app._post_progress = lambda *_args: None
     app._post_done = lambda **kwargs: done_calls.append(
         kwargs.get("session_generation")
     )
-    app._close_recording_pair = lambda: pytest.fail(
-        "recording pair must not start"
+    app._close_recording_session = lambda: pytest.fail(
+        "recording session must not start"
     )
     app._finish_dual_startup_metrics = lambda *_args, **_kwargs: None
     state = SimpleNamespace(
@@ -1403,27 +1379,22 @@ def test_main_stop_does_not_cancel_background_compare_queue():
     [
         (
             "_worker_loop",
-            [("self._rec", "(int(frame.shape[1]), int(frame.shape[0]))")],
+            ["{'front': (int(frame.shape[1]), int(frame.shape[0]))}"],
         ),
         (
             "_worker_loop_dual_camera",
-            [("self._rec", "actual_size"), ("self._rec2", "actual_size2")],
+            ["{'front': actual_size, 'side': actual_size2}"],
         ),
         (
             "_worker_loop_parallel_camera",
-            [("self._rec", "(int(frame.shape[1]), int(frame.shape[0]))")],
+            ["{'front': (int(frame.shape[1]), int(frame.shape[0]))}"],
         ),
     ],
 )
 def test_camera_paths_correct_writer_size_from_rotated_first_frame(worker_name, expected):
-    calls = _named_calls(_function_node(worker_name), "update_session_size")
-    actual = [
-        (
-            ast.unparse(call.func.value),
-            ast.unparse(next(kw.value for kw in call.keywords if kw.arg == "size")),
-        )
-        for call in calls
-    ]
+    calls = _named_calls(_function_node(worker_name), "update_sizes")
+    assert all(ast.unparse(call.func.value) == "self._recording" for call in calls)
+    actual = [ast.unparse(call.args[0]) for call in calls]
 
     assert sorted(actual) == sorted(expected)
 

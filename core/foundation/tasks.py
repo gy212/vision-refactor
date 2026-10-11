@@ -119,8 +119,13 @@ class TaskGroup:
         *,
         owner: str,
         close_budget_s: float = 2.0,
+        daemon: bool = True,
     ) -> TaskHandle:
-        """启动守护线程运行 ``fn(token)``。``close_budget_s`` 是关窗时愿意为它等待的秒数。"""
+        """启动线程运行 ``fn(token)``。``close_budget_s`` 是关窗时愿意为它等待的秒数。
+
+        默认是守护线程；``daemon=False`` 只用于进程退出前必须做完的工作（如单摄录像转码，V-4），
+        这类任务必须自行结束，不能常驻等待。
+        """
         handle = TaskHandle(name, owner, float(close_budget_s), self._token.child())
 
         def run() -> None:
@@ -134,7 +139,7 @@ class TaskGroup:
             finally:
                 handle._finished.set()
 
-        thread = threading.Thread(target=run, name=f"{self.name}/{owner}/{name}", daemon=True)
+        thread = threading.Thread(target=run, name=f"{self.name}/{owner}/{name}", daemon=daemon)
         with self._lock:
             self._handles = [h for h in self._handles if not h.done]
             self._handles.append(handle)

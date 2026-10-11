@@ -86,14 +86,28 @@ def _exam_pool(rec, c) -> None:
             if u.status in ("completed", "failed", "skipped", "cancelled"):
                 done.set()
 
-        proc = rp.DualRecordingPostProcessor(
-            on_update=on_update, transcode=lambda p, _e: p, video_validator=lambda _p: True,
-            model_available=lambda: True)
-        job = rp.DualRecordingJob(
-            segment_id=name, segment_dir=seg, front_source=front, side_source=side, front_frames=180,
-            side_frames=180, front_template=t[pool[0]], side_template=t[pool[0]],
-            front_templates=tuple(t[k] for k in front_keys), side_templates=tuple(t[k] for k in side_keys))
-        proc.submit(job)
+        if hasattr(rp, "DualRecordingPostProcessor"):  # P4 前的录后处理
+            proc = rp.DualRecordingPostProcessor(
+                on_update=on_update, transcode=lambda p, _e: p, video_validator=lambda _p: True,
+                model_available=lambda: True)
+            job = rp.DualRecordingJob(
+                segment_id=name, segment_dir=seg, front_source=front, side_source=side, front_frames=180,
+                side_frames=180, front_template=t[pool[0]], side_template=t[pool[0]],
+                front_templates=tuple(t[k] for k in front_keys), side_templates=tuple(t[k] for k in side_keys))
+            proc.submit(job)
+        else:  # P4 起：SegmentFinalizer + 双路处理计划
+            from core.recording import ProcessingPlan, ResultSpec, SegmentFinalizer, StepDeps, dual_segment_steps
+            from tests.segment_doubles import dual_segment
+
+            proc = SegmentFinalizer(on_update=on_update)
+            # 旧 DualRecordingJob 在池为空时用单模板字段回填，基准按回填后的池录制
+            steps = dual_segment_steps(
+                record_skeleton=False, auto_compare=True,
+                front_templates=tuple(t[k] for k in front_keys) or (t[pool[0]],),
+                side_templates=tuple(t[k] for k in side_keys) or (t[pool[0]],),
+                deps=StepDeps(transcode=lambda p, _e: p, video_validator=lambda _p: True, model_available=lambda: True))
+            plan = ProcessingPlan(steps, result=ResultSpec(front_template=t[pool[0]], side_template=t[pool[0]]))
+            proc.submit(dual_segment(name, seg, front, side, front_frames=180, side_frames=180), plan)
         assert done.wait(120), name
         proc.close(5.0)
         rec(f"exam/{name}/updates", lambda: [(u.status, u.message, u.front_score, u.side_score, u.combined_percent,

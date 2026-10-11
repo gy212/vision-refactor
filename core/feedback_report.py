@@ -21,6 +21,7 @@ import cv2
 import numpy as np
 from PIL import Image
 
+from core.media.segment_layout import SegmentLayout
 from core.media.video_source import read_frame_at
 from core.action_feedback import ACTIONS, STANCES, PHASES, build_checks, format_fusion
 
@@ -863,28 +864,13 @@ def generate_phase_timeline_svg(phases: list[PhaseTimelineItem], counts: StatusC
 
 
 def resolve_record_video_path(history_root: Path, record_id: str, view: str, videos: dict) -> Path | None:
-    """Safely resolve managed video path with strict directory traversal guards."""
+    """历史记录里某一视角的受管视频：记录 id 合法，且逐级不越出历史目录、不经符号链接。"""
     if not isinstance(record_id, str) or not re.fullmatch(r"[0-9a-f]{32}", record_id):
         return None
-    directory = (history_root / record_id).resolve()
-    try:
-        if directory.parent != history_root.resolve() or directory.is_symlink():
-            return None
-    except Exception:
-        return None
-
     filename = videos.get(view)
     if not filename or not isinstance(filename, str):
         return None
-
-    video_path = (directory / filename).resolve()
-    try:
-        if video_path.parent != directory or not video_path.is_file() or video_path.is_symlink():
-            return None
-    except Exception:
-        return None
-
-    return video_path
+    return SegmentLayout.resolve_contained(history_root, record_id, filename)
 
 
 def extract_evidence_frame(

@@ -57,14 +57,12 @@ PRIMITIVES: dict[str, tuple[int, str]] = {
     'subsequence_dtw: analysis/calibrate_body_core.py': (1, 'P9'),
     'subsequence_dtw: analysis/offline_matching_profile.py': (2, 'P9'),
     'subsequence_dtw: scripts/match_segments_probe.py': (1, 'P9'),
-    'thread: apps/app_ui.py': (12, 'P8'),
+    'thread: apps/app_ui.py': (10, 'P8'),
     'thread: apps/camera_enum.py': (1, 'P5'),
     'thread: apps/camera_warmup.py': (2, 'P9'),
     'thread: apps/feedback_panel.py': (1, 'P8'),
     'thread: apps/main.py': (5, 'P6'),
-    'thread: apps/recording_postprocess.py': (1, 'P4'),
     'thread: core/exam_announcer.py': (1, 'P7'),
-    'thread: core/exam_roster.py': (1, 'P4'),
     'tk_after: apps/app_ui.py': (22, 'P8'),
     'tk_after: apps/desktop_smoke.py': (2, 'P8'),
     'tk_after: apps/exam_panel.py': (3, 'P8'),
@@ -82,12 +80,10 @@ CLONES: dict[str, tuple[int, str]] = {}
 
 MODULE_SIZE: dict[str, tuple[int, str]] = {
     'analysis/bench_annotate_fps.py': (1018, 'P9'),
-    'apps/app_ui.py': (5875, 'P8'),
+    'apps/app_ui.py': (5295, 'P8'),
     'apps/camera_warmup.py': (1125, 'P9'),
-    'apps/exam_panel.py': (844, 'P8'),
-    'apps/feedback_result_panel.py': (1326, 'P8'),
-    'core/exam_roster.py': (818, 'P4'),
-    'core/feedback_report.py': (1532, 'P8'),
+    'apps/feedback_result_panel.py': (1325, 'P8'),
+    'core/feedback_report.py': (1518, 'P8'),
     'core/qwen_coach.py': (916, 'P9'),
 }
 
@@ -97,15 +93,12 @@ FUNCTION_SIZE: dict[str, tuple[int, str]] = {
     'analysis/bench_annotate_fps.py::main': (131, 'P9'),
     'analysis/calibrate_body_core.py::run': (166, 'P9'),
     'analysis/offline_matching_profile.py::run_fixture_profile': (112, 'P9'),
-    'apps/app_ui.py::App.__init__': (174, 'P8'),
-    'apps/app_ui.py::App._begin_recording_segment': (119, 'P8'),
+    'apps/app_ui.py::App.__init__': (153, 'P8'),
     'apps/app_ui.py::App._build_ui': (398, 'P8'),
-    'apps/app_ui.py::App._dispatch_recording_finalization': (193, 'P8'),
     'apps/app_ui.py::App._exit_student_practice': (102, 'P8'),
-    'apps/app_ui.py::App._on_close': (115, 'P8'),
     'apps/app_ui.py::App._set_running_controls': (124, 'P8'),
     'apps/app_ui.py::App._worker_loop': (195, 'P8'),
-    'apps/app_ui.py::App._worker_loop_dual_camera': (365, 'P8'),
+    'apps/app_ui.py::App._worker_loop_dual_camera': (359, 'P8'),
     'apps/app_ui.py::App._worker_loop_parallel_camera': (194, 'P8'),
     'apps/app_ui.py::App._worker_loop_parallel_video': (105, 'P8'),
     'apps/app_ui.py::CompareWindow._build': (128, 'P8'),
@@ -116,7 +109,6 @@ FUNCTION_SIZE: dict[str, tuple[int, str]] = {
     'apps/feedback_result_panel.py::FeedbackResultPanel._build_ui': (109, 'P8'),
     'apps/main.py::_process_video_multithread': (122, 'P6'),
     'apps/main.py::run_realtime_latest_frame_smoke': (142, 'P6'),
-    'apps/recording_postprocess.py::DualRecordingPostProcessor._process': (102, 'P4'),
     'batch/batch_dual_compare.py::_run_body_core_batch': (115, 'P9'),
     'batch/batch_dual_compare.py::main': (237, 'P9'),
     'batch/batch_export_skeleton.py::main': (120, 'P9'),
@@ -126,7 +118,6 @@ FUNCTION_SIZE: dict[str, tuple[int, str]] = {
     'core/evaluation/techeval/com.py::_compute_body_com_single': (176, 'P9'),
     'core/evaluation/techeval/com.py::eval_cog_com': (128, 'P9'),
     'core/evaluation/techeval/events.py::detect_retract_events_side': (103, 'P9'),
-    'core/exam_clip.py::prepare_exam_pair': (114, 'P4'),
     'core/feedback_report.py::build_report_model': (280, 'P8'),
     'core/feedback_report.py::generate_phase_timeline_svg': (142, 'P8'),
     'core/feedback_report.py::get_headline_summary': (131, 'P8'),
@@ -135,7 +126,7 @@ FUNCTION_SIZE: dict[str, tuple[int, str]] = {
 }
 
 DEFENSIVE_GETATTR: dict[str, tuple[int, str]] = {
-    'apps/app_ui.py': (169, 'P8'),
+    'apps/app_ui.py': (133, 'P8'),
 }
 
-ENTRY_CEILING = 75
+ENTRY_CEILING = 66

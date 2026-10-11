@@ -31,6 +31,7 @@ import cv2
 import numpy as np
 from PIL import Image, ImageTk
 
+from core.media import SegmentLayout
 from core.action_feedback import ACTIONS, STANCES, PHASES, STATE_LABELS
 from core.feedback_report import (
     RULE_JOINTS,
@@ -1158,12 +1159,10 @@ class FeedbackResultPanel(ttk.Frame):
                 img_lbl.configure(image=photo, text="")
                 continue
 
-            vfilename = videos.get(view)
-            if not video_dir or not vfilename:
+            video_path = SegmentLayout.child(video_dir, videos.get(view)) if video_dir else None
+            if video_path is None:  # 没有目录、没有文件名，或文件名越出目录
                 img_lbl.configure(image="", text="原视频不可用")
                 continue
-
-            video_path = video_dir / vfilename
             landmarks = ev.get("landmarks")
             valid_mask = ev.get("validMask")
             highlight_joints = RULE_JOINTS.get(check.code)
