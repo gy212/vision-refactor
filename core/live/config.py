@@ -81,10 +81,12 @@ def camera_session(
     loading_raw_preview: bool = True,
     hud: Literal["tk", "cli"] = "tk",
     delegate: str = "cpu",
+    smoothing: bool = True,
     dual_smoothing: bool = False,
     dual_online_match: bool = False,
 ) -> SessionConfig:
-    """摄像头会话（§8.2 表）：骨架关时不推理；单摄骨架开时平滑开、在线识别按参数；多 worker 且骨架开时并行推理。
+    """摄像头会话（§8.2 表）：骨架关时不推理；单摄骨架开时平滑与在线识别按参数（Tk 默认开，CLI 关）；
+    多 worker 且骨架开时并行推理。
 
     双摄的平滑与在线识别保持关闭（D-7），``dual_smoothing``/``dual_online_match`` 是保留的配置项。
     并行单摄的引擎与摄像头同时启动，没有加载期裸帧。站位检测只在骨架关的双摄会话里可用。
@@ -100,7 +102,7 @@ def camera_session(
         parallel=parallel,
         inference=skeleton,
         record_overlay=skeleton or not dual,   # 单摄的录像一直带 HUD；双摄骨架关时录原始帧
-        smoothing=skeleton and (dual_smoothing if dual else True),
+        smoothing=skeleton and (dual_smoothing if dual else smoothing),
         online_match=skeleton and (dual_online_match if dual else online_match),
         loading_raw_preview=skeleton and loading_raw_preview and not parallel,
         occupancy=dual and not skeleton,

@@ -418,36 +418,42 @@ class CliDriver:
 
 
 def test_cli_camera_source_opens_through_camera_service(monkeypatch):
-    from apps import main as cli
+    from apps.cli import main as cli
+    from core.live import CameraInput
 
     monkeypatch.setattr(
         pool_module, "ProcessCamera", functools.partial(capture_process.ProcessCamera, _factory=CliDriver)
     )
     before = {p.pid for p in mp.active_children()}
 
-    cap = cli._open_capture("0")
+    source = cli.open_input("0")
+    token = CancelToken()
     try:
-        assert isinstance(cap, CaptureView) and cap.isOpened()
-        assert (cap.get(3), cap.get(4)) == (1280, 720)
-        ok, frame = cap.read()
-        assert ok and frame.shape == (720, 1280, 3)
+        assert isinstance(source, CameraInput)
+        source.wait_ready(token)
+        source.start(token)
+        assert source.actual_sizes() == {PRIMARY: (1280, 720)}
+        frames = source.read(token)
+        assert frames[PRIMARY].shape == (720, 1280, 3)
     finally:
-        cap.release()
+        source.close(keep_warm=True)
 
-    assert not cap.isOpened()
+    assert not source.stream.claimed
     _eventually(lambda: {p.pid for p in mp.active_children()} == before, timeout=5.0)
 
 
 def test_cli_camera_open_failure_is_reported_and_service_closed(monkeypatch):
-    from apps import main as cli
+    from apps.cli import main as cli
 
     monkeypatch.setattr(
         pool_module, "ProcessCamera",
         functools.partial(capture_process.ProcessCamera, policy="require", _factory=SmallDriver),
     )
+    before = {p.pid for p in mp.active_children()}
 
-    with pytest.raises(RuntimeError, match="Cannot open source: 0"):
-        cli._open_capture("0")
+    with pytest.raises(RuntimeError, match="打开输入源失败"):
+        cli.run("0", show=False)
+    _eventually(lambda: {p.pid for p in mp.active_children()} == before, timeout=5.0)
 
 
 class DisconnectingCliDriver(CliDriver):
@@ -461,7 +467,8 @@ class DisconnectingCliDriver(CliDriver):
 
 
 def test_cli_run_releases_capture_writer_and_windows_on_disconnect(monkeypatch):
-    from apps import main as cli
+    from apps.cli import main as cli
+    import core.live.stages as live_stages
 
     monkeypatch.setattr(
         pool_module, "ProcessCamera",
@@ -473,8 +480,11 @@ def test_cli_run_releases_capture_writer_and_windows_on_disconnect(monkeypatch):
         def next_timestamp_ms(self, **_kwargs):
             return 0
 
-        def annotate(self, frame, *, timestamp_ms):
-            return frame, []
+        def infer(self, frame, *, timestamp_ms):
+            return None, []
+
+        def close(self):
+            pass
 
     class _Writer:
         def __init__(self, *_args):
@@ -486,25 +496,19 @@ def test_cli_run_releases_capture_writer_and_windows_on_disconnect(monkeypatch):
         def release(self):
             self.release_calls += 1
 
-    caps, writers, destroyed = [], [], []
-
-    def _open(source):
-        caps.append(cli_open(source))
-        return caps[-1]
-
-    cli_open = cli._open_capture
-    monkeypatch.setattr(cli, "_open_capture", _open)
-    monkeypatch.setattr(cli, "create_engine", lambda *_a, **_k: _Pipe())
-    monkeypatch.setattr(cli, "draw_cli_hud", lambda *_a, **_k: None)
+    inputs, writers, destroyed = [], [], []
+    cli_open = cli.open_input
+    monkeypatch.setattr(cli, "open_input", lambda source: inputs.append(cli_open(source)) or inputs[-1])
+    monkeypatch.setattr(live_stages, "create_engine", lambda *_a, **_k: _Pipe())
     monkeypatch.setattr(cli.cv2, "VideoWriter", lambda *a: writers.append(_Writer(*a)) or writers[-1])
     monkeypatch.setattr(cli.cv2, "destroyAllWindows", lambda: destroyed.append(True))
 
-    with pytest.raises(RuntimeError):
+    with pytest.raises(RuntimeError, match="运行失败"):
         cli.run("0", show=False, out_path="unused.mp4")
 
     assert [w.release_calls for w in writers] == [1]
     assert destroyed == [True]
-    assert not caps[0].isOpened()
+    assert not inputs[0].stream.claimed
     _eventually(lambda: {p.pid for p in mp.active_children()} == before, timeout=5.0)
 
 

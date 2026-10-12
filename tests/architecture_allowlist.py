@@ -57,7 +57,6 @@ PRIMITIVES: dict[str, tuple[int, str]] = {
     'subsequence_dtw: scripts/match_segments_probe.py': (1, 'P9'),
     'thread: apps/app_ui.py': (9, 'P8'),
     'thread: apps/feedback_panel.py': (1, 'P8'),
-    'thread: apps/main.py': (5, 'P6'),
     'thread: core/exam_announcer.py': (1, 'P7'),
     'tk_after: apps/app_ui.py': (22, 'P8'),
     'tk_after: apps/desktop_smoke.py': (2, 'P8'),
@@ -66,7 +65,6 @@ PRIMITIVES: dict[str, tuple[int, str]] = {
     'video_capture: analysis/bench_annotate_fps.py': (4, 'P9'),
     'video_capture: analysis/spike_yolo_baseline.py': (2, 'P9'),
     'video_capture: apps/app_ui.py': (1, 'P6'),  # _worker_loop 打开 source，随循环在 P6 删除
-    'video_capture: apps/main.py': (1, 'P6'),  # _open_capture，随 CLI 逐帧循环在 P6 删除
     'video_capture: core/qwen_coach.py': (1, 'P9'),  # D-12 未决：保留到 P9 按 D-12 处置
 }
 
@@ -100,8 +98,6 @@ FUNCTION_SIZE: dict[str, tuple[int, str]] = {
     'apps/exam_panel.py::ExamPanel._retest_current': (108, 'P8'),
     'apps/feedback_result_panel.py::FeedbackResultPanel._build_split_section': (301, 'P8'),
     'apps/feedback_result_panel.py::FeedbackResultPanel._build_ui': (109, 'P8'),
-    'apps/main.py::_process_video_multithread': (122, 'P6'),
-    'apps/main.py::run_realtime_latest_frame_smoke': (142, 'P6'),
     'batch/batch_dual_compare.py::_run_body_core_batch': (115, 'P9'),
     'batch/batch_dual_compare.py::main': (237, 'P9'),
     'batch/batch_export_skeleton.py::main': (120, 'P9'),
@@ -122,4 +118,4 @@ DEFENSIVE_GETATTR: dict[str, tuple[int, str]] = {
     'apps/app_ui.py': (132, 'P8'),
 }
 
-ENTRY_CEILING = 60
+ENTRY_CEILING = 56

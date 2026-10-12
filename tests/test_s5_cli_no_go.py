@@ -14,7 +14,7 @@ if str(_REPO_ROOT) not in sys.path:
 REPORT = _REPO_ROOT / "docs" / "yolo_gpu_recheck_report.md"
 PLAN = _REPO_ROOT / "docs" / "yolo_migration_plan.md"
 OPTIMIZED_PLAN = _REPO_ROOT / "docs" / "yolo_migration_plan_optimized.md"
-MAIN = _REPO_ROOT / "apps" / "main.py"
+MAIN = _REPO_ROOT / "apps" / "cli" / "main.py"  # P6：apps/main.py 只是入口壳，实现在 apps/cli/main.py
 
 
 def test_issue25_report_records_cli_no_go_decision():
@@ -77,4 +77,6 @@ def test_apps_main_keeps_mediapipe_only_cli_surface():
 
     assert "YoloPoseAdapter" not in source
     assert "yolo_adapter" not in source
-    assert "create_engine" in source  # P2：MediaPipe 引擎统一经 core.pose.create_engine 构造
+    # P6：逐帧处理经 core.live.SessionRunner，MediaPipe 引擎由 core.live 的 stage 经 create_engine 构造
+    assert "SessionRunner" in source
+    assert "create_engine" not in source

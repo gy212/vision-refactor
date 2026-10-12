@@ -13,22 +13,83 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from apps import main as app_main  # noqa: E402
+from apps.cli import main as app_main  # noqa: E402
+import core.live.stages as live_stages  # noqa: E402
+from core.media import PRIMARY  # noqa: E402
 
 
-def test_latest_frame_queue_keeps_only_newest_and_counts_drops():
-    q = app_main.LatestFrameQueue()
+class FakeVideoInput:
+    """视频文件形态的假输入：读 ``count`` 帧后结束；``delay`` 模拟采集间隔。"""
 
-    q.put(app_main.LatestFrameItem(0, "old", 1.0, 0))
-    q.put(app_main.LatestFrameItem(1, "new", 2.0, 33))
+    is_file = True
+    roles = (PRIMARY,)
 
-    latest = q.get_latest()
+    def __init__(self, count=None, delay=0.0) -> None:
+        self.count = count
+        self.delay = delay
+        self.read_calls = 0
+        self.closed = False
 
-    assert latest is not None
-    assert latest.index == 1
-    assert latest.frame == "new"
-    assert q.get_latest() is None
-    assert q.dropped_frames == 1
+    def wait_ready(self, cancel):
+        return {}
+
+    def first_cursor(self):
+        return {}
+
+    def snapshot(self, after):
+        return None
+
+    def start(self, cancel):
+        pass
+
+    def actual_sizes(self):
+        return {PRIMARY: (8, 8)}
+
+    def fps(self):
+        return 30.0
+
+    def total_frames(self):
+        return self.count or 0
+
+    def read(self, cancel):
+        if self.count is not None and self.read_calls >= self.count:
+            return None
+        self.read_calls += 1
+        if self.delay:
+            import time
+
+            time.sleep(self.delay)
+        return {PRIMARY: np.zeros((8, 8, 3), dtype=np.uint8)}
+
+    def close(self, *, keep_warm):
+        self.closed = True
+
+
+def test_latest_frame_mode_only_infers_newest_and_counts_drops(monkeypatch):
+    """采集快于推理时，推理只取最新帧，被覆盖的帧计入 dropped。"""
+    import time
+
+    class SlowPipeline:
+        def next_timestamp_ms(self, **_kwargs):
+            return 0
+
+        def infer(self, frame, *, timestamp_ms=None):
+            time.sleep(0.01)
+            return None, []
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(app_main, "open_input", lambda source: FakeVideoInput(count=40))
+    monkeypatch.setattr(live_stages, "create_engine", lambda spec, *, models_dir=None: SlowPipeline())
+    monkeypatch.setattr(app_main.cv2, "destroyAllWindows", lambda: None)
+
+    metrics = app_main.run_realtime_latest_frame_smoke("sample.mp4", show=False, limit_frames=40)
+
+    assert metrics.captured_frames == 40
+    assert metrics.dropped_frames > 0
+    assert metrics.processed_frames + metrics.dropped_frames == 40
+    assert metrics.rendered_frames == metrics.processed_frames
 
 
 def test_latest_frame_metrics_report_p90_latency():
@@ -150,39 +211,23 @@ def test_cli_delegate_gpu_is_explicit_opt_in(monkeypatch):
 def test_latest_frame_smoke_runs_with_fake_capture_and_pipeline(monkeypatch):
     pipeline_cfgs = []
 
-    class FakeCap:
-        def __init__(self) -> None:
-            self.index = 0
-            self.released = False
-
-        def isOpened(self) -> bool:
-            return True
-
-        def set(self, prop: int, value: float) -> None:
-            pass
-
-        def get(self, prop: int) -> float:
-            return 30.0
-
-        def read(self):
-            if self.index >= 4:
-                return False, None
-            self.index += 1
-            return True, np.zeros((8, 8, 3), dtype=np.uint8)
-
-        def release(self) -> None:
-            self.released = True
-
     class FakePipeline:
         def __init__(self, *, models_dir, cfg) -> None:
             pipeline_cfgs.append(cfg)
 
-        def annotate(self, frame, *, timestamp_ms: int):
-            return frame.copy(), ["SQUAT"]
+        def next_timestamp_ms(self, **_kwargs):
+            return 0
 
-    monkeypatch.setattr(app_main, "_open_capture", lambda source: FakeCap())
-    monkeypatch.setattr(app_main, "models_dir", lambda: Path("models"))
-    monkeypatch.setattr(app_main, "create_engine", lambda spec, *, models_dir=None: FakePipeline(models_dir=models_dir, cfg=spec))
+        def infer(self, frame, *, timestamp_ms=None):
+            return None, []
+
+        def close(self):
+            pass
+
+    source = FakeVideoInput(count=None)
+    monkeypatch.setattr(app_main, "open_input", lambda _source: source)
+    monkeypatch.setattr(live_stages, "models_dir", lambda: Path("models"))
+    monkeypatch.setattr(live_stages, "create_engine", lambda spec, *, models_dir=None: FakePipeline(models_dir=models_dir, cfg=spec))
     monkeypatch.setattr(app_main.cv2, "destroyAllWindows", lambda: None)
 
     metrics = app_main.run_realtime_latest_frame_smoke(
@@ -198,6 +243,7 @@ def test_latest_frame_smoke_runs_with_fake_capture_and_pipeline(monkeypatch):
     assert metrics.processed_frames >= 1
     assert metrics.rendered_frames >= 1
     assert metrics.latency_p90_ms is not None
+    assert source.closed
     assert pipeline_cfgs
     assert pipeline_cfgs[0].pose_variant == "heavy"
     assert pipeline_cfgs[0].enable_hands is False
@@ -206,29 +252,13 @@ def test_latest_frame_smoke_runs_with_fake_capture_and_pipeline(monkeypatch):
 
 
 def test_latest_frame_smoke_reraises_worker_failures(monkeypatch):
-    class FakeCap:
-        def isOpened(self) -> bool:
-            return True
-
-        def set(self, prop: int, value: float) -> None:
-            pass
-
-        def get(self, prop: int) -> float:
-            return 30.0
-
-        def read(self):
-            return True, np.zeros((8, 8, 3), dtype=np.uint8)
-
-        def release(self) -> None:
-            pass
-
     class BrokenPipeline:
         def __init__(self, *, models_dir, cfg) -> None:
             raise ValueError("pipeline init failed")
 
-    monkeypatch.setattr(app_main, "_open_capture", lambda source: FakeCap())
-    monkeypatch.setattr(app_main, "models_dir", lambda: Path("models"))
-    monkeypatch.setattr(app_main, "create_engine", lambda spec, *, models_dir=None: BrokenPipeline(models_dir=models_dir, cfg=spec))
+    monkeypatch.setattr(app_main, "open_input", lambda _source: FakeVideoInput())
+    monkeypatch.setattr(live_stages, "models_dir", lambda: Path("models"))
+    monkeypatch.setattr(live_stages, "create_engine", lambda spec, *, models_dir=None: BrokenPipeline(models_dir=models_dir, cfg=spec))
     monkeypatch.setattr(app_main.cv2, "destroyAllWindows", lambda: None)
 
     try:
@@ -250,10 +280,10 @@ def test_default_run_and_ui_worker_are_not_replaced_by_latest_frame_path():
         node for node in ast.walk(main_tree) if isinstance(node, ast.FunctionDef) and node.name == "run"
     )
     assert not any(
-        isinstance(node, ast.Name) and node.id == "LatestFrameQueue"
+        isinstance(node, ast.keyword) and node.arg == "latest_frame"
         for node in ast.walk(run_func)
     )
 
     app_ui_source = (_REPO_ROOT / "apps" / "app_ui.py").read_text(encoding="utf-8")
-    assert "LatestFrameQueue" not in app_ui_source
+    assert "latest_frame" not in app_ui_source
     assert "realtime_latest_frame" not in app_ui_source

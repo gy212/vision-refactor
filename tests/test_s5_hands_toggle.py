@@ -13,7 +13,8 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from apps import app_ui, main as app_main  # noqa: E402
+from apps import app_ui  # noqa: E402
+from apps.cli import main as app_main  # noqa: E402
 
 
 def test_cli_no_hands_defaults_to_hands_enabled(monkeypatch):
@@ -58,25 +59,21 @@ def test_cli_no_hands_disables_single_thread_preview(monkeypatch):
 def test_cli_no_hands_disables_parallel_offline_pipeline(monkeypatch):
     calls: list[dict[str, object]] = []
 
-    class FakeCap:
-        def isOpened(self) -> bool:
-            return True
-
     monkeypatch.setattr(
         sys,
         "argv",
         ["main.py", "--source", "sample.mp4", "--workers", "2", "--no-show", "--no-hands"],
     )
-    monkeypatch.setattr(app_main, "_open_capture", lambda source: FakeCap())
     monkeypatch.setattr(
         app_main,
-        "_process_video_multithread",
-        lambda **kwargs: calls.append(kwargs),
+        "run_parallel",
+        lambda source, **kwargs: calls.append({"source": source, **kwargs}),
     )
 
     app_main.main()
 
     assert len(calls) == 1
+    assert calls[0]["source"] == "sample.mp4"
     assert calls[0]["enable_hands"] is False
     assert calls[0]["pose_variant"] == "full"
     assert calls[0]["workers"] == 2
