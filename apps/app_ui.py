@@ -57,15 +57,11 @@ from core.recording import (
     validate_template_pair,
 )
 from core.workflows import EXAM_CLOSE_BUDGET_S, ExamClipStep, ScorebookRegistry
-from apps.camera_enum import CameraEntry, InputSourceState, enumerate_cameras
-from apps.camera_capture import open_camera
-from apps.camera_warmup import (
-    CameraWarmupPool,
-    CameraWarmupStopped,
-    CaptureSpec,
-    PRIMARY,
-    SECONDARY,
-)
+from apps.input_source import InputSourceState
+from core import foundation
+from core.foundation import Cancelled, from_stopped
+from core.media import PRIMARY, SECONDARY, CameraService, CaptureSpec, CaptureView, ProcessCamera
+from core.media import CameraDevice as CameraEntry
 from apps.feedback_panel import FeedbackControls
 
 
@@ -152,22 +148,11 @@ _CLOSE_JOIN_TIMEOUT_S = 3.0
 _CLOSE_JOIN_SLICE_S = 0.05
 _CLOSE_POLL_MS = 50
 _CAMERA_CANCEL_JOIN_TIMEOUT_S = 0.05
-# 覆盖 ProcessCamera 12 秒首帧预算与旧设备释放等待；接管只需停掉预热 reader。
-_CAMERA_START_TIMEOUT_S = 15.0
-_CAMERA_CLAIM_TIMEOUT_S = 5.0
 _CAMERA_RELEASE_WAIT_S = 3.0
 _PREVIEW_CAPTURE_SIZE = (1280, 720)
 _STUDENT_CAPTURE_SIZE = (1920, 1080)
 _DUAL_RAW_PUMP_INTERVAL_S = 0.05
 _DUAL_STAGE_RANK = {"raw": 0, "annotated": 1}
-
-
-def _log_camera_event(payload: dict) -> None:
-    """摄像头生命周期诊断行；窗口版 stdout 由 desktop_launcher 重定向到 desktop.log。"""
-    try:
-        print("[camera] " + json.dumps(payload, ensure_ascii=False, sort_keys=True), flush=True)
-    except Exception:
-        pass
 
 
 def clamp_workers(n: int) -> int:
@@ -779,6 +764,9 @@ class UiState:
     auto_compare: bool = True
     # 会话启动时冻结的请求尺寸；打开途中切换模式不得改变本次采集配置。
     capture_size: tuple[int, int] = _PREVIEW_CAPTURE_SIZE
+    # 驱动给不出请求尺寸时的处理（D-6）与按编号记下的设备名（V-3），同样在启动时冻结。
+    capture_policy: str = "prefer"
+    camera_names: tuple[tuple[int, str], ...] = ()
     session_generation: int = 0
     start_click: float = 0.0
 
@@ -1127,12 +1115,11 @@ class App:
             maxsize=1
         )
 
-        # 物理摄像头唯一所有者：单摄/双摄预热、会话接管和释放隔离都经此池。
+        # 摄像头唯一入口：单摄/双摄预热、会话接管和释放隔离都经 CameraService 的池。
         # 采集配置（编号+请求尺寸）在请求时冻结为 CaptureSpec，不在打开途中读模式标志。
-        self._camera_warmup_pool = CameraWarmupPool(
+        self._camera_service = CameraService(
             capture_factory=self._open_camera_process,
             join_timeout=_CAMERA_CANCEL_JOIN_TIMEOUT_S,
-            log=_log_camera_event,
         )
 
         self._closing = False
@@ -3344,17 +3331,8 @@ class App:
         self._set_refresh_enabled()
         self.camera_combo.configure(state="disabled")
 
-        pool = getattr(self, "_camera_warmup_pool", None)
-
-        def _run() -> None:
-            ok = True
-            entries: list[CameraEntry] = []
-            try:
-                if pool is not None:
-                    pool.wait_released(_CAMERA_RELEASE_WAIT_S)
-                entries = enumerate_cameras()
-            except Exception:
-                ok = False
+        def _deliver(snapshot) -> None:
+            # 后台线程只投递结果，由 _tick 在主线程应用；兜底探测跳过池占用的设备（V-6）。
             if getattr(self, "_closing", False):
                 return
             result_queue = self._camera_enum_result_queue
@@ -3363,9 +3341,9 @@ class App:
                     result_queue.get_nowait()
                 except Empty:
                     break
-            result_queue.put((entries, ok))
+            result_queue.put((list(snapshot.devices), snapshot.ok))
 
-        threading.Thread(target=_run, daemon=True).start()
+        self._camera_service.refresh(on_done=_deliver)
 
     def _drain_camera_enum_results(self) -> None:
         """在 Tk 主线程应用最新枚举结果，关窗后只丢弃不触碰控件。"""
@@ -3499,16 +3477,16 @@ class App:
             return
         if self._enum_busy.is_set():
             return
-        self._release_camera_warmups()
+        # V-6：刷新不放弃预热；只读设备名，兜底探测跳过本程序占用的设备。
         self._start_enumeration()
 
     def _release_camera_warmups(self) -> None:
         """放弃所有预热 reader；释放在后台完成，重开同编号时由池等待真实释放。"""
-        pool = getattr(self, "_camera_warmup_pool", None)
-        if pool is None:
+        service = getattr(self, "_camera_service", None)
+        if service is None:
             return
         try:
-            pool.release_all()
+            service.prepare({})
         except Exception:
             pass
 
@@ -3518,9 +3496,23 @@ class App:
             return _STUDENT_CAPTURE_SIZE
         return _PREVIEW_CAPTURE_SIZE
 
+    def _camera_capture_policy(self) -> str:
+        """学生练习严格要求 1080p，驱动给不出时失败并提示（D-6）；其余模式接受实际尺寸。"""
+        return "require" if bool(getattr(self, "_student_practice_active", False)) else "prefer"
+
+    def _camera_names(self) -> tuple[tuple[int, str], ...]:
+        """枚举得到的设备名，供打开时复核（V-3）；没有名称的设备不复核。"""
+        return tuple((e.index, e.name) for e in self._camera_entries if getattr(e, "name", None))
+
     def _camera_spec(self, index: int) -> CaptureSpec:
         width, height = App._camera_capture_size(self)
-        return CaptureSpec(int(index), width, height)
+        return CaptureSpec(
+            int(index),
+            width,
+            height,
+            expected_name=dict(App._camera_names(self)).get(int(index)),
+            policy=App._camera_capture_policy(self),
+        )
 
     def _selected_camera_indices(self) -> tuple[int | None, int | None]:
         primary = None
@@ -3546,15 +3538,17 @@ class App:
         running = bool(self._worker and self._worker.is_alive())
         if running and not allow_running:
             return
-        pool = getattr(self, "_camera_warmup_pool", None)
-        if pool is None:
+        service = getattr(self, "_camera_service", None)
+        if service is None:
             return
         primary, secondary = App._selected_camera_indices(self)
+        specs = {
+            role: App._camera_spec(self, index)
+            for role, index in ((PRIMARY, primary), (SECONDARY, secondary))
+            if index is not None
+        }
         try:
-            pool.sync(
-                None if primary is None else App._camera_spec(self, primary),
-                None if secondary is None else App._camera_spec(self, secondary),
-            )
+            service.prepare(specs)
         except Exception as exc:
             App._release_camera_warmups(self)
             self._post_status(f"摄像头预热失败：{exc}")
@@ -3617,6 +3611,8 @@ class App:
                 else True
             ),
             capture_size=App._camera_capture_size(self),
+            capture_policy=App._camera_capture_policy(self),
+            camera_names=App._camera_names(self),
         )
 
     @staticmethod
@@ -3717,44 +3713,43 @@ class App:
         width: int,
         height: int,
         stop_event: threading.Event,
+        expected_name: str | None = None,
+        policy: str = "prefer",
     ):
-        """池的唯一打开入口：每路一个 spawn 采集进程，调用时解析模块级 open_camera。"""
-        return open_camera(index, width=width, height=height, stop_event=stop_event)
+        """池的唯一打开入口：每路一个 spawn 采集进程，调用时解析模块级 ProcessCamera。"""
+        return ProcessCamera(
+            index, width=width, height=height, stop_event=stop_event,
+            expected_name=expected_name, policy=policy,
+        )
 
     @staticmethod
     def _session_spec(state: UiState, source: str) -> CaptureSpec:
         width, height = getattr(state, "capture_size", _PREVIEW_CAPTURE_SIZE)
-        return CaptureSpec(int(source), int(width), int(height))
+        return CaptureSpec(
+            int(source),
+            int(width),
+            int(height),
+            expected_name=dict(getattr(state, "camera_names", ())).get(int(source)),
+            policy=getattr(state, "capture_policy", "prefer"),
+        )
 
-    def _cancel_session_warmups(self, generations: tuple[int, ...]) -> None:
-        """失败会话只取消自己观察到的预热代次，不误伤之后重新声明的预热。"""
-        pool = getattr(self, "_camera_warmup_pool", None)
-        if pool is None:
-            return
-        for role, generation in zip((PRIMARY, SECONDARY), generations):
-            try:
-                pool.cancel(role, generation=generation)
-            except Exception:
-                pass
+    def _stop_token(self):
+        """把会话停止标志适配成 CancelToken，供 CameraStream 的等待与接管使用。"""
+        return from_stopped(self._stop_evt.is_set)
 
     def _open_session_camera(self, state: UiState):
         """单摄：等池内 reader 出有效首帧后接管为 lease；停止/超时由池回收。"""
-        pool = self._camera_warmup_pool
         spec = App._session_spec(state, state.source)
-        ready = pool.wait_one(
-            spec, timeout=_CAMERA_START_TIMEOUT_S, stop_event=self._stop_evt
-        )
-        return pool.claim_one(
-            spec,
-            timeout=_CAMERA_CLAIM_TIMEOUT_S,
-            expected_generation=ready.generation,
-            stop_event=self._stop_evt,
-        )
+        return self._camera_service.open_capture(spec, App._stop_token(self))
 
-    def _release_session_camera(self, capture) -> str | None:
-        """释放会话 lease；失败时设备保持隔离，返回可见原因。"""
+    def _release_session_camera(self, capture, *, keep_warm: bool = False) -> str | None:
+        """结束会话的摄像头：正常结束且未在关窗时，摄像头视图把设备交回池继续预热（V-1），
+        其余情况（含视频文件）直接释放；释放失败时设备保持隔离，返回可见原因。"""
         try:
-            capture.release()
+            if keep_warm and not self._closing and isinstance(capture, CaptureView):
+                capture.release(keep_warm=True)
+            else:
+                capture.release()
         except Exception as exc:
             traceback.print_exc()
             return f"摄像头释放失败：{exc}"
@@ -3777,17 +3772,15 @@ class App:
             return
 
         state = self._begin_preview_session(state, start_click=start_click)
-        _log_camera_event(
-            {
-                "event": "session_start",
-                "session": getattr(state, "session_generation", None),
-                "primary": getattr(state, "source", None),
-                "secondary": getattr(state, "source2", None),
-                "requested": "x".join(
-                    str(v) for v in getattr(state, "capture_size", _PREVIEW_CAPTURE_SIZE)
-                ),
-                "student": bool(getattr(self, "_student_practice_active", False)),
-            }
+        foundation.diag.event(
+            "session.start",
+            session=getattr(state, "session_generation", None),
+            primary=getattr(state, "source", None),
+            secondary=getattr(state, "source2", None),
+            requested="x".join(
+                str(v) for v in getattr(state, "capture_size", _PREVIEW_CAPTURE_SIZE)
+            ),
+            student=bool(getattr(self, "_student_practice_active", False)),
         )
 
         self._stop_evt.clear()
@@ -3842,11 +3835,10 @@ class App:
             except Exception:
                 pass
         dual_active = bool(getattr(self, "_active_dual_generation", 0))
-        _log_camera_event(
-            {
-                "event": "stop_requested",
-                "session": getattr(self, "_current_session_generation", 0),
-            }
+        foundation.diag.event(
+            "session.stop_requested",
+            session=getattr(self, "_current_session_generation", 0),
+            cancel="user_stop",
         )
         self._stop_evt.set()
         self._dual_recording_ready = False
@@ -3929,13 +3921,11 @@ class App:
                     self._recording.finish()
                 self._recording.cancel_all()
             finally:
-                pool = getattr(self, "_camera_warmup_pool", None)
-                if pool is not None:
+                service = getattr(self, "_camera_service", None)
+                if service is not None:
                     try:
-                        pool.close()
                         # 关窗预算内等待采集进程真实退出；超时由诊断日志记录。
-                        if not pool.wait_released(_CAMERA_RELEASE_WAIT_S):
-                            _log_camera_event({"event": "close_release_timeout"})
+                        service.close(_CAMERA_RELEASE_WAIT_S)
                     except Exception:
                         pass
 
@@ -4036,7 +4026,7 @@ class App:
                 cap = App._open_session_camera(self, state)
             else:
                 cap = cv2.VideoCapture(source)
-        except CameraWarmupStopped:
+        except Cancelled:
             self._post_status("已停止")
             self._post_done(session_generation=getattr(state, "session_generation", None))
             return
@@ -4180,7 +4170,7 @@ class App:
         finally:
             # 覆盖正常结束 / 停止 / 异常：释放 writer 并复位录制状态。
             self._stop_evt.set()
-            release_error = App._release_session_camera(self, cap)
+            release_error = App._release_session_camera(self, cap, keep_warm=not failed)
             if release_error is not None:
                 failed = True
                 final_status = final_status or release_error
@@ -4205,15 +4195,13 @@ class App:
             getattr(state, "session_generation", 0)
             or getattr(self, "_current_session_generation", 0)
         )
-        primary_spec = App._session_spec(state, state.source)
-        secondary_spec = App._session_spec(state, state.source2)
-        pool = self._camera_warmup_pool
-        cap = None
-        cap2 = None
+        stream = self._camera_service.open_stream({
+            PRIMARY: App._session_spec(state, state.source),
+            SECONDARY: App._session_spec(state, state.source2),
+        })
+        stop_token = App._stop_token(self)
         pipe = None
         pipe2 = None
-        pool_claimed = False
-        warm_generations: tuple[int, ...] = ()
         recording_pair_started = False
         raw_pump_stop = threading.Event()
         raw_pump: threading.Thread | None = None
@@ -4251,16 +4239,10 @@ class App:
                 raw_pump.join(timeout=1.0)
 
         try:
-            pair = pool.wait_pair(
-                primary_spec,
-                secondary_spec,
-                timeout=_CAMERA_START_TIMEOUT_S,
-                stop_event=self._stop_evt,
-            )
-            warm_generations = (pair[0].generation, pair[1].generation)
+            ready = stream.wait_ready(stop_token)
+            pair = (ready[PRIMARY], ready[SECONDARY])
             self._mark_dual_startup_metric(generation, "pair_ready")
-            if self._stop_evt.is_set():
-                raise CameraWarmupStopped("camera warmup was stopped")
+            stop_token.raise_if_cancelled()
 
             size = (
                 int(
@@ -4296,12 +4278,11 @@ class App:
                 def pump_raw_frames() -> None:
                     try:
                         while not raw_pump_stop.is_set() and not self._stop_evt.is_set():
-                            latest = pool.snapshot_pair(
-                                primary_spec,
-                                secondary_spec,
-                                after=(cursor[0], cursor[1]),
+                            latest = stream.snapshot(
+                                after={PRIMARY: cursor[0], SECONDARY: cursor[1]}
                             )
                             if latest is not None:
+                                latest = (latest[PRIMARY], latest[SECONDARY])
                                 cursor[0] = latest[0].sequence
                                 cursor[1] = latest[1].sequence
                                 post_raw_pair(latest)
@@ -4325,8 +4306,7 @@ class App:
                     enable_hands=state.enable_hands,
                 )
                 pipe = create_engine(cfg, models_dir=models_dir_path)
-                if self._stop_evt.is_set():
-                    raise CameraWarmupStopped("camera warmup was stopped")
+                stop_token.raise_if_cancelled()
                 pipe2 = create_engine(cfg, models_dir=models_dir_path)
                 self._mark_dual_startup_metric(generation, "pipeline_ready")
                 if raw_pump_errors:
@@ -4346,25 +4326,14 @@ class App:
                         )
                 self._advance_dual_preview_stage(generation, "annotated")
             stop_raw_pump()
-            if self._stop_evt.is_set():
-                raise CameraWarmupStopped("camera warmup was stopped")
+            stop_token.raise_if_cancelled()
 
             phase = "claim"
-            cap, cap2 = pool.claim_pair(
-                primary_spec,
-                secondary_spec,
-                timeout=_CAMERA_CLAIM_TIMEOUT_S,
-                expected_generations=warm_generations,
-                stop_event=self._stop_evt,
-            )
-            pool_claimed = True
-            if self._stop_evt.is_set():
-                raise CameraWarmupStopped("camera warmup was stopped")
+            stream.claim(stop_token)
+            stop_token.raise_if_cancelled()
 
-            w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 1280)
-            h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 720)
-            w2 = int(cap2.get(cv2.CAP_PROP_FRAME_WIDTH) or 1280)
-            h2 = int(cap2.get(cv2.CAP_PROP_FRAME_HEIGHT) or 720)
+            sizes = stream.actual_sizes()
+            (w, h), (w2, h2) = sizes[PRIMARY], sizes[SECONDARY]
             self._dual_active = True
             self._dual_record_skeleton = bool(state.record_skeleton)
             self._dual_auto_compare = self._current_auto_compare()
@@ -4387,13 +4356,8 @@ class App:
             self._post_progress(0, 0)
 
             while not self._stop_evt.is_set():
-                ok, frame = cap.read()
-                ok2, frame2 = cap2.read()
-                if not ok or not ok2:
-                    if self._stop_evt.is_set():
-                        break
-                    raise RuntimeError(f"第{1 if not ok else 2}路摄像头读帧失败，请检查连接后重新开始")
-
+                frames = stream.read()
+                frame, frame2 = frames[PRIMARY], frames[SECONDARY]
                 frame = _apply_rotation(
                     frame, self._get_runtime_rotate("primary")
                 )
@@ -4496,7 +4460,7 @@ class App:
             final_status = "已停止"
             self._post_status(final_status)
             self._post_progress(frame_count, 0)
-        except CameraWarmupStopped:
+        except Cancelled:
             outcome = "stopped"
             final_status = "已停止"
             if not getattr(self, "_closing", False):
@@ -4524,21 +4488,14 @@ class App:
                         pipeline.close()
                     except Exception:
                         pass
-            # 两路 lease 一起归还；释放失败的设备由池隔离，不影响已写片段收尾。
-            release_errors = [
-                error
-                for error in (
-                    App._release_session_camera(self, capture)
-                    for capture in (cap, cap2)
-                    if capture is not None
-                )
-                if error is not None
-            ]
-            if not pool_claimed:
-                App._cancel_session_warmups(self, warm_generations)
-            if release_errors:
+            # 两路 lease 一起归还或交回池（V-1）；未接管时只取消本次观察到的预热代次。
+            # 释放失败的设备由池隔离，不影响已写片段收尾。
+            release_error = App._release_session_camera(
+                self, stream.as_capture(), keep_warm=outcome != "failed"
+            )
+            if release_error is not None:
                 outcome = "failed"
-                final_status = final_status if error_type else release_errors[0]
+                final_status = final_status if error_type else release_error
                 error_type = error_type or "CameraReleaseError"
                 self._post_status(final_status)
             try:
@@ -4716,7 +4673,7 @@ class App:
             # 各 worker 后台建模型的同时由池接管摄像头，两段冷启动重叠（而非串行）。
             try:
                 cap = App._open_session_camera(self, state)
-            except CameraWarmupStopped:
+            except Cancelled:
                 self._post_status("已停止")
                 return
             if not cap.isOpened():
@@ -4846,7 +4803,7 @@ class App:
             if t_reader is not None and t_reader.is_alive():
                 t_reader.join(timeout=2.0)
             if cap is not None:
-                release_error = App._release_session_camera(self, cap)
+                release_error = App._release_session_camera(self, cap, keep_warm=not failed)
                 if release_error is not None:
                     failed = True
                     final_status = final_status or release_error
@@ -5121,13 +5078,11 @@ class App:
         rewarm: bool = True,
     ) -> None:
         # worker 最后一步：此时 lease 已归还（或已隔离），记录会话终态与原因。
-        _log_camera_event(
-            {
-                "event": "session_done",
-                "session": session_generation,
-                "status": final_status,
-                "rewarm": bool(rewarm),
-            }
+        foundation.diag.event(
+            "session.end",
+            session=session_generation,
+            status=final_status,
+            rewarm=bool(rewarm),
         )
 
         def _done() -> None:

@@ -6,7 +6,8 @@ import time
 import numpy as np
 import pytest
 
-from apps import camera_capture
+from core.media.camera import capture_process as camera_capture
+from core.media.camera import devices
 
 
 class FakeCapture:
@@ -122,7 +123,7 @@ def test_native_stride_failure_retries_format_before_exposing_capture(monkeypatc
             self.released = True
 
     monkeypatch.setattr(cv2, "VideoCapture", FormatCapture)
-    monkeypatch.setattr(camera_capture, "_camera_sources", lambda index: [(cv2.CAP_MSMF, index)])
+    monkeypatch.setattr(camera_capture, "backend_candidates", lambda index: [(cv2.CAP_MSMF, index)])
     cap, first = camera_capture._open_native(0, 1920, 1080)
     assert opened[0].released and cap is opened[1]
     assert all((cv2.CAP_PROP_FRAME_WIDTH, 1920) in c.settings for c in opened)
@@ -148,21 +149,20 @@ def test_transient_empty_frames_do_not_end_session(monkeypatch):
 
 def test_ambiguous_camera_names_never_fall_back_to_another_index(monkeypatch):
     import cv2
-    from apps import camera_enum
-    monkeypatch.setattr(camera_enum, "_enumerate_media_foundation_names",
+    monkeypatch.setattr(devices, "media_foundation_names",
                         lambda: ["USB Camera", "USB Camera"])
-    assert list(camera_capture._camera_sources(1)) == [(cv2.CAP_MSMF, 1)]
+    assert list(devices.backend_candidates(1)) == [(cv2.CAP_MSMF, 1)]
 
 
 def test_process_pair_survives_warmup_thread_handoff_and_reopens():
-    from apps.camera_warmup import CameraWarmupPool, CaptureSpec
+    from core.media.camera import CameraPool, CaptureSpec
 
     def factory(index, *, width, height, stop_event):
         return camera_capture.ProcessCamera(
             index, width=width, height=height, stop_event=stop_event,
             _factory=HealthyCapture)
 
-    pool = CameraWarmupPool(capture_factory=factory, join_timeout=0.1)
+    pool = CameraPool(capture_factory=factory, join_timeout=0.1)
     try:
         for size in ((1280, 720), (1920, 1080)):
             specs = (CaptureSpec(0, *size), CaptureSpec(1, *size))

@@ -47,6 +47,7 @@ from core.foundation.tasks import (
     TaskGroup,
     TaskHandle,
     as_stopped,
+    from_stopped,
     translate_interrupted,
 )
 
@@ -80,6 +81,7 @@ __all__ = [
     "diag",
     "distance",
     "find_active_range",
+    "from_stopped",
     "landmark_xy",
     "load_camera_selection",
     "load_record_dir",

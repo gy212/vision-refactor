@@ -27,7 +27,7 @@ import cv2
 
 from core.pose import EngineSpec, create_engine, draw_cli_hud
 from core.paths import models_dir
-from apps.camera_enum import open_camera
+from core.media import CameraService, CaptureSpec
 from core.parallel_pose_engine import ParallelPoseEngine, default_pipeline_factory
 
 
@@ -89,9 +89,12 @@ class LatestFrameQueue:
 def _open_capture(source: str) -> cv2.VideoCapture:
     # If source is a digit, treat as camera index.
     if source.isdigit():
-        # open_camera negotiates a fast capture format (MSMF / MJPG) and sets
-        # the requested resolution; default CAP_DSHOW+YUY2 caps many webcams at ~10fps.
-        return open_camera(int(source))
+        # 摄像头只经 CameraService：采集子进程协商快速格式（MSMF / MJPG）并设好请求分辨率；
+        # 释放时一并关闭这个服务。
+        try:
+            return CameraService().open_capture(CaptureSpec(int(source)), close_service=True)
+        except Exception as exc:
+            raise RuntimeError(f"Cannot open source: {source}: {exc}") from exc
     return cv2.VideoCapture(source)
 
 

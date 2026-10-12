@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 
 from apps import app_ui
-from apps.camera_warmup import CameraWarmupError
+from core.media import CameraService, CameraWarmupError, CameraWarmupStopped, CatalogSnapshot
 from core.recording import (
     ProcessingPlan,
     RecordingService,
@@ -137,7 +137,8 @@ def _warmup_app(*, second_label: str = "摄像头 1"):
         app_ui.CameraEntry(label="摄像头 1", index=1),
     ]
     app.camera_choice_var_2 = _Var(second_label)
-    app._camera_warmup_pool = _SyncPool()
+    app._fake_pool = _SyncPool()
+    app._camera_service = CameraService(pool=app._fake_pool)
     app._post_status = lambda _text: None
     return app
 
@@ -155,9 +156,10 @@ def _closing_app(finalizer=None):
     return app
 
 
-def _enumeration_app():
+def _enumeration_app(pending):
     applied: list[tuple[list[object], bool]] = []
     app = SimpleNamespace(
+        _camera_service=SimpleNamespace(refresh=lambda on_done: pending.append(on_done)),
         _enum_busy=threading.Event(),
         _closing=False,
         _camera_enum_result_queue=Queue(maxsize=1),
@@ -198,7 +200,7 @@ def test_single_camera_selection_declares_primary_spec_only():
 
     app_ui.App._sync_camera_warmup(app)
 
-    assert app._camera_warmup_pool.sync_calls == [
+    assert app._fake_pool.sync_calls == [
         (app_ui.CaptureSpec(0, 1280, 720), None)
     ]
 
@@ -208,7 +210,7 @@ def test_two_camera_selection_declares_both_specs():
 
     app_ui.App._sync_camera_warmup(app)
 
-    assert app._camera_warmup_pool.sync_calls == [
+    assert app._fake_pool.sync_calls == [
         (app_ui.CaptureSpec(0, 1280, 720), app_ui.CaptureSpec(1, 1280, 720))
     ]
 
@@ -218,7 +220,7 @@ def test_same_camera_selection_never_warms_second_role():
 
     app_ui.App._sync_camera_warmup(app)
 
-    assert app._camera_warmup_pool.sync_calls == [
+    assert app._fake_pool.sync_calls == [
         (app_ui.CaptureSpec(0, 1280, 720), None)
     ]
 
@@ -230,8 +232,31 @@ def test_student_mode_declares_1080p_specs_without_reading_flag_later():
     app_ui.App._sync_camera_warmup(app)
     app._student_practice_active = False
 
-    assert app._camera_warmup_pool.sync_calls == [
-        (app_ui.CaptureSpec(0, 1920, 1080), app_ui.CaptureSpec(1, 1920, 1080))
+    # D-6：学生练习严格要求 1080p。
+    assert app._fake_pool.sync_calls == [
+        (
+            app_ui.CaptureSpec(0, 1920, 1080, policy="require"),
+            app_ui.CaptureSpec(1, 1920, 1080, policy="require"),
+        )
+    ]
+
+
+def test_enumerated_device_names_are_frozen_into_specs_for_open_check():
+    app = _warmup_app()
+    app._camera_entries = [
+        app_ui.CameraEntry(label="摄像头 0: Front", index=0, name="Front"),
+        app_ui.CameraEntry(label="摄像头 1: Side", index=1, name="Side"),
+    ]
+    app.camera_choice_var_2 = _Var("摄像头 1: Side")
+
+    app_ui.App._sync_camera_warmup(app)
+
+    # V-3：打开时在采集进程内复核设备名。
+    assert app._fake_pool.sync_calls == [
+        (
+            app_ui.CaptureSpec(0, 1280, 720, expected_name="Front"),
+            app_ui.CaptureSpec(1, 1280, 720, expected_name="Side"),
+        )
     ]
 
 
@@ -240,10 +265,10 @@ def test_running_session_blocks_warmup_changes_unless_allowed():
     app._worker = SimpleNamespace(is_alive=lambda: True)
 
     app_ui.App._sync_camera_warmup(app)
-    assert app._camera_warmup_pool.sync_calls == []
+    assert app._fake_pool.sync_calls == []
 
     app_ui.App._sync_camera_warmup(app, allow_running=True)
-    assert len(app._camera_warmup_pool.sync_calls) == 1
+    assert len(app._fake_pool.sync_calls) == 1
 
 
 def test_warmup_rejection_releases_and_reports_status():
@@ -254,11 +279,11 @@ def test_warmup_rejection_releases_and_reports_status():
     def reject(_primary, _secondary):
         raise CameraWarmupError("pool closed")
 
-    app._camera_warmup_pool.sync = reject
+    app._fake_pool.sync = reject
 
     app_ui.App._sync_camera_warmup(app)
 
-    assert app._camera_warmup_pool.release_all_calls == 1
+    assert app._fake_pool.release_all_calls == 1
     assert statuses == ["摄像头预热失败：pool closed"]
 
 
@@ -270,6 +295,13 @@ def test_session_state_freezes_capture_size_for_whole_start():
 
     assert app_ui.App._session_spec(state, "1") == app_ui.CaptureSpec(1, 1920, 1080)
 
+    frozen = SimpleNamespace(
+        capture_size=(1920, 1080), capture_policy="require", camera_names=((1, "Side"),)
+    )
+    assert app_ui.App._session_spec(frozen, "1") == app_ui.CaptureSpec(
+        1, 1920, 1080, expected_name="Side", policy="require"
+    )
+
 
 def test_process_factory_forwards_frozen_spec(monkeypatch):
     calls = []
@@ -278,26 +310,17 @@ def test_process_factory_forwards_frozen_spec(monkeypatch):
         calls.append((index, kwargs))
         return _Cap()
 
-    monkeypatch.setattr(app_ui, "open_camera", factory)
+    monkeypatch.setattr(app_ui, "ProcessCamera", factory)
     stop = threading.Event()
     app = _camera_app()
     app._student_practice_active = True  # 工厂不再读取模式标志
 
     app_ui.App._open_camera_process(app, 0, width=1280, height=720, stop_event=stop)
 
-    assert calls == [(0, {"width": 1280, "height": 720, "stop_event": stop})]
-
-
-def test_failed_session_cancels_only_its_observed_generations():
-    app = _warmup_app()
-
-    app_ui.App._cancel_session_warmups(app, (3, 7))
-    app_ui.App._cancel_session_warmups(app, ())
-
-    assert app._camera_warmup_pool.cancel_calls == [
-        (app_ui.PRIMARY, 3),
-        (app_ui.SECONDARY, 7),
-    ]
+    assert calls == [(0, {
+        "width": 1280, "height": 720, "stop_event": stop,
+        "expected_name": None, "policy": "prefer",
+    })]
 
 
 def test_session_release_failure_is_reported_not_swallowed():
@@ -310,23 +333,13 @@ def test_session_release_failure_is_reported_not_swallowed():
     assert message is not None and "已隔离" in message
 
 
-def test_camera_enumeration_result_is_applied_only_from_main_thread_queue(monkeypatch):
-    app, applied = _enumeration_app()
+def test_camera_enumeration_result_is_applied_only_from_main_thread_queue():
     pending: list[object] = []
-    entries = [object()]
-
-    class _PendingThread:
-        def __init__(self, *, target, daemon) -> None:
-            pending.append(target)
-
-        def start(self) -> None:
-            pass
-
-    monkeypatch.setattr(app_ui.threading, "Thread", _PendingThread)
-    monkeypatch.setattr(app_ui, "enumerate_cameras", lambda: entries)
+    app, applied = _enumeration_app(pending)
+    entries = [app_ui.CameraEntry(label="摄像头 0", index=0)]
 
     app_ui.App._start_enumeration(app)
-    pending[0]()
+    pending[0](CatalogSnapshot(tuple(entries), ok=True))
 
     assert applied == []
     app_ui.App._drain_camera_enum_results(app)
@@ -400,30 +413,21 @@ def test_explicit_camera_selections_are_persisted(monkeypatch) -> None:
     assert app.source_var.get() == "1"
 
 
-def test_camera_enumeration_return_after_close_does_not_touch_tk(monkeypatch):
-    app, applied = _enumeration_app()
+def test_camera_enumeration_return_after_close_does_not_touch_tk():
     pending: list[object] = []
-
-    class _PendingThread:
-        def __init__(self, *, target, daemon) -> None:
-            pending.append(target)
-
-        def start(self) -> None:
-            pass
-
-    monkeypatch.setattr(app_ui.threading, "Thread", _PendingThread)
-    monkeypatch.setattr(app_ui, "enumerate_cameras", lambda: [object()])
+    app, applied = _enumeration_app(pending)
 
     app_ui.App._start_enumeration(app)
     app._closing = True
-    pending[0]()
+    pending[0](CatalogSnapshot((app_ui.CameraEntry(label="摄像头 0", index=0),), ok=True))
     app_ui.App._drain_camera_enum_results(app)
 
     assert applied == []
     assert app._camera_enum_result_queue.empty()
 
 
-def test_refresh_releases_all_camera_warmups_before_enumeration():
+def test_refresh_keeps_camera_warmups_while_enumerating():
+    # V-6：刷新不再先放弃预热、等设备释放；兜底探测由 DeviceCatalog 跳过占用的设备。
     app = _warmup_app()
     app._enum_busy = threading.Event()
     events: list[str] = []
@@ -432,7 +436,7 @@ def test_refresh_releases_all_camera_warmups_before_enumeration():
 
     app_ui.App._refresh_cameras(app)
 
-    assert events == ["release", "enumerate"]
+    assert events == ["enumerate"]
 
 
 def test_video_worker_releases_camera_warmups_before_opening_file(monkeypatch):
@@ -502,7 +506,7 @@ def test_camera_open_failure_restores_controls_without_rewarming():
     completions = []
     pool = _SinglePool(wait_error=TimeoutError("摄像头响应超时"))
     app = SimpleNamespace(
-        _camera_warmup_pool=pool,
+        _camera_service=CameraService(pool=pool),
         _stop_evt=threading.Event(),
         _post_status=statuses.append,
         _post_done=lambda **kwargs: completions.append(kwargs),
@@ -521,9 +525,9 @@ def test_camera_open_failure_restores_controls_without_rewarming():
 
 def test_single_camera_stop_during_open_finishes_session_quietly():
     completions = []
-    pool = _SinglePool(wait_error=app_ui.CameraWarmupStopped("stopped"))
+    pool = _SinglePool(wait_error=CameraWarmupStopped("stopped"))
     app = SimpleNamespace(
-        _camera_warmup_pool=pool,
+        _camera_service=CameraService(pool=pool),
         _stop_evt=threading.Event(),
         _post_status=lambda _text: None,
         _post_done=lambda **kwargs: completions.append(kwargs),
@@ -608,7 +612,7 @@ def test_recording_ready_callback_requires_current_live_generation():
 def test_close_permanently_closes_dual_camera_warmup_pool():
     app = _closing_app()
     pool = _SyncPool()
-    app._camera_warmup_pool = pool
+    app._camera_service = CameraService(pool=pool)
 
     app_ui.App._on_close(app)
     app._close_prepare_worker.join(timeout=1.0)
@@ -709,11 +713,11 @@ def test_close_poll_window_disables_recording_controls_and_rejects_toggle():
             raise AssertionError("closing toggle must return before reading Tk state")
 
     app.record_dir_var = _UnexpectedTkRead()
-    app._camera_warmup_pool = SimpleNamespace(
+    app._camera_service = CameraService(pool=SimpleNamespace(
         release_all=lambda: None,
         close=lambda: release_prepare.wait(2.0),
         wait_released=lambda _timeout: True,
-    )
+    ))
 
     try:
         app_ui.App._on_close(app)
