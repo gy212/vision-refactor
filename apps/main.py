@@ -435,64 +435,65 @@ def run(
     cap = _open_capture(source)
     if not cap.isOpened():
         raise RuntimeError(f"Cannot open source: {source}")
-
-    # Try to request a reasonable camera resolution; for files it is ignored.
-    src_fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
-    is_file = not source.isdigit()
-    fps_for_ts = src_fps if (is_file and src_fps > 1e-3) else 30.0
-    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0) if is_file else 0
-
-    models_dir_path = models_dir()
-    pipe = create_engine(
-        EngineSpec(
-            pose_variant=pose_variant,
-            running_mode="video",
-            enable_hands=enable_hands,
-            delegate=delegate,
-        ),
-        models_dir=models_dir_path,
-    )
-
     writer: cv2.VideoWriter | None = None
-    if out_path:
-        w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 1280)
-        h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 720)
-        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-        writer = cv2.VideoWriter(out_path, fourcc, fps_for_ts, (w, h))
+    # 采集失败（如摄像头断流）抛出的异常照常上抛，但采集、写出和窗口一律在 finally 里收尾。
+    try:
+        # Try to request a reasonable camera resolution; for files it is ignored.
+        src_fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
+        is_file = not source.isdigit()
+        fps_for_ts = src_fps if (is_file and src_fps > 1e-3) else 30.0
+        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0) if is_file else 0
 
-    t0 = time.monotonic()
-    frame_count = 0
-    printed_done = 0
+        models_dir_path = models_dir()
+        pipe = create_engine(
+            EngineSpec(
+                pose_variant=pose_variant,
+                running_mode="video",
+                enable_hands=enable_hands,
+                delegate=delegate,
+            ),
+            models_dir=models_dir_path,
+        )
 
-    while True:
-        ok, frame = cap.read()
-        if not ok:
-            break
+        if out_path:
+            w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 1280)
+            h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 720)
+            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+            writer = cv2.VideoWriter(out_path, fourcc, fps_for_ts, (w, h))
 
-        timestamp_ms = pipe.next_timestamp_ms(is_file=is_file, fps_for_ts=fps_for_ts)
-        annotated, actions = pipe.annotate(frame, timestamp_ms=timestamp_ms)
+        t0 = time.monotonic()
+        frame_count = 0
+        printed_done = 0
 
-        # Overlay labels
-        frame_count += 1
-        fps = frame_count / max(1e-6, (time.monotonic() - t0))
-        draw_cli_hud(annotated, actions, f"FPS: {fps:.1f}")
-
-        if writer is not None:
-            writer.write(annotated)
-            if is_file and out_path:
-                if frame_count != printed_done and (frame_count % 5 == 0 or (total > 0 and frame_count == total)):
-                    _print_progress(frame_count, total, t0)
-                    printed_done = frame_count
-
-        if show:
-            cv2.imshow("MediaPipe (Video/Camera)", annotated)
-            if (cv2.waitKey(1) & 0xFF) == ord("q"):
+        while True:
+            ok, frame = cap.read()
+            if not ok:
                 break
 
-    cap.release()
-    if writer is not None:
-        writer.release()
-    cv2.destroyAllWindows()
+            timestamp_ms = pipe.next_timestamp_ms(is_file=is_file, fps_for_ts=fps_for_ts)
+            annotated, actions = pipe.annotate(frame, timestamp_ms=timestamp_ms)
+
+            # Overlay labels
+            frame_count += 1
+            fps = frame_count / max(1e-6, (time.monotonic() - t0))
+            draw_cli_hud(annotated, actions, f"FPS: {fps:.1f}")
+
+            if writer is not None:
+                writer.write(annotated)
+                if is_file and out_path:
+                    if frame_count != printed_done and (frame_count % 5 == 0 or (total > 0 and frame_count == total)):
+                        _print_progress(frame_count, total, t0)
+                        printed_done = frame_count
+
+            if show:
+                cv2.imshow("MediaPipe (Video/Camera)", annotated)
+                if (cv2.waitKey(1) & 0xFF) == ord("q"):
+                    break
+    finally:
+        cap.release()
+        if writer is not None:
+            writer.release()
+        cv2.destroyAllWindows()
 
 
 def run_realtime_parallel(

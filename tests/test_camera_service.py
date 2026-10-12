@@ -126,11 +126,14 @@ def test_read_failure_names_the_failed_role_in_dual_stream(service):
     stream = service.open_stream({PRIMARY: CaptureSpec(0), SECONDARY: CaptureSpec(1)})
     stream.wait_ready(CancelToken())
     stream.claim(CancelToken())
-    StreamingCapture.opened[1].release()  # 第二路断流
+    try:
+        # 两路预热线程的打开顺序不确定，按设备号找第二路。
+        next(cap for cap in StreamingCapture.opened if cap.index == 1).release()  # 第二路断流
 
-    with pytest.raises(service_module.CameraReadError, match="第2路"):
-        stream.read()
-    stream.close()
+        with pytest.raises(service_module.CameraReadError, match="第2路"):
+            stream.read()
+    finally:
+        stream.close()
 
 
 # --------------------------------------------------------------------------- #
@@ -445,6 +448,64 @@ def test_cli_camera_open_failure_is_reported_and_service_closed(monkeypatch):
 
     with pytest.raises(RuntimeError, match="Cannot open source: 0"):
         cli._open_capture("0")
+
+
+class DisconnectingCliDriver(CliDriver):
+    """出几帧后断流（之后一直读不到画面）。"""
+
+    def read(self):
+        self.calls += 1
+        if self.calls > 20:
+            return False, None
+        return True, np.full((self.size[1], self.size[0], 3), self.calls % 255, np.uint8)
+
+
+def test_cli_run_releases_capture_writer_and_windows_on_disconnect(monkeypatch):
+    from apps import main as cli
+
+    monkeypatch.setattr(
+        pool_module, "ProcessCamera",
+        functools.partial(capture_process.ProcessCamera, _factory=DisconnectingCliDriver),
+    )
+    before = {p.pid for p in mp.active_children()}
+
+    class _Pipe:
+        def next_timestamp_ms(self, **_kwargs):
+            return 0
+
+        def annotate(self, frame, *, timestamp_ms):
+            return frame, []
+
+    class _Writer:
+        def __init__(self, *_args):
+            self.release_calls = 0
+
+        def write(self, _frame):
+            pass
+
+        def release(self):
+            self.release_calls += 1
+
+    caps, writers, destroyed = [], [], []
+
+    def _open(source):
+        caps.append(cli_open(source))
+        return caps[-1]
+
+    cli_open = cli._open_capture
+    monkeypatch.setattr(cli, "_open_capture", _open)
+    monkeypatch.setattr(cli, "create_engine", lambda *_a, **_k: _Pipe())
+    monkeypatch.setattr(cli, "draw_cli_hud", lambda *_a, **_k: None)
+    monkeypatch.setattr(cli.cv2, "VideoWriter", lambda *a: writers.append(_Writer(*a)) or writers[-1])
+    monkeypatch.setattr(cli.cv2, "destroyAllWindows", lambda: destroyed.append(True))
+
+    with pytest.raises(RuntimeError):
+        cli.run("0", show=False, out_path="unused.mp4")
+
+    assert [w.release_calls for w in writers] == [1]
+    assert destroyed == [True]
+    assert not caps[0].isOpened()
+    _eventually(lambda: {p.pid for p in mp.active_children()} == before, timeout=5.0)
 
 
 def test_no_thread_left_running_after_service_close(service):
