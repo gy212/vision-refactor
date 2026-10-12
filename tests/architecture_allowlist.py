@@ -46,9 +46,7 @@ LAYERING: dict[str, tuple[int, str]] = {}
 
 CYCLES: dict[str, tuple[int, str]] = {}
 
-PRIVATE: dict[str, tuple[int, str]] = {
-    'apps/camera_capture.py: apps.camera_enum._enumerate_media_foundation_names': (1, 'P5'),
-}
+PRIVATE: dict[str, tuple[int, str]] = {}
 
 PRIMITIVES: dict[str, tuple[int, str]] = {
     'np_load: analysis/calibrate_body_core.py': (1, 'P9'),
@@ -57,9 +55,7 @@ PRIMITIVES: dict[str, tuple[int, str]] = {
     'subsequence_dtw: analysis/calibrate_body_core.py': (1, 'P9'),
     'subsequence_dtw: analysis/offline_matching_profile.py': (2, 'P9'),
     'subsequence_dtw: scripts/match_segments_probe.py': (1, 'P9'),
-    'thread: apps/app_ui.py': (10, 'P8'),
-    'thread: apps/camera_enum.py': (1, 'P5'),
-    'thread: apps/camera_warmup.py': (2, 'P9'),
+    'thread: apps/app_ui.py': (9, 'P8'),
     'thread: apps/feedback_panel.py': (1, 'P8'),
     'thread: apps/main.py': (5, 'P6'),
     'thread: core/exam_announcer.py': (1, 'P7'),
@@ -70,8 +66,6 @@ PRIMITIVES: dict[str, tuple[int, str]] = {
     'video_capture: analysis/bench_annotate_fps.py': (4, 'P9'),
     'video_capture: analysis/spike_yolo_baseline.py': (2, 'P9'),
     'video_capture: apps/app_ui.py': (1, 'P6'),  # _worker_loop 打开 source，随循环在 P6 删除
-    'video_capture: apps/camera_capture.py': (1, 'P5'),
-    'video_capture: apps/camera_enum.py': (3, 'P5'),
     'video_capture: apps/main.py': (1, 'P6'),  # _open_capture，随 CLI 逐帧循环在 P6 删除
     'video_capture: core/qwen_coach.py': (1, 'P9'),  # D-12 未决：保留到 P9 按 D-12 处置
 }
@@ -80,9 +74,9 @@ CLONES: dict[str, tuple[int, str]] = {}
 
 MODULE_SIZE: dict[str, tuple[int, str]] = {
     'analysis/bench_annotate_fps.py': (1018, 'P9'),
-    'apps/app_ui.py': (5295, 'P8'),
-    'apps/camera_warmup.py': (1125, 'P9'),
+    'apps/app_ui.py': (5250, 'P8'),
     'apps/feedback_result_panel.py': (1325, 'P8'),
+    'core/media/camera/pool.py': (1116, 'P9'),  # 原 apps/camera_warmup.py（1125），D-15：P9 按职责拆分
     'core/feedback_report.py': (1518, 'P8'),
     'core/qwen_coach.py': (916, 'P9'),
 }
@@ -93,16 +87,15 @@ FUNCTION_SIZE: dict[str, tuple[int, str]] = {
     'analysis/bench_annotate_fps.py::main': (131, 'P9'),
     'analysis/calibrate_body_core.py::run': (166, 'P9'),
     'analysis/offline_matching_profile.py::run_fixture_profile': (112, 'P9'),
-    'apps/app_ui.py::App.__init__': (153, 'P8'),
+    'apps/app_ui.py::App.__init__': (152, 'P8'),
     'apps/app_ui.py::App._build_ui': (398, 'P8'),
     'apps/app_ui.py::App._exit_student_practice': (102, 'P8'),
     'apps/app_ui.py::App._set_running_controls': (124, 'P8'),
     'apps/app_ui.py::App._worker_loop': (195, 'P8'),
-    'apps/app_ui.py::App._worker_loop_dual_camera': (359, 'P8'),
+    'apps/app_ui.py::App._worker_loop_dual_camera': (326, 'P8'),
     'apps/app_ui.py::App._worker_loop_parallel_camera': (194, 'P8'),
     'apps/app_ui.py::App._worker_loop_parallel_video': (105, 'P8'),
     'apps/app_ui.py::CompareWindow._build': (128, 'P8'),
-    'apps/camera_enum.py::_enumerate_media_foundation_names': (107, 'P5'),
     'apps/desktop_smoke.py::run': (142, 'P8'),
     'apps/exam_panel.py::ExamPanel._retest_current': (108, 'P8'),
     'apps/feedback_result_panel.py::FeedbackResultPanel._build_split_section': (301, 'P8'),
@@ -126,7 +119,7 @@ FUNCTION_SIZE: dict[str, tuple[int, str]] = {
 }
 
 DEFENSIVE_GETATTR: dict[str, tuple[int, str]] = {
-    'apps/app_ui.py': (133, 'P8'),
+    'apps/app_ui.py': (132, 'P8'),
 }
 
-ENTRY_CEILING = 66
+ENTRY_CEILING = 60

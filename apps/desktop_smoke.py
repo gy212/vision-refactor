@@ -90,9 +90,8 @@ def _check_camera_mode_switch(app, root):
     """Exercise real Tk callbacks, pool, spawn and claim with simulated devices."""
     from unittest.mock import patch
     from apps.app_ui import NO_SECOND_CAMERA
-    from apps.camera_capture import ProcessCamera
-    from apps.camera_enum import CameraEntry
-    from apps.camera_warmup import CaptureSpec
+    from core.media import PRIMARY, SECONDARY, CaptureSpec, ProcessCamera
+    from core.media import CameraDevice as CameraEntry
 
     def pump_until(predicate):
         deadline = time.monotonic() + 20
@@ -123,7 +122,7 @@ def _check_camera_mode_switch(app, root):
     def capture(index, **kwargs):
         return ProcessCamera(index, _factory=_CameraSmokePreview, **kwargs)
 
-    with patch("apps.app_ui.open_camera", side_effect=capture):
+    with patch("apps.app_ui.ProcessCamera", side_effect=capture):
         try:
             app.record_skeleton_var.set(False)
             app.auto_compare_var.set(False)
@@ -131,15 +130,19 @@ def _check_camera_mode_switch(app, root):
             app._preferred_secondary_camera_index = 1
             app._apply_camera_entries([CameraEntry("摄像头 0", 0), CameraEntry("摄像头 1", 1)], True)
             app.feedback_controls.student_id.set("offline-switch")
-            pool = app._camera_warmup_pool
-            preview = (CaptureSpec(0, 1280, 720), CaptureSpec(1, 1280, 720))
+            service = app._camera_service
+            preview = {PRIMARY: CaptureSpec(0, 1280, 720), SECONDARY: CaptureSpec(1, 1280, 720)}
+
+            def preview_warm():
+                # 会话结束后设备交回池（V-1）或重新预热，720p 预览帧可用。
+                return service.open_stream(preview).snapshot() is not None
             for _ in range(2):
                 app._start()
                 pump_until(ready)
                 assert app._recording.session_sizes == {"front": (1280, 720), "side": (1280, 720)}
                 app._stop()
                 pump_until(stopped)
-                pump_until(lambda: pool.snapshot_pair(*preview) is not None)
+                pump_until(preview_warm)
                 # 已有 720p 预热时进入学生练习：池按 1080p 重新协商，旧格式不混入会话。
                 app._enter_student_practice()
                 app._student_start()
@@ -148,7 +151,7 @@ def _check_camera_mode_switch(app, root):
                 assert app._recording.state == "idle"  # Blank frames cannot start a recording.
                 app._exit_student_practice()
                 pump_until(stopped)
-                pump_until(lambda: pool.snapshot_pair(*preview) is not None)
+                pump_until(preview_warm)
             # 开始后立即停止，再开始：无迟到打开，第二次会话正常就绪。
             app._start()
             app._stop()
@@ -160,7 +163,7 @@ def _check_camera_mode_switch(app, root):
             # 双摄 → 单摄：第二路不再保留设备，单摄会话按 720p 就绪。
             app.camera_choice_var_2.set(NO_SECOND_CAMERA)
             app._on_camera_2_selected()
-            pump_until(lambda: not pool.device_busy(1))
+            pump_until(lambda: not service.device_busy(1))
             app._start()
             pump_until(lambda: app._recording.session_sizes == {"front": (1280, 720)})
             app._stop()
@@ -170,9 +173,8 @@ def _check_camera_mode_switch(app, root):
                 app._stop()
                 pump_until(stopped)
             app._release_camera_warmups()
-            app._camera_warmup_pool.close()
             # 关窗前所有采集进程都必须真实退出，不遗留占用设备的子进程。
-            assert app._camera_warmup_pool.wait_released(5.0)
+            assert app._camera_service.close(5.0)
 
 
 def run(report_path: Path) -> int:
@@ -267,7 +269,7 @@ def run(report_path: Path) -> int:
                 assert not any("qwen" in name or name == "torch" for name in sys.modules)
                 report["checks"].append("mediapipe_feedback_history_export")
 
-                from apps.camera_capture import ProcessCamera
+                from core.media import ProcessCamera
                 failed_camera = ProcessCamera(1, _factory=_CameraSmokeCapture)
                 try:
                     assert failed_camera.read()[0]

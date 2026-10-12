@@ -1,3 +1,35 @@
+## 2026-10-12（America/Los_Angeles）: [fix] P5 评审修正：CLI 断流时仍释放采集、写出与窗口；稳定双摄断流用例
+
+- 问题描述：PR #16 评审。① CLI `run()` 的摄像头源改走 `ProcessCamera` 后，断流时子进程抛 `RuntimeError`，`CaptureView.read` 只捕获 `CameraReadError`，异常越过 `run()` 末尾的 `cap.release()`、`writer.release()`、`destroyAllWindows()`，服务也留下未归还的租约。② `test_read_failure_names_the_failed_role_in_dual_stream` 按 `StreamingCapture.opened[1]` 取第二路，两路预热线程的打开顺序不确定，偶发断开第 1 路；断言失败时也跳过 `stream.close()`。
+- 修改内容：
+  - `apps/main.py` `run()`：打开源之后的处理放进 `try`，采集、写出和窗口在 `finally` 里收尾，异常照常上抛。
+  - `tests/test_camera_service.py`：按 `index == 1` 选第二路，`stream.close()` 放进 `finally`；新增 `test_cli_run_releases_capture_writer_and_windows_on_disconnect`（模拟驱动出 20 帧后断流 + 真实 spawn，推理与 writer 为替身），检查异常上抛、writer 与窗口各释放一次、采集已关闭、子进程回收。
+- 验证方法：
+  - 新用例在修正前的 `apps/main.py` 上失败，修正后通过；两条相关用例连续 5 轮通过。
+  - `tests/test_camera_service.py` 25 passed；摄像头套件（`test_camera_capture/service/warmup/enum`）86 passed。
+  - 门禁、架构与 CLI 相关（golden/契约 4 个文件、`test_architecture.py`、`test_s5_realtime_latest_frame.py`、`test_s5_cli_no_go.py`）76 passed。
+  - `git diff --check` 通过。
+
+## 2026-10-12（America/Los_Angeles）: [refactor] P5 摄像头：池与采集进程迁入 core/media/camera，新增 DeviceCatalog 与 CameraService，实施 D-6、V-1、V-3、V-6
+
+- 问题描述：P5 要把 PR #75 的"池 + 租约"迁到媒体层，并补上 PR #75 没覆盖的部分：CLI 仍用 `camera_enum.open_camera`（进程内同编号跨后端回退）；池在 `apps/` 下由 `App` 直接编排；后端解析与帧有效性各有两份；`[camera]`/`[camera-capture]` 诊断行未并入 `diag`。开工前用户决定（2026-10-12）：D-6 学生练习用 `require`；V-1、V-3、V-6 接受。
+- 修改内容：
+  - 新增 `core/media/frames.py`（`is_valid_bgr`，取代 `_read_frame` 的判定与 `_valid_frame`）和 `core/media/camera/`：`spec.py`（`CaptureSpec` 新增 `expected_name`、`policy`）、`devices.py`（`DeviceCatalog`、`CameraDevice`、`backend_candidates`，MF 枚举函数拆到 100 行以内，兜底探测改用 `TaskGroup`）、`capture_process.py`（`ProcessCamera`，子进程内复核设备名与 `require` 尺寸）、`pool.py`（`CameraPool`，即 `CameraWarmupPool` 原样迁入，加 `CameraLease.restore()`）、`service.py`（`CameraService`、`CameraStream`、迁移期适配器 `CaptureView`、池事件写 `diag`）。
+  - `App`：池编排改为调用 `CameraService`；三个旧循环经 `CameraStream` 读帧（单摄经 `CaptureView`）；`CancelToken` 由 `from_stopped(self._stop_evt.is_set)` 适配；会话正常结束时租约归还池（V-1）；规格冻结设备名与 policy（V-3、D-6）；刷新改为 `CameraService.refresh`，不再放弃预热（V-6）；`[camera]` JSON 行改为 `diag` 事件。`core.foundation` 导出 `from_stopped`。
+  - CLI `apps/main.py` 的摄像头源改用 `CameraService.open_capture`；删除 `camera_enum.open_camera`。`desktop_smoke` 改经 `CameraService`。`InputSourceState` 移到 `apps/input_source.py`。三个旧模块只留转发门面。spec 的 hiddenimports 加入新模块。
+  - allowlist 66 → 60 条：私有导入 1、`thread`/`video_capture` 原语 5、函数体量 1 条消除；`apps/camera_warmup.py`（1125）随文件改为 `core/media/camera/pool.py`（1116）；`app_ui.py` 的模块、`__init__`、双摄循环、线程数与防御式 getattr 上限按实际值下调。
+  - 文档：设计文档首页、§5.3.4 实现补充、§5.3.7、§11（D-6、V-1、V-3、V-6 划线）、§12；`重构阶段任务/P5-摄像头.md`（状态、勾选、第 5 节完成情况）与 README。
+  - 测试：新增 `tests/test_camera_service.py`（24 项：取消适配、未接管时只取消观察到的代次、V-1 归还/拒收/关闭后释放、V-3 名称复核、D-6 子进程与原生路径、工厂参数转发、V-6 跳过占用设备与刷新不打断预热、诊断行、CLI 冒烟（模拟驱动 + 真实 spawn）、旧路径门面）。被替换的测试：`test_failed_session_cancels_only_its_observed_generations` → `test_unclaimed_stream_cancels_only_its_observed_generations`；`test_refresh_releases_all_camera_warmups_before_enumeration` → `test_refresh_keeps_camera_warmups_while_enumerating`；`test_app_warmup_pool_is_the_only_camera_owner` → `test_app_camera_service_is_the_only_camera_owner`。
+- 同步依据：设计文档 §5.3、§4.5、§13.3，`重构阶段任务/P5-摄像头.md` 第 3 节。
+- 验证方法：
+  - 门禁与架构：65 passed。
+  - 全量 `.\.venv\Scripts\python.exe -m pytest tests -q`：1166 passed（P4 后基线 1142 + 新增 24）。
+  - 源码模式 `tests/test_camera_capture.py::test_tk_preview_student_switch_with_process_cameras`（真实 Tk + spawn，两轮 720p↔1080p）通过。
+  - `scripts/sim_exam_flow.py`：37 passed，`SIMULATION_OK`。
+  - 搜索：`open_camera` 在 `apps/`、`core/` 无定义和调用；`cv2.VideoCapture(` 只在 `core/media/`、P6 删除的两处入口循环与 `core/qwen_coach.py`；预打开与打开锁代码为 0。
+  - `git diff --check` 通过。
+  - EXE：从干净的 `2e39923` 构建（`$env:PYTHONIOENCODING="utf-8"` 后运行 spec 顶部的构建命令；控制台为 cp1252 时 spec 末尾打印中文交付目录会抛 `UnicodeEncodeError`，EXE 本身已生成），交付目录 `dist/vision_ui_20261012_2e39923/`；`vision_ui.exe --offline-self-check` 报告 `ok=true`，`build_info.clean=true`、规则版本 v4，12 项检查含 `camera_spawn_error_cleanup_and_reopen`、`tk_preview_student_1080p_switch_twice_with_spawn`。
+
 ## 2026-10-11（America/Los_Angeles）: [docs] 练习 profile 接入统一规则引擎登记为 D-16 并移交 P9，同步 P3 完成范围（issue #8）
 
 - 问题描述：设计 §7.2 要求正式扣分与学生练习经同一个 `evaluate_rules` 执行，但 P3 只让 `formal_v1` 接入；`practice_v4` 仍在 `evaluation/practice.py` 逐项遍历检查项，`PhaseVerdict`、`RuleOutcome` 六态、`to_practice_checks()` 未实现。§7.2 的实现补充已写明这一点，P3 清单却保留原任务并标记阶段完成；执行框架统一被推给 D-3，而 D-3 处理的是规则语义。设计首页仍写"P3 起尚未开始"，README 与 §12 仍要求 P4 先于 P3 合入。

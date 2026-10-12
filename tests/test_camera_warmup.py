@@ -13,9 +13,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from apps.camera_warmup import (  # noqa: E402
+from core.media.camera import (  # noqa: E402
     CameraWarmupError,
-    CameraWarmupPool,
+    CameraPool,
     CameraWarmupStopped,
     CameraWarmupTimeout,
     CaptureSpec,
@@ -109,7 +109,7 @@ def test_wait_pair_opens_both_roles_concurrently() -> None:
         barrier.wait(timeout=1.0)
         return captures[index]
 
-    pool = CameraWarmupPool(factory)
+    pool = CameraPool(factory)
     try:
         primary, secondary = pool.wait_pair(
             0, 1, timeout=1.0, stop_event=threading.Event()
@@ -122,7 +122,7 @@ def test_wait_pair_opens_both_roles_concurrently() -> None:
 
 def test_latest_only_snapshot_and_after_cursor() -> None:
     captures = {0: ControlledCapture(1), 1: ControlledCapture(10)}
-    pool = CameraWarmupPool(captures.__getitem__)
+    pool = CameraPool(captures.__getitem__)
     try:
         first = pool.wait_pair(0, 1, timeout=1.0, stop_event=threading.Event())
         cursor = (first[0].sequence, first[1].sequence)
@@ -156,7 +156,7 @@ def test_warm_same_role_and_index_is_idempotent() -> None:
         calls.append(index)
         return captures[index]
 
-    pool = CameraWarmupPool(factory)
+    pool = CameraPool(factory)
     try:
         pool.warm(PRIMARY, 0)
         pool.warm(PRIMARY, 0)
@@ -181,7 +181,7 @@ def test_role_index_change_invalidates_late_old_generation() -> None:
             return old
         return captures[index]
 
-    pool = CameraWarmupPool(factory)
+    pool = CameraPool(factory)
     try:
         pool.warm(PRIMARY, 0)
         assert old_entered.wait(1.0)
@@ -200,7 +200,7 @@ def test_role_index_change_invalidates_late_old_generation() -> None:
 
 def test_wait_pair_timeout_cancels_and_releases_both_roles() -> None:
     captures = {0: ControlledCapture(), 1: ControlledCapture()}
-    pool = CameraWarmupPool(captures.__getitem__, join_timeout=0.2)
+    pool = CameraPool(captures.__getitem__, join_timeout=0.2)
 
     with pytest.raises(CameraWarmupTimeout):
         pool.wait_pair(0, 1, timeout=0.05, stop_event=threading.Event())
@@ -213,7 +213,7 @@ def test_wait_pair_timeout_cancels_and_releases_both_roles() -> None:
 def test_wait_pair_stop_event_cancels_and_releases_both_roles() -> None:
     captures = {0: ControlledCapture(), 1: ControlledCapture()}
     stop_event = threading.Event()
-    pool = CameraWarmupPool(captures.__getitem__, join_timeout=0.2)
+    pool = CameraPool(captures.__getitem__, join_timeout=0.2)
 
     stopper = threading.Thread(
         target=lambda: (time.sleep(0.03), stop_event.set()), daemon=True
@@ -229,7 +229,7 @@ def test_wait_pair_stop_event_cancels_and_releases_both_roles() -> None:
 
 def test_timeout_then_close_interrupts_retired_blocked_readers_once() -> None:
     captures = {0: ControlledCapture(), 1: ControlledCapture()}
-    pool = CameraWarmupPool(captures.__getitem__, join_timeout=0.02)
+    pool = CameraPool(captures.__getitem__, join_timeout=0.02)
 
     with pytest.raises(CameraWarmupTimeout):
         pool.wait_pair(0, 1, timeout=0.02, stop_event=threading.Event())
@@ -271,7 +271,7 @@ def test_release_never_runs_concurrently_with_active_read() -> None:
             super().release()
 
     captures = {0: StrictOwnerCapture(), 1: StrictOwnerCapture()}
-    pool = CameraWarmupPool(captures.__getitem__, join_timeout=0.01)
+    pool = CameraPool(captures.__getitem__, join_timeout=0.01)
     try:
         with pytest.raises(CameraWarmupTimeout):
             pool.wait_pair(0, 1, timeout=0.01, stop_event=threading.Event())
@@ -293,7 +293,7 @@ def test_blocked_open_is_quarantined_and_retry_does_not_duplicate_open() -> None
         allow_open.wait(1.0)
         return captures[index]
 
-    pool = CameraWarmupPool(factory, join_timeout=0.01)
+    pool = CameraPool(factory, join_timeout=0.01)
     try:
         with pytest.raises(CameraWarmupTimeout):
             pool.wait_pair(0, 1, timeout=0.01, stop_event=threading.Event())
@@ -330,7 +330,7 @@ def test_restart_waits_for_cancelled_capture_release(prewarm, finish) -> None:
         calls.append(index)
         return previous if len(calls) == 1 else current[index]
 
-    pool = CameraWarmupPool(factory, join_timeout=0.01)
+    pool = CameraPool(factory, join_timeout=0.01)
 
     def restart():
         waiting.set()
@@ -395,7 +395,7 @@ def test_release_failure_is_retained_and_retried() -> None:
             super().release()
 
     capture = RetryReleaseCapture()
-    pool = CameraWarmupPool(lambda _index: capture, join_timeout=0.01)
+    pool = CameraPool(lambda _index: capture, join_timeout=0.01)
     try:
         pool.warm(PRIMARY, 0)
         _eventually(lambda: capture.read_calls >= 1)
@@ -417,7 +417,7 @@ def test_positional_only_stop_event_factory_uses_one_argument_contract() -> None
         calls.append(index)
         return captures[index]
 
-    pool = CameraWarmupPool(factory)
+    pool = CameraPool(factory)
     try:
         pair = pool.wait_pair(0, 1, timeout=1.0, stop_event=threading.Event())
         assert pair[0].generation > 0
@@ -428,7 +428,7 @@ def test_positional_only_stop_event_factory_uses_one_argument_contract() -> None
 
 def test_claim_pair_stops_readers_and_transfers_both_captures() -> None:
     captures = {0: ControlledCapture(1), 1: ControlledCapture(2)}
-    pool = CameraWarmupPool(captures.__getitem__)
+    pool = CameraPool(captures.__getitem__)
     ready = pool.wait_pair(0, 1, timeout=1.0, stop_event=threading.Event())
 
     pump_done = threading.Event()
@@ -471,7 +471,7 @@ def test_claim_pair_stops_readers_and_transfers_both_captures() -> None:
 
 def test_claim_pair_never_opens_a_missing_pair() -> None:
     open_calls: list[int] = []
-    pool = CameraWarmupPool(
+    pool = CameraPool(
         lambda index: (open_calls.append(index), ControlledCapture(1))[1]
     )
     try:
@@ -484,7 +484,7 @@ def test_claim_pair_never_opens_a_missing_pair() -> None:
 
 def test_claim_pair_rejects_changed_generations_without_replacing_pair() -> None:
     captures = {0: ControlledCapture(1), 1: ControlledCapture(2)}
-    pool = CameraWarmupPool(captures.__getitem__)
+    pool = CameraPool(captures.__getitem__)
     try:
         ready = pool.wait_pair(0, 1, timeout=1.0, stop_event=threading.Event())
         with pytest.raises(CameraWarmupError, match="generation changed"):
@@ -502,7 +502,7 @@ def test_claim_pair_rejects_changed_generations_without_replacing_pair() -> None
 def test_claim_pair_stop_event_aborts_blocked_reader_shutdown() -> None:
     captures = {0: ControlledCapture(1), 1: ControlledCapture(2)}
     stop_event = threading.Event()
-    pool = CameraWarmupPool(
+    pool = CameraPool(
         captures.__getitem__, stop_poll_interval=0.005, join_timeout=0.02
     )
     ready = pool.wait_pair(0, 1, timeout=1.0, stop_event=threading.Event())
@@ -538,7 +538,7 @@ def test_claim_pair_stop_event_aborts_blocked_reader_shutdown() -> None:
 
 def test_wait_timeout_reaps_blocked_readers_without_close() -> None:
     captures = {0: ControlledCapture(), 1: ControlledCapture()}
-    pool = CameraWarmupPool(captures.__getitem__, join_timeout=0.02)
+    pool = CameraPool(captures.__getitem__, join_timeout=0.02)
     try:
         with pytest.raises(CameraWarmupTimeout):
             pool.wait_pair(0, 1, timeout=0.01, stop_event=threading.Event())
@@ -549,7 +549,7 @@ def test_wait_timeout_reaps_blocked_readers_without_close() -> None:
 
 def test_warm_reader_start_failure_reaps_previous_slot(monkeypatch) -> None:
     previous = ControlledCapture(1)
-    pool = CameraWarmupPool(lambda _index: previous, join_timeout=0.02)
+    pool = CameraPool(lambda _index: previous, join_timeout=0.02)
     pool.warm(PRIMARY, 0)
     _eventually(lambda: previous.read_calls >= 2)
 
@@ -578,7 +578,7 @@ def test_pair_reader_start_failure_rolls_back_reused_role(monkeypatch) -> None:
         calls.append(index)
         return primary
 
-    pool = CameraWarmupPool(factory, join_timeout=0.02)
+    pool = CameraPool(factory, join_timeout=0.02)
     pool.warm(PRIMARY, 0)
     _eventually(lambda: primary.read_calls >= 2)
     real_start = threading.Thread.start
@@ -602,7 +602,7 @@ def test_pair_reader_start_failure_rolls_back_reused_role(monkeypatch) -> None:
 
 def test_reaper_start_failure_uses_bounded_release_fallback(monkeypatch) -> None:
     capture = ControlledCapture(1)
-    pool = CameraWarmupPool(lambda _index: capture, join_timeout=0.02)
+    pool = CameraPool(lambda _index: capture, join_timeout=0.02)
     pool.warm(PRIMARY, 0)
     _eventually(lambda: capture.read_calls >= 2)
     real_start = threading.Thread.start
@@ -630,7 +630,7 @@ def test_wait_during_claim_is_rejected_without_reopening_or_breaking_claim() -> 
         open_calls.append(index)
         return captures[index]
 
-    pool = CameraWarmupPool(factory)
+    pool = CameraPool(factory)
     pool.wait_pair(0, 1, timeout=1.0, stop_event=threading.Event())
     result: dict[str, object] = {}
 
@@ -665,7 +665,7 @@ def test_wait_during_claim_is_rejected_without_reopening_or_breaking_claim() -> 
 
 def test_claim_pair_failure_releases_other_ready_capture() -> None:
     captures = {0: ControlledCapture(1), 1: ControlledCapture(2)}
-    pool = CameraWarmupPool(captures.__getitem__, join_timeout=0.2)
+    pool = CameraPool(captures.__getitem__, join_timeout=0.2)
     pool.wait_pair(0, 1, timeout=1.0, stop_event=threading.Event())
     captures[1].fail(RuntimeError("secondary driver failed"))
     _eventually(lambda: captures[1].release_calls == 1)
@@ -681,7 +681,7 @@ def test_claim_pair_failure_releases_other_ready_capture() -> None:
 
 def test_cancel_and_close_release_resources_and_close_is_final() -> None:
     captures = {0: ControlledCapture(1), 1: ControlledCapture(2)}
-    pool = CameraWarmupPool(captures.__getitem__)
+    pool = CameraPool(captures.__getitem__)
     pool.wait_pair(0, 1, timeout=1.0, stop_event=threading.Event())
 
     pool.cancel(PRIMARY)
@@ -708,7 +708,7 @@ def test_cancel_returns_before_blocking_driver_release_finishes() -> None:
             super().release()
 
     capture = BlockingReleaseCapture(1)
-    pool = CameraWarmupPool(lambda _index: capture, join_timeout=0.01)
+    pool = CameraPool(lambda _index: capture, join_timeout=0.01)
     try:
         pool.warm(PRIMARY, 0)
         _eventually(lambda: capture.read_calls >= 2)
@@ -748,7 +748,7 @@ def test_spec_change_renegotiates_after_old_format_releases() -> None:
 
     preview = CaptureSpec(0, 1280, 720)
     student = CaptureSpec(0, 1920, 1080)
-    pool = CameraWarmupPool(factory, join_timeout=0.01)
+    pool = CameraPool(factory, join_timeout=0.01)
     try:
         pool.sync(preview, None)
         _eventually(lambda: old.read_calls >= 2)
@@ -784,7 +784,7 @@ def test_leased_device_blocks_reopen_until_session_releases() -> None:
         opened.append(index)
         return captures[len(opened) - 1]
 
-    pool = CameraWarmupPool(factory, join_timeout=0.01)
+    pool = CameraPool(factory, join_timeout=0.01)
     try:
         ready = pool.wait_one(0, timeout=1.0, stop_event=threading.Event())
         captures[0].push(3)  # 真实采集 read 有界返回；模拟驱动需补一帧让 reader 退出
@@ -819,7 +819,7 @@ def test_failed_lease_release_is_quarantined_then_retried_before_reopen() -> Non
         opened.append(index)
         return stuck if len(opened) == 1 else fresh
 
-    pool = CameraWarmupPool(factory, join_timeout=0.01, release_retry_interval=0.0)
+    pool = CameraPool(factory, join_timeout=0.01, release_retry_interval=0.0)
     try:
         ready = pool.wait_one(0, timeout=1.0, stop_event=threading.Event())
         stuck.push(3)
@@ -837,7 +837,7 @@ def test_failed_lease_release_is_quarantined_then_retried_before_reopen() -> Non
 
 def test_generation_scoped_cancel_keeps_newer_warmup() -> None:
     captures = {0: ControlledCapture(1)}
-    pool = CameraWarmupPool(captures.__getitem__, join_timeout=0.01)
+    pool = CameraPool(captures.__getitem__, join_timeout=0.01)
     try:
         first = pool.wait_one(0, timeout=1.0, stop_event=threading.Event())
         pool.cancel(PRIMARY, generation=first.generation + 1)
@@ -857,7 +857,7 @@ def test_sync_swaps_roles_without_rejecting_same_index() -> None:
         calls.append(index)
         return captures[index] if calls.count(index) == 1 else reopened[index]
 
-    pool = CameraWarmupPool(factory, join_timeout=0.01)
+    pool = CameraPool(factory, join_timeout=0.01)
     try:
         pool.wait_pair(0, 1, timeout=1.0, stop_event=threading.Event())
         swapped = pool.wait_pair(1, 0, timeout=1.0, stop_event=threading.Event())
@@ -872,7 +872,7 @@ def test_sync_swaps_roles_without_rejecting_same_index() -> None:
     [("other", 0), (PRIMARY, -1), (PRIMARY, True)],
 )
 def test_warm_rejects_invalid_role_or_index(role, index) -> None:
-    pool = CameraWarmupPool(lambda unused: ControlledCapture(1))
+    pool = CameraPool(lambda unused: ControlledCapture(1))
     try:
         with pytest.raises(ValueError):
             pool.warm(role, index)
@@ -881,7 +881,7 @@ def test_warm_rejects_invalid_role_or_index(role, index) -> None:
 
 
 def test_pair_rejects_same_camera_index() -> None:
-    pool = CameraWarmupPool(lambda unused: ControlledCapture(1))
+    pool = CameraPool(lambda unused: ControlledCapture(1))
     try:
         with pytest.raises(ValueError, match="different"):
             pool.wait_pair(0, 0, timeout=1.0, stop_event=threading.Event())
@@ -898,7 +898,7 @@ def test_pre_set_stop_event_does_not_start_or_open_cameras() -> None:
 
     stop_event = threading.Event()
     stop_event.set()
-    pool = CameraWarmupPool(factory)
+    pool = CameraPool(factory)
     try:
         with pytest.raises(CameraWarmupStopped):
             pool.wait_pair(0, 1, timeout=1.0, stop_event=stop_event)
@@ -915,7 +915,7 @@ def test_warm_rejects_same_index_for_other_role_without_replacing_first() -> Non
         calls.append(index)
         return cap
 
-    pool = CameraWarmupPool(factory)
+    pool = CameraPool(factory)
     try:
         pool.warm(PRIMARY, 0)
         with pytest.raises(ValueError, match="both roles"):

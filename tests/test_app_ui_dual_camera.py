@@ -20,7 +20,8 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from apps import app_ui  # noqa: E402
-from apps.camera_enum import CameraEntry  # noqa: E402
+from core.media import CameraDevice as CameraEntry  # noqa: E402
+from core.media import CameraService  # noqa: E402
 from core.recording import fit_frame_to_size  # noqa: E402
 
 
@@ -533,18 +534,18 @@ def test_second_camera_combobox_binds_warmup_selection_handler():
     ]
 
 
-def test_app_warmup_pool_is_the_only_camera_owner():
+def test_app_camera_service_is_the_only_camera_owner():
     init = _app_method_node("__init__")
-    calls = _named_calls(init, "CameraWarmupPool")
+    calls = _named_calls(init, "CameraService")
 
     assert len(calls) == 1
     capture_factory = next(
         keyword.value for keyword in calls[0].keywords if keyword.arg == "capture_factory"
     )
     assert ast.unparse(capture_factory) == "self._open_camera_process"
-    # 所有摄像头打开都经池；worker 与选择回调不再直接调用 open_camera。
+    # 所有摄像头打开都经 CameraService 的池；worker 与选择回调不直接创建采集进程。
     for name in ("_worker_loop", "_worker_loop_parallel_camera", "_sync_camera_warmup"):
-        assert _named_calls(_function_node(name), "open_camera") == []
+        assert _named_calls(_function_node(name), "ProcessCamera") == []
 
 
 def test_dual_start_dispatches_state_without_claiming_in_parent_worker(monkeypatch):
@@ -556,14 +557,9 @@ def test_dual_start_dispatches_state_without_claiming_in_parent_worker(monkeypat
 
     state = SimpleNamespace(source="0", source2="1", workers=4)
     app = SimpleNamespace(
-        _camera_warmup_pool=_Pool(),
+        _camera_service=CameraService(pool=_Pool()),
         _stop_evt=threading.Event(),
         _worker_loop_dual_camera=worker_calls.append,
-    )
-    monkeypatch.setattr(
-        app_ui,
-        "open_camera",
-        lambda _index: pytest.fail("dual start must reuse CameraWarmupPool"),
     )
 
     app_ui.App._worker_loop(app, state)
@@ -597,17 +593,12 @@ def test_dual_wait_failure_posts_status_and_done_exactly_once(monkeypatch):
         enable_hands=True,
     )
     app = SimpleNamespace(
-        _camera_warmup_pool=_Pool(),
+        _camera_service=CameraService(pool=_Pool()),
         _stop_evt=threading.Event(),
         _post_status=statuses.append,
         _post_done=lambda **_kwargs: done_calls.append(True),
         _invalidate_dual_preview=lambda _generation: None,
         _finish_dual_startup_metrics=lambda *_args, **_kwargs: None,
-    )
-    monkeypatch.setattr(
-        app_ui,
-        "open_camera",
-        lambda _index: pytest.fail("claim failure must not fall back to serial open"),
     )
 
     app_ui.App._worker_loop_dual_camera(app, state)
@@ -621,7 +612,7 @@ def test_dual_wait_failure_posts_status_and_done_exactly_once(monkeypatch):
 def test_dual_worker_never_opens_camera_after_pair_claim():
     worker = _function_node("_worker_loop_dual_camera")
 
-    assert _named_calls(worker, "open_camera") == []
+    assert _named_calls(worker, "ProcessCamera") == []
 
 
 def test_dual_preview_queue_is_latest_only_and_rejects_old_generation():
@@ -961,6 +952,9 @@ def _exercise_dual_runtime_failure(monkeypatch, *, record_skeleton: bool, phase:
         def release(self) -> None:
             self.release_calls += 1
 
+        def restore(self) -> bool:
+            return False
+
     class _Recording:
         state = "idle"
 
@@ -998,9 +992,10 @@ def _exercise_dual_runtime_failure(monkeypatch, *, record_skeleton: bool, phase:
     class _Pool:
         def wait_pair(self, primary, secondary, *, timeout, stop_event):
             expected_size = (1920, 1080) if student else (1280, 720)
+            policy = "require" if student else "prefer"  # D-6
             assert (primary, secondary) == (
-                app_ui.CaptureSpec(0, *expected_size),
-                app_ui.CaptureSpec(1, *expected_size),
+                app_ui.CaptureSpec(0, *expected_size, policy=policy),
+                app_ui.CaptureSpec(1, *expected_size, policy=policy),
             )
             return (
                 SimpleNamespace(frame=frame.copy(), sequence=1, generation=1),
@@ -1038,7 +1033,7 @@ def _exercise_dual_runtime_failure(monkeypatch, *, record_skeleton: bool, phase:
     done_calls: list[bool] = []
 
     app = SimpleNamespace(
-        _camera_warmup_pool=_Pool(),
+        _camera_service=CameraService(pool=_Pool()),
         _student_practice_active=student,
         _current_session_generation=1,
         _recording=_Recording(),
@@ -1074,6 +1069,7 @@ def _exercise_dual_runtime_failure(monkeypatch, *, record_skeleton: bool, phase:
         rotate2=0,
         record_skeleton=record_skeleton,
         capture_size=(1920, 1080) if student else (1280, 720),
+        capture_policy="require" if student else "prefer",
     )
     monkeypatch.setattr(app_ui, "models_dir", lambda: Path("models"))
     monkeypatch.setattr(
@@ -1141,6 +1137,9 @@ def test_pipeline_loading_keeps_raw_pair_flowing_without_writes(monkeypatch):
         def release(self) -> None:
             self.release_calls += 1
 
+        def restore(self) -> bool:
+            return False
+
     front_cap = _Capture()
     side_cap = _Capture()
 
@@ -1204,7 +1203,7 @@ def test_pipeline_loading_keeps_raw_pair_flowing_without_writes(monkeypatch):
         return pipeline
 
     app = _dual_preview_stub(record_skeleton=True)
-    app._camera_warmup_pool = _Pool()
+    app._camera_service = CameraService(pool=_Pool())
     app._current_session_generation = 1
     app._stop_evt = threading.Event()
     app._recording = _Recording()
@@ -1329,7 +1328,7 @@ def test_second_pipeline_failure_closes_first_without_starting_recording(monkeyp
         raise RuntimeError("second pipeline failed")
 
     app = _dual_preview_stub(record_skeleton=True)
-    app._camera_warmup_pool = _Pool()
+    app._camera_service = CameraService(pool=_Pool())
     app._current_session_generation = 1
     app._stop_evt = threading.Event()
     app._recording = _Recording()

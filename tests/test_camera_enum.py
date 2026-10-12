@@ -15,10 +15,10 @@ from hypothesis import given, settings, strategies as st
 # 确保仓库根目录在 sys.path 上（与项目其它入口一致）。
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from apps.camera_enum import (  # noqa: E402
+from core.media.camera.devices import (  # noqa: E402
     SCAN_LIMIT_MAX,
     SCAN_LIMIT_MIN,
-    CameraEntry,
+    CameraDevice as CameraEntry,
     clamp_scan_limit,
     enumerate_cameras,
     make_label,
