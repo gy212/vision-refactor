@@ -71,7 +71,7 @@ CLONES: dict[str, tuple[int, str]] = {}
 
 MODULE_SIZE: dict[str, tuple[int, str]] = {
     'analysis/bench_annotate_fps.py': (1018, 'P9'),
-    'apps/app_ui.py': (3893, 'P8'),
+    'apps/app_ui.py': (3891, 'P8'),
     'apps/feedback_result_panel.py': (1325, 'P8'),
     'core/media/camera/pool.py': (1115, 'P9'),  # 原 apps/camera_warmup.py（1125），D-15：P9 按职责拆分
     'core/feedback_report.py': (1518, 'P8'),

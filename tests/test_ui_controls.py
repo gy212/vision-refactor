@@ -146,7 +146,7 @@ def test_set_running_controls_enable_disable_linkage():
     Start 文本切「停止」、Compare 始终 enabled；未运行恢复（需求 2.5、3.5、4.3、5.2、6.4、6.5）。"""
     root, app = _make_app_or_skip()
     try:
-        # 真实启动路径 _start 先经 _begin_preview_session 设置录制就绪标志，再调用
+        # 真实启动路径 _start 先设置录制就绪标志，再调用
         # _set_running_controls(True)：单摄会话为 True，双摄会话为 False（两路首帧
         # 就绪后才置 True，见下一个测试）。这里模拟单摄会话。
         app._dual_recording_ready = True
@@ -210,12 +210,12 @@ def test_set_running_controls_enable_disable_linkage():
 def test_set_running_controls_defers_record_until_dual_ready():
     """双摄会话两路首帧就绪前：其余运行态联动照常，Record_Toggle 保持禁用。
 
-    就绪后由 ``_post_dual_recording_ready`` 单独启用录制按钮，不再经过
+    就绪后由 ``_on_session_running`` 单独启用录制按钮，不再经过
     ``_set_running_controls``。
     """
     root, app = _make_app_or_skip()
     try:
-        # _begin_preview_session 对双摄会话把录制就绪标志置为 False。
+        # _start 对双摄会话把录制就绪标志置为 False。
         app._dual_recording_ready = False
         app._set_running_controls(True)
 

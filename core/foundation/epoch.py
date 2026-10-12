@@ -2,7 +2,7 @@
 """迟到结果过滤的唯一原语 ``Epoch``：所有者推进代次，事件携带 token，消费方丢弃过期 token。
 
 每个异步边界只有一个所有者持有 ``Epoch``（设计文档 §4.3）；取代 App 上手写的
-``_session_generation``、``_active_feedback_token`` 等代次字段（P6、P8 替换）。
+``_active_feedback_token`` 等代次字段（会话代次已在 P6 由 ``LiveSessionManager`` 取代，其余 P8 替换）。
 """
 from __future__ import annotations
 

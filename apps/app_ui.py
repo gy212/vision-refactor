@@ -746,8 +746,6 @@ class UiState:
     # 驱动给不出请求尺寸时的处理（D-6）与按编号记下的设备名（V-3），同样在启动时冻结。
     capture_policy: str = "prefer"
     camera_names: tuple[tuple[int, str], ...] = ()
-    session_generation: int = 0
-    start_click: float = 0.0
 
 
 class SettingsWindow:
@@ -3377,7 +3375,7 @@ class App:
 
         # 第二摄像头（可选，双摄双面视图，issue #57/#58）：未选、选不到真实条目、或主输入源
         # 不是摄像头（视频文件模式）→ source2=None，即今天的单摄/文件行为不变。双摄预览只在
-        # 主输入源也是摄像头时才有意义，这里是唯一收敛点：调用方（_start/_worker_loop）
+        # 主输入源也是摄像头时才有意义，这里是唯一收敛点：调用方（_start/_session_config）
         # 只需检查 state.source2 是否非空，不必重复判断 source 是否为摄像头。
         source2: str | None = None
         camera_choice_var_2 = getattr(self, "camera_choice_var_2", None)
