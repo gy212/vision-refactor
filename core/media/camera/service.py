@@ -140,9 +140,12 @@ class CameraStream:
         return ready
 
     def snapshot(self, after: Mapping[str, int] | None = None) -> dict[str, WarmFrame] | None:
-        """双摄模型加载期间的裸帧预览（``snapshot_pair``）；``after`` 是各路已显示的帧序号。"""
+        """模型加载期间的裸帧预览（D-8，单双摄都有）；``after`` 是各路已显示的帧序号，没有更新的帧时返回 None。"""
         if not self.dual:
-            return None
+            frame = self._pool.snapshot_one(
+                self._specs[PRIMARY], after=None if after is None else after[PRIMARY],
+            )
+            return None if frame is None else {PRIMARY: frame}
         cursor = None if after is None else (after[PRIMARY], after[SECONDARY])
         pair = self._pool.snapshot_pair(self._specs[PRIMARY], self._specs[SECONDARY], after=cursor)
         return None if pair is None else dict(zip(ROLES, pair))
