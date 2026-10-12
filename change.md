@@ -16,7 +16,7 @@
   - `scripts/sim_exam_flow.py`：37 passed，`SIMULATION_OK`。
   - 搜索：`open_camera` 在 `apps/`、`core/` 无定义和调用；`cv2.VideoCapture(` 只在 `core/media/`、P6 删除的两处入口循环与 `core/qwen_coach.py`；预打开与打开锁代码为 0。
   - `git diff --check` 通过。
-  - EXE 自检：见下一条记录。
+  - EXE：从干净的 `2e39923` 构建（`$env:PYTHONIOENCODING="utf-8"` 后运行 spec 顶部的构建命令；控制台为 cp1252 时 spec 末尾打印中文交付目录会抛 `UnicodeEncodeError`，EXE 本身已生成），交付目录 `dist/vision_ui_20261012_2e39923/`；`vision_ui.exe --offline-self-check` 报告 `ok=true`，`build_info.clean=true`、规则版本 v4，12 项检查含 `camera_spawn_error_cleanup_and_reopen`、`tk_preview_student_1080p_switch_twice_with_spawn`。
 
 ## 2026-10-11（America/Los_Angeles）: [docs] 练习 profile 接入统一规则引擎登记为 D-16 并移交 P9，同步 P3 完成范围（issue #8）
 
