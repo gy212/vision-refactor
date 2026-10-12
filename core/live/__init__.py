@@ -15,7 +15,7 @@ from core.live.inputs import CameraInput, FrameInput, VideoFileInput
 from core.live.manager import IDLE, RUNNING, STARTING, STOPPING, LiveSessionManager
 from core.live.metrics import StartupMetrics
 from core.live.preview import PreviewFrame, PreviewStore, fit_preview_rgb
-from core.live.runner import FrameSink, RunningInfo, SessionEvent, SessionOutcome, SessionRunner
+from core.live.runner import APP_CLOSE, FrameSink, RunningInfo, SessionEvent, SessionOutcome, SessionRunner
 from core.live.stages import (
     FramePacket,
     PresenceSample,
@@ -26,6 +26,7 @@ from core.live.stages import (
 )
 
 __all__ = [
+    "APP_CLOSE",
     "CameraInput",
     "DEFAULT_OCCUPANCY_STRIDE",
     "DEFAULT_ROI",

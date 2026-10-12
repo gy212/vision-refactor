@@ -28,6 +28,8 @@ import pytest
 from apps import app_ui
 from apps.feedback_result_panel import FeedbackResultPanel
 from core.recording import RecordingService, SegmentFinalizer
+from core.live import LiveControls, PresenceSample, PreviewStore
+from core.media import PRIMARY, SECONDARY
 
 
 # ---------------------------------------------------------------------------
@@ -113,6 +115,22 @@ def make_stress_record(
     }
 
 
+class _FakeLive:
+    """会话管理器替身：运行中的双摄会话，预览槽可选。"""
+
+    def __init__(self, state="running", preview=None):
+        self.state = state
+        self.preview = preview
+        self.token = 1
+        self.config = SimpleNamespace(dual=True, is_file=False)
+
+    def active(self):
+        return self.state != "idle"
+
+    def is_current(self, token):
+        return token == self.token
+
+
 def make_test_app(student_id="001"):
     """创建用于压力测试的 App 实例替身。"""
     app = app_ui.App.__new__(app_ui.App)
@@ -122,9 +140,9 @@ def make_test_app(student_id="001"):
     app._student_judging = False
     app._student_segment_ready = True
     app._closing = False
-    app._stop_evt = threading.Event()
+    app._live = _FakeLive()
+    app._live_controls = LiveControls()
     app._recording = SimpleNamespace(state="idle")
-    app._worker = SimpleNamespace(is_alive=lambda: True)
 
     app._feedback_task_token = 0
     app._active_feedback_token = None
@@ -468,6 +486,13 @@ def test_out_of_order_where_latest_token_completes_first():
 # 5. Practice Again Camera Loop: 150+ _tick() Invocations in Result View
 # ===========================================================================
 
+def _publish_pair(store, tick_idx, actions):
+    """runner 侧：发布一对 BGR 帧（160x120），主路带动作文本。"""
+    front = np.full((120, 160, 3), tick_idx % 256, dtype=np.uint8)
+    side = np.full((120, 160, 3), (tick_idx * 2) % 256, dtype=np.uint8)
+    assert store.publish("raw", {PRIMARY: front, SECONDARY: side}, {PRIMARY: actions})
+
+
 def test_camera_loop_150_ticks_in_result_view():
     """压力测试 5：在结果页展示状态下，连续触发 150+ 次 _tick()。
 
@@ -484,7 +509,10 @@ def test_camera_loop_150_ticks_in_result_view():
         app = app_ui.App.__new__(app_ui.App)
         app.root = root
         app._closing = False
-        app._stop_evt = threading.Event()
+        store = PreviewStore(1, lambda _role: (1, 1))
+        app._live = _FakeLive(preview=store)
+        app._live_events = Queue()
+        app._shown_preview_seq = 0
 
         # 容器层级（模拟实际 App 的布局）
         app.left_container = ttk.Frame(root)
@@ -500,21 +528,10 @@ def test_camera_loop_150_ticks_in_result_view():
         app.actions_var = tk.StringVar(value="")
         app.status_var = tk.StringVar(value="")
 
-        # 队列与锁
-        app._queue = Queue(maxsize=2)
-        app._queue2 = Queue(maxsize=2)
-        app._dual_preview_queue = Queue(maxsize=2)
-        app._dual_preview_lock = threading.Lock()
-        app._dual_render_lock = threading.Lock()
-        app._dual_metrics_lock = threading.Lock()
         # _refresh_recording_status 每 tick 读取的录制状态（取 App.__init__ 的空闲默认值）
         app._dual_active = False
         app._record_error_shown = False
         app.recording_status_var = tk.StringVar(value="")
-        app._dual_startup_metrics = {}
-        app._dual_first_render_events = {}
-        app._dual_preview_stage = "raw"
-        app._active_dual_generation = 0
         app._pending_record_errors = []
 
         # 录制与会话替身
@@ -544,18 +561,14 @@ def test_camera_loop_150_ticks_in_result_view():
 
         for tick_idx in range(TICKS_COUNT):
             # 每轮向队列推入新帧
-            frame_rgb = np.full((120, 160, 3), tick_idx % 256, dtype=np.uint8)
-            frame_rgb2 = np.full((120, 160, 3), (tick_idx * 2) % 256, dtype=np.uint8)
-            app._queue.put((frame_rgb, f"Action Tick {tick_idx}"))
-            app._queue2.put((frame_rgb2, ""))
+            _publish_pair(store, tick_idx, f"Action Tick {tick_idx}")
 
             # 执行 _tick
             app._tick()
             root.update_idletasks()
 
-            # 断言队列已被及时消费清空，无背压积压
-            assert app._queue.empty(), f"Queue not drained at tick {tick_idx}"
-            assert app._queue2.empty(), f"Queue2 not drained at tick {tick_idx}"
+            # 断言预览槽已被及时取走，无积压
+            assert store.take_newer(0) is None, f"Preview not drained at tick {tick_idx}"
 
         assert tick_after_calls == TICKS_COUNT
         assert app.actions_var.get() == f"Action Tick {TICKS_COUNT - 1}"
@@ -567,10 +580,7 @@ def test_camera_loop_150_ticks_in_result_view():
 
         # 5. 在恢复显示后继续运行 50 次 _tick()
         for tick_idx in range(TICKS_COUNT, TICKS_COUNT + 50):
-            frame_rgb = np.full((120, 160, 3), tick_idx % 256, dtype=np.uint8)
-            frame_rgb2 = np.full((120, 160, 3), (tick_idx * 2) % 256, dtype=np.uint8)
-            app._queue.put((frame_rgb, f"Resumed Tick {tick_idx}"))
-            app._queue2.put((frame_rgb2, ""))
+            _publish_pair(store, tick_idx, f"Resumed Tick {tick_idx}")
 
             app._tick()
             root.update_idletasks()
@@ -630,12 +640,9 @@ def test_presence_gate_completely_disarmed_on_practice_again(monkeypatch):
     assert app._recording.state == "idle"
     assert app._student_presence_gate is None
 
-    # 5. 模拟通过 _exam_occupancy_queue 管道投递事件
-    app._exam_occupancy_queue = Queue()
+    # 5. 模拟会话线程经 presence 事件投递站位采样
     for i in range(50):
-        app._exam_occupancy_queue.put((True, base_time + 10.0 + i * 0.1))
-
-    app._drain_exam_occupancy()
+        app_ui.App._on_session_presence(app, PresenceSample(True, base_time + 10.0 + i * 0.1))
     begin_record_mock.assert_not_called()
     assert app._recording.state == "idle"
 

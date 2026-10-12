@@ -18,7 +18,6 @@ from core.media import (
     CameraPool,
     CameraService,
     CaptureSpec,
-    CaptureView,
     DeviceCatalog,
 )
 from core.media.camera import capture_process, devices, pool as pool_module, service as service_module

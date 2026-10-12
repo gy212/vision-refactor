@@ -219,45 +219,6 @@ class CameraStream:
         if errors:
             raise errors[0]
 
-    def as_capture(self, role: str = PRIMARY, *, on_release: Callable[[], None] | None = None) -> "CaptureView":
-        return CaptureView(self, role, on_release=on_release)
-
-
-class CaptureView:
-    """迁移期适配器：把已接管的单路 ``CameraStream`` 包成 ``read/get/isOpened/release`` 形式，
-    供 P6 前的旧逐帧循环与 CLI 使用；循环迁到 ``SessionRunner`` 后删除。"""
-
-    def __init__(self, stream: CameraStream, role: str = PRIMARY, *,
-                 on_release: Callable[[], None] | None = None) -> None:
-        self._stream = stream
-        self._role = role
-        self._on_release = on_release
-
-    @property
-    def stream(self) -> CameraStream:
-        return self._stream
-
-    def read(self):
-        try:
-            return True, self._stream.read()[self._role]
-        except CameraReadError:
-            return False, None
-
-    def get(self, prop: int) -> float:
-        if prop in (3, 4):
-            return float(self._stream.actual_sizes()[self._role][prop - 3])
-        return self._stream.fps(self._role) if prop == 5 else 0.0
-
-    def isOpened(self) -> bool:
-        return self._stream.claimed
-
-    def release(self, *, keep_warm: bool = False) -> None:
-        try:
-            self._stream.close(keep_warm=keep_warm)
-        finally:
-            if self._on_release is not None:
-                self._on_release()
-
 
 class CameraService:
     """设备目录、预热声明、会话句柄与关闭；Tk 与 CLI 只经这里使用摄像头。"""
@@ -310,20 +271,6 @@ class CameraService:
             self._pool, specs, ready_timeout=self._ready_timeout, claim_timeout=self._claim_timeout,
         )
 
-    def open_capture(self, spec: CaptureSpec, cancel: CancelToken | None = None,
-                     *, close_service: bool = False) -> CaptureView:
-        """单路：等首帧并接管，返回迁移期的 ``CaptureView``；``close_service`` 时释放它也关闭本服务（CLI 用）。"""
-        stream = self.open_stream({PRIMARY: spec})
-        try:
-            stream.wait_ready(cancel)
-            stream.claim(cancel)
-        except BaseException:
-            stream.close()
-            if close_service:
-                self.close()
-            raise
-        return stream.as_capture(on_release=self.close if close_service else None)
-
     def close(self, timeout: float = DEFAULT_RELEASE_WAIT_S) -> bool:
         """关窗：停止全部 reader，在 ``timeout`` 内等采集进程真实退出；超时写诊断并返回 False。"""
         self._pool.close()
@@ -337,7 +284,6 @@ __all__ = [
     "CameraReadError",
     "CameraService",
     "CameraStream",
-    "CaptureView",
     "DEFAULT_CLAIM_TIMEOUT_S",
     "DEFAULT_READY_TIMEOUT_S",
     "DEFAULT_RELEASE_WAIT_S",

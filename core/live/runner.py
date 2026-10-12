@@ -34,6 +34,7 @@ from core.pose import actions_text
 RAW_PUMP_INTERVAL_S = 0.05
 FIRST_RENDER_WAIT_S = 0.25
 PARALLEL_GET_TIMEOUT_S = 0.2
+APP_CLOSE = "app_close"            # 关窗的停止原因：会话结束时不把设备交回预热
 
 _SINGLE_ERRORS = {
     "warmup": "打开输入源失败",
@@ -449,8 +450,10 @@ class SessionRunner:
                 stage.close()
             except Exception:
                 pass
+        # 正常结束把设备交回预热（V-1）；失败或关窗（池随后关闭）时直接释放。
+        keep_warm = not outcome.failed and self._cancel.reason != APP_CLOSE
         try:
-            self._source.close(keep_warm=not outcome.failed)
+            self._source.close(keep_warm=keep_warm)
         except Exception as exc:
             traceback.print_exc()
             error = f"摄像头释放失败：{exc}"
@@ -469,4 +472,4 @@ class SessionRunner:
         return outcome
 
 
-__all__ = ["FrameSink", "RunningInfo", "SessionEvent", "SessionOutcome", "SessionRunner"]
+__all__ = ["APP_CLOSE", "FrameSink", "RunningInfo", "SessionEvent", "SessionOutcome", "SessionRunner"]

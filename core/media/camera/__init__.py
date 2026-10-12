@@ -15,7 +15,6 @@ from core.media.camera.service import (
     CameraReadError,
     CameraService,
     CameraStream,
-    CaptureView,
     RoleSpecs,
 )
 from core.media.camera.spec import (
@@ -40,7 +39,6 @@ __all__ = [
     "CameraWarmupStopped",
     "CameraWarmupTimeout",
     "CaptureSpec",
-    "CaptureView",
     "CatalogSnapshot",
     "DeviceCatalog",
     "PRIMARY",

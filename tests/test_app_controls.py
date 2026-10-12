@@ -141,6 +141,7 @@ def _make_toggle_stub(tmp_path: Path):
         _closing=False,
         record_btn=FakeWidget(text=RECORD_BTN_TEXT["idle"]),
         _sync_record_stop_enabled=lambda _state: None,
+        _live=_FakeLive("running"),
     )
     return stub
 
@@ -206,8 +207,7 @@ def test_on_record_toggle_noop_before_session(tmp_path):
 def test_on_record_toggle_noop_after_stop_requested(tmp_path):
     stub = _make_toggle_stub(tmp_path)
     stub._recording.begin_session({"front": (640, 480), "side": (480, 640)}, 30.0)
-    stub._stop_evt = threading.Event()
-    stub._stop_evt.set()
+    stub._live = _FakeLive("stopping")
 
     App._on_record_toggle(stub)
 
@@ -222,24 +222,24 @@ def test_on_record_toggle_noop_after_stop_requested(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-class _FakeWorker:
-    """假 worker 线程：``is_alive`` 返回固定值，供 _set_refresh_enabled 判定运行态。"""
+class _FakeLive:
+    """假会话管理器：固定状态，供 _set_refresh_enabled 与录制入口判定会话态。"""
 
-    def __init__(self, alive: bool) -> None:
-        self._alive = alive
+    def __init__(self, state: str) -> None:
+        self.state = state
 
-    def is_alive(self) -> bool:
-        return self._alive
+    def active(self) -> bool:
+        return self.state != "idle"
 
 
-def _make_controls_stub(worker_alive: bool = False):
+def _make_controls_stub(session_active: bool = False):
     """构造 _set_running_controls 所需的 stub self（全部假控件 + 必要属性）。
 
-    提供 refresh_btn / _worker / _enum_busy，使真实 ``App._set_refresh_enabled``
+    提供 refresh_btn / _live / _enum_busy，使真实 ``App._set_refresh_enabled``
     在 stub 上也能正常工作（运行中禁用、未运行启用）。
 
-    ``worker_alive`` 模拟工作线程是否在跑：真实 App 在启动 worker 后才调用
-    ``_set_running_controls(True)``，刷新控件的启停由 worker/_enum_busy 决定。
+    ``session_active`` 模拟是否有会话：真实 App 在会话开始后才调用
+    ``_set_running_controls(True)``，刷新控件的启停由会话状态与 _enum_busy 决定。
     """
     stub = types.SimpleNamespace(
         camera_combo=FakeWidget(state="readonly"),
@@ -254,7 +254,7 @@ def _make_controls_stub(worker_alive: bool = False):
         refresh_btn=FakeWidget(state="normal"),
         status_var=FakeVar("就绪"),
         _camera_entries=["camera 0"],  # 非空，使未运行时 camera_combo 恢复 readonly
-        _worker=_FakeWorker(worker_alive),
+        _live=_FakeLive("running" if session_active else "idle"),
         _enum_busy=threading.Event(),
     )
     # 绑定真实 _set_refresh_enabled，使 _set_running_controls 内部调用可用。
@@ -265,7 +265,7 @@ def _make_controls_stub(worker_alive: bool = False):
 def test_set_running_controls_when_running():
     """running=True：Camera/Model 禁用、Record_Toggle 启用并置「开始录制」、
     Compare 始终 enabled、Start 切「停止」并禁用（需求 2.5、3.5、4.3、5.2、6.4）。"""
-    stub = _make_controls_stub(worker_alive=True)
+    stub = _make_controls_stub(session_active=True)
 
     App._set_running_controls(stub, True)
 
@@ -291,7 +291,7 @@ def test_set_running_controls_when_running():
 
 
 def test_dual_loading_keeps_record_control_disabled():
-    stub = _make_controls_stub(worker_alive=True)
+    stub = _make_controls_stub(session_active=True)
     stub._dual_recording_ready = False
 
     App._set_running_controls(stub, True)
@@ -302,8 +302,6 @@ def test_dual_loading_keeps_record_control_disabled():
 def test_record_toggle_rejects_dual_loading_even_when_called_directly(tmp_path):
     stub = _make_toggle_stub(tmp_path)
     stub._recording.begin_session({"front": (640, 480), "side": (480, 640)}, 30.0)
-    stub._stop_evt = threading.Event()
-    stub._active_dual_generation = 7
     stub._dual_recording_ready = False
 
     App._on_record_toggle(stub)

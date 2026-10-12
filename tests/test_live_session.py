@@ -11,6 +11,7 @@ import pytest
 import core.live.stages as stages_mod
 from core.foundation.tasks import Cancelled
 from core.live import (
+    APP_CLOSE,
     IDLE,
     LiveControls,
     LiveSessionManager,
@@ -121,14 +122,18 @@ class FakeSink:
     def __init__(self) -> None:
         self.calls: list = []
         self.writes: list[dict] = []
+        self.sizes: list[dict] = []
+        self.fail_write = False
 
     def begin_session(self, sizes, fps):
         self.calls.append(("begin", dict(sizes), fps))
 
     def update_sizes(self, sizes):
-        pass
+        self.sizes.append(dict(sizes))
 
     def write(self, frames):
+        if self.fail_write:
+            raise RuntimeError("write failed")
         self.writes.append(dict(frames))
 
     def close_session(self):
@@ -460,3 +465,204 @@ def test_cancelled_wait_ready_reports_stopped():
     h = Harness(Refusing())
     h.manager.start(single())
     assert h.outcome().outcome == "stopped"
+
+
+# ---- 双摄会话（取代旧 _worker_loop_dual_camera 的白盒测试） ----
+
+
+def test_dual_wait_failure_reports_warmup_error_once_and_never_claims():
+    class Unavailable(FakeInput):
+        def wait_ready(self, cancel):
+            raise RuntimeError("camera 1 unavailable")
+
+    h = Harness(Unavailable((PRIMARY, SECONDARY)))
+    h.manager.start(dual())
+    outcome = h.outcome()
+    assert outcome.status == "双摄像头预热失败：camera 1 unavailable"
+    assert [e.kind for e in h.events].count("ended") == 1
+    assert "start" not in h.source.calls and h.source.keep_warm is False
+    assert h.sink.calls == []
+
+
+def test_dual_skeleton_builds_two_engines_and_closes_both_on_infer_failure(monkeypatch):
+    class Failing(FakeEngine):
+        def infer(self, frame, *, timestamp_ms=None):
+            raise RuntimeError("annotate failed")
+
+    engines = []
+
+    def factory(spec, models_dir=None):
+        engines.append(Failing(spec))
+        return engines[-1]
+
+    monkeypatch.setattr(stages_mod, "create_engine", factory)
+    h = Harness(FakeInput((PRIMARY, SECONDARY)))
+    h.manager.start(dual(skeleton=True))
+    outcome = h.outcome()
+    assert outcome.status == "双摄像头运行失败：annotate failed"
+    assert len(engines) == 2 and all(e.closed for e in engines)
+    assert all(e.spec.running_mode == "video" for e in engines)
+    assert h.sink.calls[-1] == ("close",) and h.source.keep_warm is False
+
+
+def test_second_engine_failure_closes_first_and_never_claims_or_records(monkeypatch):
+    built = []
+
+    def factory(spec, models_dir=None):
+        if built:
+            raise RuntimeError("second pipeline failed")
+        built.append(FakeEngine(spec))
+        return built[0]
+
+    monkeypatch.setattr(stages_mod, "create_engine", factory)
+    h = Harness(FakeInput((PRIMARY, SECONDARY)))
+    h.manager.start(dual(skeleton=True))
+    outcome = h.outcome()
+    assert outcome.status == "初始化失败：second pipeline failed"
+    assert built[0].closed
+    assert "start" not in h.source.calls and h.sink.calls == []
+    assert h.source.keep_warm is False
+
+
+def test_dual_write_failure_closes_recording_and_releases_without_engines():
+    h = Harness(FakeInput((PRIMARY, SECONDARY)))
+    h.sink.fail_write = True
+    h.manager.start(dual(skeleton=False))
+    outcome = h.outcome()
+    assert outcome.status == "双摄像头运行失败：write failed"
+    assert FakeEngine.built == 0
+    assert h.sink.calls[-1] == ("close",)
+    assert h.source.calls[-1] == "close" and h.source.keep_warm is False
+
+
+def test_dual_records_raw_without_skeleton_and_annotated_with_skeleton(monkeypatch):
+    monkeypatch.setattr(stages_mod, "render_pose", lambda img, *_a, **_k: (np.full_like(img, 9), []))
+    # 旧双摄循环：HUD 画在主路标注帧上再写录像；骨架关写原始帧（无 HUD），骨架开写标注帧（主路带 HUD）
+    for skeleton, expected in ((False, (3, 3)), (True, (255, 9))):
+        h = Harness(FakeInput((PRIMARY, SECONDARY), shape=(80, 120, 3)))
+        h.manager.start(dual(skeleton=skeleton))
+        h.wait_for(lambda: len(h.sink.writes) >= 2)
+        store = h.manager.preview
+        h.manager.stop()
+        h.outcome()
+        written = h.sink.writes[0]
+        assert set(written) == {"front", "side"}
+        assert (int(written["front"].max()), int(written["side"].max())) == expected, skeleton
+        assert store.stage == ("annotated" if skeleton else "raw")
+
+
+def test_dual_loading_keeps_raw_pairs_flowing_without_writes_then_annotates():
+    FakeEngine.gate = threading.Event()
+    h = Harness(FakeInput((PRIMARY, SECONDARY)))
+    h.manager.start(dual(skeleton=True))
+    h.wait_for(lambda: FakeEngine.built >= 1)
+    store = h.manager.preview
+    shown: list = []
+    for _ in range(2):
+        seq = shown[-1].seq if shown else 0
+        h.wait_for(lambda: (f := store.take_newer(seq)) is not None and not shown.append(f))
+        assert shown[-1].stage == "raw" and set(shown[-1].images) == {PRIMARY, SECONDARY}
+        store.mark_rendered(shown[-1])
+    assert "模型加载中…（双摄裸帧预览）" in h.statuses()
+    assert h.sink.writes == [] and "running" not in h.kinds()
+    FakeEngine.gate.set()
+    h.wait_for(lambda: len(h.sink.writes) >= 2)
+    assert store.stage == "annotated"
+    h.manager.stop()
+    h.outcome()
+    assert h.kinds()[0] == "running"
+
+
+def test_dual_rotation_is_per_role_for_sizes_and_frames():
+    h = Harness(FakeInput((PRIMARY, SECONDARY)))
+    h.controls.rotation[SECONDARY].set(90)
+    h.manager.start(dual(skeleton=False))
+    h.wait_for(lambda: len(h.sink.writes) >= 2)
+    h.controls.rotation[PRIMARY].set(270)          # 运行中改旋转：之后的帧与录制尺寸随之改变
+    h.wait_for(lambda: h.sink.writes[-1]["front"].shape[:2] == (6, 4))
+    h.manager.stop()
+    h.outcome()
+    assert h.sink.calls[0] == ("begin", {"front": (6, 4), "side": (4, 6)}, 30.0)
+    assert h.sink.writes[0]["front"].shape[:2] == (4, 6)
+    assert h.sink.writes[0]["side"].shape[:2] == (6, 4)
+    assert h.sink.sizes[0] == {"front": (6, 4), "side": (4, 6)}
+    assert h.sink.sizes[-1] == {"front": (4, 6), "side": (4, 6)}
+
+
+def test_video_file_ignores_camera_rotation():
+    h = Harness(FakeInput(is_file=True, frames=3))
+    h.controls.rotation[PRIMARY].set(90)
+    h.manager.start(video_session("clip.mp4", workers=1))
+    h.outcome()
+    assert h.sink.calls[0] == ("begin", {"front": (6, 4)}, 25.0)
+    assert h.sink.writes[0]["front"].shape[:2] == (4, 6) and h.sink.sizes == []
+
+
+def test_parallel_camera_applies_rotation(monkeypatch):
+    monkeypatch.setattr(
+        stages_mod, "default_pipeline_factory", lambda **_kwargs: (lambda: FakeEngine(None)),
+    )
+    h = Harness(FakeInput())
+    h.controls.rotation[PRIMARY].set(90)
+    h.manager.start(single(skeleton=True, workers=2))
+    h.wait_for(lambda: len(h.sink.writes) >= 2)
+    h.manager.stop()
+    h.outcome()
+    assert h.sink.calls[0][1] == {"front": (4, 6)}
+    assert h.sink.writes[0]["front"].shape[:2] == (6, 4)
+
+
+def test_claim_failure_emits_failed_metrics_once(monkeypatch):
+    lines = []
+    import core.live.metrics as metrics_mod
+
+    monkeypatch.setattr(metrics_mod.diag, "event", lambda name, **fields: lines.append((name, fields)))
+
+    class ClaimFails(FakeInput):
+        def start(self, cancel):
+            raise RuntimeError("claim failed")
+
+    h = Harness(ClaimFails((PRIMARY, SECONDARY)))
+    h.manager.start(dual(skeleton=False), start_click=time.monotonic())
+    outcome = h.outcome()
+    assert outcome.status == "双摄像头接管失败：claim failed"
+    assert len(lines) == 1
+    assert lines[0][1]["outcome"] == "failed" and lines[0][1]["error_type"] == "RuntimeError"
+
+
+def test_release_failure_is_reported_not_swallowed():
+    class StuckRelease(FakeInput):
+        def close(self, *, keep_warm):
+            super().close(keep_warm=keep_warm)
+            raise RuntimeError("摄像头 0 释放失败，已隔离")
+
+    h = Harness(StuckRelease())
+    h.manager.start(single(skeleton=False))
+    h.wait_for(lambda: "running" in h.kinds())
+    h.manager.stop()
+    outcome = h.outcome()
+    assert outcome.failed and outcome.error_type == "CameraReleaseError"
+    assert outcome.status == "摄像头释放失败：摄像头 0 释放失败，已隔离"
+    assert h.statuses()[-1] == outcome.status
+
+
+def test_open_failure_releases_without_keeping_warm():
+    class Timeout(FakeInput):
+        def wait_ready(self, cancel):
+            raise TimeoutError("摄像头响应超时")
+
+    h = Harness(Timeout())
+    h.manager.start(single(skeleton=False))
+    outcome = h.outcome()
+    assert outcome.status == "打开输入源失败：摄像头响应超时"
+    assert h.source.keep_warm is False and "start" not in h.source.calls
+
+
+@pytest.mark.parametrize(("reason", "keep_warm"), [("user_stop", True), (APP_CLOSE, False)])
+def test_normal_stop_keeps_device_warm_but_app_close_releases(reason, keep_warm):
+    h = Harness(FakeInput())
+    h.manager.start(single(skeleton=False))
+    h.wait_for(lambda: "running" in h.kinds())
+    h.manager.stop(reason)
+    assert h.outcome().outcome == "stopped"
+    assert h.source.keep_warm is keep_warm

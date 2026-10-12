@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import ast
 import sys
 from pathlib import Path
 
@@ -117,61 +116,59 @@ def test_ui_state_can_disable_hands():
     assert state.out_path == "out.mp4"
 
 
-def _occupancy_pipeline_configs(tree: ast.AST) -> list[ast.Call]:
-    """``occupancy_pipe = create_engine(EngineSpec(...), ...)`` 中的 EngineSpec（P2 前为 MediaPipePipeline/PipelineConfig）。
+def test_ui_session_pipelines_use_state_enable_hands(monkeypatch):
+    """界面的手部开关进入会话配置，推理 stage 按配置构造引擎；站位检测固定 lite、不跑手部（bf8c908）。
 
-    考试 / 学生练习的站位检测只用髋部中点判断是否到位，固定跑 lite pose、不跑手部，
-    与界面的手部开关无关（bf8c908 引入）。
+    P6 起取代对 app_ui 源码的 AST 检查：引擎在 core.live 的 stage 里构造。
     """
-    found: list[ast.Call] = []
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Assign):
-            continue
-        if not any(isinstance(t, ast.Name) and t.id == "occupancy_pipe" for t in node.targets):
-            continue
-        value = node.value
-        if not (
-            isinstance(value, ast.Call)
-            and isinstance(value.func, ast.Name)
-            and value.func.id == "create_engine"
-        ):
-            continue
-        found.extend(arg for arg in value.args[:1] if isinstance(arg, ast.Call))
-    return found
+    import numpy as np
 
+    import core.live.stages as stages
+    from core.live import LiveControls
+    from core.live.stages import FramePacket, OccupancyStage, PoseStage, StageContext
+    from core.media import PRIMARY
 
-def test_ui_worker_pipelines_use_state_enable_hands():
-    source = Path(app_ui.__file__).read_text(encoding="utf-8")
-    tree = ast.parse(source)
+    specs = []
 
-    cfg_calls = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "EngineSpec"
-        and any(keyword.arg == "enable_hands" for keyword in node.keywords)
-    ]
+    class _Engine:
+        def __init__(self, spec):
+            specs.append(spec)
 
-    # 站位检测管线是唯一的例外：恰有一处，且保持 lite、不跑手部。
-    occupancy_cfgs = _occupancy_pipeline_configs(tree)
-    assert len(occupancy_cfgs) == 1
-    occupancy_kwargs = {keyword.arg: keyword.value for keyword in occupancy_cfgs[0].keywords}
-    assert isinstance(occupancy_kwargs.get("enable_hands"), ast.Constant)
-    assert occupancy_kwargs["enable_hands"].value is False
-    assert isinstance(occupancy_kwargs.get("pose_variant"), ast.Constant)
-    assert occupancy_kwargs["pose_variant"].value == "lite"
+        def next_timestamp_ms(self, **_kwargs):
+            return 0
 
-    # 其余实时 / 离线 worker 管线必须跟随界面的手部开关。
-    worker_calls = [call for call in cfg_calls if all(call is not occ for occ in occupancy_cfgs)]
-    assert len(worker_calls) >= 2
-    for call in worker_calls:
-        enable_arg = next(keyword.value for keyword in call.keywords if keyword.arg == "enable_hands")
-        where = f"apps/app_ui.py:{call.lineno}"
-        assert isinstance(enable_arg, ast.Attribute), where
-        assert isinstance(enable_arg.value, ast.Name), where
-        assert enable_arg.value.id == "state", where
-        assert enable_arg.attr == "enable_hands", where
+        def infer(self, frame, *, timestamp_ms=None):
+            return None, []
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(stages, "create_engine", lambda spec, models_dir=None: _Engine(spec))
+    monkeypatch.setattr(stages, "models_dir", lambda: Path("models"))
+
+    for source, source2 in (("0", None), ("0", "1"), ("video.mp4", None)):
+        for hands in (True, False):
+            state = app_ui.UiState(source=source, source2=source2, pose_variant="heavy", workers=1,
+                                   enable_hands=hands, record_skeleton=True)
+            config = app_ui.App._session_config(state)
+            assert config.enable_hands is hands
+            specs.clear()
+            PoseStage(config.roles).open(StageContext(config, LiveControls(), lambda *_: None))
+            assert specs and all(spec.enable_hands is hands for spec in specs)
+            assert all(spec.pose_variant == "heavy" for spec in specs)
+
+    # 站位检测管线：骨架关的双摄会话里启用后构造，恰一个，lite + 无手部，与界面开关无关。
+    state = app_ui.UiState(source="0", source2="1", pose_variant="heavy", workers=1, enable_hands=True)
+    config = app_ui.App._session_config(state)
+    controls = LiveControls()
+    controls.arm_occupancy("exam", True)
+    specs.clear()
+    stage = OccupancyStage(lambda _pose, _roi: True)
+    frame = np.zeros((8, 8, 3), np.uint8)
+    stage.process(FramePacket(0, {PRIMARY: frame}, out={PRIMARY: frame.copy()}),
+                  StageContext(config, controls, lambda *_: None))
+    assert len(specs) == 1
+    assert specs[0].pose_variant == "lite" and specs[0].enable_hands is False
 
 
 class _Var:

@@ -1,6 +1,5 @@
 """学生练习复用真实 PresenceGate；仅替换摄像头、录像落盘和语音设备。"""
-from queue import Queue
-from threading import Event, Lock
+from threading import Lock
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -8,6 +7,18 @@ import pytest
 
 from apps import app_ui
 from core.foundation import prefs as user_prefs
+from core.live import LiveControls, PresenceSample, RunningInfo
+
+
+class _FakeLive:
+    """会话管理器替身：只提供 App 读取的状态与配置。"""
+
+    def __init__(self, state="running", dual=True):
+        self.state = state
+        self.config = SimpleNamespace(dual=dual)
+
+    def active(self):
+        return self.state != "idle"
 
 
 def practice_app(monkeypatch, *, ready=True):
@@ -20,14 +31,11 @@ def practice_app(monkeypatch, *, ready=True):
     app._student_segment_ready = True
     app._student_last_segment_dir = None
     app._closing = False
-    app._stop_evt = Event()
+    app._live = _FakeLive()
+    app._live_controls = LiveControls()
     app._dual_recording_ready = ready
-    app._dual_preview_lock = Lock()
     app._exam_lock = Lock()
-    app._current_session_generation = app._active_dual_generation = 1
-    app._exam_occupancy_queue = Queue()
     app._exam_panel = SimpleNamespace(on_occupancy=Mock())
-    app._worker = SimpleNamespace(is_alive=lambda: True)
     app.root = SimpleNamespace(after=lambda _ms, callback: callback())
     app.student_status_var = Mock()
     for name in ("student_start_btn", "student_end_btn", "student_judge_btn", "student_exit_btn",
@@ -54,20 +62,19 @@ def practice_app(monkeypatch, *, ready=True):
 
 
 def occupancy(app, present, now):
-    app._exam_occupancy_queue.put((present, now))
-    app._drain_exam_occupancy()
+    app_ui.App._on_session_presence(app, PresenceSample(present, now))
 
 
 def test_cold_start_requests_student_format_without_blind_release(monkeypatch):
     app = practice_app(monkeypatch, ready=False)
-    app._worker = None
+    app._live.state = "idle"
     events = []
     app._release_camera_warmups = lambda: events.append("release")
 
     def start():
         # 学生模式下冻结的请求尺寸为 1080p；格式不一致的预热由池在释放后重开。
         events.append(("start", app_ui.App._camera_capture_size(app)))
-        app._worker = SimpleNamespace(is_alive=lambda: True)
+        app._live.state = "starting"
 
     app._start = start
     app._student_start()
@@ -78,7 +85,9 @@ def test_cold_start_requests_student_format_without_blind_release(monkeypatch):
 def test_wait_enter_record_leave_and_rearm(monkeypatch):
     app = practice_app(monkeypatch)
     app._student_start()
-    assert app._exam_roi == (.3, .2, .7, .9)
+    occ = app._live_controls.occupancy.get()
+    assert occ.roi == (.3, .2, .7, .9)
+    assert "practice" in occ.armed_by
     assert app._recording.state == "idle"
     app.student_start_btn.configure.assert_called_with(state="disabled")
     app.student_end_btn.configure.assert_called_with(state="normal")
@@ -127,7 +136,7 @@ def test_camera_ready_only_arms_detection_and_cancel_blocks_late_callback(monkey
     assert app._student_pending_record and app._student_presence_gate is None
     if cancel:
         app._student_end()
-    app._post_dual_recording_ready(1)
+    app_ui.App._on_session_running(app, RunningInfo({}, {}))
     assert app._recording.state == "idle"
     assert (app._student_presence_gate is None) == cancel
     app._student_announcer.announce.assert_not_called()
@@ -143,7 +152,7 @@ def test_manual_end_and_stop_do_not_allow_late_detection(monkeypatch):
     occupancy(app, False, 103.0)
     assert app._student_announcer.announce.call_count == 2
     app._student_start()
-    app._stop_evt.set()
+    app._live.state = "stopping"
     occupancy(app, True, 104.0)
     occupancy(app, True, 105.0)
     assert app._recording.state == "idle"

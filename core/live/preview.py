@@ -66,6 +66,7 @@ class PreviewStore:
         self._slot: PreviewFrame | None = None
         self._closed = False
         self._first_render = threading.Event()
+        self._rendered_stages: set[str] = set()
 
     @property
     def stage(self) -> str:
@@ -110,15 +111,19 @@ class PreviewStore:
             self._slot = None
             return frame
 
-    def mark_rendered(self, frame: PreviewFrame) -> None:
-        """界面已显示 ``frame``：记启动耗时，唤醒等待首帧显示的 runner。"""
+    def mark_rendered(self, frame: PreviewFrame) -> bool:
+        """界面已显示 ``frame``：记启动耗时，唤醒等待首帧显示的 runner；返回它是否是该阶段显示的第一帧。"""
         now = time.monotonic()
+        with self._lock:
+            first = frame.stage not in self._rendered_stages
+            self._rendered_stages.add(frame.stage)
         if self.metrics is not None:
             self.metrics.mark("first_pair_rendered", now)
             if frame.stage == "annotated":
                 self.metrics.mark("first_annotated_rendered", now)
             self.metrics.maybe_emit()
         self._first_render.set()
+        return first
 
     def wait_rendered(self, timeout: float) -> bool:
         return self._first_render.wait(timeout)
