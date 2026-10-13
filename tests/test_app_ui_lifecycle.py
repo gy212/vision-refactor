@@ -24,7 +24,7 @@ from core.recording import (
 )
 from core.recording import recorder as recording_recorder
 from core.recording import steps as recording_steps
-from core.workflows import ScorebookRegistry
+from core.workflows import PRACTICE, ModeManager, ScorebookRegistry, WorkflowHost
 
 
 class _Var:
@@ -162,12 +162,29 @@ class _SyncPool:
         return True
 
 
+def _attach_workflows(app):
+    """App 替身的模式与工作流路由（普通模式、无激活工作流）。"""
+    app.modes = ModeManager()
+    app.exam_scorebooks = ScorebookRegistry()
+    app.workflows = WorkflowHost(app.exam_scorebooks)
+    app.exam_panel = None
+    app._practice = None
+    return app
+
+
+def _attach_host(app):
+    """只给替身接上工作流路由（沿用它已有的台账登记表），没有激活的工作流与考试面板。"""
+    app.workflows = WorkflowHost(app.exam_scorebooks)
+    app.exam_panel = None
+    return app
+
+
 def _camera_app(index: int = 0):
     app = object.__new__(app_ui.App)
     app._live = _FakeLive()
     app._live_controls = LiveControls()
     app._closing = False
-    app._student_practice_active = False
+    _attach_workflows(app)
     app._source_state = app_ui.InputSourceState()
     app._source_state.select_camera(index)
     return app
@@ -190,7 +207,6 @@ def _closing_app(finalizer=None):
     app._recording = RecordingService(
         finalizer or _FinalizerDouble(), plan_for=lambda _segment: None
     )
-    app.exam_scorebooks = ScorebookRegistry()
     app._closing = False
     app._close_deadline = None
     app.root = _QueuedRoot()
@@ -233,7 +249,7 @@ def _camera_selection_app(
     app._source_state = app_ui.InputSourceState()
     app._sync_camera_warmup = lambda: None
     app._set_refresh_enabled = lambda: None
-    return app
+    return _attach_workflows(app)
 
 
 def test_single_camera_selection_declares_primary_spec_only():
@@ -268,10 +284,10 @@ def test_same_camera_selection_never_warms_second_role():
 
 def test_student_mode_declares_1080p_specs_without_reading_flag_later():
     app = _warmup_app()
-    app._student_practice_active = True
+    app.modes.enter(PRACTICE)
 
     app_ui.App._sync_camera_warmup(app)
-    app._student_practice_active = False
+    app.modes.leave()
 
     # D-6：学生练习严格要求 1080p。
     assert app._fake_pool.sync_calls == [
@@ -329,9 +345,9 @@ def test_warmup_rejection_releases_and_reports_status():
 
 def test_session_state_freezes_capture_size_for_whole_start():
     app = _warmup_app()
-    app._student_practice_active = True
+    app.modes.enter(PRACTICE)
     state = SimpleNamespace(capture_size=app_ui.App._camera_capture_size(app))
-    app._student_practice_active = False
+    app.modes.leave()
 
     assert app_ui.App._session_spec(state, "1") == app_ui.CaptureSpec(1, 1920, 1080)
 
@@ -353,7 +369,7 @@ def test_process_factory_forwards_frozen_spec(monkeypatch):
     monkeypatch.setattr(app_ui, "ProcessCamera", factory)
     stop = threading.Event()
     app = _camera_app()
-    app._student_practice_active = True  # 工厂不再读取模式标志
+    app.modes.enter(PRACTICE)  # 工厂不再读取模式
 
     app_ui.App._open_camera_process(app, 0, width=1280, height=720, stop_event=stop)
 
@@ -588,10 +604,11 @@ def test_exam_preflight_rejects_skeleton_session():
         _dual_recording_ready=True,
         _dual_record_skeleton=True,
         record_skeleton_var=_Var(True),
+        _current_template_lists=lambda: ([], []),
     )
-    ok, msg = app_ui.App._exam_preflight(app)
-    assert ok is False
-    assert "骨架" in msg
+    problems = app_ui.App.exam_preflight(app)
+    assert problems
+    assert "骨架" in problems[0]
 
 
 def test_close_poll_window_disables_recording_controls_and_rejects_toggle():
@@ -923,9 +940,6 @@ def _dual_submission_app(
         _live=_FakeLive("running"),
         _live_controls=LiveControls(),
         _exam_manual_locked=False,
-        _exam_pending_row=None,
-        _exam_run_id=None,
-        _student_practice_active=False,
         _pending_record_errors=[],
         _record_error_shown=False,
         _dual_active=True,
@@ -934,10 +948,10 @@ def _dual_submission_app(
         _dual_auto_compare=True,
         _record_base_dir=tmp_path,
         _latest_compare_segment_id=None,
-        exam_scorebooks=ScorebookRegistry(),
         _sync_record_stop_enabled=lambda _state: None,
         record_btn=_Widget(),
     )
+    _attach_workflows(app)
     # 计划构建读取模板池；这些测试只验证提交机制，返回空池即可。
     app._current_template_lists = lambda: ([], [])
     _bind_recording(app, finalizer, failing=failing)
@@ -1002,7 +1016,7 @@ def test_record_toggle_starts_dual_segment_under_selected_base_dir(tmp_path, mon
 def test_app_close_registers_open_panel_scorebook_for_flush_close(tmp_path):
     """主窗关闭时，仍打开的考试面板成绩簿必须移交登记表，并在最后 flush/close。"""
     from apps.exam_panel import ExamPanel
-    from core.workflows import ExamCandidate, ExamScorebook
+    from core.workflows import CommandExecutor, ExamCandidate, ExamScorebook, ExamSession, WorkflowPorts
 
     flushes: list[str] = []
     closes: list[str] = []
@@ -1019,19 +1033,34 @@ def test_app_close_registers_open_panel_scorebook_for_flush_close(tmp_path):
     book.update_row(book.rows[0], status="processing")
 
     registry = ScorebookRegistry()
-    app = SimpleNamespace(exam_scorebooks=registry, _exam_panel="sentinel")
-    announcer_closed: list[str] = []
-    panel = SimpleNamespace(
-        app=app,
-        scorebook=book,
-        session=SimpleNamespace(phase="completed"),
-        _tick_id="x",
-        win=SimpleNamespace(after_cancel=lambda _i: None, destroy=lambda: None),
-        phase_var=_Var(""),
-        status_var=_Var(""),
-        on_session_stop=lambda: None,
-        _announcer=SimpleNamespace(close=lambda: announcer_closed.append("close")),
+    modes: list[bool] = []
+    app = SimpleNamespace(
+        exam_scorebooks=registry,
+        workflows=WorkflowHost(registry),
+        set_exam_mode=modes.append,
+        lock_manual_record=lambda _locked: None,
     )
+    announcer_closed: list[str] = []
+    panel = object.__new__(ExamPanel)
+    panel.app = app
+    panel.session = ExamSession()
+    panel.session.phase = "completed"
+    panel.executor = CommandExecutor(
+        WorkflowPorts(
+            recorder=SimpleNamespace(),
+            occupancy=SimpleNamespace(arm=lambda _armed: None),
+            announcer=SimpleNamespace(),
+            ui=panel,
+        )
+    )
+    panel.scorebook = book
+    panel.win = SimpleNamespace(destroy=lambda: None)
+    panel.phase_var = _Var("")
+    panel.present_var = _Var("")
+    panel.status_var = _Var("")
+    panel._announcer = SimpleNamespace(close=lambda: announcer_closed.append("close"))
+    app.exam_panel = panel
+    app.workflows.activate(panel.session, panel.executor)
 
     ExamPanel.prepare_for_app_close(panel)  # type: ignore[arg-type]
 
@@ -1039,7 +1068,10 @@ def test_app_close_registers_open_panel_scorebook_for_flush_close(tmp_path):
     assert panel.scorebook is None
     assert registry.has_detached
     assert registry.has_processing
-    assert getattr(app, "_exam_panel", None) is None
+    assert app.exam_panel is None
+    assert app.workflows.active is None
+    assert modes == [False]
+    assert panel.status_var.get() == "主会话已停止，考试已中止"
     assert closes == []
 
     registry.close_all()
@@ -1064,6 +1096,7 @@ def test_compare_update_ignores_old_segment_and_formats_latest_score():
             has_detached=False,
         ),
     )
+    _attach_host(app)
 
     old = SegmentUpdate(
         segment_id="record_old",
@@ -1115,6 +1148,7 @@ def test_compare_update_formats_failed_skipped_and_cancelled_states():
         compare_error_var=_Var(""),
         exam_scorebooks=ScorebookRegistry(),
     )
+    _attach_host(app)
     cases = (
         ("failed", "失败", "video_unreadable", "录像无法读取"),
         ("skipped", "已跳过", "annotated_recording", "带骨架录像未自动比对"),
@@ -1142,6 +1176,7 @@ def test_compare_update_already_queued_is_discarded_after_close_starts():
         compare_error_var=_Var(""),
         exam_scorebooks=ScorebookRegistry(),
     )
+    _attach_host(app)
     app_ui.App._post_recording_compare_update(
         app,
         SegmentUpdate(

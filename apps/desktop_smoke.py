@@ -145,8 +145,8 @@ def _check_camera_mode_switch(app, root):
                 pump_until(preview_warm)
                 # 已有 720p 预热时进入学生练习：池按 1080p 重新协商，旧格式不混入会话。
                 app._enter_student_practice()
-                app._student_start()
-                pump_until(lambda: ready() and app._student_presence_gate is not None)
+                app._on_practice_start()
+                pump_until(lambda: ready() and app._practice.phase == "waiting_enter")
                 assert app._recording.session_sizes == {"front": (1920, 1080), "side": (1920, 1080)}
                 assert app._recording.state == "idle"  # Blank frames cannot start a recording.
                 app._exit_student_practice()
@@ -303,7 +303,7 @@ def run(report_path: Path) -> int:
                 report["checks"].append("tk_preview_student_1080p_switch_twice_with_spawn")
                 app._enter_student_practice()
                 root.update()
-                assert app._student_practice_active
+                assert app.modes.is_active("practice")
                 assert app.feedback_controls.analysis_model.get() == "Full（精细分析）"
                 report["checks"].append("tk_student_practice_ui")
                 app._on_close()

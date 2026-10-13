@@ -20,6 +20,16 @@ import pytest
 
 from apps import app_ui
 from core.live import LiveControls
+from core.workflows import (
+    PRACTICE,
+    CommandExecutor,
+    ModeManager,
+    PracticeSegment,
+    PracticeSession,
+    ScorebookRegistry,
+    WorkflowHost,
+    WorkflowPorts,
+)
 
 # 尝试导入 feedback_result_panel 模块 (M2 产物)
 feedback_result_panel_mod = pytest.importorskip("apps.feedback_result_panel", reason="apps.feedback_result_panel 尚未实现")
@@ -149,20 +159,16 @@ def make_dummy_record(
 def make_test_app(monkeypatch):
     """构建用于测试生命周期与视图切换的轻量 App 替身。"""
     app = app_ui.App.__new__(app_ui.App)
-    app._student_practice_active = True
-    app._student_pending_record = False
-    app._student_presence_gate = None
-    app._student_judging = False
-    app._student_segment_ready = True
     app._closing = False
-    app._rec = SimpleNamespace(state="idle")
-    app._live = SimpleNamespace(state="running", active=lambda: True)
+    app._recording = SimpleNamespace(state="idle")
+    app._live = SimpleNamespace(state="running", active=lambda: True, token=1)
     app._live_controls = LiveControls()
-
-    app._feedback_task_token = 0
-    app._active_feedback_token = None
-    app._active_feedback_student_id = None
-    app._current_student_record = None
+    app.modes = ModeManager()
+    app.modes.enter(PRACTICE)
+    app.exam_scorebooks = ScorebookRegistry()
+    app.workflows = WorkflowHost(app.exam_scorebooks)
+    app.workflows.session_started(app._live.token)
+    app.exam_panel = None
 
     app.left_container = Mock()
     app._preview_right = Mock()
@@ -175,7 +181,25 @@ def make_test_app(monkeypatch):
     app.root = Mock(after=lambda _ms, cb: cb())
     app._sync_student_buttons = Mock()
 
+    # 真实的练习状态机经 WorkflowHost 驱动；最近片段已就绪可评判
+    app._practice = PracticeSession(lambda: {"studentId": app.current_student_id.get()})
+    app._practice.segment = PracticeSegment("record_0", None, ready=True, terminal=True)
+    ports = WorkflowPorts(
+        recorder=app_ui._SegmentPort(app),
+        occupancy=app_ui._OccupancyPort(app, "practice"),
+        announcer=Mock(),
+        ui=app_ui._PracticeUi(app),
+        analysis=app_ui._PracticeAnalysis(app),
+    )
+    app.workflows.activate(app._practice, CommandExecutor(ports))
     return app
+
+
+def dispatch_analysis(app, token, student_id):
+    """模拟「动作评判」派发了第 token 代分析任务。"""
+    app._practice.token = token
+    app._practice.active_token = token
+    app._practice.active_student_id = student_id
 
 
 # ===========================================================================
@@ -327,12 +351,11 @@ def test_generation_token_drops_stale_callback_on_cancel(monkeypatch):
     app = make_test_app(monkeypatch)
 
     # 发起任务代次 1
-    app._feedback_task_token = 1
-    app._active_feedback_token = 1
-    app._active_feedback_student_id = "001"
+    dispatch_analysis(app, 1, "001")
 
     # 用户点击取消分析：active_token 清空
-    app._active_feedback_token = None
+    app._on_student_cancelled()
+    assert app._practice.active_token is None
 
     record = make_dummy_record(student_id="001")
     # 迟到的工作线程返回代次 1
@@ -352,9 +375,7 @@ def test_generation_token_drops_stale_callback_on_student_switch(monkeypatch):
     app = make_test_app(monkeypatch)
 
     # 为学生 "001" 发起代次 1
-    app._feedback_task_token = 1
-    app._active_feedback_token = 1
-    app._active_feedback_student_id = "001"
+    dispatch_analysis(app, 1, "001")
 
     # 用户在界面将学号修改为 "002"
     app.current_student_id = Mock(get=lambda: "002")
@@ -376,7 +397,9 @@ def test_generation_token_drops_stale_callback_on_practice_again(monkeypatch):
     app = make_test_app(monkeypatch)
 
     # 用户点击再练一次，active_token 设为 None，处于就绪预览态
-    app._active_feedback_token = None
+    dispatch_analysis(app, 1, "001")
+    app._on_student_practice_again()
+    assert app._practice.active_token is None
 
     record = make_dummy_record()
     app._on_student_analysis_saved(token=1, student_id="001", record=record)
@@ -410,9 +433,9 @@ def test_window_closing_drops_all_callbacks(monkeypatch):
 def test_practice_again_does_not_autostart_recording(monkeypatch):
     """验证点击“再练一次”时：安全切回录制预览，重置状态，但严格禁止自动开启摄像头录制。"""
     app = make_test_app(monkeypatch)
-    app._student_pending_record = True
-    app._student_presence_gate = Mock()
-    app._rec.state = "idle"
+    app._practice.phase = "showing_result"
+    app._practice.presence.arm_enter()
+    app._live_controls.arm_occupancy("practice", True)
 
     record_mock = Mock()
     monkeypatch.setattr(app_ui.App, "_begin_recording_segment", record_mock)
@@ -421,10 +444,11 @@ def test_practice_again_does_not_autostart_recording(monkeypatch):
     app._on_student_practice_again()
 
     # 1. 状态彻底重置
-    assert app._rec.state == "idle"
-    assert app._student_pending_record is False
-    assert app._student_presence_gate is None
-    assert app._active_feedback_token is None
+    assert app._recording.state == "idle"
+    assert not app._practice.waiting
+    assert app._practice.presence.phase == "idle"
+    assert "practice" not in app._live_controls.occupancy.get().armed_by
+    assert app._practice.active_token is None
 
     # 2. 严禁自动启动录制
     record_mock.assert_not_called()

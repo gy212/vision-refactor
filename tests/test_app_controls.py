@@ -27,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from apps.app_ui import App, RECORD_BTN_TEXT  # noqa: E402
 from core.recording import RecordingService, SegmentFinalizer, SegmentRecorder  # noqa: E402
+from core.workflows import ModeManager  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -142,6 +143,7 @@ def _make_toggle_stub(tmp_path: Path):
         record_btn=FakeWidget(text=RECORD_BTN_TEXT["idle"]),
         _sync_record_stop_enabled=lambda _state: None,
         _live=_FakeLive("running"),
+        modes=ModeManager(),
     )
     return stub
 

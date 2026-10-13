@@ -57,10 +57,9 @@ PRIMITIVES: dict[str, tuple[int, str]] = {
     'subsequence_dtw: scripts/match_segments_probe.py': (1, 'P9'),
     'thread: apps/app_ui.py': (4, 'P8'),
     'thread: apps/feedback_panel.py': (1, 'P8'),
-    'thread: core/exam_announcer.py': (1, 'P7'),
     'tk_after: apps/app_ui.py': (15, 'P8'),
     'tk_after: apps/desktop_smoke.py': (2, 'P8'),
-    'tk_after: apps/exam_panel.py': (3, 'P8'),
+    'tk_after: apps/exam_panel.py': (1, 'P8'),
     'tk_after: apps/feedback_panel.py': (2, 'P8'),
     'video_capture: analysis/bench_annotate_fps.py': (4, 'P9'),
     'video_capture: analysis/spike_yolo_baseline.py': (2, 'P9'),
@@ -71,7 +70,7 @@ CLONES: dict[str, tuple[int, str]] = {}
 
 MODULE_SIZE: dict[str, tuple[int, str]] = {
     'analysis/bench_annotate_fps.py': (1018, 'P9'),
-    'apps/app_ui.py': (3891, 'P8'),
+    'apps/app_ui.py': (3528, 'P8'),
     'apps/feedback_result_panel.py': (1325, 'P8'),
     'core/media/camera/pool.py': (1115, 'P9'),  # 原 apps/camera_warmup.py（1125），D-15：P9 按职责拆分
     'core/feedback_report.py': (1518, 'P8'),
@@ -84,9 +83,8 @@ FUNCTION_SIZE: dict[str, tuple[int, str]] = {
     'analysis/bench_annotate_fps.py::main': (131, 'P9'),
     'analysis/calibrate_body_core.py::run': (166, 'P9'),
     'analysis/offline_matching_profile.py::run_fixture_profile': (112, 'P9'),
-    'apps/app_ui.py::App.__init__': (130, 'P8'),
-    'apps/app_ui.py::App._build_ui': (398, 'P8'),
-    'apps/app_ui.py::App._exit_student_practice': (102, 'P8'),
+    'apps/app_ui.py::App.__init__': (113, 'P8'),
+    'apps/app_ui.py::App._build_ui': (391, 'P8'),
     'apps/app_ui.py::App._set_running_controls': (124, 'P8'),
     'apps/app_ui.py::CompareWindow._build': (128, 'P8'),
     'apps/desktop_smoke.py::run': (142, 'P8'),
@@ -110,7 +108,7 @@ FUNCTION_SIZE: dict[str, tuple[int, str]] = {
 }
 
 DEFENSIVE_GETATTR: dict[str, tuple[int, str]] = {
-    'apps/app_ui.py': (89, 'P8'),
+    'apps/app_ui.py': (44, 'P8'),
 }
 
-ENTRY_CEILING = 51
+ENTRY_CEILING = 49

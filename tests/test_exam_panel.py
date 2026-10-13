@@ -6,9 +6,15 @@ from types import SimpleNamespace
 
 from apps import exam_panel
 from core.foundation import prefs as user_prefs
-from core.exam_roster import ExamCandidate, ExamScorebook, write_import_template
-from core.workflows import ScorebookRegistry
-from core.exam_session import ExamSession
+from core.workflows import (
+    CommandExecutor,
+    ExamCandidate,
+    ExamScorebook,
+    ExamSession,
+    ScorebookRegistry,
+    WorkflowPorts,
+    write_import_template,
+)
 
 
 class _Var:
@@ -74,9 +80,26 @@ class _Tree:
         self.seen = str(iid)
 
 
-def _bare_panel(session: ExamSession | None = None) -> exam_panel.ExamPanel:
+def _bare_panel(session: ExamSession | None = None, lifecycle: list | None = None) -> exam_panel.ExamPanel:
+    """不建 Tk 窗口的面板；命令经真实 CommandExecutor 执行，端口记录到 ``lifecycle``。"""
+    events = lifecycle if lifecycle is not None else []
     panel = object.__new__(exam_panel.ExamPanel)
     panel.session = session or ExamSession()
+    panel.executor = CommandExecutor(
+        WorkflowPorts(
+            recorder=SimpleNamespace(),
+            occupancy=SimpleNamespace(
+                arm=lambda armed: events.append(("armed", armed)),
+                set_roi=lambda roi: events.append(("roi", roi)),
+            ),
+            announcer=SimpleNamespace(announce=lambda text: events.append(("announce", text))),
+            ui=panel,
+        )
+    )
+    panel.app = SimpleNamespace(
+        set_exam_mode=lambda active: events.append(("active", active)),
+        lock_manual_record=lambda locked: events.append(("locked", locked)),
+    )
     panel.scorebook = None
     panel.run_dir = None
     panel._row_by_id = {row.row_id: row for row in panel.session.rows}
@@ -160,15 +183,10 @@ def test_replacing_roster_hands_processing_scorebook_to_registry() -> None:
     book = _Book()
     registered = []
     lifecycle: list[tuple[str, bool]] = []
-    panel = _bare_panel()
+    panel = _bare_panel(lifecycle=lifecycle)
     panel.scorebook = book
     panel.run_dir = Path("old-run")
-    panel.app = SimpleNamespace(
-        exam_scorebooks=SimpleNamespace(detach=registered.append),
-        _exam_arm_occupancy=lambda active: lifecycle.append(("armed", active)),
-        _exam_set_active=lambda active: lifecycle.append(("active", active)),
-        _exam_lock_manual_record=lambda active: lifecycle.append(("locked", active)),
-    )
+    panel.app.exam_scorebooks = SimpleNamespace(detach=registered.append)
 
     panel._replace_roster([ExamCandidate(1, "NEW", "新考生")])
 
@@ -255,15 +273,11 @@ def test_aborted_retest_becomes_startable_without_skipping_remaining_roster(
     panel._row_by_id = {row.row_id: row for row in session.rows}
     panel._refresh_tree()
     panel.tree.selection_set(first.row_id)
-    active_calls: list[tuple[bool, str, Path]] = []
+    active_calls: list[bool] = []
     registry = ScorebookRegistry()
-    panel.app = SimpleNamespace(
-        _exam_preflight=lambda: (True, ""),
-        _exam_set_active=lambda active, *, run_id, run_dir: active_calls.append(
-            (active, run_id, run_dir)
-        ),
-        exam_scorebooks=registry,
-    )
+    panel.app.exam_preflight = lambda: []
+    panel.app.set_exam_mode = active_calls.append
+    panel.app.exam_scorebooks = registry
     panel._save_roi = lambda: True
     commands = []
     panel._dispatch = commands.extend
@@ -285,7 +299,9 @@ def test_aborted_retest_becomes_startable_without_skipping_remaining_roster(
     assert panel.session.phase == "calling"
     assert panel.session.pointer == 1
     assert panel.session.current is panel.session.rows[1]
-    assert active_calls == [(True, "run-existing", tmp_path)]
+    assert active_calls == [True]
+    assert panel.session.run_id == "run-existing"
+    assert panel.run_dir == tmp_path
     # 沿用的台账登记到新场次，录后结果按 run_id 回填到它
     assert registry.apply(SimpleNamespace(segment_id="none", exam_run_id="run-existing", status="queued")) is None
     assert registry._by_run["run-existing"] is book
@@ -318,11 +334,8 @@ def test_completed_retest_can_auto_start_when_confirmed(
     panel._row_by_id = {row.row_id: row for row in session.rows}
     panel._refresh_tree()
     panel.tree.selection_set(first.row_id)
-    panel.app = SimpleNamespace(
-        _exam_preflight=lambda: (True, ""),
-        _exam_set_active=lambda *a, **k: None,
-        exam_scorebooks=ScorebookRegistry(),
-    )
+    panel.app.exam_preflight = lambda: []
+    panel.app.exam_scorebooks = ScorebookRegistry()
     panel._save_roi = lambda: True
     commands: list = []
     panel._dispatch = commands.extend
@@ -427,10 +440,8 @@ def test_nonempty_aborted_session_does_not_claim_roster_is_missing(
     session.load_roster([ExamCandidate(1, "S1", "甲")])
     session.phase = "aborted"
     panel = _bare_panel(session)
-    panel.app = SimpleNamespace(
-        _exam_preflight=lambda: (_ for _ in ()).throw(
-            AssertionError("phase validation must run before preflight")
-        )
+    panel.app.exam_preflight = lambda: (_ for _ in ()).throw(
+        AssertionError("phase validation must run before preflight")
     )
     errors: list[str] = []
     monkeypatch.setattr(

@@ -253,7 +253,7 @@ def test_student_id_hash_optional_placeholders(tmp_path: Path) -> None:
     """###000 + 123 → 123（# 不强制补零）；超出宽度保留 ID- 前缀。"""
     from openpyxl import Workbook
 
-    from core.exam_roster import _display_text_from_number_format
+    from core.workflows.exam.roster import _display_text_from_number_format
 
     assert _display_text_from_number_format(123, "###000") == "123"
     assert _display_text_from_number_format(123, "000000") == "000123"
