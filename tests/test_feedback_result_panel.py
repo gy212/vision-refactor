@@ -19,6 +19,7 @@ from unittest.mock import Mock, call
 import pytest
 
 from apps import app_ui
+from core.live import LiveControls
 
 # 尝试导入 feedback_result_panel 模块 (M2 产物)
 feedback_result_panel_mod = pytest.importorskip("apps.feedback_result_panel", reason="apps.feedback_result_panel 尚未实现")
@@ -155,7 +156,8 @@ def make_test_app(monkeypatch):
     app._student_segment_ready = True
     app._closing = False
     app._rec = SimpleNamespace(state="idle")
-    app._worker = SimpleNamespace(is_alive=lambda: True)
+    app._live = SimpleNamespace(state="running", active=lambda: True)
+    app._live_controls = LiveControls()
 
     app._feedback_task_token = 0
     app._active_feedback_token = None

@@ -1,3 +1,90 @@
+## 2026-10-13（America/Los_Angeles）: [fix] P6 评审修复：并行视频停止时读帧线程不退出；CLI 并行导出丢失 HUD
+
+- 问题描述：PR #17 评审两项 P2。
+  1. 并行视频不丢帧，读帧线程在输入队列满时阻塞于 `ParallelPoseEngine.submit()` 的 `Queue.put()`。停止（Tk 停止或 CLI 按 q）后 `engine.close()` 只停 worker，不解除这个阻塞，会话等满超时（约 4–5 秒）才报 `stopped`，读帧线程和队列里的帧留到进程退出。
+  2. `video_session()` 的 `record_hud=workers <= 1` 把 Tk 并行视频"先写后画"的策略也用于 CLI，`apps/main.py --workers 2 --out` 导出的视频丢了动作标签和 FPS 文字；旧 CLI 是先画后写。
+- 修改内容：
+  - `core/pose/parallel.py`：不丢帧的 `submit` 改为带超时的循环放入，`close` 之后放弃这一帧并返回 None。
+  - `core/live/runner.py`：并行分支收尾时先取消读帧 token 再关引擎，再等读帧线程结束。
+  - `core/live/config.py`：`video_session` 改为 `record_hud=hud == "cli" or workers <= 1`。
+  - 设计文档 §8 的 HUD 写入顺序与上一条记录的"行为保持"同步改为区分 Tk 与 CLI。
+- 验证方法：
+  - 新增 `test_parallel_pose_engine.py::test_blocking_submit_returns_none_after_close`、`test_live_session.py::test_stopping_parallel_video_with_full_queue_leaves_no_reader`（停止在 1 秒内结束、不留读帧线程）、`test_parallel_video_writer_receives_hud_only_for_cli[cli/tk]`（写入器收到的帧副本：CLI 带文字，Tk 不带）；`test_config_table_matches_legacy_loops` 加 CLI 一条断言。三个新测试在修复前的代码上失败（停止耗时 5.2 秒、CLI 写入帧无文字、submit 不返回），修复后通过。
+  - 门禁与架构测试 65 passed；全量 `-m pytest tests -q` 1175 passed。没有被替换的测试。
+
+## 2026-10-12（America/Los_Angeles）: [refactor] P6 实时会话：新增 core/live，Tk 4 个与 CLI 3 个逐帧循环改用 SessionRunner，实施 D-7、D-8/V-2
+
+- 问题描述：Tk 的 `_worker_loop`、`_worker_loop_dual_camera`、`_worker_loop_parallel_camera`、`_worker_loop_parallel_video` 和 CLI 的 `run`、`run_realtime_parallel`、`run_realtime_latest_frame_smoke`、`_process_video_multithread` 各写了一遍"读帧 → 推理 → 绘制 → 录制 → 预览"。另有 3 个预览队列、`_post_*` 系列、会话代次字段和 `_DualStartupMetrics`。旋转与站位检测通过 App 字段跨线程读取。开工前用户决定（2026-10-12）：D-7 双摄平滑与在线识别保持关闭、作为配置项保留；D-8/V-2 单摄模型加载期间显示裸帧。
+- 修改内容：
+  - 新增 `core/live/`：
+    - `config.py`：`SessionConfig`、`camera_session`/`video_session` 把 §8.2 的表写成配置；`LiveControls` 承载每路旋转与站位检测。
+    - `inputs.py`：`CameraInput` 包装 `CameraStream`，`VideoFileInput` 包装 `VideoSource`。
+    - `stages.py`：Transform、Pose（顺序或 `ParallelPoseEngine`）、Smooth、OnlineMatch、Labels、Occupancy、Overlay。
+    - `runner.py`：`SessionRunner` 是唯一的逐帧循环，含加载期裸帧泵、latest-frame 与并行分支，按阶段区分错误前缀。
+    - `preview.py`：`PreviewStore`，单槽、序号单调、阶段只进不退。
+    - `metrics.py`：`StartupMetrics` 输出 `session.metrics`。
+    - `manager.py`：`LiveSessionManager`，状态 idle/starting/running/stopping，持有 `Epoch`，丢弃过期事件。
+  - `core/media`：`CameraPool.snapshot_one`，单摄 `CameraStream.snapshot` 返回 primary 一路；删除迁移期适配器 `CaptureView` 与 `CameraService.open_capture`。
+  - Tk：
+    - 删除 4 个 `_worker_loop*`、`_post_*`、3 个预览队列、预览布局队列、会话代次字段、`_DualStartupMetrics` 与 `_tick` 的单双摄分支。
+    - 会话改由 `LiveSessionManager` 启停：事件入队后由 `_tick` 分发（`_on_session_status/progress/match/presence/running/ended`），`_render_preview` 从 `PreviewStore` 取帧。
+    - 录制经 `_RecordingSink` 转给 `RecordingService`。
+    - 旋转、ROI、考试与练习的站位检测改写 `LiveControls`，练习经 `_set_student_gate`。
+    - 关窗以 `APP_CLOSE` 停止会话，设备直接释放、不交回预热，与旧行为一致。
+    - `UiState` 删除 `session_generation`、`start_click`。
+  - CLI：实现移入 `apps/cli/main.py`，`apps/main.py` 是 5 行入口壳，参数不变。实时预览、并行（摄像头与视频）、latest-frame 冒烟都由 `SessionRunner` 执行，冒烟指标取自 `runner.stats`。
+  - 行为保持：
+    - 单摄录像始终带 HUD。
+    - 双摄骨架关录原始帧；骨架开录标注帧，主路带 HUD。
+    - Tk 并行视频先写帧再画 HUD；CLI 并行导出先画后写。
+    - "(xN)" 后缀只用于并行摄像头。
+    - 各阶段的状态文字与错误前缀不变。
+    - 骨架关时不构造引擎，视频文件始终推理，考试预检拒绝骨架会话。
+  - 已知的可见差异：
+    - D-8：单摄骨架会话在模型加载期间先显示裸帧，模型就绪后才接管设备。
+    - 骨架关的摄像头会话在接管前先显示一帧预热画面。
+    - 双摄启动提示只在每个阶段显示第一帧时出现。
+    - 单摄会话也输出 `session.metrics` 诊断行。
+    - CLI 并行视频的 HUD FPS 与进度和 Tk 视频会话同一口径，进度每 5 帧刷新一次。
+  - allowlist 60 → 51 条：`apps/main.py` 的 4 条与 4 个 `_worker_loop*` 函数体量条目消除；`app_ui.py` 的 `video_capture` 原语消除；`app_ui.py` 的模块（5250→3891）、`App.__init__`（152→130）、线程（9→4）、`after`（22→15）、防御式 getattr（132→89）按实际值下调；`pool.py` 1116→1115。spec 的 hiddenimports 加入 `core.live` 各模块。
+  - 文档：设计文档 §5.3.4、§8.2 表（D-8）、§8.3 新增“实现补充（P6）”、§12；`重构阶段任务/P6-实时会话.md`（状态、勾选）与 README。
+  - 测试（D-13 替换关系）：
+    - 新增 `tests/test_live_session.py`（34 项）：生命周期、§8.2 配置表、D-8、站位检测、指标、预览槽、双摄失败与收尾、旋转、释放与预热归还。
+    - `test_app_ui_dual_camera.py` 删除 24 项旧 worker 白盒测试，对应关系如下：
+      - 等待失败 → `test_dual_wait_failure_reports_warmup_error_once_and_never_claims`
+      - 双引擎、标注失败 → `test_dual_skeleton_builds_two_engines_and_closes_both_on_infer_failure`
+      - 第二引擎失败 → `test_second_engine_failure_closes_first_and_never_claims_or_records`
+      - 写失败、finally 收尾、学生格式不变 → `test_dual_write_failure_closes_recording_and_releases_without_engines` 与 `test_dual_session_config_freezes_capture_specs`
+      - 录制帧选择（3 项）→ `test_dual_records_raw_without_skeleton_and_annotated_with_skeleton`
+      - 加载期裸帧 → `test_dual_loading_keeps_raw_pairs_flowing_without_writes_then_annotates`
+      - 旋转与录制尺寸（5 项）→ `test_dual_rotation_is_per_role_for_sizes_and_frames`、`test_video_file_ignores_camera_rotation`、`test_parallel_camera_applies_rotation`、`test_rotation_applies_to_recording_size_and_frames`
+      - 预览队列与阶段（3 项）→ `test_preview_store_is_single_slot_and_monotonic`、`test_loading_preview_shows_raw_then_annotated_without_regressing`、`test_tick_shows_nothing_after_stop_requested`
+      - tick 渲染与指标（3 项）→ `test_tick_renders_dual_frame_atomically_with_status_once_per_stage`、`test_metrics_emitted_once_with_legacy_fields`、`test_claim_failure_emits_failed_metrics_once`
+      - 父线程不接管、不开设备（2 项）→ `test_session_input_opens_camera_stream_without_touching_pool`、`test_app_camera_service_is_the_only_camera_owner`
+      - 引擎构造点 → `test_occupancy_samples_every_stride_frames_when_armed`
+      - 其余 3 项旋转 AST 守卫已无对应代码，行为由上述旋转测试覆盖。
+    - `test_app_ui_lifecycle.py` 删除 8 项：
+      - `_post_done` 重新预热与打开失败 → `test_session_end_rewarms_unless_camera_session_failed`、`test_open_failure_releases_without_keeping_warm`
+      - 代次去重、录制就绪代次 → `test_session_events_from_stale_sessions_are_ignored`、`test_session_running_enables_dual_recording_only_for_live_dual_session`
+      - 释放失败 → `test_release_failure_is_reported_not_swallowed`
+      - 打开期间停止 → `test_cancelled_wait_ready_reports_stopped`
+      - 视频释放预热 → `test_video_session_releases_camera_warmups_before_starting`
+      - 布局队列 → 布局改在 Tk 线程按帧尺寸选择，由 `test_tick_renders_dual_frame_atomically_with_status_once_per_stage` 覆盖
+      - 新增 `test_start_refused_while_previous_session_is_finishing`
+    - `test_app_ui_online_matcher.py` 的 10 项改为 OnlineMatchStage、`match_text`、`App._on_session_match` 与配置守卫的 7 项。
+    - `test_ui_worker_pipelines_use_state_enable_hands` → `test_ui_session_pipelines_use_state_enable_hands`；`test_latest_frame_queue_keeps_only_newest_and_counts_drops` → `test_latest_frame_mode_only_infers_newest_and_counts_drops`。
+    - `test_camera_service.py` 的 3 项 CLI 用例、`test_app_controls`、`test_error_handling`、`test_feedback_result_panel`、`test_student_presence`、`test_m2_adversarial_stress`、`test_ui_controls` 的替身改用 `_live`/`_live_controls` 与会话事件处理，用例名不变。
+- 同步依据：设计文档 §8.1–§8.3、§5.3.4、§11（D-7、D-8/V-2），`重构阶段任务/P6-实时会话.md` 第 3 节。
+- 验证方法：
+  - 全量 `.\.venv\Scripts\python.exe -m pytest tests -q`：1171 passed（开工基线 1167）。
+  - golden 与契约 4 个文件零漂移（含在全量中）；架构测试 16 passed。
+  - `tests/test_live_session.py` 连续 3 轮通过。
+  - 源码模式 `tests/test_camera_capture.py::test_tk_preview_student_switch_with_process_cameras` 通过。
+  - `scripts/sim_exam_flow.py`：37 passed，`SIMULATION_OK`。
+  - 用干净的 `0b6c1da` 构建 EXE，`--offline-self-check` 结果 `ok=true`（12 项，含 Tk 学生 1080p 切换与练习界面）。
+  - 搜索：`def _worker_loop`、`_post_frame2|_post_dual_frame_pair|_dual_preview_queue` 在 `apps/`、`core/` 无匹配；`apps/`、`core/` 中的 `cv2.VideoCapture(` 只在 `core/media/` 与 `core/qwen_coach.py`（D-12）。
+  - `git diff --check` 通过。
+
 ## 2026-10-12（America/Los_Angeles）: [fix] P5 评审修正：CLI 断流时仍释放采集、写出与窗口；稳定双摄断流用例
 
 - 问题描述：PR #16 评审。① CLI `run()` 的摄像头源改走 `ProcessCamera` 后，断流时子进程抛 `RuntimeError`，`CaptureView.read` 只捕获 `CameraReadError`，异常越过 `run()` 末尾的 `cap.release()`、`writer.release()`、`destroyAllWindows()`，服务也留下未归还的租约。② `test_read_failure_names_the_failed_role_in_dual_stream` 按 `StreamingCapture.opened[1]` 取第二路，两路预热线程的打开顺序不确定，偶发断开第 1 路；断言失败时也跳过 `stream.close()`。

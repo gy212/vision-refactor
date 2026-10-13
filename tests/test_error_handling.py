@@ -103,8 +103,9 @@ def test_start_with_no_source_shows_error_and_does_not_begin_session(monkeypatch
     def _raise_no_source(_self=None):
         raise ValueError("请先选择摄像头或视频")
 
+    started = []
     stub = types.SimpleNamespace(
-        _worker=None,
+        _live=types.SimpleNamespace(active=lambda: False, start=lambda *a, **k: started.append(a)),
         _collect_state=_raise_no_source,
         _recording=rec_spy,
     )
@@ -113,7 +114,8 @@ def test_start_with_no_source_shows_error_and_does_not_begin_session(monkeypatch
 
     # 弹出一次错误提示。
     assert recorder.count == 1
-    # 未启动录制会话。
+    # 未启动会话，也未启动录制会话。
+    assert started == []
     assert rec_spy.begin_session_calls == []
 
 

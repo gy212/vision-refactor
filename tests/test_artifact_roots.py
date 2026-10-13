@@ -66,6 +66,7 @@ _EDITED_FILES = (
     "core/rule_scoring.py",
     "analysis/tech_eval.py",
     "apps/main.py",
+    "apps/cli/main.py",
     "apps/app_ui.py",
     "apps/cli/make_template.py",
     "apps/cli/match_template.py",

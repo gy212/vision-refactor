@@ -19,8 +19,7 @@ from PIL import Image, ImageTk
 
 from core.evaluation import COMPARE, load_template
 from core.services import compare_templates, create_template_from_video
-from core.pose import EngineSpec, create_engine, draw_roi, draw_tk_hud, missing_model_message, render_pose
-from core.pose import actions_text as format_actions
+from core.pose import missing_model_message
 from core.foundation import (
     EXAM_ROI,
     PreferenceStore,
@@ -33,10 +32,25 @@ from core.foundation import (
     save_template_pools,
 )
 from core.paths import models_dir, outputs_dir
-from core import model_manager, online_matcher, paths, video_writer
-from core import pose_features as pf
-from core.parallel_pose_engine import ParallelPoseEngine, default_pipeline_factory
-from core.preview_smoother import PreviewLandmarkSmoother
+from core import model_manager, paths, video_writer
+from core.live import (
+    APP_CLOSE,
+    RUNNING,
+    STARTING,
+    CameraInput,
+    FrameInput,
+    LiveControls,
+    LiveSessionManager,
+    PresenceSample,
+    RunningInfo,
+    SessionConfig,
+    SessionEvent,
+    SessionOutcome,
+    VideoFileInput,
+    camera_session,
+    video_session,
+)
+from core.presence_gate import hip_midpoint_in_roi
 from core.media import SegmentLayout
 from core.recording import (
     BeginError,
@@ -59,8 +73,7 @@ from core.recording import (
 from core.workflows import EXAM_CLOSE_BUDGET_S, ExamClipStep, ScorebookRegistry
 from apps.input_source import InputSourceState
 from core import foundation
-from core.foundation import Cancelled, from_stopped
-from core.media import PRIMARY, SECONDARY, CameraService, CaptureSpec, CaptureView, ProcessCamera
+from core.media import PRIMARY, SECONDARY, CameraService, CaptureSpec, ProcessCamera
 from core.media import CameraDevice as CameraEntry
 from apps.feedback_panel import FeedbackControls
 
@@ -79,11 +92,6 @@ NO_SECOND_CAMERA = "无（单摄像头）"
 # 旋转在 cap.read() 之后立即应用，姿态检测 / 预览 / 录制统一用转正后的帧。
 ROTATE_CHOICES = ("0°", "90°", "180°", "270°")
 _VALID_ROTATIONS = frozenset((0, 90, 180, 270))
-_ROTATE_CODES = {
-    90: cv2.ROTATE_90_CLOCKWISE,
-    180: cv2.ROTATE_180,
-    270: cv2.ROTATE_90_COUNTERCLOCKWISE,
-}
 
 
 def _parse_rotate(text: str) -> int:
@@ -107,19 +115,6 @@ def _next_rotate_cw(degrees: int) -> int:
     return (d + 90) % 360
 
 
-def _apply_rotation(frame: np.ndarray, degrees: int) -> np.ndarray:
-    """按度数旋转帧；0（或非 90 倍数）时原样返回（不复制）。"""
-    code = _ROTATE_CODES.get(degrees)
-    return cv2.rotate(frame, code) if code is not None else frame
-
-
-def _rotated_size(width: int, height: int, degrees: int) -> tuple[int, int]:
-    """返回旋转后的 ``(width, height)``，供 writer 和布局使用。"""
-    if degrees in (90, 270):
-        return height, width
-    return width, height
-
-
 def _choose_dual_preview_layout(
     size: tuple[int, int], size2: tuple[int, int]
 ) -> str:
@@ -127,20 +122,6 @@ def _choose_dual_preview_layout(
     w, h = size
     w2, h2 = size2
     return "side_by_side" if h > w and h2 > w2 else "stacked"
-
-
-def _select_dual_recording_frames(
-    frame: np.ndarray,
-    frame2: np.ndarray,
-    annotated: np.ndarray,
-    annotated2: np.ndarray,
-    *,
-    record_skeleton: bool,
-) -> tuple[np.ndarray, np.ndarray]:
-    """会话级全局骨架开关：开启时录像写标注帧；关闭时写原始帧（与预览一致）。"""
-    if record_skeleton:
-        return annotated, annotated2
-    return frame, frame2
 
 # 关窗时给采集线程收尾并等待 H.264 转码的最长时间。等待拆成短 join 片段，
 # 避免 Tk 主线程在单次回调里长时间无响应。
@@ -151,8 +132,6 @@ _CAMERA_CANCEL_JOIN_TIMEOUT_S = 0.05
 _CAMERA_RELEASE_WAIT_S = 3.0
 _PREVIEW_CAPTURE_SIZE = (1280, 720)
 _STUDENT_CAPTURE_SIZE = (1920, 1080)
-_DUAL_RAW_PUMP_INTERVAL_S = 0.05
-_DUAL_STAGE_RANK = {"raw": 0, "annotated": 1}
 
 
 def clamp_workers(n: int) -> int:
@@ -767,37 +746,6 @@ class UiState:
     # 驱动给不出请求尺寸时的处理（D-6）与按编号记下的设备名（V-3），同样在启动时冻结。
     capture_policy: str = "prefer"
     camera_names: tuple[tuple[int, str], ...] = ()
-    session_generation: int = 0
-    start_click: float = 0.0
-
-
-@dataclass(frozen=True)
-class DualPreviewPacket:
-    session_generation: int
-    frame_rgb: np.ndarray
-    actions: str
-    frame_rgb2: np.ndarray
-    actions2: str
-    stage: str
-    enqueued_at: float
-
-
-@dataclass
-class _DualStartupMetrics:
-    session_generation: int
-    primary_index: int
-    secondary_index: int
-    record_skeleton: bool
-    start_click: float
-    pair_ready: float | None = None
-    first_pair_enqueued: float | None = None
-    first_pair_rendered: float | None = None
-    pipeline_ready: float | None = None
-    first_annotated_enqueued: float | None = None
-    first_annotated_rendered: float | None = None
-    outcome: str | None = None
-    error_type: str | None = None
-    emitted: bool = False
 
 
 class SettingsWindow:
@@ -1070,10 +1018,8 @@ class App:
         self.camera_choice_var_2 = StringVar(value=NO_SECOND_CAMERA)
         self.rotate_var = StringVar(value=ROTATE_CHOICES[0])
         self.rotate_var_2 = StringVar(value=ROTATE_CHOICES[0])
-        # 运行时旋转：主线程写、worker 每帧读；点击预览可顺时针 +90°，两路隔离。
-        self._runtime_rotate_lock = threading.Lock()
-        self._runtime_rotate = 0
-        self._runtime_rotate2 = 0
+        # 会话运行中可调的参数（每路旋转、站位检测）：主线程写，会话线程每帧读（§8.1）。
+        self._live_controls = LiveControls()
         self.source_hint_var = StringVar(value="当前输入源：未选择")
         self.pose_var = StringVar(value="full")
         self.workers_var = IntVar(value=default_workers())
@@ -1136,14 +1082,10 @@ class App:
         # 考试模式（见 docs/exam_system_design.md）
         self._exam_lock = threading.Lock()
         self._exam_active = False
-        self._exam_occupancy_armed = False
-        self._exam_roi: tuple[float, float, float, float] = (0.2, 0.1, 0.8, 0.95)
         self._exam_run_id: str | None = None
         self._exam_run_dir: Path | None = None
         self._exam_pending_row = None
         self._exam_manual_locked = False
-        self._exam_occupancy_queue: Queue[tuple[bool, float]] = Queue(maxsize=8)
-        self._exam_occupancy_stride = 3
         # 各场考试的成绩台账：按 exam_run_id 回填录后结果，考试面板关闭后仍可回填
         self.exam_scorebooks = ScorebookRegistry()
 
@@ -1165,31 +1107,15 @@ class App:
         self._student_saved_hands: bool | None = None
         self._student_saved_online_match: bool | None = None
 
-        self._stop_evt = threading.Event()
-        self._worker: threading.Thread | None = None
-        self._queue: Queue[tuple[np.ndarray, str]] = Queue(maxsize=1)
-        self._photo: ImageTk.PhotoImage | None = None
-        # 预览区当前尺寸缓存（主线程 Configure 回调写、worker 线程读；GIL 下 tuple 读写
-        # 原子，无需加锁）。worker 线程在 _post_frame/_post_frame2 里按此做 aspect-fit
-        # resize，GUI 主线程 _tick 只剩 ImageTk.PhotoImage + configure（点1：预览渲染解绑）。
-        self._preview_wh: tuple[int, int] = (0, 0)
-        # 第二路预览队列（双摄像头双面视图，issue #58）：单摄模式恒空，preview2 恒隐藏，
-        # 现有单摄路径零改动。
-        self._queue2: Queue[tuple[np.ndarray, str]] = Queue(maxsize=1)
-        self._dual_preview_queue: Queue[DualPreviewPacket] = Queue(maxsize=1)
-        self._dual_preview_lock = threading.Lock()
-        self._dual_render_lock = threading.Lock()
-        self._session_generation = 0
-        self._current_session_generation = 0
-        self._active_dual_generation = 0
-        self._dual_preview_stage = "raw"
+        # 实时会话：唯一逐帧循环在 core.live 的会话线程里；事件经 _live_events 回到 Tk 线程（_tick 排空）。
+        self._live_events: Queue[SessionEvent] = Queue()
+        self._live = App._build_live_manager(self)
+        self._shown_preview_seq = 0
         self._dual_recording_ready = False
-        self._dual_done_generation = 0
-        self._dual_metrics_lock = threading.Lock()
-        self._dual_startup_metrics: dict[int, _DualStartupMetrics] = {}
-        self._dual_first_render_events: dict[int, threading.Event] = {}
-        self._dual_layout_queue: Queue[str] = Queue(maxsize=1)
+        self._photo: ImageTk.PhotoImage | None = None
         self._photo2: ImageTk.PhotoImage | None = None
+        # 预览区当前尺寸（主线程 Configure 回调写、会话线程按它缩放预览帧；tuple 读写原子）。
+        self._preview_wh: tuple[int, int] = (0, 0)
         self._preview_wh2: tuple[int, int] = (0, 0)
         self._compare_win: CompareWindow | None = None
         self._settings_win: SettingsWindow | None = None
@@ -1607,7 +1533,7 @@ class App:
         self.feedback_controls.on_cancelled = self._on_student_cancelled
 
     def _on_preview_configure(self, event) -> None:
-        """主预览 Label 尺寸变化（主线程）：缓存供 worker 线程 _post_frame 做 resize（点1）。"""
+        """主预览 Label 尺寸变化（主线程）：缓存供会话线程按它缩放预览帧。"""
         self._preview_wh = (event.width, event.height)
 
     def _on_preview2_configure(self, event) -> None:
@@ -1615,15 +1541,7 @@ class App:
         self._preview_wh2 = (event.width, event.height)
 
     def _get_runtime_rotate(self, which: str = "primary") -> int:
-        lock = getattr(self, "_runtime_rotate_lock", None)
-        if lock is None:
-            if which == "secondary":
-                return int(getattr(self, "_runtime_rotate2", 0))
-            return int(getattr(self, "_runtime_rotate", 0))
-        with lock:
-            if which == "secondary":
-                return int(getattr(self, "_runtime_rotate2", 0))
-            return int(getattr(self, "_runtime_rotate", 0))
+        return self._live_controls.rotation_of(SECONDARY if which == "secondary" else PRIMARY)
 
     def _set_runtime_rotate(
         self,
@@ -1635,18 +1553,7 @@ class App:
     ) -> int:
         """设置一路运行时旋转（0/90/180/270），可选同步内部角度缓存与状态提示。"""
         d = int(degrees) if int(degrees) in _VALID_ROTATIONS else 0
-        lock = getattr(self, "_runtime_rotate_lock", None)
-        if lock is None:
-            if which == "secondary":
-                self._runtime_rotate2 = d
-            else:
-                self._runtime_rotate = d
-        else:
-            with lock:
-                if which == "secondary":
-                    self._runtime_rotate2 = d
-                else:
-                    self._runtime_rotate = d
+        self._live_controls.rotation[SECONDARY if which == "secondary" else PRIMARY].set(d)
         if sync_combo:
             # 无下拉控件；仍同步内部 StringVar，供 _collect_state / 考试 ROI 读数。
             label = _degrees_to_rotate_label(d)
@@ -1940,77 +1847,6 @@ class App:
             self._preview_right.columnconfigure(0, weight=1)
             self._preview_right.columnconfigure(1, weight=0)
 
-    def _post_dual_preview_layout(self, layout: str) -> None:
-        """采集线程只投递布局数据，不直接调用 Tk API。"""
-        if getattr(self, "_closing", False):
-            return
-        layout_queue = getattr(self, "_dual_layout_queue", None)
-        if layout_queue is None:
-            return
-        while True:
-            try:
-                layout_queue.get_nowait()
-            except Empty:
-                break
-        layout_queue.put(layout)
-
-    def _drain_dual_preview_layout(self) -> None:
-        """在 Tk 主线程应用最新双摄布局，关窗后只丢弃不触碰控件。"""
-        layout_queue = getattr(self, "_dual_layout_queue", None)
-        if layout_queue is None:
-            return
-        latest: str | None = None
-        while True:
-            try:
-                latest = layout_queue.get_nowait()
-            except Empty:
-                break
-        if latest is not None and not getattr(self, "_closing", False):
-            self._set_dual_preview_layout(latest)
-
-    def _build_online_matcher(self) -> online_matcher.OnlineActionMatcher | None:
-        """加载实时模板库；模板缺失或不兼容时保持预览可用。"""
-        try:
-            templates = online_matcher.load_template_library(paths.templates_dir() / "online")
-            if not templates:
-                return None
-            return online_matcher.OnlineActionMatcher(templates, self._post_match)
-        except Exception:
-            return None
-
-    @staticmethod
-    def _feed_online_matcher(matcher, pose_landmarks, timestamp_ms, frame_index) -> None:
-        """把 raw pose 特征送入在线 matcher，不让预览平滑结果回流。"""
-        if matcher is None or pose_landmarks is None:
-            return
-        feature = pf.normalize_pose_xy_v3(pose_landmarks)
-        if feature is not None:
-            matcher.push(feature, timestamp_ms, frame_index)
-
-    def _post_match(self, result: online_matcher.MatchResult) -> None:
-        """把后台 DTW 命中安全投递到 Tk 主线程。"""
-        if self._stop_evt.is_set() or result.action is None:
-            return
-        name = result.action
-        for suffix in ("_正面", "_侧面", "_左侧", "_右侧"):
-            if name.endswith(suffix):
-                name = name[: -len(suffix)]
-                break
-        text = f"识别到：{name} ({result.score:.2f})"
-
-        def _apply() -> None:
-            if self._stop_evt.is_set():
-                return
-            try:
-                self.match_var.set(text)
-            except (TclError, RuntimeError):
-                pass
-
-        try:
-            self.root.after(0, _apply)
-        except (TclError, RuntimeError):
-            pass
-
     def _open_compare(self) -> None:
         if self._compare_win and self._compare_win.is_open():
             self._compare_win.focus()
@@ -2059,10 +1895,7 @@ class App:
         """
         if bool(getattr(self, "_exam_manual_locked", False)):
             return
-        stop_evt = getattr(self, "_stop_evt", None)
-        if getattr(self, "_closing", False) or (
-            stop_evt is not None and stop_evt.is_set()
-        ):
+        if getattr(self, "_closing", False) or not App._session_live(self):
             return
         if not bool(getattr(self, "_dual_recording_ready", True)):
             return
@@ -2086,10 +1919,7 @@ class App:
 
         前置：会话已 begin_session；各路同时 idle→recording，任一路失败则全部复位。
         """
-        stop_evt = getattr(self, "_stop_evt", None)
-        if getattr(self, "_closing", False) or (
-            stop_evt is not None and stop_evt.is_set()
-        ):
+        if getattr(self, "_closing", False) or not App._session_live(self):
             return False
         if not bool(getattr(self, "_dual_recording_ready", True)):
             return False
@@ -2152,9 +1982,8 @@ class App:
         discard 在关窗/中止路径也必须执行：不得因 ``_closing`` 提前 return，
         否则随后的普通 finalize 会把已 aborted 片段送去评分。
         """
-        stop_evt = getattr(self, "_stop_evt", None)
         closing = bool(getattr(self, "_closing", False))
-        stopped = stop_evt is not None and stop_evt.is_set()
+        stopped = not App._session_live(self)
         if not discard and (closing or stopped):
             return
         if exam_row is not None:
@@ -2170,10 +1999,7 @@ class App:
         """「结束录制」点击回调：结束当前录制片段并落盘，但不结束识别会话。"""
         if bool(getattr(self, "_exam_manual_locked", False)):
             return
-        stop_evt = getattr(self, "_stop_evt", None)
-        if getattr(self, "_closing", False) or (
-            stop_evt is not None and stop_evt.is_set()
-        ):
+        if getattr(self, "_closing", False) or not App._session_live(self):
             return
         App._end_recording_segment(self, discard=False)
 
@@ -2205,7 +2031,7 @@ class App:
         ):
             messagebox.showinfo("学生练习", "考试进行中，无法进入学生练习。")
             return
-        if self._worker and self._worker.is_alive():
+        if App._session_active(self):
             messagebox.showinfo(
                 "学生练习", "请先停止当前识别会话，再进入学生练习。"
             )
@@ -2283,7 +2109,7 @@ class App:
             return
 
         # 若仍在录制则先结束片段；再停会话
-        self._student_presence_gate = None
+        App._set_student_gate(self, None)
         self._student_pending_record = False
         if self._student_announcer is not None:
             self._student_announcer.close()
@@ -2293,7 +2119,7 @@ class App:
                 App._end_recording_segment(self, discard=False)
         except Exception:
             pass
-        if self._worker and self._worker.is_alive():
+        if App._session_active(self):
             self._stop()
 
         self._student_practice_active = False
@@ -2365,8 +2191,8 @@ class App:
             pass
 
         self.root.title("MediaPipe 动作识别（人体姿态 + 手部）")
-        if self._worker and self._worker.is_alive():
-            # 采集尚在收尾：保持开始禁用，避免点击被静默丢弃；_post_done 负责恢复。
+        if App._session_active(self):
+            # 会话尚在收尾：保持开始禁用，避免点击被静默丢弃；会话结束事件负责恢复。
             self.status_var.set("正在停止…")
             for name in ("start_btn", "stop_btn"):
                 button = getattr(self, name, None)
@@ -2463,7 +2289,7 @@ class App:
         self._dual_record_skeleton = False
         self.enable_hands_var.set(False)
 
-        session_alive = bool(self._worker and self._worker.is_alive())
+        session_alive = App._session_active(self)
         if not session_alive:
             # 会话 state 冻结 1080p 请求；池发现预热格式不一致时会在旧进程释放后重开。
             self._student_pending_record = True
@@ -2475,7 +2301,7 @@ class App:
                 messagebox.showerror("学生练习", f"启动失败：{e}")
                 self._sync_student_buttons()
                 return
-            if not (self._worker and self._worker.is_alive()):
+            if not App._session_active(self):
                 self._student_pending_record = False
                 self.student_status_var.set("双摄未启动，请检查摄像头后重试")
             if bool(getattr(self, "_dual_recording_ready", False)):
@@ -2494,14 +2320,14 @@ class App:
 
             # 练习严格按离场2秒结束，不使用考试的最短录制时长限制。
             self._student_presence_started_at = time.monotonic()
-            self._student_presence_gate = PresenceGate(PresenceGateConfig(min_record_s=0.0))
+            App._set_student_gate(self, PresenceGate(PresenceGateConfig(min_record_s=0.0)))
             self.student_status_var.set("请进入正面预览黄框，站稳0.8秒后播报开始并自动录制")
         self._sync_student_buttons()
 
     def _student_on_occupancy(self, present: bool, now: float) -> None:
         gate = self._student_presence_gate
         if (gate is None or not self._student_practice_active or self._student_judging
-                or self._closing or self._stop_evt.is_set()
+                or self._closing or not App._session_live(self)
                 or now < self._student_presence_started_at):
             return
         mode = "wait_enter" if self._student_pending_record else "recording"
@@ -2511,7 +2337,7 @@ class App:
                 if self._recording.state == "recording":
                     gate.begin_recording(now)
                 else:
-                    self._student_presence_gate = None
+                    App._set_student_gate(self, None)
             elif event.kind == "empty_stable":
                 self._student_end()
 
@@ -2556,7 +2382,7 @@ class App:
         if bool(getattr(self, "_student_judging", False)):
             return
         waiting = self._student_pending_record
-        self._student_presence_gate = None
+        App._set_student_gate(self, None)
         self._student_pending_record = False
         if self._recording.state not in {"recording", "paused"}:
             self.student_status_var.set("已取消等待到位" if waiting else "当前没有进行中的录制")
@@ -2761,7 +2587,7 @@ class App:
         self._show_student_preview_view()
 
         # 2. 状态硬复位：解除闸门，清空就绪态，作废代次
-        self._student_presence_gate = None
+        App._set_student_gate(self, None)
         self._student_pending_record = False
         self._student_segment_ready = False
         self._student_front_video = None
@@ -2857,8 +2683,7 @@ class App:
                 return 0
 
     def _exam_set_roi(self, roi: tuple[float, float, float, float]) -> None:
-        with self._exam_lock:
-            self._exam_roi = tuple(float(x) for x in roi)  # type: ignore[assignment]
+        self._live_controls.set_roi(roi)
 
     def _exam_set_active(
         self, active: bool, *, run_id: str | None = None, run_dir: Path | None = None
@@ -2872,11 +2697,16 @@ class App:
             else:
                 self._exam_run_id = None
                 self._exam_run_dir = None
-                self._exam_occupancy_armed = False
+        if not active:
+            self._live_controls.arm_occupancy("exam", False)
 
     def _exam_arm_occupancy(self, armed: bool) -> None:
-        with self._exam_lock:
-            self._exam_occupancy_armed = bool(armed)
+        self._live_controls.arm_occupancy("exam", bool(armed))
+
+    def _set_student_gate(self, gate) -> None:
+        """学生练习的到位检测门：有门即在会话里启用站位检测（与考试共用同一 Lite 推理）。"""
+        self._student_presence_gate = gate
+        self._live_controls.arm_occupancy("practice", gate is not None)
 
     def _exam_lock_manual_record(self, locked: bool) -> None:
         self._exam_manual_locked = bool(locked)
@@ -2891,16 +2721,14 @@ class App:
                 else:
                     # 恢复由会话态控制
                     if name == "record_skeleton_check":
-                        if not getattr(self, "_worker", None) or (
-                            self._worker is not None and not self._worker.is_alive()
-                        ):
+                        if not App._session_active(self):
                             w.configure(state="normal")
                     elif name == "auto_compare_check":
                         # 自动比对滑块：非考试时始终可调；考试锁定期间禁用。
                         w.configure(state="normal")
                     elif name == "record_btn":
                         if getattr(self, "_dual_recording_ready", False) or (
-                            self._worker is not None and self._worker.is_alive()
+                            App._session_active(self)
                         ):
                             w.configure(state="normal")
             except Exception:
@@ -2956,24 +2784,6 @@ class App:
         if lite is None or not model_manager.is_installed(lite):
             return False, missing_model_message("exam_occupancy_lite")
         return True, ""
-
-    def _drain_exam_occupancy(self) -> None:
-        q = getattr(self, "_exam_occupancy_queue", None)
-        if q is None:
-            return
-        panel = getattr(self, "_exam_panel", None)
-        while True:
-            try:
-                present, now = q.get_nowait()
-            except Empty:
-                return
-            if bool(getattr(self, "_student_practice_active", False)):
-                self._student_on_occupancy(bool(present), float(now))
-            elif panel is not None:
-                try:
-                    panel.on_occupancy(bool(present), float(now))
-                except Exception:
-                    pass
 
     def _close_recording_session(self) -> None:
         """会话结束时关闭录制：仍在进行的片段照常提交；单摄写错误留给下一次 Tk tick 提示。"""
@@ -3316,7 +3126,7 @@ class App:
 
     def _set_refresh_enabled(self) -> None:
         """仅当非枚举中且采集未运行时启用刷新控件（需求 5.3、5.7）。"""
-        running = bool(self._worker and self._worker.is_alive())
+        running = App._session_active(self)
         enabled = (not self._enum_busy.is_set()) and (not running)
         try:
             self.refresh_btn.configure(state="normal" if enabled else "disabled")
@@ -3473,7 +3283,7 @@ class App:
 
     def _refresh_cameras(self) -> None:
         """刷新可用摄像头列表（需求 5.1、5.3、5.7）。"""
-        if self._worker and self._worker.is_alive():
+        if App._session_active(self):
             return
         if self._enum_busy.is_set():
             return
@@ -3535,7 +3345,7 @@ class App:
         """按两个下拉框和当前模式声明预热需求；配置一致则复用，不一致由池重新协商。"""
         if getattr(self, "_closing", False):
             return
-        running = bool(self._worker and self._worker.is_alive())
+        running = App._session_active(self)
         if running and not allow_running:
             return
         service = getattr(self, "_camera_service", None)
@@ -3551,7 +3361,7 @@ class App:
             service.prepare(specs)
         except Exception as exc:
             App._release_camera_warmups(self)
-            self._post_status(f"摄像头预热失败：{exc}")
+            self.status_var.set(f"摄像头预热失败：{exc}")
 
     def _collect_state(self) -> UiState:
         # 无有效输入源：使用统一提示文案（需求 4.2）。
@@ -3565,7 +3375,7 @@ class App:
 
         # 第二摄像头（可选，双摄双面视图，issue #57/#58）：未选、选不到真实条目、或主输入源
         # 不是摄像头（视频文件模式）→ source2=None，即今天的单摄/文件行为不变。双摄预览只在
-        # 主输入源也是摄像头时才有意义，这里是唯一收敛点：调用方（_start/_worker_loop）
+        # 主输入源也是摄像头时才有意义，这里是唯一收敛点：调用方（_start/_session_config）
         # 只需检查 state.source2 是否非空，不必重复判断 source 是否为摄像头。
         source2: str | None = None
         camera_choice_var_2 = getattr(self, "camera_choice_var_2", None)
@@ -3615,97 +3425,6 @@ class App:
             camera_names=App._camera_names(self),
         )
 
-    @staticmethod
-    def _drain_queue(queue: Queue) -> None:
-        while True:
-            try:
-                queue.get_nowait()
-            except Empty:
-                return
-
-    def _begin_preview_session(
-        self, state: UiState, *, start_click: float | None = None
-    ) -> UiState:
-        start_click = time.monotonic() if start_click is None else float(start_click)
-        if not hasattr(self, "_dual_preview_queue"):
-            self._dual_preview_queue = Queue(maxsize=1)
-        if not hasattr(self, "_dual_preview_lock"):
-            self._dual_preview_lock = threading.Lock()
-        if not hasattr(self, "_dual_render_lock"):
-            self._dual_render_lock = threading.Lock()
-        if not hasattr(self, "_dual_metrics_lock"):
-            self._dual_metrics_lock = threading.Lock()
-        if not hasattr(self, "_dual_startup_metrics"):
-            self._dual_startup_metrics = {}
-        if not hasattr(self, "_dual_first_render_events"):
-            self._dual_first_render_events = {}
-        if not hasattr(self, "_queue"):
-            self._queue = Queue(maxsize=1)
-        if not hasattr(self, "_queue2"):
-            self._queue2 = Queue(maxsize=1)
-        self._session_generation = getattr(self, "_session_generation", 0) + 1
-        generation = self._session_generation
-        self._current_session_generation = generation
-        if isinstance(state, UiState):
-            state = replace(
-                state,
-                session_generation=generation,
-                start_click=start_click,
-            )
-        else:
-            state.session_generation = generation
-            state.start_click = start_click
-
-        with self._dual_preview_lock:
-            App._drain_queue(self._dual_preview_queue)
-            self._dual_preview_stage = "raw"
-            self._dual_recording_ready = not bool(state.source2)
-            self._active_dual_generation = generation if state.source2 else 0
-        if state.source2:
-            App._drain_queue(self._queue)
-            App._drain_queue(self._queue2)
-            with self._dual_metrics_lock:
-                self._dual_startup_metrics[generation] = _DualStartupMetrics(
-                    session_generation=generation,
-                    primary_index=int(state.source),
-                    secondary_index=int(state.source2),
-                    record_skeleton=bool(state.record_skeleton),
-                    start_click=start_click,
-                    outcome="starting",
-                )
-                self._dual_first_render_events[generation] = threading.Event()
-        return state
-
-    def _invalidate_dual_preview(self, generation: int | None = None) -> None:
-        lock = getattr(self, "_dual_preview_lock", None)
-        if lock is None:
-            self._active_dual_generation = 0
-            self._dual_recording_ready = False
-            return
-        render_lock = getattr(self, "_dual_render_lock", None)
-
-        def invalidate_locked() -> None:
-            with lock:
-                if (
-                    generation is not None
-                    and self._active_dual_generation != generation
-                ):
-                    return
-                self._active_dual_generation = 0
-                self._dual_recording_ready = False
-                App._drain_queue(self._dual_preview_queue)
-                event = getattr(self, "_dual_first_render_events", {}).get(
-                    generation or self._current_session_generation
-                )
-                if event is not None:
-                    event.set()
-
-        if render_lock is None:
-            invalidate_locked()
-        else:
-            with render_lock:
-                invalidate_locked()
-
     def _open_camera_process(
         self,
         index: int,
@@ -3733,100 +3452,106 @@ class App:
             policy=getattr(state, "capture_policy", "prefer"),
         )
 
-    def _stop_token(self):
-        """把会话停止标志适配成 CancelToken，供 CameraStream 的等待与接管使用。"""
-        return from_stopped(self._stop_evt.is_set)
+    # ---- 实时会话（core.live）：配置、启动/停止、事件与预览 ----
 
-    def _open_session_camera(self, state: UiState):
-        """单摄：等池内 reader 出有效首帧后接管为 lease；停止/超时由池回收。"""
-        spec = App._session_spec(state, state.source)
-        return self._camera_service.open_capture(spec, App._stop_token(self))
+    def _build_live_manager(self) -> LiveSessionManager:
+        """组装会话管理器：摄像头经 CameraService，录制经 RecordingService，站位判定用髋中点 ROI。"""
+        return LiveSessionManager(
+            make_input=lambda config: App._make_session_input(self, config),
+            on_event=lambda event: App._on_session_event(self, event),
+            controls=self._live_controls,
+            sink=_RecordingSink(self),
+            probe=hip_midpoint_in_roi,
+            preview_target=lambda role: self._preview_wh2 if role == SECONDARY else self._preview_wh,
+        )
 
-    def _release_session_camera(self, capture, *, keep_warm: bool = False) -> str | None:
-        """结束会话的摄像头：正常结束且未在关窗时，摄像头视图把设备交回池继续预热（V-1），
-        其余情况（含视频文件）直接释放；释放失败时设备保持隔离，返回可见原因。"""
-        try:
-            if keep_warm and not self._closing and isinstance(capture, CaptureView):
-                capture.release(keep_warm=True)
-            else:
-                capture.release()
-        except Exception as exc:
-            traceback.print_exc()
-            return f"摄像头释放失败：{exc}"
-        return None
+    def _make_session_input(self, config: SessionConfig) -> FrameInput:
+        if config.is_file:
+            return VideoFileInput(config.video_path)
+        return CameraInput(self._camera_service.open_stream(config.cameras))
+
+    @staticmethod
+    def _session_config(state: UiState) -> SessionConfig:
+        """把开始时冻结的界面状态换成会话配置；四种循环的差异由 §8.2 的表决定。"""
+        if not state.source.isdigit():
+            return video_session(
+                state.source, pose_variant=state.pose_variant, enable_hands=state.enable_hands,
+                workers=state.workers,
+            )
+        cameras = {PRIMARY: App._session_spec(state, state.source)}
+        if state.source2:
+            cameras[SECONDARY] = App._session_spec(state, state.source2)
+        return camera_session(
+            cameras, pose_variant=state.pose_variant, enable_hands=state.enable_hands,
+            workers=state.workers, skeleton=bool(state.record_skeleton),
+            online_match=bool(state.online_match_enabled),
+        )
+
+    def _session_active(self) -> bool:
+        """有会话（含启动中与收尾中）。"""
+        return self._live.active()
+
+    def _session_live(self) -> bool:
+        """会话已开始且没有在停止：录制、站位检测只在这时接受操作。"""
+        return self._live.state in (STARTING, RUNNING)
+
+    def _session_finished(self) -> bool:
+        """会话已结束且结束事件已在 Tk 线程处理完。"""
+        return not self._live.active() and self._live_events.empty()
 
     def _start(self) -> None:
-        if self._worker and self._worker.is_alive():
-            # _post_done 是 worker 的最后一步且已归还 lease；此时线程只剩返回，可短暂 join。
-            if getattr(self, "_current_session_generation", 0) == 0:
-                self._worker.join(timeout=0.2)
-            if self._worker.is_alive():
-                self.status_var.set("上一会话仍在收尾，请稍候再点「开始」")
-                return
+        if App._session_active(self):
+            self.status_var.set("上一会话仍在收尾，请稍候再点「开始」")
+            return
         start_click = time.monotonic()
 
         try:
             state = self._collect_state()
+            config = App._session_config(state)
         except Exception as e:
             messagebox.showerror("配置错误", str(e))
             return
+        if config.is_file:
+            # 视频文件会话：先放弃选择阶段持有的摄像头预热。
+            self._release_camera_warmups()
 
-        state = self._begin_preview_session(state, start_click=start_click)
-        foundation.diag.event(
-            "session.start",
-            session=getattr(state, "session_generation", None),
-            primary=getattr(state, "source", None),
-            secondary=getattr(state, "source2", None),
-            requested="x".join(
-                str(v) for v in getattr(state, "capture_size", _PREVIEW_CAPTURE_SIZE)
-            ),
-            student=bool(getattr(self, "_student_practice_active", False)),
-        )
-
-        self._stop_evt.clear()
         self.start_btn.configure(state="disabled")
         self.stop_btn.configure(state="normal")
-        self._set_refresh_enabled()
         self.status_var.set("启动中…（首次运行可能需要下载模型）")
         self.actions_var.set("-")
         self.match_var.set("识别：待机")
         self.progress_var.set(0.0)
         self.progress_text_var.set("")
         self.progress_bar.configure(mode="determinate", maximum=100.0, value=0.0)
-
-        # 双摄像头双面视图（issue #58）：与 _worker_loop_dual_camera 的分流条件同源
-        # （state.source2 非空 ⇒ _collect_state 已保证 source 是摄像头），显示/隐藏/
-        # 分流三处用同一个信号，不再各自重复判断。
-        self._set_dual_preview_visible(bool(state.source2))
-
-        # 启动时把 UI 旋转同步到 runtime，供点击预览/worker 共用。
-        App._set_runtime_rotate(
-            self,
-            int(getattr(state, "rotate", 0) or 0),
-            which="primary",
-            sync_combo=True,
-            announce=False,
-        )
-        App._set_runtime_rotate(
-            self,
-            int(getattr(state, "rotate2", 0) or 0),
-            which="secondary",
-            sync_combo=True,
-            announce=False,
-        )
+        # 双摄双面视图（issue #58）：config.dual ⇔ 两路都是摄像头。
+        self._set_dual_preview_visible(config.dual)
+        # 启动时把界面旋转同步到运行时控制，供点击预览与会话线程共用。
+        for which, degrees in (("primary", state.rotate), ("secondary", state.rotate2)):
+            App._set_runtime_rotate(self, int(degrees or 0), which=which, sync_combo=True, announce=False)
         try:
             self._dual_auto_compare = App._current_auto_compare(self)
         except Exception:
-            self._dual_auto_compare = bool(getattr(state, "auto_compare", True))
+            self._dual_auto_compare = bool(state.auto_compare)
+        self._dual_recording_ready = not config.dual
+        self._dual_record_skeleton = bool(state.record_skeleton)
+        self._shown_preview_seq = 0
 
-        self._worker = threading.Thread(target=self._worker_loop, args=(state,), daemon=True)
-        self._worker.start()
+        token = self._live.start(config, start_click=start_click)
+        foundation.diag.event(
+            "session.start",
+            session=token,
+            primary=state.source,
+            secondary=state.source2,
+            requested="x".join(str(v) for v in state.capture_size),
+            student=bool(getattr(self, "_student_practice_active", False)),
+        )
+        self._set_refresh_enabled()
         # 集中刷新运行态控件（禁用 Camera/Model_Selector、启用 Record_Toggle 等，需求 4.3 等）。
         self._set_running_controls(True)
 
     def _stop(self) -> None:
         # 先同步考试状态机：否则 occupancy 退出后仍停在 recording，指针/手动锁不解除
-        self._student_presence_gate = None
+        App._set_student_gate(self, None)
         self._student_pending_record = False
         panel = getattr(self, "_exam_panel", None)
         if panel is not None:
@@ -3834,16 +3559,9 @@ class App:
                 panel.on_session_stop()
             except Exception:
                 pass
-        dual_active = bool(getattr(self, "_active_dual_generation", 0))
-        foundation.diag.event(
-            "session.stop_requested",
-            session=getattr(self, "_current_session_generation", 0),
-            cancel="user_stop",
-        )
-        self._stop_evt.set()
+        foundation.diag.event("session.stop_requested", session=self._live.token, cancel="user_stop")
+        self._live.stop("user_stop")
         self._dual_recording_ready = False
-        if dual_active:
-            self._invalidate_dual_preview()
         record_btn = getattr(self, "record_btn", None)
         if record_btn is not None:
             try:
@@ -3852,6 +3570,152 @@ class App:
                 pass
         self.stop_btn.configure(state="disabled")
         self.status_var.set("正在停止…")
+
+    def _on_session_event(self, event: SessionEvent) -> None:
+        """会话线程回调：只入队，由 _tick 在 Tk 线程处理。会话终态同时写诊断行。"""
+        if event.kind == "ended":
+            outcome = event.payload
+            foundation.diag.event(
+                "session.end", session=event.token, status=outcome.status, rewarm=not outcome.failed,
+            )
+        self._live_events.put(event)
+
+    def _drain_session_events(self) -> None:
+        handlers = {
+            "status": App._on_session_status,
+            "progress": App._on_session_progress,
+            "match": App._on_session_match,
+            "presence": App._on_session_presence,
+            "running": App._on_session_running,
+            "ended": App._on_session_ended,
+        }
+        while True:
+            try:
+                event = self._live_events.get_nowait()
+            except Empty:
+                return
+            if self._closing or not self._live.is_current(event.token):
+                continue
+            handlers[event.kind](self, event.payload)
+
+    def _on_session_status(self, text: str) -> None:
+        self.status_var.set(text)
+
+    def _on_session_progress(self, progress: tuple[int, int]) -> None:
+        done, total = progress
+        if total > 0:
+            self.progress_bar.configure(mode="determinate", maximum=float(total))
+            self.progress_bar["value"] = float(done)
+            self.progress_text_var.set(f"进度：{done}/{total}（{(done / total) * 100.0:.1f}%）")
+        else:
+            # 摄像头没有总帧数：不显示进度。
+            self.progress_bar.configure(mode="determinate", maximum=100.0)
+            self.progress_bar["value"] = 0.0
+            self.progress_text_var.set("")
+
+    def _on_session_match(self, text: str) -> None:
+        if App._session_live(self):
+            self.match_var.set(text)
+
+    def _on_session_presence(self, sample: PresenceSample) -> None:
+        """站位采样：学生练习时交给练习流程，否则交给考试面板。"""
+        if bool(getattr(self, "_student_practice_active", False)):
+            self._student_on_occupancy(bool(sample.present), float(sample.sampled_at))
+            return
+        panel = getattr(self, "_exam_panel", None)
+        if panel is not None:
+            try:
+                panel.on_occupancy(bool(sample.present), float(sample.sampled_at))
+            except Exception:
+                pass
+
+    def _on_session_running(self, _info: RunningInfo) -> None:
+        """会话已接管设备并登记录制：双摄此时才允许录制，学生练习据此启用站位检测。"""
+        if not self._live.config.dual or not App._session_live(self):
+            return
+        self._dual_active = True
+        self._dual_auto_compare = self._current_auto_compare()
+        self._dual_recording_ready = True
+        practice = bool(getattr(self, "_student_practice_active", False))
+        record_btn = getattr(self, "record_btn", None)
+        if record_btn is not None and not practice:
+            record_btn.configure(state="normal", text=RECORD_BTN_TEXT["idle"])
+        if practice and self._student_pending_record:
+            # 双摄就绪只启用站位检测，到位事件才开录。
+            try:
+                self._student_wait_for_position()
+            except Exception:
+                self._student_pending_record = False
+                try:
+                    self.student_status_var.set("站位检测启动失败，请再点「开始」")
+                except Exception:
+                    pass
+        elif practice:
+            try:
+                self._sync_student_buttons()
+            except Exception:
+                pass
+
+    def _on_session_ended(self, outcome: SessionOutcome) -> None:
+        """会话终态（设备已归还或已隔离）：复位界面；未失败时重新声明预热。"""
+        config = self._live.config
+        self._dual_recording_ready = False
+        self._dual_active = False
+        if bool(getattr(self, "_exam_active", False)):
+            panel = getattr(self, "_exam_panel", None)
+            if panel is not None:
+                try:
+                    panel.on_session_stop()
+                except Exception:
+                    traceback.print_exc()
+        self.start_btn.configure(state="normal")
+        self.stop_btn.configure(state="disabled")
+        self._set_refresh_enabled()
+        # 会话结束：集中复位运行态控件并使 Status_Area 显示「就绪」（需求 4.5、5.1）。
+        self._set_running_controls(False)
+        if bool(getattr(self, "_student_practice_active", False)):
+            App._set_student_gate(self, None)
+            self._student_pending_record = False
+            self.student_status_var.set(outcome.status or "双摄会话已结束，可点「开始」重试")
+            self._sync_student_buttons()
+        if outcome.status:
+            self.status_var.set(outcome.status)
+        # 新 reader 若遇到仍在退出的旧进程，会在后台等待真实释放后再打开，Tk 线程不等待驱动。
+        if not outcome.failed or (config is not None and config.is_file):
+            try:
+                self._sync_camera_warmup(allow_running=True)
+            except Exception:
+                pass
+
+    def _render_preview(self) -> None:
+        """每 tick 显示比已显示更新的一帧预览；双摄按两路画面方向选择布局。"""
+        store = self._live.preview
+        if store is None or not App._session_live(self):
+            return
+        frame = store.take_newer(self._shown_preview_seq)
+        if frame is None:
+            return
+        self._shown_preview_seq = frame.seq
+        self.actions_var.set(frame.actions_text)
+        self._photo = ImageTk.PhotoImage(Image.fromarray(frame.images[PRIMARY]))
+        self.preview.configure(image=self._photo)
+        dual = SECONDARY in frame.images
+        if dual:
+            self._photo2 = ImageTk.PhotoImage(Image.fromarray(frame.images[SECONDARY]))
+            self.preview2.configure(image=self._photo2)
+            layout = _choose_dual_preview_layout(frame.sizes[PRIMARY], frame.sizes[SECONDARY])
+            if layout != getattr(self, "_dual_preview_layout", None):
+                self._set_dual_preview_layout(layout)
+        first = store.mark_rendered(frame)
+        metrics = store.metrics
+        if dual and first and metrics is not None:
+            # 双摄启动耗时提示：首个裸帧与首个标注帧各显示一次。
+            elapsed_ms = metrics.elapsed_ms()
+            if frame.stage == "raw":
+                loading = "，模型加载中…" if metrics.inference else ""
+                self.status_var.set(f"双摄画面已显示（{elapsed_ms:.0f} ms）{loading}")
+            else:
+                self.status_var.set(f"运行中…（双摄首个标注帧 {elapsed_ms:.0f} ms）")
 
     def _on_close(self) -> None:
         if self._closing:
@@ -3879,7 +3743,7 @@ class App:
         if hasattr(self, "feedback_controls"):
             self.feedback_controls.close()
         self._active_feedback_token = None
-        self._student_presence_gate = None
+        App._set_student_gate(self, None)
         self._student_pending_record = False
         announcer = getattr(self, "_student_announcer", None)
         if announcer is not None:
@@ -3887,9 +3751,8 @@ class App:
             self._student_announcer = None
         # 2) 再进入关闭态
         self._closing = True
-        self._stop_evt.set()
+        self._live.stop(APP_CLOSE)
         self._dual_recording_ready = False
-        App._invalidate_dual_preview(self)
         App._release_camera_warmups(self)
         for name in (
             "record_btn",
@@ -3938,7 +3801,7 @@ class App:
         self._poll_close_workers()
 
     def _poll_close_workers(self) -> None:
-        """分片 join 关窗准备与采集线程、等待录后处理空闲；全部结束或到达期限后销毁 Tk 窗口。"""
+        """分片等待关窗准备与会话线程、等待录后处理空闲；全部结束或到达期限后销毁 Tk 窗口。"""
         deadline = self._close_deadline or time.monotonic()
         remaining = deadline - time.monotonic()
         close_prepare_worker = getattr(self, "_close_prepare_worker", None)
@@ -3954,25 +3817,19 @@ class App:
             )
 
         remaining = deadline - time.monotonic()
-        capture_worker = self._worker
-        if (
-            capture_worker is not None
-            and capture_worker is not current
-            and capture_worker.is_alive()
-            and remaining > 0.0
-        ):
-            capture_worker.join(timeout=min(_CLOSE_JOIN_SLICE_S, remaining))
+        if remaining > 0.0:
+            self._live.wait_idle(min(_CLOSE_JOIN_SLICE_S, remaining))
 
         close_prepare_alive = bool(
             close_prepare_worker is not None and close_prepare_worker.is_alive()
         )
-        # 采集线程的 finally 会提交最后的片段；决定销毁前重新查看 finalizer 是否空闲。
-        capture_alive = bool(self._worker and self._worker.is_alive())
+        # 会话线程收尾时会提交最后的片段；决定销毁前重新查看 finalizer 是否空闲。
+        session_alive = not self._live.wait_idle(0)
         finalizer_busy = not self._recording.finalizer.idle
 
         if (
             close_prepare_alive
-            or capture_alive
+            or session_alive
             or finalizer_busy
         ) and time.monotonic() < deadline:
             try:
@@ -3993,1249 +3850,33 @@ class App:
         except (TclError, RuntimeError):
             pass
 
-    def _worker_loop(self, state: UiState) -> None:
-        source = state.source
-        is_file = not source.isdigit()
-
-        if is_file:
-            # 当前主界面虽以摄像头为主，仍保留旧视频输入兼容；进入文件会话前确保
-            # 选择阶段持有的摄像头资源全部释放。
-            self._release_camera_warmups()
-
-        # 双摄 worker 自己负责 wait/snapshot/raw pump/claim，确保模型构造期间 pool
-        # reader 继续提供裸帧；此处不得提前 claim 停掉 reader。
-        if state.source2 and not is_file:
-            self._worker_loop_dual_camera(state)
-            return
-
-        # 摄像头 + 多 worker + 开启骨架：让「打开摄像头」与「各 worker 加载模型」并行发生，
-        # 而不是串行等摄像头开好再建模型（缩短点击→首帧）。骨架关闭时无需并行引擎，
-        # 落入下方串行裸帧路径。open 下放到分支内部，故此处提前分流。
-        if (
-            (not is_file)
-            and (not state.source2)
-            and state.workers > 1
-            and bool(state.record_skeleton)
-        ):
-            self._worker_loop_parallel_camera(state)
-            return
-
-        try:
-            if source.isdigit():
-                # 预热 reader 出首帧后接管；无预热时池在后台按本次 spec 冷启动。
-                cap = App._open_session_camera(self, state)
-            else:
-                cap = cv2.VideoCapture(source)
-        except Cancelled:
-            self._post_status("已停止")
-            self._post_done(session_generation=getattr(state, "session_generation", None))
-            return
-        except Exception as exc:
-            traceback.print_exc()
-            final_status = f"打开输入源失败：{exc}"
-            self._post_status(final_status)
-            self._post_done(
-                session_generation=getattr(state, "session_generation", None),
-                final_status=final_status,
-                rewarm=False,
-            )
-            return
-
-        if not cap.isOpened():
-            cap.release()
-            final_status = f"无法打开输入源：{source}"
-            self._post_status(final_status)
-            self._post_done(
-                session_generation=getattr(state, "session_generation", None),
-                final_status=final_status,
-            )
-            return
-
-        src_fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
-        fps_for_ts = src_fps if (is_file and src_fps > 1e-3) else 30.0
-        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0) if is_file else 0
-
-        w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 1280)
-        h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 720)
-
-        if is_file and state.workers > 1:
-            self._worker_loop_parallel_video(state, cap, fps_for_ts, total)
-            return
-
-        # 仅实时摄像头使用旋转选项；离线视频保持原尺寸和既有处理行为。
-        # 旋转读 runtime（点击预览可运行中改），不再冻结 UiState.rotate。
-        session_size = (
-            (w, h)
-            if is_file
-            else _rotated_size(w, h, self._get_runtime_rotate("primary"))
-        )
-        self._recording.begin_session({"front": session_size}, fps_for_ts)
-        # 全局骨架开关：摄像头默认关 → 预览/录制裸帧、跳过推理；离线文件仍始终跑 annotate。
-        draw_skeleton = bool(is_file or state.record_skeleton)
-        matcher = (
-            self._build_online_matcher()
-            if (draw_skeleton and (not is_file) and state.online_match_enabled)
-            else None
-        )
-        smoother = PreviewLandmarkSmoother() if (draw_skeleton and not is_file) else None
-
-        pipe = None
-        failed = False
-        final_status: str | None = None
-        try:
-            if draw_skeleton:
-                try:
-                    models_dir_path = models_dir()
-                    pipe = create_engine(
-                        EngineSpec(
-                            pose_variant=state.pose_variant,
-                            running_mode="video",
-                            enable_hands=state.enable_hands,
-                        ),
-                        models_dir=models_dir_path,
-                    )
-                except Exception as e:
-                    failed = True
-                    final_status = f"初始化失败：{e}"
-                    self._post_status(final_status)
-                    return
-
-            t0 = time.monotonic()
-            frame_count = 0
-            actual_size_checked = is_file
-            self._post_status("运行中…" if draw_skeleton else "运行中…（裸帧预览）")
-            self._post_progress(0, total)
-
-            while not self._stop_evt.is_set():
-                ok, frame = cap.read()
-                if not ok:
-                    if not is_file and not self._stop_evt.is_set():
-                        raise RuntimeError("摄像头读帧失败，请检查连接后重新开始")
-                    self._stop_evt.set()
-                    break
-
-                if not is_file:
-                    # 在推理前转正，保证 landmarks、预览和录制使用同一坐标系。
-                    frame = _apply_rotation(
-                        frame, self._get_runtime_rotate("primary")
-                    )
-                    self._recording.update_sizes(
-                        {"front": (int(frame.shape[1]), int(frame.shape[0]))}
-                    )
-                    actual_size_checked = True
-
-                if draw_skeleton and pipe is not None:
-                    ts = pipe.next_timestamp_ms(is_file=is_file, fps_for_ts=fps_for_ts)
-                    if is_file:
-                        # 文件 VIDEO 模式保留 annotate()，包括其内部 frame index 自增语义。
-                        annotated, actions = pipe.annotate(frame, timestamp_ms=ts)
-                    else:
-                        pose_landmarks, hands = pipe.infer(frame, timestamp_ms=ts)
-                        self._feed_online_matcher(
-                            matcher, pose_landmarks, ts, frame_count
-                        )
-                        smoothed = smoother.feed(pose_landmarks, timestamp_ms=ts)
-                        annotated, actions = pipe.draw(
-                            frame,
-                            smoothed,
-                            hands,
-                            action_pose_landmarks=pose_landmarks,
-                        )
-                else:
-                    annotated, actions = frame.copy(), []
-
-                frame_count += 1
-                if is_file and total > 0 and (frame_count % 5 == 0 or frame_count == total):
-                    self._post_progress(frame_count, total)
-                fps = frame_count / max(1e-6, (time.monotonic() - t0))
-                draw_tk_hud(annotated, f"FPS: {fps:.1f}", hint=True)
-
-                self._recording.write({"front": annotated})
-
-                actions_text = format_actions(actions)
-                self._post_frame(annotated, actions_text)
-
-            cv2.destroyAllWindows()
-
-            self._post_status("已停止")
-            self._post_progress(frame_count, total)
-        except Exception as exc:
-            failed = not self._stop_evt.is_set()
-            if failed:
-                traceback.print_exc()
-                final_status = f"运行失败：{exc}"
-                self._post_status(final_status)
-            else:
-                self._post_status("已停止")
-        finally:
-            # 覆盖正常结束 / 停止 / 异常：释放 writer 并复位录制状态。
-            self._stop_evt.set()
-            release_error = App._release_session_camera(self, cap, keep_warm=not failed)
-            if release_error is not None:
-                failed = True
-                final_status = final_status or release_error
-                self._post_status(final_status)
-            if pipe is not None:
-                try:
-                    pipe.close()
-                except Exception:
-                    pass
-            if matcher is not None:
-                matcher.close()
-            self._close_recording_session()
-            self._post_done(
-                session_generation=getattr(state, "session_generation", None),
-                final_status=final_status,
-                rewarm=not failed,
-            )
-
-    def _worker_loop_dual_camera(self, state: UiState) -> None:
-        """双摄 wait→裸帧→模型→claim→正式循环，所有资源在单一 finally 收敛。"""
-        generation = int(
-            getattr(state, "session_generation", 0)
-            or getattr(self, "_current_session_generation", 0)
-        )
-        stream = self._camera_service.open_stream({
-            PRIMARY: App._session_spec(state, state.source),
-            SECONDARY: App._session_spec(state, state.source2),
-        })
-        stop_token = App._stop_token(self)
-        pipe = None
-        pipe2 = None
-        recording_pair_started = False
-        raw_pump_stop = threading.Event()
-        raw_pump: threading.Thread | None = None
-        raw_pump_errors: list[BaseException] = []
-        frame_count = 0
-        phase = "warmup"
-        outcome = "failed"
-        error_type: str | None = None
-        final_status: str | None = None
-        occupancy_pipe = None
-
-        def post_raw_pair(pair) -> bool:
-            frame = _apply_rotation(
-                pair[0].frame, self._get_runtime_rotate("primary")
-            )
-            frame2 = _apply_rotation(
-                pair[1].frame, self._get_runtime_rotate("secondary")
-            )
-            return self._post_dual_frame_pair(
-                frame,
-                "-",
-                frame2,
-                "-",
-                session_generation=generation,
-                stage="raw",
-            )
-
-        def stop_raw_pump() -> None:
-            raw_pump_stop.set()
-            if (
-                raw_pump is not None
-                and raw_pump is not threading.current_thread()
-                and raw_pump.is_alive()
-            ):
-                raw_pump.join(timeout=1.0)
-
-        try:
-            ready = stream.wait_ready(stop_token)
-            pair = (ready[PRIMARY], ready[SECONDARY])
-            self._mark_dual_startup_metric(generation, "pair_ready")
-            stop_token.raise_if_cancelled()
-
-            size = (
-                int(
-                    _apply_rotation(
-                        pair[0].frame, self._get_runtime_rotate("primary")
-                    ).shape[1]
-                ),
-                int(
-                    _apply_rotation(
-                        pair[0].frame, self._get_runtime_rotate("primary")
-                    ).shape[0]
-                ),
-            )
-            size2 = (
-                int(
-                    _apply_rotation(
-                        pair[1].frame, self._get_runtime_rotate("secondary")
-                    ).shape[1]
-                ),
-                int(
-                    _apply_rotation(
-                        pair[1].frame, self._get_runtime_rotate("secondary")
-                    ).shape[0]
-                ),
-            )
-            self._post_dual_preview_layout(_choose_dual_preview_layout(size, size2))
-            if not state.record_skeleton:
-                self._mark_dual_startup_metric(generation, "pipeline_ready")
-            post_raw_pair(pair)
-
-            cursor = [pair[0].sequence, pair[1].sequence]
-            if state.record_skeleton:
-                def pump_raw_frames() -> None:
-                    try:
-                        while not raw_pump_stop.is_set() and not self._stop_evt.is_set():
-                            latest = stream.snapshot(
-                                after={PRIMARY: cursor[0], SECONDARY: cursor[1]}
-                            )
-                            if latest is not None:
-                                latest = (latest[PRIMARY], latest[SECONDARY])
-                                cursor[0] = latest[0].sequence
-                                cursor[1] = latest[1].sequence
-                                post_raw_pair(latest)
-                            raw_pump_stop.wait(_DUAL_RAW_PUMP_INTERVAL_S)
-                    except BaseException as exc:
-                        raw_pump_errors.append(exc)
-                        raw_pump_stop.set()
-
-                raw_pump = threading.Thread(
-                    target=pump_raw_frames,
-                    name=f"dual-raw-preview-{generation}",
-                    daemon=True,
-                )
-                raw_pump.start()
-                self._post_status("模型加载中…（双摄裸帧预览）")
-                phase = "pipeline"
-                models_dir_path = models_dir()
-                cfg = EngineSpec(
-                    pose_variant=state.pose_variant,
-                    running_mode="video",
-                    enable_hands=state.enable_hands,
-                )
-                pipe = create_engine(cfg, models_dir=models_dir_path)
-                stop_token.raise_if_cancelled()
-                pipe2 = create_engine(cfg, models_dir=models_dir_path)
-                self._mark_dual_startup_metric(generation, "pipeline_ready")
-                if raw_pump_errors:
-                    raise RuntimeError(str(raw_pump_errors[0])) from raw_pump_errors[0]
-                first_render = getattr(
-                    self, "_dual_first_render_events", {}
-                ).get(generation)
-                if first_render is not None:
-                    deadline = time.monotonic() + 0.25
-                    while (
-                        not self._stop_evt.is_set()
-                        and not first_render.is_set()
-                        and time.monotonic() < deadline
-                    ):
-                        first_render.wait(
-                            min(0.02, max(0.0, deadline - time.monotonic()))
-                        )
-                self._advance_dual_preview_stage(generation, "annotated")
-            stop_raw_pump()
-            stop_token.raise_if_cancelled()
-
-            phase = "claim"
-            stream.claim(stop_token)
-            stop_token.raise_if_cancelled()
-
-            sizes = stream.actual_sizes()
-            (w, h), (w2, h2) = sizes[PRIMARY], sizes[SECONDARY]
-            self._dual_active = True
-            self._dual_record_skeleton = bool(state.record_skeleton)
-            self._dual_auto_compare = self._current_auto_compare()
-            recording_pair_started = True
-            self._recording.begin_session(
-                {
-                    "front": _rotated_size(w, h, self._get_runtime_rotate("primary")),
-                    "side": _rotated_size(w2, h2, self._get_runtime_rotate("secondary")),
-                },
-                30.0,
-            )
-            self._set_dual_startup_outcome(generation, "running")
-            self._emit_dual_startup_metrics(generation)
-            self._post_dual_recording_ready(generation)
-
-            phase = "runtime"
-            t0 = time.monotonic()
-            last_layout: str | None = None
-            self._post_status(f"运行中…（双摄像头 {w}×{h} / {w2}×{h2}）")
-            self._post_progress(0, 0)
-
-            while not self._stop_evt.is_set():
-                frames = stream.read()
-                frame, frame2 = frames[PRIMARY], frames[SECONDARY]
-                frame = _apply_rotation(
-                    frame, self._get_runtime_rotate("primary")
-                )
-                frame2 = _apply_rotation(
-                    frame2, self._get_runtime_rotate("secondary")
-                )
-                actual_size = (int(frame.shape[1]), int(frame.shape[0]))
-                actual_size2 = (int(frame2.shape[1]), int(frame2.shape[0]))
-                # writer 未建时可随旋转更新；已建则写盘路径 resize。
-                self._recording.update_sizes({"front": actual_size, "side": actual_size2})
-                layout = _choose_dual_preview_layout(actual_size, actual_size2)
-                if layout != last_layout:
-                    self._post_dual_preview_layout(layout)
-                    last_layout = layout
-
-                if state.record_skeleton:
-                    ts = pipe.next_timestamp_ms(is_file=False, fps_for_ts=30.0)
-                    ts2 = pipe2.next_timestamp_ms(is_file=False, fps_for_ts=30.0)
-                    annotated, actions = pipe.annotate(frame, timestamp_ms=ts)
-                    annotated2, actions2 = pipe2.annotate(frame2, timestamp_ms=ts2)
-                    stage = "annotated"
-                else:
-                    annotated, actions = frame.copy(), []
-                    annotated2, actions2 = frame2.copy(), []
-                    stage = "raw"
-
-                # 考试 / 学生练习共用裸帧录制 + lite pose 的站位检测。
-                with self._exam_lock:
-                    occ_armed = bool(self._exam_occupancy_armed) or getattr(self, "_student_presence_gate", None) is not None
-                    exam_roi = self._exam_roi
-                    occ_stride = int(self._exam_occupancy_stride or 3)
-                if occ_armed and not state.record_skeleton:
-                    try:
-                        if occupancy_pipe is None:
-                            occupancy_pipe = create_engine(
-                                EngineSpec(
-                                    pose_variant="lite",
-                                    running_mode="video",
-                                    enable_hands=False,
-                                ),
-                                models_dir=models_dir(),
-                            )
-                        if frame_count % max(1, occ_stride) == 0:
-                            from core.presence_gate import hip_midpoint_in_roi
-
-                            ots = occupancy_pipe.next_timestamp_ms(
-                                is_file=False, fps_for_ts=30.0
-                            )
-                            sampled_at = time.monotonic()
-                            pose_lms, _ = occupancy_pipe.infer(
-                                frame, timestamp_ms=ots
-                            )
-                            present = hip_midpoint_in_roi(pose_lms, exam_roi)
-                            q = getattr(self, "_exam_occupancy_queue", None)
-                            if q is not None:
-                                try:
-                                    while q.full():
-                                        try:
-                                            q.get_nowait()
-                                        except Empty:
-                                            break
-                                    q.put_nowait((bool(present), sampled_at))
-                                except Exception:
-                                    pass
-                        # 预览叠 ROI
-                        draw_roi(annotated, exam_roi)
-                    except Exception:
-                        pass
-                elif occupancy_pipe is not None and not occ_armed:
-                    try:
-                        occupancy_pipe.close()
-                    except Exception:
-                        pass
-                    occupancy_pipe = None
-
-                frame_count += 1
-                fps = frame_count / max(1e-6, (time.monotonic() - t0))
-                draw_tk_hud(annotated, f"FPS: {fps:.1f}", hint=True)
-
-                record_frame, record_frame2 = _select_dual_recording_frames(
-                    frame,
-                    frame2,
-                    annotated,
-                    annotated2,
-                    record_skeleton=state.record_skeleton,
-                )
-                self._recording.write({"front": record_frame, "side": record_frame2})
-                actions_text = format_actions(actions)
-                actions_text2 = format_actions(actions2)
-                self._post_dual_frame_pair(
-                    annotated,
-                    actions_text,
-                    annotated2,
-                    actions_text2,
-                    session_generation=generation,
-                    stage=stage,
-                )
-
-            outcome = "stopped"
-            final_status = "已停止"
-            self._post_status(final_status)
-            self._post_progress(frame_count, 0)
-        except Cancelled:
-            outcome = "stopped"
-            final_status = "已停止"
-            if not getattr(self, "_closing", False):
-                self._post_status(final_status)
-        except Exception as exc:
-            traceback.print_exc()
-            if self._stop_evt.is_set():
-                outcome = "stopped"
-                final_status = "已停止"
-            else:
-                error_type = type(exc).__name__
-                prefix = {
-                    "warmup": "双摄像头预热失败",
-                    "pipeline": "初始化失败",
-                    "claim": "双摄像头接管失败",
-                    "runtime": "双摄像头运行失败",
-                }.get(phase, "双摄像头启动失败")
-                final_status = f"{prefix}：{exc}"
-            self._post_status(final_status)
-        finally:
-            stop_raw_pump()
-            for pipeline in (pipe, pipe2, occupancy_pipe):
-                if pipeline is not None:
-                    try:
-                        pipeline.close()
-                    except Exception:
-                        pass
-            # 两路 lease 一起归还或交回池（V-1）；未接管时只取消本次观察到的预热代次。
-            # 释放失败的设备由池隔离，不影响已写片段收尾。
-            release_error = App._release_session_camera(
-                self, stream.as_capture(), keep_warm=outcome != "failed"
-            )
-            if release_error is not None:
-                outcome = "failed"
-                final_status = final_status if error_type else release_error
-                error_type = error_type or "CameraReleaseError"
-                self._post_status(final_status)
-            try:
-                cv2.destroyAllWindows()
-            except Exception:
-                pass
-            if recording_pair_started:
-                self._close_recording_session()
-            self._invalidate_dual_preview(generation)
-            self._finish_dual_startup_metrics(
-                generation,
-                outcome=outcome,
-                error_type=error_type,
-            )
-            self._post_done(
-                session_generation=generation,
-                final_status=final_status,
-                rewarm=outcome != "failed",
-            )
-
-    def _worker_loop_parallel_video(
-        self,
-        state: UiState,
-        cap: cv2.VideoCapture,
-        fps_for_ts: float,
-        total: int,
-    ) -> None:
-        # Parallel processing for offline videos using IMAGE mode pipelines.
-        models_dir_path = models_dir()
-        workers = max(1, int(state.workers))
-        frame_q: "Queue[tuple[int, object] | None]" = Queue(maxsize=workers * 2)
-        result_q: "Queue[tuple[int, object, list[str]]]" = Queue(maxsize=workers * 2)
-
-        # 录制由 RecordingController 管理：进入帧循环前登记本会话写入参数（fps/size）。
-        w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 1280)
-        h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 720)
-        self._recording.begin_session({"front": (w, h)}, fps_for_ts)
-
-        def reader() -> None:
-            idx = 0
-            while not self._stop_evt.is_set():
-                ok, frame = cap.read()
-                if not ok:
-                    break
-                frame_q.put((idx, frame))
-                idx += 1
-            for _ in range(workers):
-                frame_q.put(None)
-
-        def worker() -> None:
-            pipe = create_engine(
-                EngineSpec(
-                    pose_variant=state.pose_variant,
-                    running_mode="image",
-                    enable_hands=state.enable_hands,
-                ),
-                models_dir=models_dir_path,
-            )
-            while True:
-                item = frame_q.get()
-                if item is None:
-                    break
-                if self._stop_evt.is_set():
-                    continue
-                idx, frame = item
-                annotated, actions = pipe.annotate(frame, timestamp_ms=None)
-                result_q.put((idx, annotated, actions))
-
-        self._post_status(f"运行中…（离线多线程：{workers}）")
-        self._post_progress(0, total)
-
-        t_reader = threading.Thread(target=reader, daemon=True)
-        t_reader.start()
-        worker_ts = [threading.Thread(target=worker, daemon=True) for _ in range(workers)]
-        for t in worker_ts:
-            t.start()
-
-        next_idx = 0
-        pending: dict[int, tuple[object, list[str]]] = {}
-        written = 0
-        t0 = time.monotonic()
-
-        try:
-            while not self._stop_evt.is_set():
-                if next_idx in pending:
-                    annotated, actions = pending.pop(next_idx)
-                    written += 1
-
-                    self._recording.write({"front": annotated})
-
-                    if total > 0 and (written % 5 == 0 or written == total):
-                        self._post_progress(written, total)
-
-                    fps = written / max(1e-6, (time.monotonic() - t0))
-                    draw_tk_hud(annotated, f"FPS: {fps:.1f}", hint=False)
-
-                    actions_text = format_actions(actions)
-                    self._post_frame(annotated, actions_text)
-                    next_idx += 1
-                    continue
-
-                try:
-                    idx, annotated, actions = result_q.get(timeout=0.2)
-                except Exception:
-                    alive = t_reader.is_alive() or any(t.is_alive() for t in worker_ts)
-                    if (not alive) and (not pending):
-                        break
-                    continue
-
-                pending[int(idx)] = (annotated, actions)
-
-            self._stop_evt.set()
-            t_reader.join(timeout=2.0)
-            for t in worker_ts:
-                t.join(timeout=2.0)
-
-            cap.release()
-            cv2.destroyAllWindows()
-
-            self._post_status("已停止")
-            self._post_progress(written, total)
-            self._post_done()
-        finally:
-            # 覆盖正常结束 / 停止 / 异常：释放 writer 并复位录制状态。
-            self._close_recording_session()
-
-    def _worker_loop_parallel_camera(self, state: UiState) -> None:
-        """实时摄像头多核并行推理（IMAGE 模式 + 满则丢帧）。
-
-        单线程 VIDEO 模式在多核机上只用到少数核心，heavy 模型实时只能跑 ~15fps；并行多
-        worker 能近线性提升吞吐。代价是失去 VIDEO 模式的时序平滑（骨架更抖），且高负载时
-        丢弃新帧以约束端到端延迟。
-
-        启动优化：先构造并 ``start()`` 引擎——各 worker 在后台线程各自加载一份模型——再
-        打开摄像头，使「模型加载」与「摄像头冷启动」两段耗时重叠，缩短点击→首帧的等待。
-        """
-        workers = max(1, int(state.workers))
-        matcher = (
-            self._build_online_matcher()
-            if state.online_match_enabled
-            else None
-        )
-        smoother = PreviewLandmarkSmoother()
-        draw_cfg = EngineSpec(
-            pose_variant=state.pose_variant,
-            running_mode="image",
-            enable_hands=state.enable_hands,
-        )
-
-        engine = ParallelPoseEngine(
-            pipeline_factory=default_pipeline_factory(
-                models_dir=models_dir(),
-                pose_variant=state.pose_variant,
-                enable_hands=state.enable_hands,
-            ),
-            workers=workers,
-            drop_when_full=True,
-            defer_draw=True,
-        )
-
-        cap = None
-        t_reader: threading.Thread | None = None
-        failed = False
-        final_status: str | None = None
-        capture_errors: list[Exception] = []
-        try:
-            try:
-                engine.start()
-            except Exception as e:
-                failed = True
-                final_status = f"初始化失败：{e}"
-                self._post_status(final_status)
-                return
-
-            # 各 worker 后台建模型的同时由池接管摄像头，两段冷启动重叠（而非串行）。
-            try:
-                cap = App._open_session_camera(self, state)
-            except Cancelled:
-                self._post_status("已停止")
-                return
-            if not cap.isOpened():
-                failed = True
-                final_status = f"无法打开输入源：{state.source}"
-                self._post_status(final_status)
-                return
-
-            fps_for_ts = 30.0
-            w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 1280)
-            h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 720)
-            session_size = _rotated_size(
-                w, h, self._get_runtime_rotate("primary")
-            )
-            self._recording.begin_session({"front": session_size}, fps_for_ts)
-
-            capture_t0 = time.monotonic()
-            timestamp_ready = threading.Condition()
-            submitted_timestamps: dict[int, int] = {}
-
-            def reader() -> None:
-                try:
-                    while not self._stop_evt.is_set():
-                        ok, frame = cap.read()
-                        if not ok:
-                            if not self._stop_evt.is_set():
-                                raise RuntimeError("摄像头读帧失败，请检查连接后重新开始")
-                            break
-                        frame = _apply_rotation(
-                            frame, self._get_runtime_rotate("primary")
-                        )
-                        self._recording.update_sizes(
-                            {"front": (int(frame.shape[1]), int(frame.shape[0]))}
-                        )
-                        timestamp_ms = int((time.monotonic() - capture_t0) * 1000.0)
-                        submitted_index = engine.submit(frame)
-                        if submitted_index is not None:
-                            with timestamp_ready:
-                                submitted_timestamps[submitted_index] = timestamp_ms
-                                timestamp_ready.notify_all()
-                except Exception as exc:
-                    if not self._stop_evt.is_set():
-                        traceback.print_exc()
-                        capture_errors.append(exc)
-                finally:
-                    engine.signal_input_done()
-
-            t_reader = threading.Thread(target=reader, daemon=True)
-            t_reader.start()
-
-            self._post_status(f"运行中…（实时多线程：{workers}，预览平滑开启）")
-            self._post_progress(0, 0)
-
-            t0 = time.monotonic()
-            rendered = 0
-            while not self._stop_evt.is_set():
-                res = engine.get(timeout=0.2)
-                if res is None:
-                    if engine.is_drained():
-                        break
-                    continue
-                if res.frame is None:
-                    continue
-
-                # submit() 仅给成功入队帧分配 index；另存采集时刻才能保留满队列丢帧造成的
-                # 真实时间间隙。极端调度竞态下短暂等待 reader 发布对应 timestamp。
-                deadline = time.monotonic() + 0.2
-                with timestamp_ready:
-                    while res.index not in submitted_timestamps:
-                        remaining = deadline - time.monotonic()
-                        if remaining <= 0.0:
-                            break
-                        timestamp_ready.wait(timeout=remaining)
-                    timestamp_ms = submitted_timestamps.pop(
-                        res.index,
-                        int(res.index * 1000.0 / fps_for_ts),
-                    )
-
-                self._feed_online_matcher(
-                    matcher,
-                    res.pose_landmarks,
-                    timestamp_ms,
-                    res.index,
-                )
-                smoothed = smoother.feed(res.pose_landmarks, timestamp_ms=timestamp_ms)
-                annotated, actions = render_pose(
-                    res.frame,
-                    smoothed,
-                    res.hands or [],
-                    draw_face=draw_cfg.draw_pose_face,
-                    draw_joint_angles_overlay=draw_cfg.draw_joint_angles,
-                    action_pose_landmarks=res.pose_landmarks,
-                )
-                rendered += 1
-                fps = rendered / max(1e-6, (time.monotonic() - t0))
-                draw_tk_hud(annotated, f"FPS: {fps:.1f} (x{workers})", hint=False)
-
-                self._recording.write({"front": annotated})
-
-                actions_text = format_actions(actions)
-                self._post_frame(annotated, actions_text)
-
-            self._stop_evt.set()
-            engine.close()
-            t_reader.join(timeout=2.0)
-            cv2.destroyAllWindows()
-
-            err = capture_errors[0] if capture_errors else engine.take_error()
-            if err is not None:
-                failed = True
-                final_status = f"运行失败：{err}"
-                self._post_status(final_status)
-            else:
-                self._post_status("已停止")
-            self._post_progress(0, 0)
-        except Exception as exc:
-            failed = not self._stop_evt.is_set()
-            if failed:
-                traceback.print_exc()
-                final_status = f"运行失败：{exc}"
-                self._post_status(final_status)
-            else:
-                self._post_status("已停止")
-        finally:
-            self._stop_evt.set()
-            engine.close()
-            if t_reader is not None and t_reader.is_alive():
-                t_reader.join(timeout=2.0)
-            if cap is not None:
-                release_error = App._release_session_camera(self, cap, keep_warm=not failed)
-                if release_error is not None:
-                    failed = True
-                    final_status = final_status or release_error
-                    self._post_status(final_status)
-            if matcher is not None:
-                matcher.close()
-            self._close_recording_session()
-            self._post_done(
-                session_generation=getattr(state, "session_generation", None),
-                final_status=final_status,
-                rewarm=not failed,
-            )
-
-    def _prepare_preview_rgb(
-        self, frame_bgr: np.ndarray, preview_wh: tuple[int, int]
-    ) -> np.ndarray:
-        rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-        pw, ph = preview_wh
-        if pw > 1 and ph > 1:
-            ih, iw = rgb.shape[:2]
-            scale = min(pw / iw, ph / ih)
-            nw, nh = max(1, int(iw * scale)), max(1, int(ih * scale))
-            rgb = cv2.resize(rgb, (nw, nh), interpolation=cv2.INTER_LINEAR)
-        return rgb
-
-    def _mark_dual_startup_metric(
-        self,
-        generation: int,
-        name: str,
-        when: float | None = None,
-    ) -> None:
-        when = time.monotonic() if when is None else float(when)
-        with self._dual_metrics_lock:
-            metrics = self._dual_startup_metrics.get(generation)
-            if metrics is None or not hasattr(metrics, name):
-                return
-            if getattr(metrics, name) is None:
-                setattr(metrics, name, when)
-
-    def _set_dual_startup_outcome(
-        self, generation: int, outcome: str, error_type: str | None = None
-    ) -> None:
-        with self._dual_metrics_lock:
-            metrics = self._dual_startup_metrics.get(generation)
-            if metrics is None:
-                return
-            metrics.outcome = outcome
-            metrics.error_type = error_type
-
-    def _emit_dual_startup_metrics(
-        self, generation: int, *, force: bool = False
-    ) -> None:
-        with self._dual_metrics_lock:
-            metrics = self._dual_startup_metrics.get(generation)
-            if metrics is None or metrics.emitted:
-                return
-            ready_to_emit = (
-                metrics.first_annotated_rendered is not None
-                if metrics.record_skeleton
-                else metrics.first_pair_rendered is not None
-            )
-            if not force and (
-                not ready_to_emit or metrics.outcome == "starting"
-            ):
-                return
-            metrics.emitted = True
-            fields = {
-                "pair_ready": metrics.pair_ready,
-                "first_pair_enqueued": metrics.first_pair_enqueued,
-                "first_pair_rendered": metrics.first_pair_rendered,
-                "pipeline_ready": metrics.pipeline_ready,
-                "first_annotated_enqueued": metrics.first_annotated_enqueued,
-                "first_annotated_rendered": metrics.first_annotated_rendered,
-            }
-            payload: dict[str, object] = {
-                "session_generation": metrics.session_generation,
-                "primary_index": metrics.primary_index,
-                "secondary_index": metrics.secondary_index,
-                "record_skeleton": metrics.record_skeleton,
-                "outcome": metrics.outcome,
-                "error_type": metrics.error_type,
-            }
-            for name, value in fields.items():
-                payload[f"start_to_{name}_ms"] = (
-                    round((value - metrics.start_click) * 1000.0, 3)
-                    if value is not None
-                    else None
-                )
-        try:
-            print(
-                "[dual-startup] "
-                + json.dumps(payload, ensure_ascii=False, sort_keys=True)
-            )
-        except Exception:
-            # Packaged GUI processes may not have a writable stdout.
-            pass
-
-    def _finish_dual_startup_metrics(
-        self,
-        generation: int,
-        *,
-        outcome: str,
-        error_type: str | None,
-    ) -> None:
-        self._set_dual_startup_outcome(generation, outcome, error_type)
-        self._emit_dual_startup_metrics(generation, force=True)
-
-    def _advance_dual_preview_stage(self, generation: int, stage: str) -> bool:
-        if stage not in _DUAL_STAGE_RANK:
-            raise ValueError(f"unsupported dual preview stage: {stage}")
-        with self._dual_render_lock:
-            with self._dual_preview_lock:
-                if self._active_dual_generation != generation:
-                    return False
-                if _DUAL_STAGE_RANK[stage] < _DUAL_STAGE_RANK[self._dual_preview_stage]:
-                    return False
-                if stage != self._dual_preview_stage:
-                    self._dual_preview_stage = stage
-                    App._drain_queue(self._dual_preview_queue)
-                return True
-
-    def _post_dual_frame_pair(
-        self,
-        frame: np.ndarray,
-        actions: str,
-        frame2: np.ndarray,
-        actions2: str,
-        *,
-        session_generation: int,
-        stage: str,
-    ) -> bool:
-        if stage not in _DUAL_STAGE_RANK:
-            raise ValueError(f"unsupported dual preview stage: {stage}")
-        rgb = self._prepare_preview_rgb(frame, self._preview_wh)
-        rgb2 = self._prepare_preview_rgb(frame2, self._preview_wh2)
-        now = time.monotonic()
-        packet = DualPreviewPacket(
-            session_generation=session_generation,
-            frame_rgb=rgb,
-            actions=actions,
-            frame_rgb2=rgb2,
-            actions2=actions2,
-            stage=stage,
-            enqueued_at=now,
-        )
-        with self._dual_preview_lock:
-            if self._active_dual_generation != session_generation:
-                return False
-            current_rank = _DUAL_STAGE_RANK[self._dual_preview_stage]
-            stage_rank = _DUAL_STAGE_RANK[stage]
-            if stage_rank != current_rank:
-                return False
-            App._drain_queue(self._dual_preview_queue)
-            self._mark_dual_startup_metric(
-                session_generation, "first_pair_enqueued", now
-            )
-            if stage == "annotated":
-                self._mark_dual_startup_metric(
-                    session_generation, "first_annotated_enqueued", now
-                )
-            self._dual_preview_queue.put_nowait(packet)
-        return True
-
-    def _post_dual_recording_ready(self, generation: int) -> None:
-        def _ready() -> None:
-            if (
-                getattr(self, "_closing", False)
-                or self._stop_evt.is_set()
-                or self._current_session_generation != generation
-                or self._active_dual_generation != generation
-            ):
-                return
-            with self._dual_preview_lock:
-                if self._active_dual_generation != generation:
-                    return
-                self._dual_recording_ready = True
-            record_btn = getattr(self, "record_btn", None)
-            if record_btn is not None and not bool(
-                getattr(self, "_student_practice_active", False)
-            ):
-                record_btn.configure(
-                    state="normal", text=RECORD_BTN_TEXT["idle"]
-                )
-            # 双摄就绪只启用站位检测，到位事件才开录。
-            if bool(getattr(self, "_student_practice_active", False)) and bool(
-                getattr(self, "_student_pending_record", False)
-            ):
-                try:
-                    self._student_wait_for_position()
-                except Exception:
-                    self._student_pending_record = False
-                    try:
-                        self.student_status_var.set("站位检测启动失败，请再点「开始」")
-                    except Exception:
-                        pass
-            elif bool(getattr(self, "_student_practice_active", False)):
-                try:
-                    self._sync_student_buttons()
-                except Exception:
-                    pass
-
-        if getattr(self, "_closing", False):
-            return
-        try:
-            self.root.after(0, _ready)
-        except (TclError, RuntimeError):
-            pass
-
-    def _post_frame(self, frame_bgr: np.ndarray, actions: str) -> None:
-        # 点1：cvtColor(BGR→RGB) + aspect-fit resize 移到 worker 线程，GUI 主线程 _tick
-        # 只剩 ImageTk.PhotoImage+configure。cvtColor/resize 均返回新数组，不 mutate
-        # 传入的 frame_bgr（调用方 post 前已用它 write_frame，需要保持原 BGR 不变）。
-        rgb = self._prepare_preview_rgb(frame_bgr, self._preview_wh)
-        # Keep only the latest frame.
-        while True:
-            try:
-                self._queue.get_nowait()
-            except Empty:
-                break
-        self._queue.put((rgb, actions))
-
-    def _post_frame2(self, frame_bgr: np.ndarray, actions: str) -> None:
-        # 第二路预览队列（双摄像头双面视图，issue #58），与 _post_frame 同构。
-        rgb = self._prepare_preview_rgb(frame_bgr, self._preview_wh2)
-        while True:
-            try:
-                self._queue2.get_nowait()
-            except Empty:
-                break
-        self._queue2.put((rgb, actions))
-
-    def _post_status(self, text: str) -> None:
-        # Tkinter updates must happen on the main thread.
-        if getattr(self, "_closing", False):
-            return
-
-        def _set() -> None:
-            if not getattr(self, "_closing", False):
-                self.status_var.set(text)
-
-        try:
-            self.root.after(0, _set)
-        except (TclError, RuntimeError):
-            pass
-
-    def _post_progress(self, done: int, total: int) -> None:
-        def _set() -> None:
-            if getattr(self, "_closing", False):
-                return
-            if total > 0:
-                self.progress_bar.configure(mode="determinate", maximum=float(total))
-                self.progress_bar["value"] = float(done)
-                pct = (done / total) * 100.0
-                self.progress_text_var.set(f"进度：{done}/{total}（{pct:.1f}%）")
-            else:
-                # Unknown total (camera): show nothing.
-                self.progress_bar.configure(mode="determinate", maximum=100.0)
-                self.progress_bar["value"] = 0.0
-                self.progress_text_var.set("")
-
-        if getattr(self, "_closing", False):
-            return
-        try:
-            self.root.after(0, _set)
-        except (TclError, RuntimeError):
-            pass
-
-    def _post_done(
-        self,
-        session_generation: int | None = None,
-        final_status: str | None = None,
-        rewarm: bool = True,
-    ) -> None:
-        # worker 最后一步：此时 lease 已归还（或已隔离），记录会话终态与原因。
-        foundation.diag.event(
-            "session.end",
-            session=session_generation,
-            status=final_status,
-            rewarm=bool(rewarm),
-        )
-
-        def _done() -> None:
-            if getattr(self, "_closing", False):
-                return
-            if session_generation is not None:
-                if self._current_session_generation != session_generation:
-                    return
-                if self._dual_done_generation == session_generation:
-                    return
-                self._dual_done_generation = session_generation
-                self._current_session_generation = 0
-                with self._dual_preview_lock:
-                    self._dual_recording_ready = False
-                    if self._active_dual_generation == session_generation:
-                        self._active_dual_generation = 0
-                    App._drain_queue(self._dual_preview_queue)
-                metrics_lock = getattr(self, "_dual_metrics_lock", None)
-                if metrics_lock is not None:
-                    with metrics_lock:
-                        getattr(self, "_dual_first_render_events", {}).pop(
-                            session_generation, None
-                        )
-                        getattr(self, "_dual_startup_metrics", {}).pop(
-                            session_generation, None
-                        )
-            if bool(getattr(self, "_exam_active", False)):
-                panel = getattr(self, "_exam_panel", None)
-                if panel is not None:
-                    try:
-                        panel.on_session_stop()
-                    except Exception:
-                        traceback.print_exc()
-            self.start_btn.configure(state="normal")
-            self.stop_btn.configure(state="disabled")
-            self._set_refresh_enabled()
-            # 会话结束：集中复位运行态控件并使 Status_Area 显示「就绪」（需求 4.5、5.1）。
-            self._set_running_controls(False)
-            if bool(getattr(self, "_student_practice_active", False)):
-                self._student_presence_gate = None
-                self._student_pending_record = False
-                self.student_status_var.set(final_status or "双摄会话已结束，可点「开始」重试")
-                self._sync_student_buttons()
-            if final_status:
-                self.status_var.set(final_status)
-            # worker 已在 _post_done 前归还 lease；新 reader 若遇到仍在退出的旧进程，
-            # 会在后台等待真实释放后再打开，Tk 线程不等待驱动。
-            try:
-                if rewarm:
-                    self._sync_camera_warmup(allow_running=True)
-            except Exception:
-                pass
-
-        if getattr(self, "_closing", False):
-            return
-        try:
-            self.root.after(0, _done)
-        except (TclError, RuntimeError):
-            pass
-
     def _tick(self) -> None:
         self._drain_recording_compare_updates()
-        self._drain_exam_occupancy()
-        self._drain_dual_preview_layout()
+        self._drain_session_events()
         self._drain_camera_enum_results()
-        # 录制状态刷新必须每 tick 执行，与帧队列是否有新帧无关（需求 5.9/5.10/5.11）。
+        # 录制状态刷新必须每 tick 执行，与是否有新帧无关（需求 5.9/5.10/5.11）。
         self._refresh_recording_status()
-
-        dual_generation = getattr(self, "_active_dual_generation", 0)
-        if dual_generation:
-            packet = None
-            rendered = False
-            with self._dual_render_lock:
-                with self._dual_preview_lock:
-                    try:
-                        candidate = self._dual_preview_queue.get_nowait()
-                    except Empty:
-                        candidate = None
-                    if (
-                        candidate is not None
-                        and candidate.session_generation == dual_generation
-                        and _DUAL_STAGE_RANK[candidate.stage]
-                        >= _DUAL_STAGE_RANK[self._dual_preview_stage]
-                    ):
-                        packet = candidate
-                if packet is not None:
-                    self.actions_var.set(packet.actions)
-                    img = Image.fromarray(packet.frame_rgb)
-                    img2 = Image.fromarray(packet.frame_rgb2)
-                    self._photo = ImageTk.PhotoImage(img)
-                    self._photo2 = ImageTk.PhotoImage(img2)
-                    self.preview.configure(image=self._photo)
-                    self.preview2.configure(image=self._photo2)
-                    rendered = True
-            if rendered and packet is not None:
-                now = time.monotonic()
-                self._mark_dual_startup_metric(
-                    dual_generation, "first_pair_rendered", now
-                )
-                first_render = getattr(
-                    self, "_dual_first_render_events", {}
-                ).get(dual_generation)
-                if first_render is not None:
-                    first_render.set()
-                if packet.stage == "annotated":
-                    self._mark_dual_startup_metric(
-                        dual_generation, "first_annotated_rendered", now
-                    )
-                with self._dual_metrics_lock:
-                    metrics = self._dual_startup_metrics.get(dual_generation)
-                    elapsed_ms = (
-                        (now - metrics.start_click) * 1000.0
-                        if metrics is not None
-                        else None
-                    )
-                if elapsed_ms is not None:
-                    if packet.stage == "raw":
-                        self.status_var.set(
-                            f"双摄画面已显示（{elapsed_ms:.0f} ms）"
-                            + ("，模型加载中…" if metrics.record_skeleton else "")
-                        )
-                    else:
-                        self.status_var.set(
-                            f"运行中…（双摄首个标注帧 {elapsed_ms:.0f} ms）"
-                        )
-                self._emit_dual_startup_metrics(dual_generation)
-            self.root.after(16, self._tick)
-            return
-
-        try:
-            frame_rgb, actions = self._queue.get_nowait()
-        except Empty:
-            self.root.after(16, self._tick)
-            return
-
-        self.actions_var.set(actions)
-
-        # 点1：cvtColor/resize 已在 worker 线程 _post_frame 完成，这里只剩 PhotoImage+configure。
-        img = Image.fromarray(frame_rgb)
-        self._photo = ImageTk.PhotoImage(img)
-        self.preview.configure(image=self._photo)
-
-        # 第二路预览（双摄像头双面视图，issue #58）：单摄模式下 _queue2 恒空，本段恒跳过。
-        try:
-            frame_rgb2, _actions2 = self._queue2.get_nowait()
-        except Empty:
-            frame_rgb2 = None
-        if frame_rgb2 is not None:
-            img2 = Image.fromarray(frame_rgb2)
-            self._photo2 = ImageTk.PhotoImage(img2)
-            self.preview2.configure(image=self._photo2)
-
+        self._render_preview()
         self.root.after(16, self._tick)
+
+
+class _RecordingSink:
+    """``core.live.FrameSink`` 的 Tk 端实现：转给 App 的 ``RecordingService``，会话结束走 App 的收尾。"""
+
+    def __init__(self, app: App) -> None:
+        self._app = app
+
+    def begin_session(self, sizes, fps: float) -> None:
+        self._app._recording.begin_session(sizes, fps)
+
+    def update_sizes(self, sizes) -> None:
+        self._app._recording.update_sizes(sizes)
+
+    def write(self, frames) -> None:
+        self._app._recording.write(frames)
+
+    def close_session(self) -> None:
+        App._close_recording_session(self._app)
 
 
 def main() -> None:

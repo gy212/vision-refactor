@@ -12,6 +12,7 @@ import numpy as np
 import pytest
 
 from apps import app_ui
+from core.live import LiveControls, SessionEvent, SessionOutcome
 from core.media import CameraService, CameraWarmupError, CameraWarmupStopped, CatalogSnapshot
 from core.recording import (
     ProcessingPlan,
@@ -85,6 +86,47 @@ class _WarmCapture(_Cap):
             self._condition.notify_all()
 
 
+class _FakeLive:
+    """会话管理器替身：记录 stop/wait_idle。默认 stop 后会话线程立即结束；
+    ``ends_on_stop=False`` 模拟迟迟不结束的会话线程，``on_wait`` 模拟它在等待期间收尾。"""
+
+    def __init__(self, state: str = "idle", *, on_wait=None, ends_on_stop: bool = True) -> None:
+        self.state = state
+        self.ends_on_stop = ends_on_stop
+        self.stops: list[str] = []
+        self.waits: list[float] = []
+        self.started: list[object] = []
+        self.on_wait = on_wait
+        self.token = 1
+        self.config = None
+        self.preview = None
+
+    def active(self) -> bool:
+        return self.state != "idle"
+
+    def is_current(self, token: int) -> bool:
+        return token == self.token
+
+    def start(self, config, *, start_click=None):
+        self.started.append(config)
+        self.config = config
+        self.state = "starting"
+        return self.token
+
+    def stop(self, reason: str = "user_stop") -> bool:
+        self.stops.append(reason)
+        if self.state in ("idle", "stopping"):
+            return False
+        self.state = "idle" if self.ends_on_stop else "stopping"
+        return True
+
+    def wait_idle(self, timeout: float) -> bool:
+        self.waits.append(timeout)
+        if self.on_wait is not None:
+            self.on_wait()
+        return self.state == "idle"
+
+
 class _QueuedRoot:
     def __init__(self) -> None:
         self.after_calls: list[tuple[int, object]] = []
@@ -122,7 +164,8 @@ class _SyncPool:
 
 def _camera_app(index: int = 0):
     app = object.__new__(app_ui.App)
-    app._worker = None
+    app._live = _FakeLive()
+    app._live_controls = LiveControls()
     app._closing = False
     app._student_practice_active = False
     app._source_state = app_ui.InputSourceState()
@@ -139,7 +182,6 @@ def _warmup_app(*, second_label: str = "摄像头 1"):
     app.camera_choice_var_2 = _Var(second_label)
     app._fake_pool = _SyncPool()
     app._camera_service = CameraService(pool=app._fake_pool)
-    app._post_status = lambda _text: None
     return app
 
 
@@ -151,7 +193,6 @@ def _closing_app(finalizer=None):
     app.exam_scorebooks = ScorebookRegistry()
     app._closing = False
     app._close_deadline = None
-    app._stop_evt = threading.Event()
     app.root = _QueuedRoot()
     return app
 
@@ -180,7 +221,7 @@ def _camera_selection_app(
     app._camera_entries = []
     app._enum_busy = threading.Event()
     app._enum_busy.set()
-    app._worker = None
+    app._live = _FakeLive()
     app._closing = False
     app.camera_combo = _Widget()
     app.camera_combo_2 = _Widget()
@@ -262,7 +303,7 @@ def test_enumerated_device_names_are_frozen_into_specs_for_open_check():
 
 def test_running_session_blocks_warmup_changes_unless_allowed():
     app = _warmup_app()
-    app._worker = SimpleNamespace(is_alive=lambda: True)
+    app._live = _FakeLive("running")
 
     app_ui.App._sync_camera_warmup(app)
     assert app._fake_pool.sync_calls == []
@@ -273,8 +314,7 @@ def test_running_session_blocks_warmup_changes_unless_allowed():
 
 def test_warmup_rejection_releases_and_reports_status():
     app = _warmup_app()
-    statuses: list[str] = []
-    app._post_status = statuses.append
+    app.status_var = _Var("")
 
     def reject(_primary, _secondary):
         raise CameraWarmupError("pool closed")
@@ -284,7 +324,7 @@ def test_warmup_rejection_releases_and_reports_status():
     app_ui.App._sync_camera_warmup(app)
 
     assert app._fake_pool.release_all_calls == 1
-    assert statuses == ["摄像头预热失败：pool closed"]
+    assert app.status_var.get() == "摄像头预热失败：pool closed"
 
 
 def test_session_state_freezes_capture_size_for_whole_start():
@@ -321,16 +361,6 @@ def test_process_factory_forwards_frozen_spec(monkeypatch):
         "width": 1280, "height": 720, "stop_event": stop,
         "expected_name": None, "policy": "prefer",
     })]
-
-
-def test_session_release_failure_is_reported_not_swallowed():
-    class _StuckLease:
-        def release(self) -> None:
-            raise CameraWarmupError("摄像头 0 释放失败，已隔离")
-
-    message = app_ui.App._release_session_camera(object(), _StuckLease())
-
-    assert message is not None and "已隔离" in message
 
 
 def test_camera_enumeration_result_is_applied_only_from_main_thread_queue():
@@ -439,174 +469,105 @@ def test_refresh_keeps_camera_warmups_while_enumerating():
     assert events == ["enumerate"]
 
 
-def test_video_worker_releases_camera_warmups_before_opening_file(monkeypatch):
+def _start_app(state):
+    app = _camera_app()
+    app._collect_state = lambda: state
+    app.start_btn = _Widget()
+    app.stop_btn = _Widget()
+    app.status_var = _Var()
+    app.actions_var = _Var()
+    app.match_var = _Var("识别到：直拳 (0.91)")
+    app.progress_var = _Var()
+    app.progress_text_var = _Var()
+    app.progress_bar = _Widget()
+    app.rotate_var = _Var("0°")
+    app.rotate_var_2 = _Var("0°")
+    app._current_auto_compare = lambda prefer_ui=False: True
+    app._set_refresh_enabled = lambda: None
+    app._set_dual_preview_visible = lambda _visible: None
+    app._set_running_controls = lambda _running: None
+    return app
+
+
+def test_video_session_releases_camera_warmups_before_starting():
     events: list[str] = []
-    video_cap = _Cap(opened=False)
-    app = SimpleNamespace(
-        _release_camera_warmups=lambda: events.append("release"),
-        _post_status=lambda text: events.append(text),
-        _post_done=lambda **_kwargs: events.append("done"),
-    )
-    state = SimpleNamespace(source="input.mp4", source2=None, workers=1)
+    state = app_ui.UiState(source="input.mp4", pose_variant="full", workers=1, enable_hands=True)
+    app = _start_app(state)
+    app._release_camera_warmups = lambda: events.append("release")
+    original_start = app._live.start
+    app._live.start = lambda config, **kw: (events.append("start"), original_start(config, **kw))[1]
 
-    monkeypatch.setattr(
-        app_ui.cv2,
-        "VideoCapture",
-        lambda path: (events.append(f"open:{path}"), video_cap)[1],
-    )
+    app_ui.App._start(app)
 
-    app_ui.App._worker_loop(app, state)
-
-    assert events[:2] == ["release", "open:input.mp4"]
-    assert events[-1] == "done"
-    assert video_cap.release_calls == 1
+    assert events == ["release", "start"]
+    assert app._live.started[0].is_file and str(app._live.started[0].video_path) == "input.mp4"
 
 
-@pytest.mark.parametrize("rewarm", [True, False])
-def test_post_done_rewarms_only_when_requested(rewarm):
+def test_start_resets_stale_match_text():
+    state = app_ui.UiState(source="0", pose_variant="full", workers=1, enable_hands=True)
+    app = _start_app(state)
+
+    app_ui.App._start(app)
+
+    assert app.match_var.get() == "识别：待机"
+    assert len(app._live.started) == 1 and not app._live.started[0].dual
+    assert app.stop_btn.config["state"] == "normal"
+
+
+def test_start_refused_while_previous_session_is_finishing():
+    app = _start_app(None)
+    app._live.state = "stopping"
+
+    app_ui.App._start(app)
+
+    assert app._live.started == []
+    assert app.status_var.get() == "上一会话仍在收尾，请稍候再点「开始」"
+
+
+def _ended_app(config):
     calls: list[bool] = []
+    app = _camera_app()
+    app._live.config = config
+    app.start_btn = _Widget()
+    app.stop_btn = _Widget()
+    app.status_var = _Var("就绪")
+    app._set_refresh_enabled = lambda: None
+    app._set_running_controls = lambda _running: None
+    app._sync_camera_warmup = lambda *, allow_running=False: calls.append(allow_running)
+    return app, calls
 
-    class _ImmediateRoot:
-        def after(self, _delay, callback) -> None:
-            callback()
 
-    app = SimpleNamespace(
-        _closing=False,
-        root=_ImmediateRoot(),
-        start_btn=_Widget(),
-        stop_btn=_Widget(),
-        _set_refresh_enabled=lambda: None,
-        _set_running_controls=lambda _running: None,
-        _sync_camera_warmup=lambda *, allow_running=False: calls.append(allow_running),
-    )
+@pytest.mark.parametrize(
+    ("outcome", "is_file", "rewarm"),
+    [("stopped", False, True), ("failed", False, False), ("failed", True, True)],
+)
+def test_session_end_rewarms_unless_camera_session_failed(outcome, is_file, rewarm):
+    """V-1：摄像头会话失败时设备已隔离/释放，不再声明预热；视频会话结束总是恢复预热。"""
+    app, calls = _ended_app(SimpleNamespace(is_file=is_file, dual=False))
+    status = "初始化失败：boom" if outcome == "failed" else "已停止"
 
-    app_ui.App._post_done(app, rewarm=rewarm)
+    app_ui.App._on_session_ended(app, SessionOutcome(outcome, status))
 
     assert calls == ([True] if rewarm else [])
+    assert app.status_var.get() == status
+    assert app.start_btn.config["state"] == "normal"
+    assert app.stop_btn.config["state"] == "disabled"
 
 
-class _SinglePool:
-    def __init__(self, *, wait_error: BaseException | None = None) -> None:
-        self.wait_error = wait_error
-        self.calls: list[str] = []
+def test_session_events_from_stale_sessions_are_ignored():
+    app, calls = _ended_app(SimpleNamespace(is_file=False, dual=True))
+    app._live_events = Queue()
+    app._dual_recording_ready = True
+    app._live.token = 4
 
-    def wait_one(self, spec, *, timeout, stop_event):
-        self.calls.append(f"wait:{spec.index}:{spec.width}x{spec.height}")
-        if self.wait_error is not None:
-            raise self.wait_error
-        return SimpleNamespace(generation=5)
+    app._live_events.put(SessionEvent("ended", 3, SessionOutcome("stopped", "旧会话")))
+    app_ui.App._drain_session_events(app)
+    assert calls == [] and app._dual_recording_ready is True
 
-    def claim_one(self, spec, *, timeout, expected_generation, stop_event):
-        self.calls.append(f"claim:{expected_generation}")
-        return _Cap()
-
-
-def test_camera_open_failure_restores_controls_without_rewarming():
-    statuses = []
-    completions = []
-    pool = _SinglePool(wait_error=TimeoutError("摄像头响应超时"))
-    app = SimpleNamespace(
-        _camera_service=CameraService(pool=pool),
-        _stop_evt=threading.Event(),
-        _post_status=statuses.append,
-        _post_done=lambda **kwargs: completions.append(kwargs),
-    )
-    state = SimpleNamespace(
-        source="0", source2=None, workers=1, record_skeleton=False,
-        capture_size=(1280, 720), session_generation=6,
-    )
-    app_ui.App._worker_loop(app, state)
-    assert pool.calls == ["wait:0:1280x720"]
-    assert "摄像头响应超时" in statuses[-1]
-    assert completions == [
-        {"session_generation": 6, "final_status": statuses[-1], "rewarm": False}
-    ]
-
-
-def test_single_camera_stop_during_open_finishes_session_quietly():
-    completions = []
-    pool = _SinglePool(wait_error=CameraWarmupStopped("stopped"))
-    app = SimpleNamespace(
-        _camera_service=CameraService(pool=pool),
-        _stop_evt=threading.Event(),
-        _post_status=lambda _text: None,
-        _post_done=lambda **kwargs: completions.append(kwargs),
-    )
-    state = SimpleNamespace(
-        source="0", source2=None, workers=1, record_skeleton=False,
-        capture_size=(1920, 1080), session_generation=2,
-    )
-    app_ui.App._worker_loop(app, state)
-    assert pool.calls == ["wait:0:1920x1080"]
-    assert completions == [{"session_generation": 2}]
-
-
-def test_generation_aware_post_done_ignores_stale_and_deduplicates_current():
-    events: list[str] = []
-
-    class _ImmediateRoot:
-        def after(self, _delay, callback) -> None:
-            callback()
-
-    app = SimpleNamespace(
-        _closing=False,
-        root=_ImmediateRoot(),
-        start_btn=_Widget(),
-        stop_btn=_Widget(),
-        _set_refresh_enabled=lambda: events.append("refresh"),
-        _set_running_controls=lambda _running: events.append("controls"),
-        _sync_camera_warmup=lambda *, allow_running=False: events.append("warm"),
-        _current_session_generation=4,
-        _dual_done_generation=0,
-        _active_dual_generation=4,
-        _dual_recording_ready=True,
-        _dual_preview_lock=threading.Lock(),
-        _dual_preview_queue=Queue(maxsize=1),
-        _dual_metrics_lock=threading.Lock(),
-        _dual_first_render_events={4: object()},
-        _dual_startup_metrics={4: object()},
-        status_var=_Var("就绪"),
-    )
-
-    app_ui.App._post_done(app, session_generation=3)
-    assert events == []
-
-    app_ui.App._post_done(
-        app, session_generation=4, final_status="初始化失败：boom"
-    )
-    app_ui.App._post_done(app, session_generation=4)
-
-    assert events == ["refresh", "controls", "warm"]
-    assert app._current_session_generation == 0
-    assert app._dual_done_generation == 4
+    app._live_events.put(SessionEvent("ended", 4, SessionOutcome("failed", "初始化失败：boom")))
+    app_ui.App._drain_session_events(app)
     assert app._dual_recording_ready is False
-    assert app._dual_first_render_events == {}
-    assert app._dual_startup_metrics == {}
     assert app.status_var.get() == "初始化失败：boom"
-
-
-def test_recording_ready_callback_requires_current_live_generation():
-    class _ImmediateRoot:
-        def after(self, _delay, callback) -> None:
-            callback()
-
-    app = SimpleNamespace(
-        _closing=False,
-        root=_ImmediateRoot(),
-        _stop_evt=threading.Event(),
-        _current_session_generation=8,
-        _active_dual_generation=8,
-        _dual_recording_ready=False,
-        _dual_preview_lock=threading.Lock(),
-        record_btn=_Widget(),
-    )
-
-    app_ui.App._post_dual_recording_ready(app, 7)
-    assert app._dual_recording_ready is False
-
-    app_ui.App._post_dual_recording_ready(app, 8)
-    assert app._dual_recording_ready is True
-    assert app.record_btn.config["state"] == "normal"
 
 
 def test_close_permanently_closes_dual_camera_warmup_pool():
@@ -621,45 +582,6 @@ def test_close_permanently_closes_dual_camera_warmup_pool():
     assert pool.close_calls == 1
 
 
-def test_start_resets_stale_match_text(monkeypatch):
-    app = object.__new__(app_ui.App)
-    app._worker = None
-    app._stop_evt = threading.Event()
-    app._collect_state = lambda: SimpleNamespace(source2=None)
-    app.start_btn = _Widget()
-    app.stop_btn = _Widget()
-    app.status_var = _Var()
-    app.actions_var = _Var()
-    app.match_var = _Var("识别到：直拳 (0.91)")
-    app.progress_var = _Var()
-    app.progress_text_var = _Var()
-    app.progress_bar = _Widget()
-    app._set_refresh_enabled = lambda: None
-    app._set_dual_preview_visible = lambda _visible: None
-    app._set_running_controls = lambda _running: None
-    app._worker_loop = lambda _state: None
-
-    class _StartOnlyThread:
-        def __init__(self, *, target, args, daemon) -> None:
-            self.target = target
-            self.args = args
-            self.daemon = daemon
-            self.started = False
-
-        def start(self) -> None:
-            self.started = True
-
-        def is_alive(self) -> bool:
-            return self.started
-
-    monkeypatch.setattr(app_ui.threading, "Thread", _StartOnlyThread)
-
-    app_ui.App._start(app)
-
-    assert app.match_var.get() == "识别：待机"
-    assert app._worker.started is True
-
-
 def test_exam_preflight_rejects_skeleton_session():
     app = SimpleNamespace(
         _dual_active=True,
@@ -670,25 +592,6 @@ def test_exam_preflight_rejects_skeleton_session():
     ok, msg = app_ui.App._exam_preflight(app)
     assert ok is False
     assert "骨架" in msg
-
-
-def test_dual_layout_update_uses_queue_and_never_touches_tk_after_close():
-    applied: list[str] = []
-    app = SimpleNamespace(
-        _closing=False,
-        _dual_layout_queue=Queue(maxsize=1),
-        _set_dual_preview_layout=lambda layout: applied.append(layout),
-    )
-
-    app_ui.App._post_dual_preview_layout(app, "stacked")
-    app_ui.App._post_dual_preview_layout(app, "side_by_side")
-    app_ui.App._drain_dual_preview_layout(app)
-    assert applied == ["side_by_side"]
-
-    app._closing = True
-    app_ui.App._post_dual_preview_layout(app, "stacked")
-    app_ui.App._drain_dual_preview_layout(app)
-    assert applied == ["side_by_side"]
 
 
 def test_close_poll_window_disables_recording_controls_and_rejects_toggle():
@@ -799,6 +702,7 @@ def _bind_recording(app, finalizer, *, failing: frozenset[str] = frozenset()) ->
 def _single_recording_app(tmp_path: Path, *, failing: frozenset[str] = frozenset()):
     """单摄会话中、已开录并写入一帧；finalizer 是真实的。"""
     app = _closing_app()
+    app._live = _FakeLive("running")
     _bind_recording(app, SegmentFinalizer(), failing=failing)
     app._pending_record_errors = []
     app._record_error_shown = False
@@ -849,7 +753,7 @@ def test_close_waits_for_single_camera_transcode_without_blocking_tk_loop(monkey
 
     app_ui.App._on_close(app)
 
-    assert app._stop_evt.is_set()
+    assert app._live.stops == [app_ui.APP_CLOSE]
     assert app.root.destroy_calls == 0
     assert app.root.after_calls[0][0] == app_ui._CLOSE_POLL_MS
 
@@ -868,24 +772,13 @@ def test_close_destroys_window_after_bounded_deadline(monkeypatch):
     app = _closing_app(finalizer)
     clock = [0.0]
 
-    class _NeverEndingWorker:
-        def __init__(self) -> None:
-            self.join_timeouts: list[float] = []
-
-        def is_alive(self) -> bool:
-            return True
-
-        def join(self, timeout=None) -> None:
-            self.join_timeouts.append(timeout)
-
-    worker = _NeverEndingWorker()
-    app._worker = worker
+    app._live = _FakeLive("running", ends_on_stop=False)   # 会话线程一直不结束
     monkeypatch.setattr(app_ui.time, "monotonic", lambda: clock[0])
 
     app_ui.App._on_close(app)
     app._close_prepare_worker.join(1.0)
     assert app.root.destroy_calls == 0
-    assert worker.join_timeouts == [app_ui._CLOSE_JOIN_SLICE_S]
+    assert app._live.waits == [app_ui._CLOSE_JOIN_SLICE_S, 0]
 
     clock[0] = app_ui._CLOSE_JOIN_TIMEOUT_S + 0.1
     _delay, poll = app.root.after_calls.pop(0)
@@ -897,18 +790,13 @@ def test_close_waits_for_transcode_submitted_by_capture_finally(monkeypatch, tmp
     entered, finish, _threads = _blocking_transcode(monkeypatch)
     app = _single_recording_app(tmp_path)
 
-    class _CaptureFinishingWorker:
-        def __init__(self) -> None:
-            self.alive = True
-
-        def is_alive(self) -> bool:
-            return self.alive
-
-        def join(self, timeout=None) -> None:
-            self.alive = False
+    def session_finishes() -> None:
+        # 会话线程收尾（FrameSink.close_session）在关窗等待期间才提交单摄片段
+        if app._live.state != "idle":
+            app._live.state = "idle"
             app_ui.App._close_recording_session(app)
 
-    app._worker = _CaptureFinishingWorker()
+    app._live = _FakeLive("running", on_wait=session_finishes, ends_on_stop=False)
     app_ui.App._on_close(app)
 
     # 采集线程 finally 在关窗后才提交单摄片段：finish_on_close 仍被接受，poll 必须等它
@@ -1032,7 +920,8 @@ def _dual_submission_app(
     finalizer = _FinalizerDouble()
     app = SimpleNamespace(
         _closing=False,
-        _stop_evt=None,
+        _live=_FakeLive("running"),
+        _live_controls=LiveControls(),
         _exam_manual_locked=False,
         _exam_pending_row=None,
         _exam_run_id=None,
@@ -1273,7 +1162,6 @@ def test_compare_update_already_queued_is_discarded_after_close_starts():
 
 def test_main_stop_finally_submits_current_dual_segment_once(tmp_path):
     app, finalizer, _segment_dir = _dual_submission_app(tmp_path)
-    app._stop_evt = threading.Event()
     app.stop_btn = _Widget()
     app.status_var = _Var()
 
@@ -1281,7 +1169,7 @@ def test_main_stop_finally_submits_current_dual_segment_once(tmp_path):
     app_ui.App._close_recording_session(app)
     app_ui.App._close_recording_session(app)
 
-    assert app._stop_evt.is_set()
+    assert app._live.stops == ["user_stop"]
     assert app.status_var.get() == "正在停止…"
     assert len(finalizer.jobs) == 1
 
@@ -1294,7 +1182,6 @@ def test_zero_frame_dual_segment_is_submitted_from_explicit_and_main_stop(tmp_pa
         if mode == "explicit":
             app_ui.App._on_record_stop(app)
         else:
-            app._stop_evt = threading.Event()
             app.stop_btn = _Widget()
             app.status_var = _Var()
             app_ui.App._stop(app)
@@ -1410,7 +1297,6 @@ def test_submit_callback_sees_segment_as_latest_before_submit_returns(tmp_path):
 
 def test_close_finalizes_current_dual_segment_then_cancels_postprocessor(tmp_path):
     app, finalizer, _segment_dir = _dual_submission_app(tmp_path)
-    app._stop_evt = threading.Event()
     app._poll_close_workers = lambda: None
     app._close_deadline = None
 
@@ -1418,14 +1304,13 @@ def test_close_finalizes_current_dual_segment_then_cancels_postprocessor(tmp_pat
     app._close_prepare_worker.join(1.0)
 
     assert app._closing is True
-    assert app._stop_evt.is_set()
+    assert app._live.stops == [app_ui.APP_CLOSE]
     assert len(finalizer.jobs) == 1
     assert finalizer.cancel_calls == 1
 
 
 def test_close_returns_while_inflight_finalize_finishes_before_cancelling(tmp_path):
     app, finalizer, _segment_dir = _dual_submission_app(tmp_path)
-    app._stop_evt = threading.Event()
     app._poll_close_workers = lambda: None
     app._close_deadline = None
     submit_started = threading.Event()
@@ -1470,7 +1355,6 @@ def test_close_returns_while_inflight_finalize_finishes_before_cancelling(tmp_pa
 
 def test_close_deadline_is_set_before_blocking_cancel_work(tmp_path):
     app, finalizer, _segment_dir = _dual_submission_app(tmp_path)
-    app._stop_evt = threading.Event()
     app._poll_close_workers = lambda: None
     app._close_deadline = None
     cancel_started = threading.Event()
@@ -1497,7 +1381,6 @@ def test_close_deadline_is_set_before_blocking_cancel_work(tmp_path):
 def test_recording_status_refresh_returns_without_recording_locks_during_close(tmp_path):
     app, finalizer, _segment_dir = _dual_submission_app(tmp_path)
     app._closing = True
-    app._stop_evt = threading.Event()
     app.record_btn.configure(state="disabled")
     app.record_stop_btn = _Widget()
     app.record_stop_btn.configure(state="disabled")
@@ -1535,8 +1418,7 @@ def test_recording_status_refresh_returns_without_recording_locks_during_close(t
 
 def test_recording_status_refresh_clears_worker_finalized_main_stop_state(tmp_path):
     app, finalizer, _segment_dir = _dual_submission_app(tmp_path)
-    app._stop_evt = threading.Event()
-    app._stop_evt.set()
+    app._live.state = "stopping"
     app.recording_status_var = _Var("录制中：旧片段")
     app.record_stop_btn = _Widget()
     app.record_stop_btn.configure(state="normal")
@@ -1556,8 +1438,7 @@ def test_recording_status_refresh_clears_worker_finalized_main_stop_state(tmp_pa
 
 def test_record_stop_returns_without_recording_lock_after_stop_requested(tmp_path):
     app, finalizer, _segment_dir = _dual_submission_app(tmp_path)
-    app._stop_evt = threading.Event()
-    app._stop_evt.set()
+    app._live.state = "stopping"
     app.record_btn.configure(state="disabled")
     app.record_stop_btn = _Widget()
     app.record_stop_btn.configure(state="disabled")

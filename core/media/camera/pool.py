@@ -247,26 +247,25 @@ class CameraPool:
         *,
         after: tuple[int, int] | None = None,
     ) -> tuple[WarmFrame, WarmFrame] | None:
-        """Return the current pair if ready and newer than ``after``.
-
-        ``after`` is a ``(primary_sequence, secondary_sequence)`` cursor. A new
-        snapshot is returned when either role has advanced beyond its cursor.
-        """
-
+        """Return the current pair if ready and newer than ``after``, a
+        ``(primary_sequence, secondary_sequence)`` cursor; either role advancing counts."""
         wants = self._validate_pair(primary, secondary)
-        cursor = self._validate_after(after)
+        return self._snapshot(dict(zip(ROLES, wants)), self._validate_after(after))
+
+    def snapshot_one(self, spec: CaptureSpec | int, *, after: int | None = None) -> WarmFrame | None:
+        """单摄：primary 的最新预热帧，比 ``after`` 新时才返回（模型加载期的裸帧预览，D-8）。"""
+        result = self._snapshot({PRIMARY: self._validate_spec(spec)}, None if after is None else (int(after),))
+        return None if result is None else result[0]
+
+    def _snapshot(self, wants: Mapping[str, CaptureSpec], cursor: tuple[int, ...] | None):
         with self._condition:
-            slots = self._matching(dict(zip(ROLES, wants)))
+            slots = self._matching(wants)
             if slots is None or not all(
-                not slot.claimed and slot.error is None and slot.latest is not None
-                for slot in slots
+                not slot.claimed and slot.error is None and slot.latest is not None for slot in slots
             ):
                 return None
-            result = (slots[0].latest, slots[1].latest)
-            if cursor is not None and (
-                result[0].sequence <= cursor[0]
-                and result[1].sequence <= cursor[1]
-            ):
+            result = tuple(slot.latest for slot in slots)
+            if cursor is not None and all(frame.sequence <= seen for frame, seen in zip(result, cursor)):
                 return None
             return result
 

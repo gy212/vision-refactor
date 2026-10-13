@@ -177,7 +177,8 @@ class ParallelPoseEngine:
     def submit(self, frame: np.ndarray) -> int | None:
         """提交一帧。返回分配的帧序号；当 ``drop_when_full`` 且队列满时丢弃并返回 None。
 
-        被丢弃的帧不消耗序号，因此重排序列保持连续、不留空洞。
+        被丢弃的帧不消耗序号，因此重排序列保持连续、不留空洞。不丢帧时阻塞等待队列空位，
+        ``close`` 之后放弃这一帧并返回 None，让读帧线程能随会话停止退出。
         """
         if not self._started:
             raise RuntimeError("ParallelPoseEngine not started")
@@ -191,12 +192,22 @@ class ParallelPoseEngine:
                     with self._stats_lock:
                         self._dropped += 1
                     return None
-            else:
-                self._frame_q.put(item)
+            elif not self._put_until_stopped(item):
+                return None
             self._next_submit_idx += 1
             with self._stats_lock:
                 self._submitted += 1
             return idx
+
+    def _put_until_stopped(self, item: tuple[int, np.ndarray]) -> bool:
+        """阻塞放入输入队列，``close`` 后放弃；放入成功返回 True。"""
+        while not self._stop_evt.is_set():
+            try:
+                self._frame_q.put(item, timeout=0.1)
+                return True
+            except Full:
+                continue
+        return False
 
     def signal_input_done(self) -> None:
         """通知引擎不会再有新帧；worker 处理完队列后退出。

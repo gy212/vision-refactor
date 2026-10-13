@@ -114,7 +114,7 @@ def _check_camera_mode_switch(app, root):
             raise errors[0]
 
     def stopped():
-        return not app._worker.is_alive() and app._current_session_generation == 0
+        return app._session_finished()
 
     def ready():
         return app._dual_recording_ready and bool(app._recording.session_sizes)
@@ -169,7 +169,7 @@ def _check_camera_mode_switch(app, root):
             app._stop()
             pump_until(stopped)
         finally:
-            if app._worker is not None and app._worker.is_alive():
+            if app._session_active():
                 app._stop()
                 pump_until(stopped)
             app._release_camera_warmups()
