@@ -549,3 +549,25 @@ def test_result_panel_bottom_actions_trigger_callbacks():
     finally:
         panel.destroy()
         root.destroy()
+
+
+def test_export_report_from_result_page_writes_html(monkeypatch, tmp_path):
+    """结果页「导出图文报告」：默认文件名用动作中文名，写出 HTML（修复前 ACTIONS 未导入，点击即 NameError）。"""
+    app = make_test_app(monkeypatch)
+    history = SimpleNamespace(root=tmp_path / "history")
+    app.feedback_controls = SimpleNamespace(history=lambda: history)
+    app.student_status_var = Mock()
+    asked = {}
+    target = tmp_path / "report.html"
+
+    def _ask(**kwargs):
+        asked.update(kwargs)
+        return str(target)
+
+    monkeypatch.setattr(app_ui.filedialog, "asksaveasfilename", _ask)
+    monkeypatch.setattr(app_ui.messagebox, "showinfo", Mock())
+    record = make_dummy_record()
+    app_ui.App._on_student_export_report(app, record)
+    assert asked["initialfile"] == f"{record['studentId']}_{app_ui.ACTIONS[record['action']]}_练习分析报告"
+    assert "散打学生练习分析图文报告" in target.read_text(encoding="utf-8")
+    app.student_status_var.set.assert_called_once_with("报告已成功导出至：report.html")

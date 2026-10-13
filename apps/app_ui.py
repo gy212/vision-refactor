@@ -17,7 +17,7 @@ import cv2
 import numpy as np
 from PIL import Image, ImageTk
 
-from core.evaluation import COMPARE, load_template
+from core.evaluation import ACTIONS, COMPARE, load_template
 from core.services import compare_templates, create_template_from_video
 from core.pose import missing_model_message
 from core.foundation import (
