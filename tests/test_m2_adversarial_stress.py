@@ -697,9 +697,9 @@ def test_result_panel_rapid_set_record_stress():
                 panel.clear()
 
         # 验证最终状态正确
-        assert panel._current_record is not None
-        assert panel._current_record["studentId"] == "stu_099"
-        assert len(panel._photo_cache) <= 30  # 有界缓存保护
+        assert panel.record is not None
+        assert panel.record["studentId"] == "stu_099"
+        assert panel.photo_count <= 30  # 有界缓存保护
     finally:
         panel.destroy()
         root.destroy()

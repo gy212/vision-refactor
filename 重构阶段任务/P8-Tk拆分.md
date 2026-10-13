@@ -58,10 +58,15 @@
 | 批 | 内容 | 状态 |
 |---|---|---|
 | B1 | 报告：`reporting/practice_model.py`、`reporting/evidence.py`、`reporting/html/`（模板 + 渲染器 + 时间线 SVG + 图标 + 脱敏）；`core/feedback_report.py` 改门面；HTML 差分基准 `tests/fixtures/report_html/`（旧实现录制，14 例逐字节一致）；spec 收入模板目录 | 已完成 |
-| B2 | 结果页拆成 `apps/tk/views/practice_result/`（头部、概览卡片、相位条、检查列表、证据区、诊断区、底部操作栏），`apps/feedback_result_panel.py` 改门面 | 未开始 |
+| B2 | 结果页拆成 `apps/tk/views/practice_result/`（头部、概览卡片、相位条、检查列表、证据区、诊断区、底部操作栏），`apps/feedback_result_panel.py` 改门面 | 已完成 |
 | B3 | `apps/tk/dispatcher.py`（`UiDispatcher`）与 `apps/tk/shutdown.py`（`ShutdownCoordinator`）及单测；App、ExamPanel、FeedbackControls、CompareWindow、SettingsWindow 的轮询与跨线程 `after(0)` 改走 dispatcher | 未开始 |
 | B4 | `CompareWindow` → `views/compare_dialog.py` + `controllers/compare.py`；`SettingsWindow` → `views/settings_dialog.py` + `controllers/settings.py`；`CollapsibleSection` 等 → `views/widgets.py` | 未开始 |
 | B5 | `ExamPanel` → `views/exam_window.py` + `controllers/exam.py`；`FeedbackControls` → `views/practice_controls.py` + `controllers/practice.py`（持有分析任务 `Epoch`） | 未开始 |
 | B6 | `App` 拆分：`views/main_window.py`、`capture_panel.py`、`preview_surface.py`、`recording_panel.py`；`controllers/session.py`、`recording.py`；组合根 `apps/tk/app.py`；`apps/app_ui.py` 留入口壳；删除 `App` 类；改写 48 处半成品构造 | 未开始 |
 | B7 | `apps/desktop_smoke.py` → `apps/tk/self_check.py`（拆 `run`，并加 HTML 图文报告导出检查，验证模板随包分发）；`desktop_launcher` 改启动 `apps/tk/app.py` | 未开始 |
 | B8 | 架构测试加 Tk 体量预算与 `.after(` 只在 `apps/tk/`；附录 A 走查；设计文档 §9/§12、README、change.md；EXE 自检；开 PR | 未开始 |
+
+各批要点（写 change.md 与 PR 说明时汇总）：
+
+- B1：HTML 基准 `tests/report_html_cases.py` + `tests/fixtures/report_html/`，测试 `tests/test_report_html_golden.py`；模板用 `string.Template`，读取时统一 LF（Windows 检出可能是 CRLF）。`core.reporting` 的 `__init__` 导出模型、证据帧与 `render_html_report`。报告测试改从 `core.reporting` 导入。allowlist 49 → 44。
+- B2：结果页拆成 `style`、`header`（头部 + 结论横幅）、`overview`、`phase_bar`、`check_list`（含纯函数 `filter_checks`/`initial_check_id`）、`evidence_view`、`review_box`、`diagnostics`、`action_bar`、`panel`（容器）。构造参数 `history_store` 改为 `history_root`（App 传 `feedback_controls.history().root`）。删掉面板里 App 从不走到的兜底分支：没有 `on_review_toggle` 时自己调 `history_store.review`、没有 `on_export_report` 时自己弹保存框并渲染 HTML（App 始终注入这两个回调，导出与复核留在练习控制器）。`_active_photos` 无界列表删除，正在显示的画面由各视角框持有引用。测试改用公共方法 `select_phase/select_status/select_check/review/practice_again/view_history/export`、`record`、`photo_count`。差分：`tests/result_page_snapshot.py` + `tests/fixtures/result_page/snapshots.json`（拆分前旧面板 3 份记录 50 步控件树快照摘要），测试 `tests/test_result_page_snapshot.py`。allowlist 44 → 41。

@@ -476,13 +476,13 @@ def test_result_panel_phase_filtering():
         assert len(panel.check_tree.get_children()) == 4
 
         # 切换到 "start" (开始实战式: 1项)
-        panel._on_phase_clicked("start")
+        panel.select_phase("start")
         children = panel.check_tree.get_children()
         assert len(children) == 1
         assert "chk:start:front:stance_elbow" in children
 
         # 切换回全部
-        panel._on_phase_clicked(None)
+        panel.select_phase(None)
         assert len(panel.check_tree.get_children()) == 4
     finally:
         panel.destroy()
@@ -500,15 +500,14 @@ def test_result_panel_review_action_triggers_callback():
         panel.set_record(record)
 
         # 选中第一项
-        panel.check_tree.selection_set("chk:start:front:stance_elbow")
-        panel._on_tree_select()
+        panel.select_check("chk:start:front:stance_elbow")
 
         panel.teacher_entry.delete(0, "end")
         panel.teacher_entry.insert(0, "王老师")
         panel.reason_entry.delete(0, "end")
         panel.reason_entry.insert(0, "动作幅度符合标准")
 
-        panel._on_review_action_clicked("confirmed")
+        panel.review("confirmed")
         on_review_toggle.assert_called_once_with(
             record["id"],
             "chk:start:front:stance_elbow",
@@ -539,13 +538,13 @@ def test_result_panel_bottom_actions_trigger_callbacks():
         record = make_dummy_record()
         panel.set_record(record)
 
-        panel._on_practice_again_clicked()
+        panel.practice_again()
         on_practice_again.assert_called_once()
 
-        panel._on_export_clicked()
+        panel.export()
         on_export_report.assert_called_once_with(record)
 
-        panel._on_history_clicked()
+        panel.view_history()
         on_view_history.assert_called_once()
     finally:
         panel.destroy()

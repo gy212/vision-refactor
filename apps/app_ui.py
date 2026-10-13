@@ -1503,7 +1503,7 @@ class App:
         # 学生练习分析结果主视图 (Milestone 2)；任务代次在 PracticeSession
         self.current_student_id = self.feedback_controls.student_id
 
-        from apps.feedback_result_panel import FeedbackResultPanel
+        from apps.tk.views.practice_result import FeedbackResultPanel
 
         self.feedback_result_panel = FeedbackResultPanel(
             outer,
@@ -1512,7 +1512,7 @@ class App:
             on_view_history=self._on_student_view_history,
             on_review_toggle=self._on_student_review_toggle,
             on_switch_to_preview=self._show_student_preview_view,
-            history_store=self.feedback_controls.history(),
+            history_root=self.feedback_controls.history().root,
         )
         self.feedback_result_panel.grid_remove()
 

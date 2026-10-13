@@ -71,7 +71,6 @@ CLONES: dict[str, tuple[int, str]] = {}
 MODULE_SIZE: dict[str, tuple[int, str]] = {
     'analysis/bench_annotate_fps.py': (1018, 'P9'),
     'apps/app_ui.py': (3528, 'P8'),
-    'apps/feedback_result_panel.py': (1325, 'P8'),
     'core/media/camera/pool.py': (1115, 'P9'),  # 原 apps/camera_warmup.py（1125），D-15：P9 按职责拆分
     'core/qwen_coach.py': (916, 'P9'),
 }
@@ -88,8 +87,6 @@ FUNCTION_SIZE: dict[str, tuple[int, str]] = {
     'apps/app_ui.py::CompareWindow._build': (128, 'P8'),
     'apps/desktop_smoke.py::run': (142, 'P8'),
     'apps/exam_panel.py::ExamPanel._retest_current': (108, 'P8'),
-    'apps/feedback_result_panel.py::FeedbackResultPanel._build_split_section': (301, 'P8'),
-    'apps/feedback_result_panel.py::FeedbackResultPanel._build_ui': (109, 'P8'),
     'batch/batch_dual_compare.py::_run_body_core_batch': (115, 'P9'),
     'batch/batch_dual_compare.py::main': (237, 'P9'),
     'batch/batch_export_skeleton.py::main': (120, 'P9'),
@@ -106,4 +103,4 @@ DEFENSIVE_GETATTR: dict[str, tuple[int, str]] = {
     'apps/app_ui.py': (44, 'P8'),
 }
 
-ENTRY_CEILING = 44
+ENTRY_CEILING = 41
