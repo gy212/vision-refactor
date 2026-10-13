@@ -493,6 +493,41 @@ def test_1080p_30fps_analysis_keeps_every_frame(tmp_path):
     assert series["capture"]["analyzedFrames"] == 12 and not series["valid_mask"].any()
 
 
+def test_real_tk_invalid_config_reports_analysis_not_started(tmp_path, monkeypatch):
+    """feedback_config.json 损坏：analyze_recording 报错并返回 False，修好后重试能真正启动。"""
+    import tkinter as tk
+    import apps.feedback_panel as panel
+    root = tk.Tk()
+    root.withdraw()
+    messages, busy = [], []
+    controls = panel.FeedbackControls(root, root=root, set_busy=busy.append, show_result=messages.append,
+                                      set_status=lambda _: None, can_analyze=lambda: True)
+    controls.store = FeedbackHistory(tmp_path / "history", renderers=practice_report_renderers())
+    controls.student_id.set("001")
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"mock")
+
+    def broken_config():
+        raise ValueError("feedback_config.json 格式错误")
+
+    try:
+        monkeypatch.setattr(panel, "load_feedback_config", broken_config)
+        assert controls.analyze_recording(controls.identity(), source, None) is False
+        assert messages == ["feedback_config.json 格式错误"] and busy == [] and not controls.busy
+        monkeypatch.undo()
+        monkeypatch.setattr(panel, "analyze_feedback", fake_analyzer)
+        assert controls.analyze_recording(controls.identity(), source, None) is True
+        assert busy == [True]
+        deadline = time.monotonic() + 5
+        while controls.busy and time.monotonic() < deadline:
+            root.update()
+            time.sleep(.01)
+        assert not controls.busy and busy == [True, False]
+    finally:
+        controls.close()
+        root.destroy()
+
+
 def test_real_tk_evidence_frames_and_model_choice(tmp_path, monkeypatch):
     import tkinter as tk
     import apps.feedback_panel as panel

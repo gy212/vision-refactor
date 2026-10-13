@@ -290,7 +290,7 @@ def test_executor_rows_export_and_analysis():
     book.bind_segment = lambda row, **f: book.calls.append(("bind", row, f))
     book.flush = lambda: book.calls.append(("flush",))
     analysis = SimpleNamespace(requests=[])
-    analysis.start_practice_analysis = analysis.requests.append
+    analysis.start_practice_analysis = lambda request: analysis.requests.append(request) or True
     ports = _ports(scorebook=book, analysis=analysis)
     flow = _Flow([
         Command("UPDATE_ROW", {"row_id": "r1", "status": "recording"}),
@@ -312,6 +312,36 @@ def test_executor_rows_export_and_analysis():
     assert ("status", (f"成绩已写入：{Path('out.xlsx')}",), {}) in ports.ui.calls
     assert ("show_result", ({"id": "r"},), {}) in ports.ui.calls
     assert ("lock_manual_record", (True,), {}) in ports.ui.calls
+
+
+def test_analysis_start_failure_restores_retryable_phase():
+    """配置错误等同步启动失败：回到 ready_to_judge，修好后再点能真正发起分析。"""
+    outcomes = [False, RuntimeError("坏配置"), True]
+    analysis = SimpleNamespace(requests=[])
+
+    def start(request):
+        analysis.requests.append(request)
+        outcome = outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    analysis.start_practice_analysis = start
+    executor = CommandExecutor(_ports(analysis=analysis))
+    s = _practice()
+    s.segment = PracticeSegment("seg", None, ready=True, terminal=True)
+    s.identity = {"studentId": "001"}
+    s.phase = "ready_to_judge"
+    for expected_calls in (1, 2):
+        executor.dispatch(s, "judge")
+        assert len(analysis.requests) == expected_calls
+        assert s.phase == "ready_to_judge" and s.active_token is None and not s.busy
+    executor.dispatch(s, "judge")
+    assert len(analysis.requests) == 3 and s.phase == "analyzing"
+    assert s.active_token == analysis.requests[-1]["token"]
+    # 迟到的旧代次失败回报不影响进行中的任务
+    s.handle("analysis_start_failed", token=1)
+    assert s.phase == "analyzing" and s.active_token == 3
 
 
 # ---------------------------------------------------------------- WorkflowHost

@@ -115,6 +115,7 @@ class PracticeSession:
             "segment_update": self._on_segment_update,
             "judge": self._on_judge,
             "analysis_busy": self._on_analysis_busy,
+            "analysis_start_failed": self._on_analysis_start_failed,
             "record_saved": self._on_record_saved,
             "analysis_saved": self._on_analysis_saved,
             "identity_changed": self._on_identity_changed,
@@ -306,6 +307,16 @@ class PracticeSession:
     def _on_analysis_busy(self, *, busy: bool, **_: Any) -> list[Command]:
         self.busy = bool(busy)
         if not self.busy and self.phase == "analyzing":
+            self.phase = self._rest_phase()
+        return []
+
+    def _on_analysis_start_failed(self, *, token: int | None = None, **_: Any) -> list[Command]:
+        """分析没能启动（如配置错误）：作废本次任务代次，回到可重试的阶段。"""
+        if token is not None and token != self.active_token:
+            return []
+        self.active_token = None
+        self.active_student_id = None
+        if self.phase == "analyzing":
             self.phase = self._rest_phase()
         return []
 

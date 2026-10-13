@@ -110,6 +110,24 @@ def _bare_panel(session: ExamSession | None = None, lifecycle: list | None = Non
     return panel
 
 
+def test_close_callback_detaches_and_destroys_window() -> None:
+    """WM_DELETE_WINDOW 回调：释放工作流后必须销毁窗口，不留下脱管的面板。"""
+    events: list = []
+    panel = _bare_panel(lifecycle=events)
+    deactivated: list = []
+    panel.app.workflows = SimpleNamespace(deactivate=deactivated.append)
+    panel.app.exam_panel = panel
+    panel._announcer = SimpleNamespace(close=lambda: events.append(("announcer_closed",)))
+    panel.win = SimpleNamespace(destroy=lambda: events.append(("destroyed",)))
+
+    panel._on_close()
+
+    assert deactivated == [panel.session]
+    assert panel.app.exam_panel is None
+    assert events[-1] == ("destroyed",)
+    assert ("announcer_closed",) in events
+
+
 def test_imported_roster_path_is_saved_and_restored(
     monkeypatch, tmp_path: Path
 ) -> None:

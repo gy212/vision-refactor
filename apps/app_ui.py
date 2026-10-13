@@ -3484,14 +3484,14 @@ class _PracticeAnalysis:
     def __init__(self, app: App) -> None:
         self._app = app
 
-    def start_practice_analysis(self, request: dict) -> None:
+    def start_practice_analysis(self, request: dict) -> bool:
         app, token, student_id = self._app, request["token"], request["student_id"]
 
         def on_saved(record):
             app._practice_dispatch("record_saved", record_id=record["id"])
             App._on_student_analysis_saved(app, token=token, student_id=student_id, record=record)
 
-        app.feedback_controls.analyze_recording(
+        return app.feedback_controls.analyze_recording(
             request["identity"], request["front"], request["side"],
             record_id=request["record_id"], on_saved=on_saved, token=token,
         )

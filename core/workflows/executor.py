@@ -68,7 +68,9 @@ class Scorebook(Protocol):
 
 
 class AnalysisControl(Protocol):
-    def start_practice_analysis(self, request: dict[str, Any]) -> None: ...
+    def start_practice_analysis(self, request: dict[str, Any]) -> bool:
+        """启动后台分析；同步失败（配置错误、正忙）时返回 False。"""
+        ...
 
 
 @dataclass
@@ -136,8 +138,14 @@ class CommandExecutor:
             if payload.get("alert"):
                 ports.ui.alert(str(payload.get("title") or ""), str(payload["alert"]), error=bool(payload.get("error")))
         elif kind == "START_ANALYSIS":
-            if ports.analysis is not None:
-                ports.analysis.start_practice_analysis(dict(payload))
+            started = False
+            try:
+                if ports.analysis is not None:
+                    started = bool(ports.analysis.start_practice_analysis(dict(payload)))
+            except Exception:
+                traceback.print_exc()
+            if not started:
+                return "analysis_start_failed", {"token": payload.get("token")}
         elif kind == "SHOW_RESULT":
             ports.ui.show_result(payload["record"])
         # SCHEDULE_CALL_GUARD / SCHEDULE_INTER_GAP / ADVANCE_POINTER：只是记录，定时由 tick 驱动

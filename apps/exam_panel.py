@@ -650,6 +650,10 @@ class ExamPanel:
                     pass
             self.scorebook = None
         self._detach_from_app()
+        try:
+            self.win.destroy()
+        except Exception:
+            pass
 
 
 def _set_if_changed(var: StringVar, value: str) -> None:

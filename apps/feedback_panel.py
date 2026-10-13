@@ -90,10 +90,11 @@ class FeedbackControls:
         self.history_button.configure(state="disabled" if recording or self.busy else "normal")
         self.export_button.configure(state="normal" if self.current and not self.busy else "disabled")
 
-    def _start(self, work, on_saved=None, token=None):
+    def _start(self, work, on_saved=None, token=None) -> bool:
+        """启动后台分析；未能启动（忙或不可分析）时返回 False。"""
         if self.busy or not self.can_analyze():
             messagebox.showinfo("动作问题说明", "请先结束录制并等待当前任务完成。", parent=self.root)
-            return
+            return False
         self.active_token = token
         self.busy = True
         self.stop_event.clear()
@@ -154,14 +155,16 @@ class FeedbackControls:
 
         threading.Thread(target=run, name="student-action-feedback", daemon=True).start()
         self.poll_id = self.root.after(100, poll)
+        return True
 
-    def analyze_recording(self, identity, front, side, *, record_id=None, on_saved=None, token=None):
+    def analyze_recording(self, identity, front, side, *, record_id=None, on_saved=None, token=None) -> bool:
+        """发起后台分析；配置错误等同步失败时返回 False，调用方据此恢复可重试状态。"""
         try:
             analyzer = self._analyzer()
         except (ValueError, OSError) as exc:
             self.show_result(str(exc))
-            return
-        self._start(
+            return False
+        return self._start(
             lambda: self.history().reanalyze(record_id, stopped=self.stop_event.is_set, analyzer=analyzer) if record_id else
             self.history().add(identity, front, side, stopped=self.stop_event.is_set, analyzer=analyzer),
             on_saved=on_saved,
