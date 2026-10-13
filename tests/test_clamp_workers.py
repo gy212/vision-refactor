@@ -3,7 +3,7 @@
 
 设计来源：``.kiro/specs/ui-layout-redesign/design.md``（Correctness Property 7）。
 
-被测函数：``apps.app_ui.clamp_workers(n) -> int``，将任意整数输入钳制到闭区间
+被测函数：``apps.tk.controllers.session.clamp_workers(n) -> int``，将任意整数输入钳制到闭区间
 ``[1, os.cpu_count()]``（当 ``os.cpu_count()`` 返回 None 时上界回退为 1）。
 """
 from __future__ import annotations
@@ -17,7 +17,7 @@ from hypothesis import strategies as st
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from apps.app_ui import clamp_workers  # noqa: E402
+from apps.tk.controllers.session import clamp_workers  # noqa: E402
 
 
 def _expected(n: int) -> int:

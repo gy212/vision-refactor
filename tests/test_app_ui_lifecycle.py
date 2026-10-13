@@ -1029,9 +1029,9 @@ def test_record_toggle_starts_dual_segment_under_selected_base_dir(tmp_path, mon
 
 
 def test_app_close_registers_open_panel_scorebook_for_flush_close(tmp_path):
-    """主窗关闭时，仍打开的考试面板成绩簿必须移交登记表，并在最后 flush/close。"""
-    from apps.exam_panel import ExamPanel
-    from core.workflows import CommandExecutor, ExamCandidate, ExamScorebook, ExamSession, WorkflowPorts
+    """主窗关闭时，仍打开的考试窗口成绩簿必须移交登记表，并在最后 flush/close。"""
+    from apps.tk.controllers.exam import ExamController
+    from core.workflows import ExamCandidate, ExamScorebook, WorkflowPorts
 
     flushes: list[str] = []
     closes: list[str] = []
@@ -1049,35 +1049,32 @@ def test_app_close_registers_open_panel_scorebook_for_flush_close(tmp_path):
 
     registry = ScorebookRegistry()
     modes: list[bool] = []
+    announcer_closed: list[str] = []
     app = SimpleNamespace(
         exam_scorebooks=registry,
         workflows=WorkflowHost(registry),
         set_exam_mode=modes.append,
         lock_manual_record=lambda _locked: None,
+        exam_ports=lambda *, ui, announcer: WorkflowPorts(
+            recorder=SimpleNamespace(), occupancy=SimpleNamespace(arm=lambda _armed: None),
+            announcer=announcer, ui=ui,
+        ),
+        exam_closed=lambda c: setattr(app, "exam_panel", None) if app.exam_panel is c else None,
     )
-    announcer_closed: list[str] = []
-    panel = object.__new__(ExamPanel)
-    panel.app = app
-    panel.session = ExamSession()
+    view = SimpleNamespace(
+        status="", set_roi=lambda _roi: None, set_phase=lambda _t: None, set_present=lambda _t: None,
+        is_open=lambda: True, destroy=lambda: None,
+    )
+    view.set_status = lambda text: setattr(view, "status", text)
+    panel = ExamController(
+        app, view, prefs={}, restore=False,
+        announcer=SimpleNamespace(close=lambda: announcer_closed.append("close")),
+    )
     panel.session.phase = "completed"
-    panel.executor = CommandExecutor(
-        WorkflowPorts(
-            recorder=SimpleNamespace(),
-            occupancy=SimpleNamespace(arm=lambda _armed: None),
-            announcer=SimpleNamespace(),
-            ui=panel,
-        )
-    )
     panel.scorebook = book
-    panel.win = SimpleNamespace(destroy=lambda: None)
-    panel.phase_var = _Var("")
-    panel.present_var = _Var("")
-    panel.status_var = _Var("")
-    panel._announcer = SimpleNamespace(close=lambda: announcer_closed.append("close"))
     app.exam_panel = panel
-    app.workflows.activate(panel.session, panel.executor)
 
-    ExamPanel.prepare_for_app_close(panel)  # type: ignore[arg-type]
+    panel.prepare_for_app_close()
 
     assert announcer_closed == ["close"], "主窗关闭路径必须停 exam-announcer"
     assert panel.scorebook is None
@@ -1086,7 +1083,7 @@ def test_app_close_registers_open_panel_scorebook_for_flush_close(tmp_path):
     assert app.exam_panel is None
     assert app.workflows.active is None
     assert modes == [False]
-    assert panel.status_var.get() == "主会话已停止，考试已中止"
+    assert view.status == "主会话已停止，考试已中止"
     assert closes == []
 
     registry.close_all()

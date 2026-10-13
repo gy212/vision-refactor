@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import csv
-import os
 import threading
 import time
 import traceback
@@ -82,9 +81,9 @@ from apps.input_source import InputSourceState
 from core import foundation
 from core.media import PRIMARY, SECONDARY, CameraService, CaptureSpec, ProcessCamera
 from core.media import CameraDevice as CameraEntry
-from apps.feedback_panel import FeedbackControls
 from apps.tk import ShutdownCoordinator, ShutdownSteps, UiDispatcher
-from apps.tk.views import CompareDialog, SettingsDialog
+from apps.tk.controllers.session import clamp_workers, default_workers
+from apps.tk.views import CompareDialog, ExamWindow, PracticeControls, SettingsDialog
 
 
 # Record_Toggle 三态按钮文本映射，供录制回调（任务 7.1/7.2/7.3）与 UI 重构（任务 9.x）复用。
@@ -138,40 +137,6 @@ _CAMERA_CANCEL_JOIN_TIMEOUT_S = 0.05
 _CAMERA_RELEASE_WAIT_S = 3.0
 # 普通模式的请求尺寸（各模式的采集格式由 core.workflows.modes 声明）
 _PREVIEW_CAPTURE_SIZE = NORMAL.requirements.fmt.size
-
-
-def clamp_workers(n: int) -> int:
-    """将离线线程数钳制到闭区间 [1, os.cpu_count()]。
-
-    - 小于 1 的输入钳制为 1
-    - 大于主机 CPU 逻辑核心数的输入钳制为核心数
-    - 当 ``os.cpu_count()`` 返回 None（无法确定核心数）时，上界回退为 1
-
-    Validates: Requirements 7.2
-    """
-    cpu = os.cpu_count()
-    upper = cpu if cpu and cpu >= 1 else 1
-    try:
-        value = int(n)
-    except (TypeError, ValueError):
-        value = 1
-    if value < 1:
-        return 1
-    if value > upper:
-        return upper
-    return value
-
-
-def default_workers() -> int:
-    """主预览默认并行 worker 数：按 CPU 逻辑核数自适应，尽量榨满多核吞吐。
-
-    单条 VIDEO 管线在多核机上只用到少数核（32 核机整机 ~10% 利用率）；多 worker 并行
-    IMAGE 推理可近线性扩展。留 2 个核给 UI/采集/系统；上限 8——实测 6 worker 已达
-    ~57fps，再多是拿内存（每 worker 一份模型）换不到额外 fps。想更激进可在「线程数」
-    里手调（上限 16）。
-    """
-    cpu = os.cpu_count() or 4
-    return max(2, min(8, cpu - 2))
 
 
 @dataclass(frozen=True)
@@ -540,7 +505,7 @@ class App:
             foreground="#555555",
             wraplength=320,
         ).pack(anchor="w", pady=(6, 0))
-        self.feedback_controls = FeedbackControls(
+        self.feedback_controls = PracticeControls(
             self._student_block, root=self.root, post=self.ui.post,
             set_busy=self._set_feedback_busy,
             show_result=self._set_student_result_text,
@@ -1168,13 +1133,11 @@ class App:
         existing = self.exam_panel
         if existing is not None:
             try:
-                existing.win.lift()
+                existing.view.lift()
                 return
             except Exception:
                 pass
-        from apps.exam_panel import ExamPanel
-
-        ExamPanel(self)
+        self.exam_panel = ExamWindow(self.root, self).controller
 
     # ------------------------------------------------------------------
     # 学生练习模式（MediaPipe 关键点规则检查，无分数）；流程在 core.workflows.PracticeSession
@@ -1529,6 +1492,21 @@ class App:
                 return _parse_rotate(self.rotate_var.get())
             except Exception:
                 return 0
+
+    def post(self, callback) -> bool:
+        """后台线程回到 Tk 线程（考试播报文字等）。"""
+        return self.ui.post(callback)
+
+    def exam_record_dir(self) -> Path:
+        """考试场次目录的父目录：录制保存目录，未填时回落 outputs。"""
+        try:
+            return Path(self.record_dir_var.get().strip() or str(outputs_dir()))
+        except Exception:
+            return outputs_dir()
+
+    def exam_closed(self, controller) -> None:
+        if self.exam_panel is controller:
+            self.exam_panel = None
 
     def exam_ports(self, *, ui, announcer) -> WorkflowPorts:
         """考试流程的端口：录制与站位检测接到本窗口的会话，界面与播报由面板提供。"""

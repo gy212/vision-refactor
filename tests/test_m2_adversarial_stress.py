@@ -245,15 +245,15 @@ def test_worker_completion_after_cancellation():
 
 
 def test_worker_completion_after_cancellation_feedback_panel_integration():
-    """压力测试 1b：FeedbackControls._start 队列层级的取消防御（真实后台线程 + Tk poll）。"""
-    from apps.feedback_panel import FeedbackControls
+    """压力测试 1b：练习分析任务的取消防御（真实后台线程 + UiDispatcher 回到 Tk 线程）。"""
+    from apps.tk.views import PracticeControls
 
     root = tk.Tk()
     root.withdraw()
     panel = None
     try:
         show_result = Mock()
-        panel = FeedbackControls(root, root=root, post=_pumped(root), set_busy=lambda _busy: None, show_result=show_result,
+        panel = PracticeControls(root, root=root, post=_pumped(root), set_busy=lambda _busy: None, show_result=show_result,
                                  set_status=lambda _text: None, can_analyze=lambda: True)
         on_saved_mock = Mock()
         finish = threading.Event()
@@ -262,13 +262,12 @@ def test_worker_completion_after_cancellation_feedback_panel_integration():
             finish.wait(5)  # 后台分析在用户取消之后才完成
             return make_stress_record("001", token=42)
 
-        panel._start(work, on_saved=on_saved_mock, token=42)
-        assert panel.active_token == 42
+        panel.analysis.start(work, on_saved=on_saved_mock, token=42)
+        assert panel.busy
 
         # 用户在 poll 消费结果前点击了 cancel
         panel.cancel()
-        assert panel.active_token is None
-        assert panel.stop_event.is_set()
+        assert panel.analysis.stop_event.is_set()
         finish.set()
 
         deadline = time.monotonic() + 5
