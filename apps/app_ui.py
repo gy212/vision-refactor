@@ -2289,7 +2289,7 @@ class App:
 
     def _on_student_export_report(self, record: dict) -> None:
         """从结果面板导出 HTML / TXT 图文报告。"""
-        from core.feedback_report import render_html_report
+        from core.reporting import render_html_report
 
         student_id = record.get("studentId", "student")
         action = record.get("action", "action")

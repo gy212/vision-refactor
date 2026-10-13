@@ -1,6 +1,6 @@
 # P8 Tk 拆分
 
-> 依据：设计文档 §9.1、§9.3、§3 第 7、39 项。前置：P7。规模：大，阶段内分多次提交。状态：未开始。
+> 依据：设计文档 §9.1、§9.3、§3 第 7、39 项。前置：P7。规模：大，阶段内分多次提交。状态：进行中（2026-10-13 开工，分支 `refactor/p8-tk-split`）。
 
 ## 1. 任务前检查
 
@@ -48,3 +48,20 @@
 - [ ] 控制器单测、真实 Tk 冒烟、源码模式的模式切换检查、EXE 自检全部通过。
 - [ ] 附录 A 的 Tk 能力清单逐项走查，与第 1 节的记录一致。
 - [ ] 同一份分析结果，新旧 HTML 报告和结果页的内容一致（文字、证据帧、相位条）。
+
+## 5. 分批计划与进度（断点续做用）
+
+用户决定（2026-10-13）：一个分支一个 PR；每批提交时全量测试通过，提交后立即推送分支。接手时先读本节，再看 `git log main..HEAD`。
+
+开工基线：全量 1197 passed、1 skipped；allowlist 49 条。
+
+| 批 | 内容 | 状态 |
+|---|---|---|
+| B1 | 报告：`reporting/practice_model.py`、`reporting/evidence.py`、`reporting/html/`（模板 + 渲染器 + 时间线 SVG + 图标 + 脱敏）；`core/feedback_report.py` 改门面；HTML 差分基准 `tests/fixtures/report_html/`（旧实现录制，14 例逐字节一致）；spec 收入模板目录 | 已完成 |
+| B2 | 结果页拆成 `apps/tk/views/practice_result/`（头部、概览卡片、相位条、检查列表、证据区、诊断区、底部操作栏），`apps/feedback_result_panel.py` 改门面 | 未开始 |
+| B3 | `apps/tk/dispatcher.py`（`UiDispatcher`）与 `apps/tk/shutdown.py`（`ShutdownCoordinator`）及单测；App、ExamPanel、FeedbackControls、CompareWindow、SettingsWindow 的轮询与跨线程 `after(0)` 改走 dispatcher | 未开始 |
+| B4 | `CompareWindow` → `views/compare_dialog.py` + `controllers/compare.py`；`SettingsWindow` → `views/settings_dialog.py` + `controllers/settings.py`；`CollapsibleSection` 等 → `views/widgets.py` | 未开始 |
+| B5 | `ExamPanel` → `views/exam_window.py` + `controllers/exam.py`；`FeedbackControls` → `views/practice_controls.py` + `controllers/practice.py`（持有分析任务 `Epoch`） | 未开始 |
+| B6 | `App` 拆分：`views/main_window.py`、`capture_panel.py`、`preview_surface.py`、`recording_panel.py`；`controllers/session.py`、`recording.py`；组合根 `apps/tk/app.py`；`apps/app_ui.py` 留入口壳；删除 `App` 类；改写 48 处半成品构造 | 未开始 |
+| B7 | `apps/desktop_smoke.py` → `apps/tk/self_check.py`（拆 `run`，并加 HTML 图文报告导出检查，验证模板随包分发）；`desktop_launcher` 改启动 `apps/tk/app.py` | 未开始 |
+| B8 | 架构测试加 Tk 体量预算与 `.after(` 只在 `apps/tk/`；附录 A 走查；设计文档 §9/§12、README、change.md；EXE 自检；开 PR | 未开始 |

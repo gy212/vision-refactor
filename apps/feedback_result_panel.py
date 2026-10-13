@@ -33,7 +33,7 @@ from PIL import Image, ImageTk
 
 from core.media import SegmentLayout
 from core.action_feedback import ACTIONS, STANCES, PHASES, STATE_LABELS
-from core.feedback_report import (
+from core.reporting import (
     RULE_JOINTS,
     GroupedReason,
     HeadlineSummary,

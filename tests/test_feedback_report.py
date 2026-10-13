@@ -14,7 +14,7 @@ import pytest
 from core.action_feedback import ACTIONS, STANCES, build_checks
 from core.reporting import practice_report_renderers
 from core.feedback_history import FeedbackHistory
-from core.feedback_report import (
+from core.reporting import (
     StatusCounts,
     HeadlineSummary,
     NormalizedCheck,
@@ -24,13 +24,12 @@ from core.feedback_report import (
     build_report_model,
     get_headline_summary,
     group_checks_by_reason,
-    generate_phase_timeline_svg,
     extract_evidence_frame,
     frame_to_data_uri,
-    render_html_report,
     format_local_datetime,
     resolve_record_video_path,
 )
+from core.reporting.html import generate_phase_timeline_svg, render_html_report
 
 
 def make_synthetic_check(

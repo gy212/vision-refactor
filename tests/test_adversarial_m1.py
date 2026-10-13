@@ -19,15 +19,15 @@ import cv2
 import numpy as np
 import pytest
 
-from core.feedback_report import (
+from core.reporting import (
     StatusCounts,
     HeadlineSummary,
     NormalizedReportModel,
     build_report_model,
     get_headline_summary,
-    render_html_report,
     extract_evidence_frame,
 )
+from core.reporting.html import render_html_report
 from tests.test_feedback_report import make_synthetic_check, make_synthetic_record, make_dummy_video
 
 

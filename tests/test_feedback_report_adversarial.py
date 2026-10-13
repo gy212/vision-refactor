@@ -19,12 +19,10 @@ import cv2
 import numpy as np
 import pytest
 
-from core.feedback_report import (
-    render_html_report,
+from core.reporting import (
     build_report_model,
-    desensitize_paths,
-    generate_phase_timeline_svg,
 )
+from core.reporting.html import render_html_report, desensitize_paths, generate_phase_timeline_svg
 from tests.test_feedback_html_export import make_html_test_record
 
 

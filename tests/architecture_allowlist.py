@@ -73,7 +73,6 @@ MODULE_SIZE: dict[str, tuple[int, str]] = {
     'apps/app_ui.py': (3528, 'P8'),
     'apps/feedback_result_panel.py': (1325, 'P8'),
     'core/media/camera/pool.py': (1115, 'P9'),  # 原 apps/camera_warmup.py（1125），D-15：P9 按职责拆分
-    'core/feedback_report.py': (1518, 'P8'),
     'core/qwen_coach.py': (916, 'P9'),
 }
 
@@ -100,10 +99,6 @@ FUNCTION_SIZE: dict[str, tuple[int, str]] = {
     'core/evaluation/techeval/com.py::_compute_body_com_single': (176, 'P9'),
     'core/evaluation/techeval/com.py::eval_cog_com': (128, 'P9'),
     'core/evaluation/techeval/events.py::detect_retract_events_side': (103, 'P9'),
-    'core/feedback_report.py::build_report_model': (280, 'P8'),
-    'core/feedback_report.py::generate_phase_timeline_svg': (142, 'P8'),
-    'core/feedback_report.py::get_headline_summary': (131, 'P8'),
-    'core/feedback_report.py::render_html_report': (517, 'P8'),
     'scripts/sim_exam_flow.py::scenario_5': (107, 'P9'),
 }
 
@@ -111,4 +106,4 @@ DEFENSIVE_GETATTR: dict[str, tuple[int, str]] = {
     'apps/app_ui.py': (44, 'P8'),
 }
 
-ENTRY_CEILING = 49
+ENTRY_CEILING = 44

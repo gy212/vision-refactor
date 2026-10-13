@@ -22,9 +22,9 @@ import cv2
 import numpy as np
 import pytest
 
-feedback_report = pytest.importorskip("core.feedback_report")
+feedback_report = pytest.importorskip("core.reporting.html")
 render_html_report = feedback_report.render_html_report
-build_report_model = feedback_report.build_report_model
+from core.reporting import build_report_model  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
