@@ -55,6 +55,7 @@ from core.pose.landmarks import (
 )
 from core.pose.layouts import BODY_CORE_V1, POSE33_V3, FeatureLayoutSpec, get_layout, resolve_layout_by_shape
 from core.pose.live_labels import ACTION_LABELS_ZH, actions_text, classify_pose_actions
+from core.pose.models import MEDIAPIPE_MODELS, ModelSpec, download_model, installed_size_mb, is_installed
 from core.pose.normalize import (
     mirror_pose_features,
     normalize_pose_body_core_v1,
@@ -89,6 +90,11 @@ from core.pose.validity import DEFAULT_VALID_CONF_THR, MEDIAPIPE_VALIDITY_POLICY
 from core.pose.view_score import pose_view_score
 
 __all__ = [
+    "MEDIAPIPE_MODELS",
+    "ModelSpec",
+    "download_model",
+    "installed_size_mb",
+    "is_installed",
     "ACTION_LABELS_ZH",
     "BODY_CONNECTIONS",
     "BODY_CORE_V1",

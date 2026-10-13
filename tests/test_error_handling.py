@@ -11,7 +11,7 @@
 
 设计意图：以 stub self 绑定调用未绑定的 ``App`` 方法（``App._method(stub, ...)``），
 并用 monkeypatch 替换 ``apps.app_ui`` 的 ``messagebox`` /
-``CompareWindow``，从而在无显示（headless / CI）环境中也能稳定运行，不会 skip。
+``CompareDialog``，从而在无显示（headless / CI）环境中也能稳定运行，不会 skip。
 
 _Requirements: 4.2, 6.3_
 """
@@ -127,16 +127,17 @@ def test_start_with_no_source_shows_error_and_does_not_begin_session(monkeypatch
 def test_open_compare_failure_shows_error_and_keeps_state(monkeypatch):
     """比对窗口创建抛异常：弹「打开失败」一次、_compare_win 保持 None（需求 6.3）。"""
 
-    def _raise_boom(_root):
+    def _raise_boom(_root, _post):
         raise Exception("boom")
 
-    monkeypatch.setattr(app_ui, "CompareWindow", _raise_boom)
+    monkeypatch.setattr(app_ui, "CompareDialog", _raise_boom)
     recorder = ShowErrorRecorder()
     monkeypatch.setattr(app_ui.messagebox, "showerror", recorder)
 
     stub = types.SimpleNamespace(
         _compare_win=None,
         root=object(),
+        ui=types.SimpleNamespace(post=lambda _cb: None),
     )
 
     App._open_compare(stub)
