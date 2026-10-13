@@ -174,3 +174,37 @@ def test_pipelines_are_closed_on_close():
     assert out == []
     assert len(created) == 3
     assert all(p.closed for p in created)
+
+
+def test_blocking_submit_returns_none_after_close():
+    """不丢帧的 submit 阻塞在满队列上时，close 之后放弃该帧返回 None（PR #17 评审 1）。"""
+    gate = threading.Event()
+
+    class Blocked:
+        def annotate(self, frame_bgr, *, timestamp_ms=None):
+            gate.wait(5.0)
+            return frame_bgr, []
+
+        def close(self):
+            pass
+
+    engine = ParallelPoseEngine(pipeline_factory=Blocked, workers=1, drop_when_full=False, queue_factor=1)
+    engine.start()
+    frame = np.zeros((2, 2, 3), dtype=np.uint8)
+    results: list = []
+
+    def produce():
+        for _ in range(5):
+            results.append(engine.submit(frame))
+
+    producer = threading.Thread(target=produce, daemon=True)
+    producer.start()
+    time.sleep(0.3)
+    assert producer.is_alive()
+    closer = threading.Thread(target=engine.close, daemon=True)
+    closer.start()
+    producer.join(1.0)
+    assert not producer.is_alive()
+    assert results[-1] is None
+    gate.set()
+    closer.join(5.0)

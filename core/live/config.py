@@ -128,7 +128,7 @@ def video_session(
         delegate=delegate,
         workers=max(1, int(workers)),
         parallel=workers > 1,
-        record_hud=workers <= 1,
+        record_hud=hud == "cli" or workers <= 1,   # Tk 并行视频录原始帧；CLI 导出一直带 HUD
         hud=hud,
         hud_hint=hud == "cli" or workers <= 1,
     )

@@ -382,8 +382,9 @@ class SessionRunner:
                 if not self._finish_frame(packet):
                     break
         finally:
-            engine.close()
+            # 先取消读帧再关引擎：close 会让阻塞在 submit 上的读帧线程放弃当前帧并退出。
             reader.token.cancel("loop_end")
+            engine.close()
             reader.join(2.0)
         if reader.error is not None and not self._cancel.cancelled:
             raise reader.error

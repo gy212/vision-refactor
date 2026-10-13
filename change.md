@@ -1,3 +1,17 @@
+## 2026-10-13（America/Los_Angeles）: [fix] P6 评审修复：并行视频停止时读帧线程不退出；CLI 并行导出丢失 HUD
+
+- 问题描述：PR #17 评审两项 P2。
+  1. 并行视频不丢帧，读帧线程在输入队列满时阻塞于 `ParallelPoseEngine.submit()` 的 `Queue.put()`。停止（Tk 停止或 CLI 按 q）后 `engine.close()` 只停 worker，不解除这个阻塞，会话等满超时（约 4–5 秒）才报 `stopped`，读帧线程和队列里的帧留到进程退出。
+  2. `video_session()` 的 `record_hud=workers <= 1` 把 Tk 并行视频"先写后画"的策略也用于 CLI，`apps/main.py --workers 2 --out` 导出的视频丢了动作标签和 FPS 文字；旧 CLI 是先画后写。
+- 修改内容：
+  - `core/pose/parallel.py`：不丢帧的 `submit` 改为带超时的循环放入，`close` 之后放弃这一帧并返回 None。
+  - `core/live/runner.py`：并行分支收尾时先取消读帧 token 再关引擎，再等读帧线程结束。
+  - `core/live/config.py`：`video_session` 改为 `record_hud=hud == "cli" or workers <= 1`。
+  - 设计文档 §8 的 HUD 写入顺序与上一条记录的"行为保持"同步改为区分 Tk 与 CLI。
+- 验证方法：
+  - 新增 `test_parallel_pose_engine.py::test_blocking_submit_returns_none_after_close`、`test_live_session.py::test_stopping_parallel_video_with_full_queue_leaves_no_reader`（停止在 1 秒内结束、不留读帧线程）、`test_parallel_video_writer_receives_hud_only_for_cli[cli/tk]`（写入器收到的帧副本：CLI 带文字，Tk 不带）；`test_config_table_matches_legacy_loops` 加 CLI 一条断言。三个新测试在修复前的代码上失败（停止耗时 5.2 秒、CLI 写入帧无文字、submit 不返回），修复后通过。
+  - 门禁与架构测试 65 passed；全量 `-m pytest tests -q` 1175 passed。没有被替换的测试。
+
 ## 2026-10-12（America/Los_Angeles）: [refactor] P6 实时会话：新增 core/live，Tk 4 个与 CLI 3 个逐帧循环改用 SessionRunner，实施 D-7、D-8/V-2
 
 - 问题描述：Tk 的 `_worker_loop`、`_worker_loop_dual_camera`、`_worker_loop_parallel_camera`、`_worker_loop_parallel_video` 和 CLI 的 `run`、`run_realtime_parallel`、`run_realtime_latest_frame_smoke`、`_process_video_multithread` 各写了一遍"读帧 → 推理 → 绘制 → 录制 → 预览"。另有 3 个预览队列、`_post_*` 系列、会话代次字段和 `_DualStartupMetrics`。旋转与站位检测通过 App 字段跨线程读取。开工前用户决定（2026-10-12）：D-7 双摄平滑与在线识别保持关闭、作为配置项保留；D-8/V-2 单摄模型加载期间显示裸帧。
@@ -22,7 +36,7 @@
   - 行为保持：
     - 单摄录像始终带 HUD。
     - 双摄骨架关录原始帧；骨架开录标注帧，主路带 HUD。
-    - 并行视频先写帧再画 HUD。
+    - Tk 并行视频先写帧再画 HUD；CLI 并行导出先画后写。
     - "(xN)" 后缀只用于并行摄像头。
     - 各阶段的状态文字与错误前缀不变。
     - 骨架关时不构造引擎，视频文件始终推理，考试预检拒绝骨架会话。

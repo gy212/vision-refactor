@@ -348,6 +348,40 @@ def test_parallel_video_keeps_every_frame_in_order(monkeypatch):
     assert len(h.sink.writes) == 12
 
 
+def test_stopping_parallel_video_with_full_queue_leaves_no_reader(monkeypatch):
+    """PR #17 评审 1：输入队列满、读帧线程阻塞在 submit 时停止，会话要很快结束且不留读帧线程。"""
+    class Slow(FakeEngine):
+        def infer(self, frame, *, timestamp_ms=None):
+            time.sleep(0.3)   # 停止时 worker 仍在推理，结束后不再取帧，读帧线程卡在满队列上
+            return None, []
+
+    monkeypatch.setattr(stages_mod, "default_pipeline_factory", lambda **_kwargs: (lambda: Slow(None)))
+    h = Harness(FakeInput(is_file=True, frames=200))
+    h.manager.start(video_session("clip.mp4", workers=2))
+    h.wait_for(lambda: len(h.sink.writes) >= 1)
+    started = time.monotonic()
+    h.manager.stop()
+    outcome = h.outcome()
+    assert outcome.outcome == "stopped"
+    assert time.monotonic() - started < 1.0
+    assert not [t.name for t in threading.enumerate() if t.name.endswith("/runner/reader")]
+
+
+@pytest.mark.parametrize("hud, expect_text", [("cli", True), ("tk", False)])
+def test_parallel_video_writer_receives_hud_only_for_cli(monkeypatch, hud, expect_text):
+    """PR #17 评审 2：CLI 并行导出先画标签/FPS 再写；Tk 并行视频沿用写完再画。"""
+    monkeypatch.setattr(
+        stages_mod, "default_pipeline_factory", lambda **_kwargs: (lambda: FakeEngine(None)),
+    )
+    h = Harness(FakeInput(is_file=True, frames=6, shape=(120, 320, 3)))
+    copies: list[np.ndarray] = []
+    h.sink.write = lambda frames: copies.append(next(iter(frames.values())).copy())
+    h.manager.start(video_session("clip.mp4", workers=2, hud=hud))
+    assert h.outcome().frames == 6
+    assert len(copies) == 6
+    assert all(bool((f != 3).any()) == expect_text for f in copies)
+
+
 def test_video_file_always_infers_and_ends_at_eof():
     h = Harness(FakeInput(is_file=True, frames=7))
     h.manager.start(video_session("clip.mp4"))
@@ -372,6 +406,7 @@ def test_config_table_matches_legacy_loops():
     assert dual(skeleton=False).occupancy
     video = video_session("x.mp4", workers=3)
     assert video.inference and video.parallel and not video.record_hud and not video.smoothing
+    assert video_session("x.mp4", workers=3, hud="cli").record_hud   # CLI 并行导出也带 HUD
 
 
 def test_loading_preview_shows_raw_then_annotated_without_regressing():
