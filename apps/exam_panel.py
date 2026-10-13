@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Tk 考试面板：名单、ROI、开考控制；状态机在 core.exam_session。"""
+"""Tk 考试面板：名单、ROI、开考控制与成绩表；叫号状态机与命令执行在 ``core.workflows``。
+
+面板只经 App 的公共接口（``exam_ports``、``exam_preflight``、``set_exam_mode``、``lock_manual_record``、
+``workflows``、``exam_scorebooks``）工作，命令由 ``CommandExecutor`` 映射到端口执行。面板本身实现
+``WorkflowUi``：状态文字、成绩表刷新与阶段显示。
+"""
 
 from __future__ import annotations
 
@@ -7,19 +12,8 @@ import time
 import traceback
 from pathlib import Path
 from tkinter import DoubleVar, StringVar, Toplevel, filedialog, messagebox, ttk
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any
 
-from core.exam_announcer import ExamAnnouncer
-from core.exam_roster import (
-    ExamCandidate,
-    ExamResultRow,
-    ExamScorebook,
-    RosterError,
-    import_roster_xlsx,
-    local_timestamp,
-    write_import_template,
-)
-from core.exam_session import ExamCommand, ExamSession, ExamSessionConfig
 from core.foundation import (
     EXAM_EMPTY_HOLD_S,
     EXAM_ENTER_STABLE_S,
@@ -32,7 +26,20 @@ from core.foundation import (
     PreferenceStore,
 )
 from core.paths import outputs_dir
-from core.presence_gate import PresenceGate, PresenceGateConfig
+from core.workflows import (
+    Announcer,
+    Command,
+    CommandExecutor,
+    ExamCandidate,
+    ExamResultRow,
+    ExamScorebook,
+    ExamSession,
+    ExamSessionConfig,
+    RosterError,
+    import_roster_xlsx,
+    write_import_template,
+    write_scorebook_xlsx,
+)
 
 if TYPE_CHECKING:
     from apps.app_ui import App
@@ -51,18 +58,11 @@ class ExamPanel:
                 min_record_s=EXAM_MIN_RECORD_S.read(prefs),
             )
         )
-        self.gate = PresenceGate(
-            PresenceGateConfig(
-                enter_stable_s=self.session.config.enter_stable_s,
-                empty_hold_s=self.session.config.empty_hold_s,
-                min_record_s=self.session.config.min_record_s,
-            )
-        )
         self.roi = EXAM_ROI.read(prefs)
         self.run_dir: Path | None = None
-        self.scorebook: ExamScorebook | None = None
-        self._announcer = ExamAnnouncer(on_text=self._on_announce_text)
-        self._pending_discard = False
+        self._announcer = Announcer(on_text=self._on_announce_text)
+        self.executor = CommandExecutor(app.exam_ports(ui=self, announcer=self._announcer))
+        self.scorebook = None
         self._row_by_id: dict[str, Any] = {}
 
         self.win = Toplevel(app.root)
@@ -78,8 +78,21 @@ class ExamPanel:
 
         self._build()
         self._restore_roster(EXAM_ROSTER_PATH.read(prefs))
-        self._tick_id = self.win.after(100, self._panel_tick)
-        app._exam_panel = self  # type: ignore[attr-defined]
+        # 站位样本、会话停止与定时 tick 由 App 的 WorkflowHost 送来
+        app.workflows.activate(self.session, self.executor)
+        app.exam_panel = self
+
+    @property
+    def scorebook(self) -> ExamScorebook | None:
+        return self._scorebook
+
+    @scorebook.setter
+    def scorebook(self, book: ExamScorebook | None) -> None:
+        """当前场次的台账；同步给命令执行端口，UPDATE_ROW / EXPORT 写进它。"""
+        self._scorebook = book
+        executor = self.__dict__.get("executor")
+        if executor is not None:
+            executor.ports.scorebook = book
 
     def _roi_text(self) -> str:
         r = self.roi
@@ -230,13 +243,13 @@ class ExamPanel:
                     pass
             self.scorebook = None
         self.run_dir = None
-        for method_name, args in (
-            ("_exam_arm_occupancy", (False,)),
-            ("_exam_set_active", (False,)),
-            ("_exam_lock_manual_record", (False,)),
+        for release in (
+            lambda: self.executor.ports.occupancy.arm(False),
+            lambda: self.app.set_exam_mode(False),
+            lambda: self.app.lock_manual_record(False),
         ):
             try:
-                getattr(self.app, method_name)(*args)
+                release()
             except Exception:
                 pass
         self.session.load_roster(candidates)
@@ -271,19 +284,14 @@ class ExamPanel:
             messagebox.showerror("ROI", "须满足 0≤x0<x1≤1 且 0≤y0<y1≤1", parent=self.win)
             return False
         self.roi = r  # type: ignore[assignment]
-        rotate = 0
+        # ROI 在 primary 旋转后的画面上判定，一并记下当前旋转
         try:
-            rotate = int(getattr(self.app, "_parse_rotate_for_exam", lambda: 0)())
+            rotate = int(self.app.exam_primary_rotation())
         except Exception:
             rotate = 0
-        # 从 app 读当前 primary 旋转
-        try:
-            rotate = self.app._exam_primary_rotate()  # type: ignore[attr-defined]
-        except Exception:
-            pass
         PreferenceStore().update({EXAM_ROI: self.roi, EXAM_ROI_ROTATE: rotate})
         self.roi_var.set(self._roi_text())
-        self.app._exam_set_roi(self.roi)  # type: ignore[attr-defined]
+        self.executor.ports.occupancy.set_roi(self.roi)
         self.status_var.set("ROI 已保存")
         return True
 
@@ -307,16 +315,15 @@ class ExamPanel:
                 parent=self.win,
             )
             return
-        ok, msg = self.app._exam_preflight()  # type: ignore[attr-defined]
-        if not ok:
-            messagebox.showerror("无法开考", msg, parent=self.win)
+        problems = self.app.exam_preflight()
+        if problems:
+            messagebox.showerror("无法开考", problems[0], parent=self.win)
             return
         if not self._save_roi():
             return
         # 已有台账（例如整场完成后追加重考）时复用，禁止 load_candidates 清空成绩
         if self.scorebook is None:
             run_id = time.strftime("%Y%m%d_%H%M%S")
-            base = Path(getattr(self.app, "_record_base_dir", outputs_dir()))
             try:
                 base = Path(self.app.record_dir_var.get().strip() or str(outputs_dir()))
             except Exception:
@@ -335,15 +342,12 @@ class ExamPanel:
             self.session.rows = self.scorebook.rows
             self._row_by_id = {r.row_id: r for r in self.session.rows}
         self.app.exam_scorebooks.register(run_id, self.scorebook)
-        self.app._exam_set_active(True, run_id=run_id, run_dir=self.run_dir)  # type: ignore[attr-defined]
+        self.app.set_exam_mode(True)
         self._dispatch(self.session.handle("start_exam", now=time.monotonic(), run_id=run_id))
         self._refresh_tree()
 
     def _event(self, name: str) -> None:
-        now = time.monotonic()
-        if name == "skip_current" and self.session.phase == "recording":
-            self._pending_discard = True
-        self._dispatch(self.session.handle(name, now=now))
+        self._dispatch(self.session.handle(name, now=time.monotonic()))
         self._refresh_tree()
 
     def _resolve_retest_row(self) -> ExamResultRow | None:
@@ -505,167 +509,64 @@ class ExamPanel:
         if not path:
             return
         try:
-            from core.exam_roster import write_scorebook_xlsx
-
             write_scorebook_xlsx(path, self.scorebook.rows)
             messagebox.showinfo("导出", f"已导出：{path}", parent=self.win)
         except Exception as exc:
             messagebox.showerror("导出失败", str(exc), parent=self.win)
 
-    def _dispatch(self, cmds: list[ExamCommand]) -> None:
-        for cmd in cmds:
-            try:
-                self._run_command(cmd)
-            except Exception as exc:
-                self.status_var.set(f"命令失败 {cmd.kind}: {exc}")
-                traceback.print_exc()
-        self.phase_var.set(f"阶段：{self.session.phase}")
+    def _dispatch(self, cmds: list[Command]) -> None:
+        """执行面板按钮产生的命令（命令失败只提示，不中断后续命令）。"""
+        self.executor.run(self.session, cmds)
+        self.refresh()
 
-    def _run_command(self, cmd: ExamCommand) -> None:
-        k = cmd.kind
-        p = cmd.payload
-        if k == "ANNOUNCE":
-            self._announcer.announce(str(p.get("text") or ""))
-        elif k == "ARM_OCCUPANCY":
-            mode = "wait_enter" if self.session.phase == "wait_enter" else "recording"
-            if self.session.phase == "recording":
-                self.gate.begin_recording(time.monotonic())
-            else:
-                self.gate.begin_wait_enter()
-            self.app._exam_arm_occupancy(True)  # type: ignore[attr-defined]
-        elif k == "DISARM_OCCUPANCY":
-            self.app._exam_arm_occupancy(False)  # type: ignore[attr-defined]
-        elif k == "BEGIN_SEGMENT":
-            row = self._row_by_id.get(str(p.get("row_id") or ""))
-            ok = self.app._begin_recording_segment(exam_row=row)  # type: ignore[attr-defined]
-            if not ok:
-                # begin_failed 内部会 UPDATE failed 并推进指针；不得再执行外层
-                # 同批残留的 UPDATE_ROW(recording)（enter_stable 已不再附带该命令）。
-                self._dispatch(
-                    self.session.handle(
-                        "begin_failed",
-                        now=time.monotonic(),
-                        message="开录失败（请确认双摄已运行且空闲）",
-                    )
-                )
-            else:
-                if row is not None and self.scorebook is not None:
-                    # begin_failed 重试成功：清失败标记
-                    self.scorebook.update_row(
-                        row,
-                        status="recording",
-                        error_code=None,
-                        error_message=None,
-                    )
-                self.gate.begin_recording(time.monotonic())
-                self.app._exam_arm_occupancy(True)  # type: ignore[attr-defined]
-                self.session.handle("record_started", now=time.monotonic())
-                self._refresh_tree()
-        elif k == "END_SEGMENT":
-            self._pending_discard = False
-            row = self._row_by_id.get(str(p.get("row_id") or ""))
-            self.app._end_recording_segment(discard=False, exam_row=row)  # type: ignore[attr-defined]
-            self._dispatch(
-                self.session.handle(
-                    "record_stopped", now=time.monotonic(), discarded=False
-                )
-            )
-        elif k == "DISCARD_SEGMENT":
-            self._pending_discard = True
-            row = self._row_by_id.get(str(p.get("row_id") or ""))
-            self.app._end_recording_segment(discard=True, exam_row=row)  # type: ignore[attr-defined]
-            # 正常 skip 路径 phase=finishing，需 record_stopped 推进；
-            # abort 路径 phase 已是 aborted，只停 writer，不再推进/覆盖行状态。
-            if self.session.phase == "finishing":
-                self._dispatch(
-                    self.session.handle(
-                        "record_stopped", now=time.monotonic(), discarded=True
-                    )
-                )
-        elif k == "UPDATE_ROW":
-            row = self._row_by_id.get(str(p.get("row_id") or ""))
-            if row is not None and self.scorebook is not None:
-                fields = {kk: vv for kk, vv in p.items() if kk != "row_id"}
-                self.scorebook.update_row(row, **fields)
-            self._refresh_tree()
-        elif k == "EXPORT":
-            if self.scorebook is not None:
-                self.scorebook.flush()
-                err = self.scorebook.write_error
-                if err:
-                    self.status_var.set(err)
-                else:
-                    self.status_var.set(
-                        f"成绩已写入：{self.scorebook.path}" if self.scorebook.path else "成绩已更新"
-                    )
-        elif k == "UI_LOCK_MANUAL_RECORD":
-            self.app._exam_lock_manual_record(True)  # type: ignore[attr-defined]
-        elif k == "UI_UNLOCK_MANUAL_RECORD":
-            self.app._exam_lock_manual_record(False)  # type: ignore[attr-defined]
-        elif k in {"SCHEDULE_CALL_GUARD", "SCHEDULE_INTER_GAP", "ADVANCE_POINTER", "BIND_SEGMENT_PENDING"}:
-            pass
+    # ------------------------------------------------------------------ WorkflowUi
+    def status(self, text: str) -> None:
+        self.status_var.set(text)
 
-    def on_occupancy(self, present: bool, now: float) -> None:
-        """主线程：worker 上报占用。"""
-        self.present_var.set("占用：有人" if present else "占用：无人")
-        phase = self.session.phase
-        if phase not in {"wait_enter", "recording"}:
-            return
-        mode = "wait_enter" if phase == "wait_enter" else "recording"
-        events = self.gate.update(present, now, mode=mode)
-        for ev in events:
-            if ev.kind == "enter_stable":
-                self._dispatch(self.session.handle("enter_stable", now=now))
-            elif ev.kind == "empty_stable":
-                self._dispatch(self.session.handle("empty_stable", now=now))
-        self._refresh_tree()
+    def alert(self, title: str, text: str, *, error: bool = False) -> None:
+        (messagebox.showerror if error else messagebox.showinfo)(title, text, parent=self.win)
+
+    def lock_manual_record(self, locked: bool) -> None:
+        self.app.lock_manual_record(locked)
+
+    def show_result(self, record: dict[str, Any]) -> None:
+        pass
 
     def refresh_rows(self) -> None:
-        """台账被录后结果回填后刷新表格（由 App 在回填当前面板的台账后调用）。"""
+        """台账被命令或录后结果更新后刷新表格。"""
         try:
             if self.win.winfo_exists():
                 self._refresh_tree()
         except Exception:
             pass
 
-    def on_session_stop(self) -> None:
-        """主窗口「停止」：同步中止考试状态机并解除占用/手动锁。"""
+    def refresh(self) -> None:
+        """每次分派后同步阶段、占用与台账写入错误。"""
+        _set_if_changed(self.phase_var, f"阶段：{self.session.phase}")
+        if self.session.present is not None:
+            _set_if_changed(self.present_var, "占用：有人" if self.session.present else "占用：无人")
+        if self.scorebook is not None and self.scorebook.write_error:
+            _set_if_changed(self.status_var, self.scorebook.write_error)
+
+    # ------------------------------------------------------------------ 关闭
+    def _stop_exam(self) -> None:
+        """中止考试状态机、解除占用与手动锁，并退出考试模式。"""
         try:
-            if self.session.phase not in {"idle", "ready", "completed", "aborted"}:
-                self._dispatch(
-                    self.session.handle("abort_exam", now=time.monotonic())
-                )
+            self.executor.dispatch(self.session, "session_stopped", now=time.monotonic())
         except Exception:
             traceback.print_exc()
         try:
-            self.app._exam_arm_occupancy(False)  # type: ignore[attr-defined]
-        except Exception:
-            pass
-        try:
-            self.app._exam_set_active(False)  # type: ignore[attr-defined]
-        except Exception:
-            pass
-        try:
-            self.app._exam_lock_manual_record(False)  # type: ignore[attr-defined]
-        except Exception:
-            pass
-        try:
-            self.phase_var.set(f"阶段：{self.session.phase}")
-            self.status_var.set("主会话已停止，考试已中止")
+            self.app.set_exam_mode(False)
         except Exception:
             pass
 
     def prepare_for_app_close(self) -> None:
-        """主窗口销毁前：中止考试、flush 成绩簿并移交 App sinks（保证落盘）。
+        """主窗口销毁前：中止考试、flush 成绩簿并移交台账登记表（保证落盘）。
 
         主窗 ``root.destroy`` 不会触发本面板 ``WM_DELETE_WINDOW``/``_on_close``，
-        必须在此显式移交 scorebook，否则只关 sinks 会漏掉当前面板台账。
+        必须在此显式移交 scorebook，否则只关登记表会漏掉当前面板台账。
         """
-        self.on_session_stop()
-        try:
-            self.win.after_cancel(self._tick_id)
-        except Exception:
-            pass
+        self._stop_exam()
         # 与 _on_close 一致：停播报线程/语音，避免窗毁后仍 Speak
         try:
             self._announcer.close()
@@ -679,20 +580,16 @@ class ExamPanel:
             # 一律移交台账登记表：应用关闭末段统一再 flush/close；processing 行仍可回填
             self.app.exam_scorebooks.detach(self.scorebook)
             self.scorebook = None
-        try:
-            delattr(self.app, "_exam_panel")
-        except Exception:
-            pass
+        self._detach_from_app()
         try:
             self.win.destroy()
         except Exception:
             pass
 
-    def bind_segment(self, row_id: str, segment_id: str, segment_dir: str) -> None:
-        row = self._row_by_id.get(row_id)
-        if row is None or self.scorebook is None:
-            return
-        self.scorebook.bind_segment(row, segment_id=segment_id, segment_dir=segment_dir)
+    def _detach_from_app(self) -> None:
+        self.app.workflows.deactivate(self.session)
+        if getattr(self.app, "exam_panel", None) is self:
+            self.app.exam_panel = None
 
     def _refresh_tree(self) -> None:
         existing = set(self.tree.get_children())
@@ -719,48 +616,27 @@ class ExamPanel:
             self._row_by_id.pop(str(stale), None)
         self.phase_var.set(f"阶段：{self.session.phase}")
 
-    def _panel_tick(self) -> None:
-        try:
-            if not self.win.winfo_exists():
-                return
-            now = time.monotonic()
-            self._dispatch(self.session.handle("tick", now=now))
-            if self.scorebook and self.scorebook.write_error:
-                self.status_var.set(self.scorebook.write_error)
-        except Exception:
-            traceback.print_exc()
-        try:
-            self._tick_id = self.win.after(100, self._panel_tick)
-        except Exception:
-            pass
-
     def _on_close(self) -> None:
-        try:
-            self.win.after_cancel(self._tick_id)
-        except Exception:
-            pass
         # 关窗必须先中止：录制中/暂停自 recording 则 discard，避免后台继续写
         try:
             if self.session.phase not in {"idle", "ready", "completed", "aborted"}:
-                self._dispatch(
-                    self.session.handle("abort_exam", now=time.monotonic())
-                )
+                self._dispatch(self.session.handle("abort_exam", now=time.monotonic()))
         except Exception:
             traceback.print_exc()
             try:
-                self.app._end_recording_segment(discard=True)  # type: ignore[attr-defined]
+                self.executor.ports.recorder.finish(discard=True)
             except Exception:
                 pass
-        self.app._exam_arm_occupancy(False)  # type: ignore[attr-defined]
-        self.app._exam_set_active(False)  # type: ignore[attr-defined]
-        self.app._exam_lock_manual_record(False)  # type: ignore[attr-defined]
+        self.executor.ports.occupancy.arm(False)
+        self.app.set_exam_mode(False)
+        self.app.lock_manual_record(False)
         self._announcer.close()
         if self.scorebook is not None:
             try:
                 self.scorebook.flush()
             except Exception:
                 pass
-            # 仍有 processing 行时登记到 App sinks（可多场并存，禁止覆盖）；
+            # 仍有 processing 行时移交台账登记表（可多场并存，禁止覆盖）；
             # 无未完成行才立即 close。
             has_processing = any(
                 r.status == "processing" for r in self.scorebook.rows
@@ -773,8 +649,13 @@ class ExamPanel:
                 except Exception:
                     pass
             self.scorebook = None
+        self._detach_from_app()
         try:
-            delattr(self.app, "_exam_panel")
+            self.win.destroy()
         except Exception:
             pass
-        self.win.destroy()
+
+
+def _set_if_changed(var: StringVar, value: str) -> None:
+    if var.get() != value:
+        var.set(value)

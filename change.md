@@ -1,3 +1,36 @@
+## 2026-10-13（America/Los_Angeles）: [fix] P7 评审修复：考试面板关窗不销毁窗口；动作评判启动失败后卡在 analyzing
+
+- 问题描述：PR #18 评审两项 P2。
+  1. `ExamPanel._on_close` 释放工作流和成绩表后只调用 `_detach_from_app()`，没有 `self.win.destroy()`（基线 e9a02f2 有）；关窗后面板仍留在屏幕上，再打开会出现第二个面板。
+  2. 点「动作评判」时 `PracticeSession` 先进入 `analyzing` 再交给分析端口。`feedback_config.json` 损坏时 `FeedbackControls.analyze_recording()` 报错后直接返回，不调用 `set_busy`，没有事件把阶段改回来；修好配置后再点也不会发起分析，只能重置练习流程。
+- 修改内容：
+  - `apps/exam_panel.py`：`_on_close` 在脱离 App 后销毁窗口。
+  - `apps/feedback_panel.py`：`_start`、`analyze_recording` 返回是否已启动后台分析；`apps/app_ui.py` 的分析端口把结果返回给执行器。
+  - `core/workflows/executor.py`：`AnalysisControl.start_practice_analysis` 返回 bool；`START_ANALYSIS` 未启动（返回 False、抛异常或没有分析端口）时回送 `analysis_start_failed`。
+  - `core/workflows/practice/session.py`：新增 `analysis_start_failed` 事件，作废本次代次并回到可重试的阶段（`ready_to_judge`）；不匹配当前代次的迟到回报忽略。
+  - `apps/exam_panel.py` 原已超过 600 行预警线（657 → 661 行），本次只恢复基线的销毁调用，不增加职责；按设计文档在 P8 拆分 Tk 层时处理。
+- 验证方法：
+  - 新增 `test_exam_panel.py::test_close_callback_detaches_and_destroys_window`、`test_workflows.py::test_analysis_start_failure_restores_retryable_phase`（启动失败、启动抛异常后均回到 `ready_to_judge`，第三次点击真正发起分析）、`test_action_feedback.py::test_real_tk_invalid_config_reports_analysis_not_started`（真实 Tk：坏配置返回 False 且不置忙，修好后重试启动并完成）；`test_executor_rows_export_and_analysis` 的假端口改为返回 True。无被替换的测试。
+  - 门禁、架构与考试/练习/录制套件 263 passed；`scripts/sim_exam_flow.py` 37 passed、SIMULATION_OK；`test_camera_capture.py::test_tk_preview_student_switch_with_process_cameras` 通过；全量 `-m pytest tests -q` 1198 passed；`git diff --check` 无空白错误。
+
+## 2026-10-13（America/Los_Angeles）: [refactor] P7 工作流：新增 core/workflows 的命令执行、事件路由与运行模式，学生练习改为纯状态机，实施 V-5
+
+- 问题描述：考试面板直接调用 App 的 11 个私有成员；学生练习的流程散在 App 的 7 个 `_student_*` 方法里，进入练习时改写用户的骨架、手部、自动比对、在线识别勾选，退出再恢复（`_student_saved_*`）；`_begin_recording_segment` 按模式分支改自动比对，`_exam_preflight` 硬编码检查。开工前用户决定（2026-10-13）：V-5 接受。
+- 修改内容：
+  - `git mv` 迁入 `core/workflows/`：`exam_session` → `exam/session.py`，`exam_roster` → `exam/roster.py`，`presence_gate` → `presence.py`，`exam_announcer` → `announcer.py`；旧路径留只做转发的门面（P9 删除）。
+  - 新增 `commands.py`（统一命令词表，练习新增 `START_ANALYSIS`、`SHOW_RESULT`、`STATUS`）、`presence.py` 的 `PresenceRecordingCycle`、`practice/session.py` 的 `PracticeSession`、`executor.py` 的 `CommandExecutor` 与 `WorkflowPorts`、`host.py` 的 `WorkflowHost`、`modes.py` 的 `Mode`/`SessionRequirements`/`ModeManager`、`plans.py` 的 `SegmentIntent` 与 `build_segment_plan`。
+  - `ExamSession` 到位/离场委托 `PresenceRecordingCycle`，会话停止/结束改为状态机事件；播报器改在 `TaskGroup` 线程上运行（去掉 `thread` allowlist 条目）。
+  - ExamPanel 只经 App 的公共接口（`exam_ports`、`exam_preflight`、`set_exam_mode`、`lock_manual_record`、`exam_primary_rotation`、`workflows`、`exam_scorebooks`）和 `CommandExecutor` 工作，删除 `_run_command`、`_panel_tick`、`on_occupancy`、`bind_segment`、`on_session_stop`。
+  - App 删除 7 个 `_student_*` 流程方法、4 个 `_student_saved_*` 字段、`_exam_set_roi/_set_active/_arm_occupancy/_lock_manual_record/_preflight/_primary_rotate`、`_set_student_gate`、`_apply_exam_postprocess_update`、`_on_student_postprocess_update`；站位、会话就绪/停止/结束、片段更新和 tick 都交给 `WorkflowHost`；会话配置 = 用户设置快照叠加模式要求（V-5：练习只锁会话参数，不改写勾选，界面注明锁定）。
+  - `apps/app_ui.py` 3891 → 3528 行；allowlist 降到 49 条（体量 33 条：模块 6、函数 27）。
+  - 设计文档 §8.5/§8.6 补实施说明（`Mode` 为 dataclass、`announce` 取代 `say`、计划由 `plans.py` 构建）、§11 V-5 划线、§12 状态；P7 清单与 README 状态更新。
+- 验证方法：
+  - 门禁与架构测试 65 passed；全量 `-m pytest tests -q` 1195 passed（开工基线 1174 passed、1 skipped）。
+  - `scripts/sim_exam_flow.py`：37 passed、0 failed，SIMULATION_OK，与开工时输出相比只有计时不同。
+  - `test_camera_capture.py::test_tk_preview_student_switch_with_process_cameras` 通过；`git diff --check` 无空白错误。
+  - 搜索：`apps/exam_panel.py` 中 `self\.app\._|app\._` 无匹配，`_student_saved_` 无匹配。
+  - 被替换的测试（D-13）：`test_student_presence.py` 全部用例改为经 `WorkflowHost` 驱动真实 `PracticeSession`（场景与计时不变）；`test_action_feedback.py` 的开录绑定身份用例改为 `test_practice_judges_identity_bound_at_recording_start`；`test_feedback_result_panel.py`、`test_m2_adversarial_stress.py` 的代次与"再练一次"用例改为断言 `PracticeSession` 字段；`test_app_ui_lifecycle.py` 的 `prepare_for_app_close` 用例改用真实 `ExamPanel`/`CommandExecutor`/`WorkflowHost`。新增 `tests/test_workflows.py`（20 项：`PresenceRecordingCycle`、`PracticeSession`、`CommandExecutor`、`WorkflowHost`、`ModeManager`）。
+
 ## 2026-10-13（America/Los_Angeles）: [fix] P6 评审修复：并行视频停止时读帧线程不退出；CLI 并行导出丢失 HUD
 
 - 问题描述：PR #17 评审两项 P2。

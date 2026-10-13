@@ -1,27 +1,97 @@
 # -*- coding: utf-8 -*-
-"""业务流程层（L5）的公共 API：考试片段裁剪步骤与成绩台账（P4 起建骨架，其余 P7 迁入）。"""
+"""业务流程层（L5）的公共 API：命令词表、到位录制周期、考试与学生练习流程、命令执行、事件路由、运行模式与片段计划。"""
+from core.workflows.announcer import Announcer
+from core.workflows.commands import Command, CommandKind
 from core.workflows.exam import (
+    BEGIN_FAILED_MESSAGE,
     EXAM_CLOSE_BUDGET_S,
+    IMPORT_HEADERS,
     ClipResult,
     ExamCandidate,
     ExamClipStep,
+    ExamCommand,
+    ExamPhase,
     ExamResultRow,
     ExamScorebook,
+    ExamSession,
+    ExamSessionConfig,
+    RosterError,
     ScorebookRegistry,
+    align_frame_counts,
     apply_segment_update,
+    import_roster_xlsx,
+    local_timestamp,
     prepare_exam_pair,
+    write_import_template,
     write_scorebook_xlsx,
+)
+from core.workflows.executor import CommandExecutor, Workflow, WorkflowPorts
+from core.workflows.host import WorkflowHost
+from core.workflows.modes import (
+    EXAM,
+    NORMAL,
+    PRACTICE,
+    CaptureFormat,
+    Mode,
+    ModeManager,
+    PreflightContext,
+    SessionRequirements,
+)
+from core.workflows.plans import PlanSettings, SegmentIntent, build_segment_plan
+from core.workflows.practice import PracticeSegment, PracticeSession
+from core.workflows.presence import (
+    PresenceEvent,
+    PresenceGate,
+    PresenceGateConfig,
+    PresenceRecordingCycle,
+    hip_midpoint_in_roi,
 )
 
 __all__ = [
+    "Announcer",
+    "BEGIN_FAILED_MESSAGE",
+    "CaptureFormat",
     "ClipResult",
+    "Command",
+    "CommandExecutor",
+    "CommandKind",
+    "EXAM",
     "EXAM_CLOSE_BUDGET_S",
     "ExamCandidate",
     "ExamClipStep",
+    "ExamCommand",
+    "ExamPhase",
     "ExamResultRow",
     "ExamScorebook",
+    "ExamSession",
+    "ExamSessionConfig",
+    "IMPORT_HEADERS",
+    "Mode",
+    "ModeManager",
+    "NORMAL",
+    "PRACTICE",
+    "PlanSettings",
+    "PracticeSegment",
+    "PracticeSession",
+    "PreflightContext",
+    "PresenceEvent",
+    "PresenceGate",
+    "PresenceGateConfig",
+    "PresenceRecordingCycle",
+    "RosterError",
     "ScorebookRegistry",
+    "SegmentIntent",
+    "SessionRequirements",
+    "Workflow",
+    "WorkflowHost",
+    "WorkflowPorts",
+    "align_frame_counts",
     "apply_segment_update",
+    "build_segment_plan",
+    "hip_midpoint_in_roi",
+    "import_roster_xlsx",
+    "local_timestamp",
     "prepare_exam_pair",
+    "write_import_template",
     "write_scorebook_xlsx",
 ]

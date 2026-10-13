@@ -25,6 +25,7 @@ from core.live.stages import apply_rotation, rotated_size  # noqa: E402
 from core.media import CameraDevice as CameraEntry  # noqa: E402
 from core.media import CameraService  # noqa: E402
 from core.recording import fit_frame_to_size  # noqa: E402
+from core.workflows import ModeManager, ScorebookRegistry, WorkflowHost  # noqa: E402
 
 
 class _Var:
@@ -114,6 +115,7 @@ def _app_stub(
         CameraEntry(label="摄像头 0", index=0),
         CameraEntry(label="摄像头 1", index=1),
     ]
+    app.modes = ModeManager()
     return app
 
 
@@ -171,6 +173,8 @@ def _dual_preview_stub(*, record_skeleton: bool = False):
     app._drain_recording_compare_updates = lambda: None
     app._drain_camera_enum_results = lambda: None
     app._refresh_recording_status = lambda: None
+    app.modes = ModeManager()
+    app.workflows = WorkflowHost(ScorebookRegistry())
     return app
 
 
@@ -255,7 +259,7 @@ def test_runtime_rotate_primary_and_secondary_are_isolated():
     app.rotate_var = _Var("0°")
     app.rotate_var_2 = _Var("0°")
     app.status_var = _Var("")
-    app._exam_active = False
+    app.modes = ModeManager()
 
     app_ui.App._set_runtime_rotate(app, 90, which="primary", announce=False)
     app_ui.App._set_runtime_rotate(app, 180, which="secondary", announce=False)
@@ -627,7 +631,6 @@ def test_tick_shows_nothing_after_stop_requested(monkeypatch):
 def test_session_running_enables_dual_recording_only_for_live_dual_session():
     app = _dual_preview_stub()
     app.record_btn = SimpleNamespace(calls=[], configure=lambda **kw: app.record_btn.calls.append(kw))
-    app._student_practice_active = False
 
     app._live.state = "stopping"
     app_ui.App._on_session_running(app, None)

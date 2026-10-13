@@ -30,6 +30,16 @@ from apps.feedback_result_panel import FeedbackResultPanel
 from core.recording import RecordingService, SegmentFinalizer
 from core.live import LiveControls, PresenceSample, PreviewStore
 from core.media import PRIMARY, SECONDARY
+from core.workflows import (
+    PRACTICE,
+    CommandExecutor,
+    ModeManager,
+    PracticeSegment,
+    PracticeSession,
+    ScorebookRegistry,
+    WorkflowHost,
+    WorkflowPorts,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -134,21 +144,17 @@ class _FakeLive:
 def make_test_app(student_id="001"):
     """创建用于压力测试的 App 实例替身。"""
     app = app_ui.App.__new__(app_ui.App)
-    app._student_practice_active = True
-    app._student_pending_record = False
-    app._student_presence_gate = None
-    app._student_judging = False
-    app._student_segment_ready = True
     app._closing = False
     app._live = _FakeLive()
     app._live_controls = LiveControls()
     app._recording = SimpleNamespace(state="idle")
-
-    app._feedback_task_token = 0
-    app._active_feedback_token = None
-    app._active_feedback_student_id = None
-    app._current_student_record = None
-    app._student_feedback_record_id = None
+    app.modes = ModeManager()
+    app.modes.enter(PRACTICE)
+    app.exam_scorebooks = ScorebookRegistry()
+    app.workflows = WorkflowHost(app.exam_scorebooks)
+    app.workflows.session_started(app._live.token)
+    app.exam_panel = None
+    app._student_announcer = MagicMock()
 
     # UI Widgets
     app.left_container = MagicMock()
@@ -175,7 +181,25 @@ def make_test_app(student_id="001"):
     app.root.after.side_effect = lambda _ms, cb: cb()
     app._sync_student_buttons = MagicMock()
 
+    # 真实的练习状态机经 WorkflowHost 驱动；身份在开录瞬间读取当前学号
+    app._practice = PracticeSession(lambda: {"studentId": app.current_student_id.get()})
+    app._practice.segment = PracticeSegment("record_0", None, ready=True, terminal=True)
+    ports = WorkflowPorts(
+        recorder=app_ui._SegmentPort(app),
+        occupancy=app_ui._OccupancyPort(app, "practice"),
+        announcer=app._student_announcer,
+        ui=app_ui._PracticeUi(app),
+        analysis=app_ui._PracticeAnalysis(app),
+    )
+    app.workflows.activate(app._practice, CommandExecutor(ports))
     return app
+
+
+def dispatch_analysis(app, token, student_id):
+    """模拟「动作评判」派发了第 token 代分析任务。"""
+    app._practice.token = token
+    app._practice.active_token = token
+    app._practice.active_student_id = student_id
 
 
 # ===========================================================================
@@ -194,13 +218,11 @@ def test_worker_completion_after_cancellation():
     app = make_test_app("student_001")
 
     # 1. 发起代次 1 的分析任务
-    app._feedback_task_token = 1
-    app._active_feedback_token = 1
-    app._active_feedback_student_id = "student_001"
+    dispatch_analysis(app, 1, "student_001")
 
     # 2. 用户立即取消分析
     app._on_student_cancelled()
-    assert app._active_feedback_token is None
+    assert app._practice.active_token is None
 
     # 3. 模拟后台 worker 线程此时完成并投递回调
     record = make_stress_record("student_001", token=1)
@@ -209,8 +231,8 @@ def test_worker_completion_after_cancellation():
     # 4. 严苛断言：回调被完全拦截，结果面板未更新，结果视图未展示
     app.feedback_result_panel.set_record.assert_not_called()
     app.feedback_result_panel.grid.assert_not_called()
-    assert app._current_student_record is None
-    assert app._student_feedback_record_id is None
+    assert app._practice.current_record is None
+    assert app._practice.record_id is None
 
 
 def test_worker_completion_after_cancellation_feedback_panel_integration():
@@ -264,17 +286,15 @@ def test_worker_completion_after_student_id_change_via_event():
     app = make_test_app("student_A")
 
     # 发起学生 A 的代次 1
-    app._feedback_task_token = 1
-    app._active_feedback_token = 1
-    app._active_feedback_student_id = "student_A"
+    dispatch_analysis(app, 1, "student_A")
 
     # 用户在输入框中修改学号为 student_B，触发 _on_student_identity_changed
     app.current_student_id.set("student_B")
     app._on_student_identity_changed()
 
     # 验证 token 被作废
-    assert app._active_feedback_token is None
-    assert app._active_feedback_student_id is None
+    assert app._practice.active_token is None
+    assert app._practice.active_student_id is None
 
     # 后台线程针对 student_A 的回调迟到
     record_A = make_stress_record("student_A", token=1)
@@ -282,7 +302,7 @@ def test_worker_completion_after_student_id_change_via_event():
 
     # 验证 student_A 的结果被完全丢弃，不污染 student_B
     app.feedback_result_panel.set_record.assert_not_called()
-    assert app._current_student_record is None
+    assert app._practice.current_record is None
 
 
 def test_worker_completion_after_student_id_change_without_token_invalidation():
@@ -293,9 +313,7 @@ def test_worker_completion_after_student_id_change_without_token_invalidation():
     """
     app = make_test_app("student_A")
 
-    app._feedback_task_token = 1
-    app._active_feedback_token = 1
-    app._active_feedback_student_id = "student_A"
+    dispatch_analysis(app, 1, "student_A")
 
     # 对抗注入：学号已变为 student_B，但 active_token 依然是 1
     app.current_student_id.set("student_B")
@@ -306,7 +324,7 @@ def test_worker_completion_after_student_id_change_without_token_invalidation():
 
     # 核心验证：双重校验拦截生效，绝不上屏！
     app.feedback_result_panel.set_record.assert_not_called()
-    assert app._current_student_record is None
+    assert app._practice.current_record is None
 
 
 def test_student_rapid_switch_a_to_b_execution():
@@ -317,16 +335,12 @@ def test_student_rapid_switch_a_to_b_execution():
     app = make_test_app("student_A")
 
     # 任务 1: student_A
-    app._feedback_task_token = 1
-    app._active_feedback_token = 1
-    app._active_feedback_student_id = "student_A"
+    dispatch_analysis(app, 1, "student_A")
 
     # 切换为 student_B，发起任务 2
     app.current_student_id.set("student_B")
     app._on_student_identity_changed()
-    app._feedback_task_token = 2
-    app._active_feedback_token = 2
-    app._active_feedback_student_id = "student_B"
+    dispatch_analysis(app, 2, "student_B")
 
     record_A = make_stress_record("student_A", token=1)
     record_B = make_stress_record("student_B", token=2)
@@ -338,7 +352,7 @@ def test_student_rapid_switch_a_to_b_execution():
     # 任务 2 正常返回
     app._on_student_analysis_saved(token=2, student_id="student_B", record=record_B)
     app.feedback_result_panel.set_record.assert_called_once_with(record_B)
-    assert app._current_student_record == record_B
+    assert app._practice.current_record == record_B
 
 
 # ===========================================================================
@@ -356,8 +370,7 @@ def test_worker_completion_after_practice_again():
     app = make_test_app("student_001")
 
     # 1. 任务完成，展示结果
-    app._feedback_task_token = 1
-    app._active_feedback_token = 1
+    dispatch_analysis(app, 1, "student_001")
     record = make_stress_record("student_001", token=1)
     app._show_student_result_view(record)
     assert app.left_container.grid_remove.called
@@ -375,7 +388,7 @@ def test_worker_completion_after_practice_again():
     app.left_container.grid.assert_called_once()
     app._preview_right.grid.assert_called_once()
     app.feedback_result_panel.grid_remove.assert_called_once()
-    assert app._active_feedback_token is None
+    assert app._practice.active_token is None
 
     # 重置 mock，以便检测后续非法调用
     app.feedback_result_panel.reset_mock()
@@ -417,12 +430,11 @@ def test_50_rapid_sequential_dispatches_out_of_order():
         records = {}
         # 1. 模拟 50 次连续快速派发
         for i in range(1, TOTAL_DISPATCHES + 1):
-            app._feedback_task_token = getattr(app, "_feedback_task_token", 0) + 1
-            token = app._feedback_task_token
-            app._active_feedback_token = token
+            token = app._practice.token + 1
+            dispatch_analysis(app, token, "student_001")
             records[token] = make_stress_record("student_001", token=token)
 
-        assert app._active_feedback_token == TOTAL_DISPATCHES
+        assert app._practice.active_token == TOTAL_DISPATCHES
 
         # 2. 构造乱序返回序列
         completion_order = list(range(1, TOTAL_DISPATCHES + 1))
@@ -450,7 +462,7 @@ def test_50_rapid_sequential_dispatches_out_of_order():
         )
         assert len(rejected_tokens) == TOTAL_DISPATCHES - 1
         assert TOTAL_DISPATCHES not in rejected_tokens
-        assert app._current_student_record == records[TOTAL_DISPATCHES]
+        assert app._practice.current_record == records[TOTAL_DISPATCHES]
 
 
 def test_out_of_order_where_latest_token_completes_first():
@@ -463,15 +475,14 @@ def test_out_of_order_where_latest_token_completes_first():
 
     records = {}
     for i in range(1, TOTAL_DISPATCHES + 1):
-        app._feedback_task_token = getattr(app, "_feedback_task_token", 0) + 1
-        token = app._feedback_task_token
-        app._active_feedback_token = token
+        token = app._practice.token + 1
+        dispatch_analysis(app, token, "student_001")
         records[token] = make_stress_record("student_001", token=token)
 
     # 代次 50 最先完成
     app._on_student_analysis_saved(token=50, student_id="student_001", record=records[50])
     assert app.feedback_result_panel.set_record.call_count == 1
-    assert app._current_student_record["result"]["checks"][0]["id"] == "chk:start:front:stance_elbow_50"
+    assert app._practice.current_record["result"]["checks"][0]["id"] == "chk:start:front:stance_elbow_50"
 
     # 代次 49 到 1 依次迟到
     for old_token in range(49, 0, -1):
@@ -479,7 +490,7 @@ def test_out_of_order_where_latest_token_completes_first():
 
     # 严苛断言：set_record 仍然只被调用过 1 次，当前记录依然是代次 50
     assert app.feedback_result_panel.set_record.call_count == 1
-    assert app._current_student_record["result"]["checks"][0]["id"] == "chk:start:front:stance_elbow_50"
+    assert app._practice.current_record["result"]["checks"][0]["id"] == "chk:start:front:stance_elbow_50"
 
 
 # ===========================================================================
@@ -513,6 +524,7 @@ def test_camera_loop_150_ticks_in_result_view():
         app._live = _FakeLive(preview=store)
         app._live_events = Queue()
         app._shown_preview_seq = 0
+        app.workflows = WorkflowHost(ScorebookRegistry())
 
         # 容器层级（模拟实际 App 的布局）
         app.left_container = ttk.Frame(root)
@@ -596,80 +608,65 @@ def test_camera_loop_150_ticks_in_result_view():
 # ===========================================================================
 
 def test_presence_gate_completely_disarmed_on_practice_again(monkeypatch):
-    """压力测试 6：验证点击“再练一次”后，到场闸门被彻底解除，学生站入黄框绝不会自动触发录制。
+    """压力测试 6：验证点击“再练一次”后，站位检测被彻底解除，学生站入黄框绝不会自动触发录制。
 
     验证：
-    - _student_presence_gate is None
-    - _student_pending_record is False
+    - 站位周期回到 idle，练习不在等待到位
     - 连续 100 帧 (10 秒) 持续有人 (present=True) 到场事件被坚决忽略
     - _begin_recording_segment 绝不被调用
-    - 只有在用户显式点击“开始”(_student_start)后，才重新装载闸门并触发录制
+    - 只有在用户显式点击“开始”(_on_practice_start)后，才重新武装并触发录制
     """
     app = make_test_app("student_001")
-    app._student_practice_active = True
     app._dual_recording_ready = True
-    app._student_announcer = MagicMock()
 
-    # 1. 模拟处于已完成评判状态
-    app._student_segment_ready = True
-    app._student_pending_record = True
-    app._student_presence_gate = MagicMock()
+    # 1. 模拟处于已完成评判、正在显示结果的状态
+    app._practice.phase = "showing_result"
+    app._practice.presence.arm_enter()
 
-    begin_record_mock = MagicMock(return_value=True)
-    # 生产代码以 App._begin_recording_segment(self) 调用，须在类上替换才能拦截（同 test_student_presence）。
-    monkeypatch.setattr(app_ui.App, "_begin_recording_segment", lambda _self: begin_record_mock())
+    begin_record_mock = MagicMock(return_value=SimpleNamespace(segment_id="record_1", directory=None))
+    # 生产代码以 App._begin_recording_segment(self, intent) 调用，须在类上替换才能拦截（同 test_student_presence）。
+    monkeypatch.setattr(app_ui.App, "_begin_recording_segment", lambda _self, _intent=None: begin_record_mock())
 
     # 2. 点击“再练一次”
     app._on_student_practice_again()
 
     # 验证防线初始状态
-    assert app._student_presence_gate is None
-    assert app._student_pending_record is False
+    assert app._practice.presence.phase == "idle"
+    assert not app._practice.waiting
+    assert "practice" not in app._live_controls.occupancy.get().armed_by
     assert app._recording.state == "idle"
 
-    # 3. 对抗压力：模拟学生直接站立在镜头前（连续 100 次检测到人，持续 10.0 秒）
+    # 3. 对抗压力：会话线程经 presence 事件投递站位采样（连续 150 次有人，持续 15 秒）
     base_time = time.monotonic()
-    for i in range(100):
-        t = base_time + i * 0.1
-        # 直接调用 occupancy 处理
-        app._student_on_occupancy(present=True, now=t)
+    for i in range(150):
+        app_ui.App._on_session_presence(app, PresenceSample(True, base_time + i * 0.1))
 
-    # 4. 严苛断言：
-    # 闸门未装载，开录未被触发！
+    # 4. 严苛断言：站位检测未武装，开录未被触发！
     begin_record_mock.assert_not_called()
     assert app._recording.state == "idle"
-    assert app._student_presence_gate is None
+    assert app._practice.presence.phase == "idle"
 
-    # 5. 模拟会话线程经 presence 事件投递站位采样
-    for i in range(50):
-        app_ui.App._on_session_presence(app, PresenceSample(True, base_time + 10.0 + i * 0.1))
-    begin_record_mock.assert_not_called()
-    assert app._recording.state == "idle"
-
-    # 6. 正向对照：只有当用户明确点击「开始」后，才激活等待到位
-    # _student_start 的前置检查（正/侧双摄选择、Lite 模型）按真实启动条件补齐；
+    # 5. 正向对照：只有当用户明确点击「开始」后，才激活等待到位
+    # 「开始」的前置检查（身份、正/侧双摄选择、Lite 模型）按真实启动条件补齐；
     # 弹窗换成 Mock，前置检查失败时直接断言失败，而不是弹出阻塞的模态框。
-    app.camera_choice_var = SimpleNamespace(get=lambda: "摄像头 0")
-    app.camera_choice_var_2 = SimpleNamespace(get=lambda: "摄像头 1")
-    for name in ("auto_compare_var", "auto_compare_scale_var", "record_skeleton_var", "enable_hands_var"):
-        setattr(app, name, MagicMock())
-    app._exam_lock = threading.Lock()
+    app.feedback_controls.identity = lambda: {"studentId": "student_001"}
+    app._student_dual_cameras_ready = lambda: (True, "")
     monkeypatch.setattr(app_ui.model_manager, "is_installed", lambda _model: True)
     monkeypatch.setattr(app_ui, "messagebox", MagicMock())
-    app._student_start()
+    gate_start = base_time + 20.0
+    monkeypatch.setattr(app_ui.time, "monotonic", lambda: gate_start)
+    app._on_practice_start()
     app_ui.messagebox.showwarning.assert_not_called()
-    assert app._student_pending_record is True
-    assert app._student_presence_gate is not None
+    assert app._practice.waiting
+    assert app._practice.presence.phase == "wait_enter"
 
-    # 此时学生稳定站立 0.8s 以上，才会触发录制
-    gate_start = app._student_presence_started_at
-    # 模拟进入并稳定站立
-    app._student_on_occupancy(present=True, now=gate_start + 0.1)
-    app._student_on_occupancy(present=True, now=gate_start + 0.5)
-    app._student_on_occupancy(present=True, now=gate_start + 1.0)  # > 0.8s enter_stable
+    # 模拟进入并稳定站立 0.8s 以上，才会触发录制
+    for dt in (0.1, 0.5, 1.0):
+        app_ui.App._on_session_presence(app, PresenceSample(True, gate_start + dt))
 
     # 验证此时录制被合法启动
     begin_record_mock.assert_called_once()
+    assert app._practice.recording
 
 
 # ===========================================================================

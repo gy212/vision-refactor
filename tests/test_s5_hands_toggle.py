@@ -13,6 +13,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from apps import app_ui  # noqa: E402
+from core.workflows import ModeManager  # noqa: E402
 from apps.cli import main as app_main  # noqa: E402
 
 
@@ -89,6 +90,7 @@ def test_ui_state_defaults_to_hands_enabled():
     app._source_state = app_ui.InputSourceState()
     app._source_state.select_camera(0)
     app._camera_entries = []
+    app.modes = ModeManager()
 
     state = app_ui.App._collect_state(app)
 
@@ -108,6 +110,7 @@ def test_ui_state_can_disable_hands():
     app._source_state = app_ui.InputSourceState()
     app._source_state.select_video("video.mp4")
     app._camera_entries = []
+    app.modes = ModeManager()
 
     state = app_ui.App._collect_state(app)
 

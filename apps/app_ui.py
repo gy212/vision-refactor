@@ -50,7 +50,6 @@ from core.live import (
     camera_session,
     video_session,
 )
-from core.presence_gate import hip_midpoint_in_roi
 from core.media import SegmentLayout
 from core.recording import (
     BeginError,
@@ -58,19 +57,31 @@ from core.recording import (
     ProcessingPlan,
     RecordingService,
     RecordingState,
-    ResultSpec,
     SegmentFinalizer,
     SegmentMeta,
     SegmentUpdate,
     default_template_paths,
-    dual_segment_steps,
-    single_segment_steps,
     template_action_name,
     try_load_heavy_template,
-    validate_auto_compare_template_lists,
     validate_template_pair,
 )
-from core.workflows import EXAM_CLOSE_BUDGET_S, ExamClipStep, ScorebookRegistry
+from core.workflows import (
+    EXAM,
+    NORMAL,
+    PRACTICE,
+    Announcer,
+    CommandExecutor,
+    ModeManager,
+    PlanSettings,
+    PracticeSession,
+    PreflightContext,
+    ScorebookRegistry,
+    SegmentIntent,
+    WorkflowHost,
+    WorkflowPorts,
+    build_segment_plan,
+    hip_midpoint_in_roi,
+)
 from apps.input_source import InputSourceState
 from core import foundation
 from core.media import PRIMARY, SECONDARY, CameraService, CaptureSpec, ProcessCamera
@@ -130,8 +141,8 @@ _CLOSE_JOIN_SLICE_S = 0.05
 _CLOSE_POLL_MS = 50
 _CAMERA_CANCEL_JOIN_TIMEOUT_S = 0.05
 _CAMERA_RELEASE_WAIT_S = 3.0
-_PREVIEW_CAPTURE_SIZE = (1280, 720)
-_STUDENT_CAPTURE_SIZE = (1920, 1080)
+# 普通模式的请求尺寸（各模式的采集格式由 core.workflows.modes 声明）
+_PREVIEW_CAPTURE_SIZE = NORMAL.requirements.fmt.size
 
 
 def clamp_workers(n: int) -> int:
@@ -1079,33 +1090,16 @@ class App:
             SegmentFinalizer(on_update=self._post_recording_compare_update),
             plan_for=self._recording_plan,
         )
-        # 考试模式（见 docs/exam_system_design.md）
-        self._exam_lock = threading.Lock()
-        self._exam_active = False
-        self._exam_run_id: str | None = None
-        self._exam_run_dir: Path | None = None
-        self._exam_pending_row = None
+        # 运行模式（普通/考试/学生练习，§8.5）与工作流事件路由（§8.6）。考试面板开考时进入考试模式。
         self._exam_manual_locked = False
+        self.modes = ModeManager()
         # 各场考试的成绩台账：按 exam_run_id 回填录后结果，考试面板关闭后仍可回填
         self.exam_scorebooks = ScorebookRegistry()
-
-        # 学生练习模式（MediaPipe 关键点规则检查，见 docs/error_analysis_plan.md §C）
-        self._student_practice_active = False
-        self._student_pending_record = False
-        self._student_presence_gate = None
-        self._student_presence_started_at = 0.0
-        self._student_announcer = None
-        self._student_judging = False
-        self._student_last_segment_dir: Path | None = None
-        self._student_last_segment_id: str | None = None
-        self._student_front_video: Path | None = None
-        self._student_side_video: Path | None = None
-        self._student_segment_ready = False  # 后处理终态且视频可读后才可评判
-        self._student_judge_worker: threading.Thread | None = None
-        self._student_saved_auto_compare: bool | None = None
-        self._student_saved_skeleton: bool | None = None
-        self._student_saved_hands: bool | None = None
-        self._student_saved_online_match: bool | None = None
+        self.workflows = WorkflowHost(self.exam_scorebooks)
+        self.exam_panel = None
+        # 学生练习（MediaPipe 关键点规则检查）：进入练习模式时创建流程状态机与播报器
+        self._practice: PracticeSession | None = None
+        self._student_announcer: Announcer | None = None
 
         # 实时会话：唯一逐帧循环在 core.live 的会话线程里；事件经 _live_events 回到 Tk 线程（_tick 排空）。
         self._live_events: Queue[SessionEvent] = Queue()
@@ -1359,7 +1353,7 @@ class App:
         self.student_exit_btn.pack(fill="x")
         ttk.Label(
             self._student_block,
-            text="仅指出动作问题，不打分；MediaPipe Lite 本机CPU运行",
+            text="仅指出动作问题，不打分；MediaPipe Lite 本机CPU运行。骨架、手部、自动比对、在线识别由学生练习模式锁定为关闭，不改你的设置",
             foreground="#555555",
             wraplength=320,
         ).pack(anchor="w", pady=(6, 0))
@@ -1368,30 +1362,27 @@ class App:
             set_busy=self._set_feedback_busy,
             show_result=self._set_student_result_text,
             set_status=self.student_feedback_status,
-            can_analyze=lambda: self._student_practice_active
-            and not self._student_judging
-            and not self._student_pending_record
+            can_analyze=lambda: self._practice is not None
+            and not (self._practice.busy or self._practice.waiting)
             and self._recording.state not in {"recording", "paused"},
         )
-        self._student_feedback_identity = None
-        self._student_feedback_record_id = None
         student_btn_row = ttk.Frame(self._student_block)
         student_btn_row.pack(fill="x", pady=(10, 0))
         self.student_start_btn = ttk.Button(
-            student_btn_row, text="开始", command=self._student_start
+            student_btn_row, text="开始", command=self._on_practice_start
         )
         self.student_start_btn.pack(side="left", fill="x", expand=True)
         self.student_end_btn = ttk.Button(
             student_btn_row,
             text="结束",
-            command=self._student_end,
+            command=self._on_practice_end,
             state="disabled",
         )
         self.student_end_btn.pack(side="left", fill="x", expand=True, padx=(8, 0))
         self.student_judge_btn = ttk.Button(
             self._student_block,
             text="动作评判",
-            command=self._student_judge,
+            command=self._on_practice_judge,
             state="disabled",
         )
         self.student_judge_btn.pack(fill="x", pady=(8, 0))
@@ -1509,11 +1500,7 @@ class App:
         self.preview2.bind("<Button-1>", self._on_preview2_click_rotate)
         self._set_dual_preview_visible(False)
 
-        # 任务代次并发防御与学生练习分析结果主视图 (Milestone 2)
-        self._feedback_task_token: int = 0
-        self._active_feedback_token: int | None = None
-        self._active_feedback_student_id: str | None = None
-        self._current_student_record: dict | None = None
+        # 学生练习分析结果主视图 (Milestone 2)；任务代次在 PracticeSession
         self.current_student_id = self.feedback_controls.student_id
 
         from apps.feedback_result_panel import FeedbackResultPanel
@@ -1569,7 +1556,7 @@ class App:
         if announce:
             side = "侧摄" if which == "secondary" else "主摄"
             msg = f"{side}旋转 → {d}°（点击预览可继续顺时针 90°）"
-            if which != "secondary" and bool(getattr(self, "_exam_active", False)):
+            if which != "secondary" and self.modes.is_active("exam"):
                 msg += "；考试 ROI 可能失效，请重新标定"
             try:
                 self.status_var.set(msg)
@@ -1780,14 +1767,13 @@ class App:
     def _current_auto_compare(self, *, prefer_ui: bool = False) -> bool:
         """片段级自动比对开关。
 
-        - 考试中强制 True。
+        - 当前模式锁定时按模式（考试强制开、学生练习强制关）。
         - 默认读主线程维护的 ``_dual_auto_compare`` 缓存（worker 可安全读取）。
         - ``prefer_ui=True`` 时（仅主线程）从滑块/BooleanVar 刷新缓存。
         """
-        if bool(getattr(self, "_exam_active", False)) or getattr(
-            self, "_exam_pending_row", None
-        ) is not None:
-            return True
+        forced = self.modes.segment_auto_compare
+        if forced is not None:
+            return forced
         if prefer_ui and hasattr(self, "auto_compare_var"):
             try:
                 on = bool(self.auto_compare_var.get())
@@ -1914,15 +1900,16 @@ class App:
         if sync_record_stop is not None:
             sync_record_stop(new_state)
 
-    def _begin_recording_segment(self, exam_row=None) -> bool:
-        """从 idle 开录一段（考试与手动共用）。成功返回 True。
+    def _begin_recording_segment(self, intent: SegmentIntent | None = None):
+        """从 idle 开录一段（工作流与手动共用）；成功返回片段引用，失败返回 None。
 
-        前置：会话已 begin_session；各路同时 idle→recording，任一路失败则全部复位。
+        前置：会话已 begin_session；各路同时 idle→recording，任一路失败则全部复位。片段意图
+        （考生信息；自动比对未指定时按当前模式）随片段登记，结束时据此构建处理计划。
         """
         if getattr(self, "_closing", False) or not App._session_live(self):
-            return False
+            return None
         if not bool(getattr(self, "_dual_recording_ready", True)):
-            return False
+            return None
 
         record_dir_var = getattr(self, "record_dir_var", None)
         next_base_dir = getattr(self, "_record_base_dir", outputs_dir())
@@ -1934,30 +1921,26 @@ class App:
                 next_base_dir = Path(base)
         self._record_base_dir = Path(next_base_dir)
         save_record_dir(next_base_dir)
-        self._exam_pending_row = exam_row
-        segment = self._recording.start(SegmentMeta(Path(next_base_dir)))
+        intent = intent or SegmentIntent()
+        if intent.auto_compare is None:
+            intent = replace(intent, auto_compare=self.modes.segment_auto_compare)
+        segment = self._recording.start(SegmentMeta(Path(next_base_dir), context=intent))
         if isinstance(segment, BeginError):
-            self._exam_pending_row = None
-            return False
+            return None
 
         if segment.multi:
-            App._show_new_dual_segment(self, segment, exam_row)
+            App._show_new_dual_segment(self, segment, intent)
         record_btn = getattr(self, "record_btn", None)
         if record_btn is not None and not getattr(self, "_exam_manual_locked", False):
             record_btn.configure(text=RECORD_BTN_TEXT["recording"])
         self._sync_record_stop_enabled("recording")
-        return True
+        return segment
 
-    def _show_new_dual_segment(self, segment, exam_row) -> None:
-        """双摄新片段：记下本段是否自动比对，刷新比对状态栏；考试片段绑定到台账行。"""
-        auto_compare = (
-            True
-            if exam_row is not None
-            else App._current_auto_compare(self, prefer_ui=True)
-        )
-        # 学生练习：永不自动模板比对
-        if bool(getattr(self, "_student_practice_active", False)):
-            auto_compare = False
+    def _show_new_dual_segment(self, segment, intent: SegmentIntent) -> None:
+        """双摄新片段：记下本段是否自动比对，刷新比对状态栏。"""
+        auto_compare = intent.auto_compare
+        if auto_compare is None:
+            auto_compare = App._current_auto_compare(self, prefer_ui=True)
         self._dual_auto_compare = bool(auto_compare)
         status_text = "自动比对：录制中" if auto_compare else "仅录制：录制中"
         for name, value in (
@@ -1969,14 +1952,8 @@ class App:
             var = getattr(self, name, None)
             if var is not None:
                 var.set(value)
-        panel = getattr(self, "_exam_panel", None)
-        if exam_row is not None and panel is not None:
-            try:
-                panel.bind_segment(exam_row.row_id, segment.segment_id, str(segment.directory))
-            except Exception:
-                pass
 
-    def _end_recording_segment(self, *, discard: bool = False, exam_row=None) -> None:
+    def _end_recording_segment(self, *, discard: bool = False) -> None:
         """结束当前录制片段；discard=True 时只落盘、不入比对队列。
 
         discard 在关窗/中止路径也必须执行：不得因 ``_closing`` 提前 return，
@@ -1986,10 +1963,7 @@ class App:
         stopped = not App._session_live(self)
         if not discard and (closing or stopped):
             return
-        if exam_row is not None:
-            self._exam_pending_row = exam_row
         self._recording.finish(discard=discard)
-        self._exam_pending_row = None
         record_btn = getattr(self, "record_btn", None)
         if record_btn is not None and not getattr(self, "_exam_manual_locked", False):
             record_btn.configure(text=RECORD_BTN_TEXT["idle"])
@@ -2004,10 +1978,10 @@ class App:
         App._end_recording_segment(self, discard=False)
 
     def _open_exam_panel(self) -> None:
-        if bool(getattr(self, "_student_practice_active", False)):
+        if self.modes.is_active("practice"):
             messagebox.showinfo("学生练习", "请先退出学生练习模式，再打开考试模式。")
             return
-        existing = getattr(self, "_exam_panel", None)
+        existing = self.exam_panel
         if existing is not None:
             try:
                 existing.win.lift()
@@ -2019,16 +1993,14 @@ class App:
         ExamPanel(self)
 
     # ------------------------------------------------------------------
-    # 学生练习模式（MediaPipe 关键点规则检查，无分数）
+    # 学生练习模式（MediaPipe 关键点规则检查，无分数）；流程在 core.workflows.PracticeSession
     # ------------------------------------------------------------------
 
     def _enter_student_practice(self) -> None:
         """切换到学生练习极简界面：开始 / 结束 / 动作评判 / 预览。"""
-        if bool(getattr(self, "_student_practice_active", False)):
+        if self.modes.is_active("practice"):
             return
-        if bool(getattr(self, "_exam_active", False)) or bool(
-            getattr(self, "_exam_manual_locked", False)
-        ):
+        if self.modes.is_active("exam") or bool(getattr(self, "_exam_manual_locked", False)):
             messagebox.showinfo("学生练习", "考试进行中，无法进入学生练习。")
             return
         if App._session_active(self):
@@ -2037,51 +2009,28 @@ class App:
             )
             return
 
-        self._student_practice_active = True
-        self._student_pending_record = False
-        self._student_judging = False
-        self._student_last_segment_dir = None
-        self._student_last_segment_id = None
-        self._student_front_video = None
-        self._student_side_video = None
-        self._student_segment_ready = False
-        self._active_feedback_token = None
-        self._active_feedback_student_id = None
-        self._current_student_record = None
+        # 骨架、手部、自动比对、在线识别由模式要求在会话配置里锁定为关，不改写用户勾选（V-5）
+        self.modes.enter(PRACTICE)
+        self._practice = PracticeSession(self.feedback_controls.identity)
+        self._student_announcer = Announcer()
+        ports = WorkflowPorts(
+            recorder=_SegmentPort(self),
+            occupancy=_OccupancyPort(self, "practice"),
+            announcer=self._student_announcer,
+            ui=_PracticeUi(self),
+            analysis=_PracticeAnalysis(self),
+        )
+        self.workflows.activate(self._practice, CommandExecutor(ports))
         if hasattr(self, "feedback_result_panel"):
             self.feedback_result_panel.clear()
             self._show_student_preview_view()
 
-        # 省 GPU：关骨架/手部/自动比对（不改正式评分算法，仅本模式会话策略）
-        self._student_saved_auto_compare = bool(self.auto_compare_var.get())
-        self._student_saved_skeleton = bool(self.record_skeleton_var.get())
-        self._student_saved_hands = bool(self.enable_hands_var.get())
-        self._student_saved_online_match = bool(self.online_match_var.get())
-        self.auto_compare_var.set(False)
-        self.auto_compare_scale_var.set(0.0)
-        self._dual_auto_compare = False
-        self.record_skeleton_var.set(False)
-        self._dual_record_skeleton = False
-        self.enable_hands_var.set(False)
-        self.online_match_var.set(False)
-        self._sync_auto_compare_hint()
-
-        try:
-            self._teacher_block.pack_forget()
-        except Exception:
-            pass
-        try:
-            self.primary_secondary_separator.pack_forget()
-        except Exception:
-            pass
-        try:
-            self._secondary_block.pack_forget()
-        except Exception:
-            pass
-        try:
-            self._info_teacher_extra.pack_forget()
-        except Exception:
-            pass
+        for block in (self._teacher_block, self.primary_secondary_separator, self._secondary_block,
+                      self._info_teacher_extra):
+            try:
+                block.pack_forget()
+            except Exception:
+                pass
         try:
             self.settings_btn.configure(state="disabled")
         except Exception:
@@ -2101,58 +2050,47 @@ class App:
         self._sync_camera_warmup()
 
     def _exit_student_practice(self) -> None:
-        """退出学生练习并恢复教师控件。"""
-        if not bool(getattr(self, "_student_practice_active", False)):
+        """退出学生练习并恢复教师控件；用户的骨架/手部/自动比对/在线识别勾选从未被改写。"""
+        practice = self._practice
+        if practice is None:
             return
-        if bool(getattr(self, "_student_judging", False)):
+        if practice.busy:
             messagebox.showinfo("学生练习", "动作评判进行中，请稍候再退出。")
             return
 
         # 若仍在录制则先结束片段；再停会话
-        App._set_student_gate(self, None)
-        self._student_pending_record = False
+        self.workflows.dispatch("exit")
         if self._student_announcer is not None:
             self._student_announcer.close()
             self._student_announcer = None
-        try:
-            if self._recording.state in {"recording", "paused"}:
-                App._end_recording_segment(self, discard=False)
-        except Exception:
-            pass
         if App._session_active(self):
             self._stop()
-
-        self._student_practice_active = False
-        self._student_pending_record = False
-        self._student_judging = False
-        self._student_segment_ready = False
-        self._student_front_video = None
-        self._student_side_video = None
-        self._active_feedback_token = None
-        self._active_feedback_student_id = None
-        self._current_student_record = None
+        self.workflows.deactivate(practice)
+        self._practice = None
+        self.modes.leave("practice")
+        if self.exam_panel is not None:
+            # 考试面板仍开着：站位、tick 交还给考试流程
+            self.workflows.activate(self.exam_panel.session, self.exam_panel.executor)
         if hasattr(self, "feedback_result_panel"):
             self.feedback_result_panel.clear()
             self._show_student_preview_view()
+        App._restore_teacher_blocks(self)
 
-        if self._student_saved_auto_compare is not None:
-            self.auto_compare_var.set(bool(self._student_saved_auto_compare))
-            self.auto_compare_scale_var.set(
-                1.0 if self._student_saved_auto_compare else 0.0
-            )
-            self._dual_auto_compare = bool(self._student_saved_auto_compare)
-        if self._student_saved_skeleton is not None:
-            self.record_skeleton_var.set(bool(self._student_saved_skeleton))
-        if self._student_saved_hands is not None:
-            self.enable_hands_var.set(bool(self._student_saved_hands))
-        if self._student_saved_online_match is not None:
-            self.online_match_var.set(bool(self._student_saved_online_match))
-        self._student_saved_auto_compare = None
-        self._student_saved_skeleton = None
-        self._student_saved_hands = None
-        self._student_saved_online_match = None
-        self._sync_auto_compare_hint()
+        self.root.title("MediaPipe 动作识别（人体姿态 + 手部）")
+        if App._session_active(self):
+            # 会话尚在收尾：保持开始禁用，避免点击被静默丢弃；会话结束事件负责恢复。
+            self.status_var.set("正在停止…")
+            for name in ("start_btn", "stop_btn"):
+                button = getattr(self, name, None)
+                if button is not None:
+                    button.configure(state="disabled")
+            return
+        self.status_var.set("就绪")
+        self._set_running_controls(False)
+        self._sync_camera_warmup()
 
+    def _restore_teacher_blocks(self) -> None:
+        """退出学生练习后恢复教师控件，pack 顺序：primary → separator → secondary → info。"""
         try:
             self._student_block.pack_forget()
         except Exception:
@@ -2161,7 +2099,6 @@ class App:
             self._teacher_block.pack(fill="x")
         except Exception:
             pass
-        # 恢复 pack 顺序：primary → separator → secondary → info
         info_block = getattr(self, "_info_block", None)
         try:
             if info_block is not None:
@@ -2190,19 +2127,6 @@ class App:
         except Exception:
             pass
 
-        self.root.title("MediaPipe 动作识别（人体姿态 + 手部）")
-        if App._session_active(self):
-            # 会话尚在收尾：保持开始禁用，避免点击被静默丢弃；会话结束事件负责恢复。
-            self.status_var.set("正在停止…")
-            for name in ("start_btn", "stop_btn"):
-                button = getattr(self, name, None)
-                if button is not None:
-                    button.configure(state="disabled")
-            return
-        self.status_var.set("就绪")
-        self._set_running_controls(False)
-        self._sync_camera_warmup()
-
     def _student_dual_cameras_ready(self) -> tuple[bool, str]:
         label2 = (self.camera_choice_var_2.get() or "").strip()
         if not label2 or label2 == NO_SECOND_CAMERA:
@@ -2213,19 +2137,14 @@ class App:
         return True, ""
 
     def _sync_student_buttons(self) -> None:
-        if not bool(getattr(self, "_student_practice_active", False)):
+        practice = self._practice
+        if practice is None:
             return
-        judging = bool(getattr(self, "_student_judging", False))
-        recording = False
-        try:
-            recording = self._recording.state in {"recording", "paused"}
-        except Exception:
-            recording = False
-        waiting = bool(self._student_pending_record)
-        # 仅后处理终态就绪后才允许评判（避免与转码抢文件）
-        can_judge = bool(getattr(self, "_student_segment_ready", False))
+        judging = practice.busy
+        recording = practice.recording
+        waiting = practice.waiting
         if hasattr(self, "feedback_controls"):
-            self.feedback_controls.set_recording(recording or self._student_pending_record)
+            self.feedback_controls.set_recording(recording or waiting)
 
         try:
             self.student_start_btn.configure(
@@ -2234,10 +2153,9 @@ class App:
             self.student_end_btn.configure(
                 state="normal" if ((recording or waiting) and not judging) else "disabled"
             )
+            # 仅后处理终态就绪后才允许评判（避免与转码抢文件）
             self.student_judge_btn.configure(
-                state="normal"
-                if (can_judge and not judging and not recording and not waiting)
-                else "disabled"
+                state="normal" if practice.can_judge else "disabled"
             )
             self.student_exit_btn.configure(
                 state="disabled" if judging else "normal"
@@ -2257,288 +2175,59 @@ class App:
         except Exception:
             pass
 
-    def _student_start(self) -> None:
-        """开启双摄预览，等待进入站位区域后开录。"""
-        if not bool(getattr(self, "_student_practice_active", False)):
+    def _practice_dispatch(self, event: str, **kw) -> None:
+        """把界面事件交给学生练习流程（只在练习流程处于激活时）。"""
+        practice = self._practice
+        if practice is not None and self.workflows.active is practice:
+            self.workflows.dispatch(event, **kw)
+
+    def _on_practice_start(self) -> None:
+        """「开始」：预检通过后开启双摄（未开时），进入站位区域站稳后由练习流程开录。"""
+        practice = self._practice
+        if practice is None or practice.busy or practice.waiting or practice.recording:
             return
-        if bool(getattr(self, "_student_judging", False)):
+        problems = PRACTICE.requirements.preflight(App._preflight_context(self, practice=True))
+        if problems:
+            messagebox.showwarning("学生练习", problems[0])
             return
-        if self._student_pending_record or self._recording.state in {"recording", "paused"}:
+        self._live_controls.set_roi(PreferenceStore().get(EXAM_ROI))
+        if App._session_active(self):
+            self._practice_dispatch("start", now=time.monotonic(), session_ready=bool(self._dual_recording_ready))
             return
+        # 会话 state 冻结 1080p 请求；池发现预热格式不一致时会在旧进程释放后重开。
+        self._practice_dispatch("start", now=time.monotonic(), session_ready=False, launching=True)
         try:
-            self.feedback_controls.identity()
-        except ValueError as exc:
-            messagebox.showwarning("学生练习", str(exc))
+            self._start()
+        except Exception as e:
+            self._practice_dispatch("session_failed")
+            messagebox.showerror("学生练习", f"启动失败：{e}")
             return
-        ok, err = self._student_dual_cameras_ready()
-        if not ok:
-            messagebox.showwarning("学生练习", err)
-            return
+        if not App._session_active(self):
+            self._practice_dispatch("session_failed", message="双摄未启动，请检查摄像头后重试")
+        elif bool(getattr(self, "_dual_recording_ready", False)):
+            self._practice_dispatch("session_ready", now=time.monotonic())
 
-        lite = next(m for m in model_manager.MEDIAPIPE_MODELS if m.key == "pose_lite")
-        if not model_manager.is_installed(lite):
-            messagebox.showwarning("学生练习", missing_model_message("student_lite"))
-            return
-        self._exam_set_roi(PreferenceStore().get(EXAM_ROI))
+    def _on_practice_end(self) -> None:
+        """「结束」：停录落盘（或取消等待到位），不自动评判。"""
+        self._practice_dispatch("end")
 
-        # 强制仅录制、无骨架
-        self.auto_compare_var.set(False)
-        self.auto_compare_scale_var.set(0.0)
-        self._dual_auto_compare = False
-        self.record_skeleton_var.set(False)
-        self._dual_record_skeleton = False
-        self.enable_hands_var.set(False)
-
-        session_alive = App._session_active(self)
-        if not session_alive:
-            # 会话 state 冻结 1080p 请求；池发现预热格式不一致时会在旧进程释放后重开。
-            self._student_pending_record = True
-            self.student_status_var.set("正在启动双摄预览…")
-            try:
-                self._start()
-            except Exception as e:
-                self._student_pending_record = False
-                messagebox.showerror("学生练习", f"启动失败：{e}")
-                self._sync_student_buttons()
-                return
-            if not App._session_active(self):
-                self._student_pending_record = False
-                self.student_status_var.set("双摄未启动，请检查摄像头后重试")
-            if bool(getattr(self, "_dual_recording_ready", False)):
-                self._student_wait_for_position()
-            self._sync_student_buttons()
-            return
-
-        self._student_pending_record = True
-        self._student_wait_for_position()
-
-    def _student_wait_for_position(self) -> None:
-        if not self._student_practice_active or not self._student_pending_record:
-            return
-        if self._dual_recording_ready and self._student_presence_gate is None:
-            from core.presence_gate import PresenceGate, PresenceGateConfig
-
-            # 练习严格按离场2秒结束，不使用考试的最短录制时长限制。
-            self._student_presence_started_at = time.monotonic()
-            App._set_student_gate(self, PresenceGate(PresenceGateConfig(min_record_s=0.0)))
-            self.student_status_var.set("请进入正面预览黄框，站稳0.8秒后播报开始并自动录制")
-        self._sync_student_buttons()
-
-    def _student_on_occupancy(self, present: bool, now: float) -> None:
-        gate = self._student_presence_gate
-        if (gate is None or not self._student_practice_active or self._student_judging
-                or self._closing or not App._session_live(self)
-                or now < self._student_presence_started_at):
-            return
-        mode = "wait_enter" if self._student_pending_record else "recording"
-        for event in gate.update(present, now, mode=mode):
-            if event.kind == "enter_stable":
-                self._student_try_begin_recording()
-                if self._recording.state == "recording":
-                    gate.begin_recording(now)
-                else:
-                    App._set_student_gate(self, None)
-            elif event.kind == "empty_stable":
-                self._student_end()
-
-    def _student_try_begin_recording(self) -> None:
-        if not bool(getattr(self, "_student_practice_active", False)):
-            return
-        if bool(getattr(self, "_student_judging", False)):
-            return
-        if not bool(getattr(self, "_dual_recording_ready", False)):
-            self._student_pending_record = False
-            self.student_status_var.set("双摄尚未就绪，请重试「开始」")
-            self._sync_student_buttons()
-            return
-        self._student_pending_record = False
-        self._dual_auto_compare = False
-        try:
-            identity = self.feedback_controls.identity()
-        except ValueError as exc:
-            self.student_status_var.set(str(exc))
-            self._sync_student_buttons()
-            return
-        ok = App._begin_recording_segment(self)
-        if not ok:
-            self.student_status_var.set("开录失败，请重试「开始」")
-            messagebox.showerror("学生练习", "无法开始录制，请确认双摄已就绪。")
-            self._sync_student_buttons()
-            return
-        self._student_feedback_identity = identity
-        self._student_feedback_record_id = None
-        if self._student_announcer is None:
-            from core.exam_announcer import ExamAnnouncer
-
-            self._student_announcer = ExamAnnouncer()
-        self._student_announcer.announce("开始")
-        self.student_status_var.set("开始，录制中…离开黄框连续2秒自动结束，也可点「结束」")
-        self._sync_student_buttons()
-
-    def _student_end(self) -> None:
-        """结束 = 停录落盘，不自动评判；须等后处理终态才可评判。"""
-        if not bool(getattr(self, "_student_practice_active", False)):
-            return
-        if bool(getattr(self, "_student_judging", False)):
-            return
-        waiting = self._student_pending_record
-        App._set_student_gate(self, None)
-        self._student_pending_record = False
-        if self._recording.state not in {"recording", "paused"}:
-            self.student_status_var.set("已取消等待到位" if waiting else "当前没有进行中的录制")
-            self._sync_student_buttons()
-            return
-        # 新一段：清空就绪态，避免误用上一段视频
-        self._student_segment_ready = False
-        self._student_front_video = None
-        self._student_side_video = None
-        App._end_recording_segment(self, discard=False)
-        if self._student_announcer is not None:
-            self._student_announcer.announce("结束")
-        # segment_dir / segment_id 由 _recording_plan 在提交片段时写入
-        if self._student_last_segment_dir is not None:
-            self.student_status_var.set(
-                f"已停录：{self._student_last_segment_dir.name}，"
-                "正在转码落盘，完成后可「动作评判」…"
-            )
-        else:
-            self.student_status_var.set("录制已结束（未解析到片段目录，请重试）")
-        self._sync_student_buttons()
-
-    def _on_student_postprocess_update(self, update: SegmentUpdate) -> None:
-        """后处理终态：记录最终视频路径，再允许动作评判。"""
-        if not bool(getattr(self, "_student_practice_active", False)):
-            return
-        seg_id = getattr(self, "_student_last_segment_id", None)
-        if not seg_id or update.segment_id != seg_id:
-            return
-        terminal = {"completed", "failed", "skipped", "cancelled"}
-        if update.status not in terminal:
-            # 中间态：提示转码中
-            if update.status in {"queued", "transcoding", "validating"}:
-                try:
-                    self.student_status_var.set(
-                        f"处理中：{update.message or update.status}…"
-                    )
-                except Exception:
-                    pass
-            return
-
-        front = getattr(update, "front_video", None)
-        side = getattr(update, "side_video", None)
-        front_ok = front is not None and Path(front).is_file()
-        side_ok = side is not None and Path(side).is_file()
-
-        # skipped(auto_compare_disabled) / completed：转码完成即可评
-        # failed/cancelled：若仍有可读源文件也允许（降级），否则禁用
-        usable = front_ok or side_ok
-        if update.status in {"failed", "cancelled"} and not usable:
-            self._student_segment_ready = False
-            self._student_front_video = None
-            self._student_side_video = None
-            try:
-                self.student_status_var.set(
-                    f"片段处理失败，无法评判：{update.error_code or update.message}"
-                )
-            except Exception:
-                pass
-            self._sync_student_buttons()
-            return
-
-        self._student_front_video = Path(front) if front_ok else None
-        self._student_side_video = Path(side) if side_ok else None
-        # 目录内再兜底一次
-        if (
-            (self._student_front_video is None or self._student_side_video is None)
-            and self._student_last_segment_dir is not None
-        ):
-            try:
-                f2, s2 = SegmentLayout.resolve_videos(self._student_last_segment_dir)
-                if self._student_front_video is None:
-                    self._student_front_video = f2
-                if self._student_side_video is None:
-                    self._student_side_video = s2
-            except Exception:
-                pass
-
-        ready = (
-            self._student_front_video is not None
-            and self._student_side_video is not None
-            and Path(self._student_front_video).is_file()
-            and Path(self._student_side_video).is_file()
-        )
-        # 单路仍可检查可见项目；缺视角的规则明确标记无法判断
-        if not ready:
-            ready = (
-                (self._student_front_video is not None and Path(self._student_front_video).is_file())
-                or (self._student_side_video is not None and Path(self._student_side_video).is_file())
-            )
-        self._student_segment_ready = bool(ready)
-        try:
-            if self._student_segment_ready:
-                self.student_status_var.set(
-                    f"已就绪：{seg_id}，可点「动作评判」"
-                )
-            else:
-                self.student_status_var.set(
-                    f"处理结束但未找到可读视频：{update.error_code or update.status}"
-                )
-        except Exception:
-            pass
-        self._sync_student_buttons()
+    def _on_practice_judge(self) -> None:
+        """「动作评判」：按开录时绑定的学生与动作后台分析。"""
+        self._practice_dispatch("judge")
 
     def student_feedback_status(self, text: str) -> None:
         self.student_status_var.set(text)
 
     def _set_feedback_busy(self, busy: bool) -> None:
-        self._student_judging = busy
-        self._sync_student_buttons()
-
-    def _student_judge(self) -> None:
-        """按录制开始时绑定的学生与动作，后台分析并保存问题说明。"""
-        if not self._student_practice_active or self._student_judging:
-            return
-        if self._student_pending_record:
-            return
-        if not self._student_segment_ready:
-            messagebox.showinfo("动作评判", "请先结束练习，并等待录像转码落盘。")
-            return
-        if self._recording.state in {"recording", "paused"}:
-            messagebox.showinfo("动作评判", "请先结束录制再评判。")
-            return
-        identity = self._student_feedback_identity
-        if identity is None:
-            messagebox.showinfo("动作评判", "这段录像未绑定学生，请使用「导入旧视频」分析。")
-            return
-
-        self._feedback_task_token = getattr(self, "_feedback_task_token", 0) + 1
-        token = self._feedback_task_token
-        self._active_feedback_token = token
-        student_id = identity.get("studentId") if isinstance(identity, dict) else None
-        self._active_feedback_student_id = student_id
-
-        def on_saved(record):
-            self._student_feedback_record_id = record["id"]
-            if hasattr(self, "_on_student_analysis_saved"):
-                self._on_student_analysis_saved(token=token, student_id=student_id, record=record)
-
-        self.feedback_controls.analyze_recording(
-            identity, self._student_front_video, self._student_side_video,
-            record_id=self._student_feedback_record_id, on_saved=on_saved,
-            token=token,
-        )
-
-
+        self._practice_dispatch("analysis_busy", busy=bool(busy))
 
     def _on_student_identity_changed(self) -> None:
         """用户在学生练习界面修改了学号：作废当前任务代次，清空旧记录。"""
-        self._active_feedback_token = None
-        self._active_feedback_student_id = None
-        self._current_student_record = None
+        self._practice_dispatch("identity_changed")
 
     def _on_student_cancelled(self) -> None:
         """用户点击了取消分析：作废任务代次。"""
-        self._active_feedback_token = None
+        self._practice_dispatch("analysis_cancelled")
 
     def _show_student_result_view(self, record: dict) -> None:
         """切换至学生练习分析结果视图：平滑隐藏预览和左侧控制栏，展示结果面板。"""
@@ -2578,54 +2267,25 @@ class App:
 
     def _on_student_practice_again(self) -> None:
         """从分析结果页切回录制预览，重置状态，但严格禁止自动启动录制。"""
-        if not bool(getattr(self, "_student_practice_active", False)):
+        practice = self._practice
+        if practice is None or practice.busy:
             return
-        if bool(getattr(self, "_student_judging", False)):
-            return
-
-        # 1. 视图平滑切回预览
         self._show_student_preview_view()
-
-        # 2. 状态硬复位：解除闸门，清空就绪态，作废代次
-        App._set_student_gate(self, None)
-        self._student_pending_record = False
-        self._student_segment_ready = False
-        self._student_front_video = None
-        self._student_side_video = None
-        self._active_feedback_token = None
-
-        # 3. 按钮与文案同步，不自动触发录制
-        try:
-            self.student_status_var.set("已返回录制预览。进入黄框就位后请点击「开始」")
-            self._sync_student_buttons()
-        except Exception:
-            pass
+        self._practice_dispatch("practice_again")
 
     def _on_student_analysis_saved(self, token: int, student_id: str, record: dict) -> None:
-        """分析完成且保存后的主线程回调：通过任务代次与学号双重拦截晚到/作废结果。"""
+        """分析完成且保存后的主线程回调：交给练习流程按任务代次与学号拦截晚到/作废结果。"""
         if bool(getattr(self, "_closing", False)):
             return
-
-        active_token = getattr(self, "_active_feedback_token", None)
-        if active_token is None or token != active_token:
-            return
-
         curr_student_id = None
         if hasattr(self, "current_student_id") and hasattr(self.current_student_id, "get"):
             curr_student_id = self.current_student_id.get()
         elif hasattr(self, "feedback_controls") and hasattr(self.feedback_controls, "student_id"):
             curr_student_id = self.feedback_controls.student_id.get()
-
-        if curr_student_id is not None and curr_student_id != student_id:
-            return
-
-        rec = getattr(self, "_rec", None)
-        if rec is not None and getattr(rec, "state", "idle") in ("recording", "paused"):
-            return
-
-        self._current_student_record = record
-        self._student_feedback_record_id = record.get("id")
-        self._show_student_result_view(record)
+        self._practice_dispatch(
+            "analysis_saved", token=token, student_id=student_id, record=record,
+            current_student_id=curr_student_id,
+        )
 
     def _on_student_export_report(self, record: dict) -> None:
         """从结果面板导出 HTML / TXT 图文报告。"""
@@ -2668,12 +2328,16 @@ class App:
             updated = self.feedback_controls.history().review(
                 record_id, check_id, decision, teacher, reason
             )
-            self._current_student_record = updated
+            if self._practice is not None:
+                self._practice.current_record = updated
             self.feedback_result_panel.set_record(updated)
         except Exception as exc:
             messagebox.showerror("复核失败", str(exc), parent=self.root)
 
-    def _exam_primary_rotate(self) -> int:
+    # ---- 考试面板使用的公共接口（面板不访问 App 私有成员） ----
+
+    def exam_primary_rotation(self) -> int:
+        """考试 ROI 按 primary 旋转后的画面判定；返回当前 primary 旋转角。"""
         try:
             return int(self._get_runtime_rotate("primary"))
         except Exception:
@@ -2682,33 +2346,28 @@ class App:
             except Exception:
                 return 0
 
-    def _exam_set_roi(self, roi: tuple[float, float, float, float]) -> None:
-        self._live_controls.set_roi(roi)
+    def exam_ports(self, *, ui, announcer) -> WorkflowPorts:
+        """考试流程的端口：录制与站位检测接到本窗口的会话，界面与播报由面板提供。"""
+        return WorkflowPorts(
+            recorder=_SegmentPort(self), occupancy=_OccupancyPort(self, "exam"),
+            announcer=announcer, ui=ui,
+        )
 
-    def _exam_set_active(
-        self, active: bool, *, run_id: str | None = None, run_dir: Path | None = None
-    ) -> None:
-        with self._exam_lock:
-            self._exam_active = bool(active)
-            if active:
-                self._exam_run_id = run_id
-                self._exam_run_dir = run_dir
-                self._dual_auto_compare = True
-            else:
-                self._exam_run_id = None
-                self._exam_run_dir = None
-        if not active:
-            self._live_controls.arm_occupancy("exam", False)
+    def exam_preflight(self) -> list[str]:
+        """开考预检（考试模式声明的条件）；返回不满足的条件，空表示可以开考。"""
+        return EXAM.requirements.preflight(App._preflight_context(self))
 
-    def _exam_arm_occupancy(self, armed: bool) -> None:
-        self._live_controls.arm_occupancy("exam", bool(armed))
+    def set_exam_mode(self, active: bool) -> None:
+        """开考时进入考试模式；主会话停止、换名单或关闭面板时退出。"""
+        if active:
+            self.modes.enter(EXAM)
+            self._dual_auto_compare = True
+            return
+        self.modes.leave("exam")
+        self._live_controls.arm_occupancy("exam", False)
 
-    def _set_student_gate(self, gate) -> None:
-        """学生练习的到位检测门：有门即在会话里启用站位检测（与考试共用同一 Lite 推理）。"""
-        self._student_presence_gate = gate
-        self._live_controls.arm_occupancy("practice", gate is not None)
-
-    def _exam_lock_manual_record(self, locked: bool) -> None:
+    def lock_manual_record(self, locked: bool) -> None:
+        """考试进行中锁定手动录制按钮与骨架、自动比对开关（考试强制比对、骨架关）。"""
         self._exam_manual_locked = bool(locked)
         state = "disabled" if locked else "normal"
         for name in ("record_btn", "record_stop_btn", "record_skeleton_check", "auto_compare_check"):
@@ -2743,12 +2402,8 @@ class App:
             except Exception:
                 pass
 
-    def _exam_preflight(self) -> tuple[bool, str]:
-        if not bool(getattr(self, "_dual_active", False)):
-            return False, "请先选择双摄像头并点击「开始」进入双摄会话。"
-        if not bool(getattr(self, "_dual_recording_ready", False)):
-            return False, "双摄尚未就绪，请稍候再试。"
-        # 骨架会话 worker 会跳过 occupancy，首位会永久卡在 wait_enter
+    def _preflight_context(self, *, practice: bool = False) -> PreflightContext:
+        """采集模式预检要用的事实；练习另查身份与双摄选择，考试另查模板池。"""
         skeleton_on = bool(getattr(self, "_dual_record_skeleton", False))
         try:
             skeleton_var = getattr(self, "record_skeleton_var", None)
@@ -2756,34 +2411,28 @@ class App:
                 skeleton_on = True
         except Exception:
             pass
-        if skeleton_on:
-            return (
-                False,
-                "考试模式不支持「开启骨架」会话（占用检测会被跳过）。"
-                "请取消骨架后重新「开始」双摄，再开考。",
-            )
-        # 多模板池：正对正、侧对侧，至少一侧非空且模板可用（heavy+pose33_v3）即可开考。
-        front_list, side_list = self._current_template_lists()
-        try:
-            validate_auto_compare_template_lists(front_list, side_list)
-        except Exception as exc:
-            return (
-                False,
-                f"正/侧模板池不可用（须至少一侧含可用 heavy+pose33_v3 模板，请在主界面录制区添加）：{exc}",
-            )
-        heavy = next(
-            (m for m in model_manager.MEDIAPIPE_MODELS if m.key == "pose_heavy"),
-            None,
+        identity_error = cameras_error = None
+        front: list = []
+        side: list = []
+        if practice:
+            try:
+                self.feedback_controls.identity()
+            except ValueError as exc:
+                identity_error = str(exc)
+            ok, err = self._student_dual_cameras_ready()
+            cameras_error = None if ok else err
+        elif bool(getattr(self, "_dual_active", False)):
+            front, side = self._current_template_lists()
+        return PreflightContext(
+            dual_active=bool(getattr(self, "_dual_active", False)),
+            recording_ready=bool(getattr(self, "_dual_recording_ready", False)),
+            skeleton_on=skeleton_on,
+            front_templates=tuple(front),
+            side_templates=tuple(side),
+            model_installed=_model_installed,
+            identity_error=identity_error,
+            cameras_error=cameras_error,
         )
-        lite = next(
-            (m for m in model_manager.MEDIAPIPE_MODELS if m.key == "pose_lite"),
-            None,
-        )
-        if heavy is None or not model_manager.is_installed(heavy):
-            return False, missing_model_message("exam_heavy")
-        if lite is None or not model_manager.is_installed(lite):
-            return False, missing_model_message("exam_occupancy_lite")
-        return True, ""
 
     def _close_recording_session(self) -> None:
         """会话结束时关闭录制：仍在进行的片段照常提交；单摄写错误留给下一次 Tk tick 提示。"""
@@ -2795,77 +2444,30 @@ class App:
                 self._pending_record_errors.append(f"第一路：{error}")
 
     def _recording_plan(self, segment: FinishedSegment) -> ProcessingPlan | None:
-        """按当前模式为结束的片段构建处理计划（P7 起由普通/考试/练习流程各自构建）。
+        """按片段开录时登记的意图与结束时的用户设置构建处理计划（见 ``core.workflows.plans``）。
 
-        单摄只转码（V-4）；双摄按 §8.4 表：考试在前面加裁剪步骤并强制比对，学生练习强制不比对。
         在 RecordingService 的锁内、提交前调用：先把本片段登记为"最新"，提交后的首批更新不会被当成旧片段丢弃。
         """
         if not segment.multi:
-            return ProcessingPlan(single_segment_steps(), finish_on_close=True)
-        practice = bool(getattr(self, "_student_practice_active", False))
-        if practice:
-            # 学生练习：记下片段目录/id；就绪态等后处理终态再开（见 _on_student_postprocess_update）
-            self._student_last_segment_dir = Path(segment.directory)
-            self._student_last_segment_id = segment.segment_id
-            self._student_segment_ready = False
-            self._student_front_video = None
-            self._student_side_video = None
-        exam_row = getattr(self, "_exam_pending_row", None)
-        exam_run_id = getattr(self, "_exam_run_id", None)
-        auto_compare = (exam_row is not None or bool(App._current_auto_compare(self, prefer_ui=False))) and not practice
+            return build_segment_plan(segment, PlanSettings(record_skeleton=False, auto_compare=False))
         front_templates, side_templates = self._current_template_lists()
-        record_skeleton = bool(getattr(self, "_dual_record_skeleton", False))
-        steps = dual_segment_steps(
-            record_skeleton=record_skeleton,
-            auto_compare=auto_compare,
-            front_templates=tuple(front_templates),
-            side_templates=tuple(side_templates),
-        )
-        exam = None
-        if exam_row is not None:
-            candidate = getattr(exam_row, "candidate", None)
-            exam = {
-                "exam_run_id": str(exam_run_id) if exam_run_id else None,
-                "student_id": getattr(candidate, "student_id", None),
-                "student_name": getattr(candidate, "name", None),
-                "student_order": getattr(candidate, "order", None),
-                "attempt_index": getattr(exam_row, "attempt_index", None),
-            }
-            steps = (ExamClipStep(), *steps)
-        self._latest_compare_segment_id = segment.segment_id
-        return ProcessingPlan(
-            steps,
-            result=ResultSpec(
-                record_skeleton=record_skeleton,
-                auto_compare=auto_compare,
-                front_template=front_templates[0] if front_templates else Path(""),
-                side_template=side_templates[0] if side_templates else Path(""),
-                exam=exam,
+        plan = build_segment_plan(
+            segment,
+            PlanSettings(
+                record_skeleton=bool(getattr(self, "_dual_record_skeleton", False)),
+                auto_compare=bool(App._current_auto_compare(self, prefer_ui=False)),
+                front_templates=tuple(front_templates),
+                side_templates=tuple(side_templates),
             ),
-            close_budget_s=EXAM_CLOSE_BUDGET_S if exam_row is not None else 0.0,
         )
-
-    def _apply_exam_postprocess_update(self, update: SegmentUpdate) -> None:
-        """考试台账回填：按 run_id 交给台账登记表；属于当前面板的台账时刷新面板表格。"""
-        applied = self.exam_scorebooks.apply(update)
-        if applied is None:
-            return
-        panel = getattr(self, "_exam_panel", None)
-        if panel is not None and getattr(panel, "scorebook", None) is applied[0]:
-            try:
-                panel.refresh_rows()
-            except Exception:
-                pass
+        self._latest_compare_segment_id = segment.segment_id
+        return plan
 
     def _post_recording_compare_update(self, update: SegmentUpdate) -> None:
         """后处理线程只把不可变状态写入队列，不直接调用任何 Tk API。"""
         # 关窗时仍允许考试台账回填（面板或已移交的台账），避免裁剪晚到的终态被丢弃
         if getattr(self, "_closing", False):
-            has_exam = (
-                getattr(self, "_exam_panel", None) is not None
-                or self.exam_scorebooks.has_detached
-            )
-            if not has_exam:
+            if self.exam_panel is None and not self.exam_scorebooks.has_detached:
                 return
         self._compare_update_queue.put(update)
 
@@ -2923,14 +2525,9 @@ class App:
                     self.compare_error_var.set(detail)
                 else:
                     self.compare_error_var.set("")
-            # 学生练习：等后处理终态 + 最终视频路径再允许评判
-            if not closing and bool(getattr(self, "_student_practice_active", False)):
-                try:
-                    App._on_student_postprocess_update(self, update)
-                except Exception:
-                    pass
-            # 考试台账：面板或关窗后 sink，所有片段终态/过程态都要回填
-            App._apply_exam_postprocess_update(self, update)
+            # 考试台账按 run_id 回填（面板或关窗后移交的台账，所有片段终态/过程态都要回填）；
+            # 学生练习等后处理终态 + 最终视频路径再允许评判。关窗收尾时只回填台账。
+            self.workflows.segment_update(update, route=not closing)
 
     def _sync_record_stop_enabled(self, state: RecordingState) -> None:
         """根据录制状态联动「结束录制」按钮的可用性：recording/paused 启用，idle 禁用。"""
@@ -3302,13 +2899,11 @@ class App:
 
     def _camera_capture_size(self) -> tuple[int, int]:
         """当前模式的请求尺寸；只在主线程构造 spec 时读取一次，随后冻结。"""
-        if bool(getattr(self, "_student_practice_active", False)):
-            return _STUDENT_CAPTURE_SIZE
-        return _PREVIEW_CAPTURE_SIZE
+        return self.modes.current.requirements.fmt.size
 
     def _camera_capture_policy(self) -> str:
         """学生练习严格要求 1080p，驱动给不出时失败并提示（D-6）；其余模式接受实际尺寸。"""
-        return "require" if bool(getattr(self, "_student_practice_active", False)) else "prefer"
+        return self.modes.current.requirements.fmt.policy
 
     def _camera_names(self) -> tuple[tuple[int, str], ...]:
         """枚举得到的设备名，供打开时复核（V-3）；没有名称的设备不复核。"""
@@ -3506,7 +3101,8 @@ class App:
         start_click = time.monotonic()
 
         try:
-            state = self._collect_state()
+            # 会话配置 = 用户设置快照叠加当前模式的要求（§8.5），在开始时计算一次
+            state = self.modes.session_settings(self._collect_state())
             config = App._session_config(state)
         except Exception as e:
             messagebox.showerror("配置错误", str(e))
@@ -3537,28 +3133,26 @@ class App:
         self._shown_preview_seq = 0
 
         token = self._live.start(config, start_click=start_click)
+        self.workflows.session_started(token)
         foundation.diag.event(
             "session.start",
             session=token,
             primary=state.source,
             secondary=state.source2,
             requested="x".join(str(v) for v in state.capture_size),
-            student=bool(getattr(self, "_student_practice_active", False)),
+            student=self.modes.is_active("practice"),
         )
         self._set_refresh_enabled()
         # 集中刷新运行态控件（禁用 Camera/Model_Selector、启用 Record_Toggle 等，需求 4.3 等）。
         self._set_running_controls(True)
 
     def _stop(self) -> None:
-        # 先同步考试状态机：否则 occupancy 退出后仍停在 recording，指针/手动锁不解除
-        App._set_student_gate(self, None)
-        self._student_pending_record = False
-        panel = getattr(self, "_exam_panel", None)
-        if panel is not None:
-            try:
-                panel.on_session_stop()
-            except Exception:
-                pass
+        # 先同步工作流：否则 occupancy 退出后考试仍停在 recording，指针/手动锁不解除；练习停止等待到位
+        try:
+            self.workflows.session_stopped(time.monotonic())
+        except Exception:
+            traceback.print_exc()
+        App.set_exam_mode(self, False)
         foundation.diag.event("session.stop_requested", session=self._live.token, cancel="user_stop")
         self._live.stop("user_stop")
         self._dual_recording_ready = False
@@ -3618,16 +3212,10 @@ class App:
             self.match_var.set(text)
 
     def _on_session_presence(self, sample: PresenceSample) -> None:
-        """站位采样：学生练习时交给练习流程，否则交给考试面板。"""
-        if bool(getattr(self, "_student_practice_active", False)):
-            self._student_on_occupancy(bool(sample.present), float(sample.sampled_at))
+        """站位采样：会话未在停止时交给当前激活的工作流（考试或学生练习）。"""
+        if not App._session_live(self):
             return
-        panel = getattr(self, "_exam_panel", None)
-        if panel is not None:
-            try:
-                panel.on_occupancy(bool(sample.present), float(sample.sampled_at))
-            except Exception:
-                pass
+        self.workflows.presence(self._live.token, bool(sample.present), float(sample.sampled_at))
 
     def _on_session_running(self, _info: RunningInfo) -> None:
         """会话已接管设备并登记录制：双摄此时才允许录制，学生练习据此启用站位检测。"""
@@ -3636,48 +3224,25 @@ class App:
         self._dual_active = True
         self._dual_auto_compare = self._current_auto_compare()
         self._dual_recording_ready = True
-        practice = bool(getattr(self, "_student_practice_active", False))
         record_btn = getattr(self, "record_btn", None)
-        if record_btn is not None and not practice:
+        if record_btn is not None and not self.modes.is_active("practice"):
             record_btn.configure(state="normal", text=RECORD_BTN_TEXT["idle"])
-        if practice and self._student_pending_record:
-            # 双摄就绪只启用站位检测，到位事件才开录。
-            try:
-                self._student_wait_for_position()
-            except Exception:
-                self._student_pending_record = False
-                try:
-                    self.student_status_var.set("站位检测启动失败，请再点「开始」")
-                except Exception:
-                    pass
-        elif practice:
-            try:
-                self._sync_student_buttons()
-            except Exception:
-                pass
+        # 学生练习：双摄就绪只启用站位检测，到位事件才开录。
+        self.workflows.session_ready(self._live.token, time.monotonic())
 
     def _on_session_ended(self, outcome: SessionOutcome) -> None:
         """会话终态（设备已归还或已隔离）：复位界面；未失败时重新声明预热。"""
         config = self._live.config
         self._dual_recording_ready = False
         self._dual_active = False
-        if bool(getattr(self, "_exam_active", False)):
-            panel = getattr(self, "_exam_panel", None)
-            if panel is not None:
-                try:
-                    panel.on_session_stop()
-                except Exception:
-                    traceback.print_exc()
+        # 开考后主会话结束：考试中止；学生练习回到可重新「开始」
+        self.workflows.session_ended(self._live.token, time.monotonic(), status=outcome.status or "")
+        App.set_exam_mode(self, False)
         self.start_btn.configure(state="normal")
         self.stop_btn.configure(state="disabled")
         self._set_refresh_enabled()
         # 会话结束：集中复位运行态控件并使 Status_Area 显示「就绪」（需求 4.5、5.1）。
         self._set_running_controls(False)
-        if bool(getattr(self, "_student_practice_active", False)):
-            App._set_student_gate(self, None)
-            self._student_pending_record = False
-            self.student_status_var.set(outcome.status or "双摄会话已结束，可点「开始」重试")
-            self._sync_student_buttons()
         if outcome.status:
             self.status_var.set(outcome.status)
         # 新 reader 若遇到仍在退出的旧进程，会在后台等待真实释放后再打开，Tk 线程不等待驱动。
@@ -3722,29 +3287,23 @@ class App:
             return
         # 1) 先中止考试、移交当前面板 scorebook 到 sinks（_closing 仍为 False，discard 可走）
         #    root.destroy 不会触发面板 WM_DELETE_WINDOW，必须 prepare_for_app_close。
-        panel = getattr(self, "_exam_panel", None)
+        panel = self.exam_panel
         if panel is not None:
             try:
-                if hasattr(panel, "prepare_for_app_close"):
-                    panel.prepare_for_app_close()
-                else:
-                    panel.on_session_stop()
-                    book = getattr(panel, "scorebook", None)
-                    if book is not None:
-                        self.exam_scorebooks.detach(book)
-                        panel.scorebook = None
+                panel.prepare_for_app_close()
             except Exception:
                 pass
-        elif bool(getattr(self, "_exam_active", False)):
+        elif self.modes.is_active("exam"):
             try:
                 App._end_recording_segment(self, discard=True)
             except Exception:
                 pass
         if hasattr(self, "feedback_controls"):
             self.feedback_controls.close()
-        self._active_feedback_token = None
-        App._set_student_gate(self, None)
-        self._student_pending_record = False
+        if self._practice is not None:
+            # 作废分析代次并停止等待到位
+            self._practice_dispatch("analysis_cancelled")
+            self._practice_dispatch("session_stopped", now=time.monotonic())
         announcer = getattr(self, "_student_announcer", None)
         if announcer is not None:
             announcer.close()
@@ -3853,11 +3412,89 @@ class App:
     def _tick(self) -> None:
         self._drain_recording_compare_updates()
         self._drain_session_events()
+        self.workflows.tick(time.monotonic())
         self._drain_camera_enum_results()
         # 录制状态刷新必须每 tick 执行，与是否有新帧无关（需求 5.9/5.10/5.11）。
         self._refresh_recording_status()
         self._render_preview()
         self.root.after(16, self._tick)
+
+
+def _model_installed(key: str) -> bool:
+    """按模型键（如 ``pose_lite``）查询 MediaPipe 模型是否已安装。"""
+    spec = next((m for m in model_manager.MEDIAPIPE_MODELS if m.key == key), None)
+    return spec is not None and model_manager.is_installed(spec)
+
+
+class _SegmentPort:
+    """工作流的录制端口（``SegmentControl``）：开录/结束接到 App 的录制服务。"""
+
+    def __init__(self, app: App) -> None:
+        self._app = app
+
+    def start_segment(self, payload: dict):
+        return App._begin_recording_segment(self._app, SegmentIntent(exam=payload.get("exam")))
+
+    def finish(self, *, discard: bool) -> None:
+        App._end_recording_segment(self._app, discard=discard)
+
+
+class _OccupancyPort:
+    """工作流的站位检测端口（``OccupancyControl``）：按所有者武装会话内的站位检测。"""
+
+    def __init__(self, app: App, owner: str) -> None:
+        self._app = app
+        self._owner = owner
+
+    def arm(self, armed: bool) -> None:
+        self._app._live_controls.arm_occupancy(self._owner, bool(armed))
+
+    def set_roi(self, roi) -> None:
+        self._app._live_controls.set_roi(roi)
+
+
+class _PracticeUi:
+    """学生练习的界面端口（``WorkflowUi``）：状态栏、提示框、结果页与按钮联动。"""
+
+    def __init__(self, app: App) -> None:
+        self._app = app
+
+    def status(self, text: str) -> None:
+        self._app.student_status_var.set(text)
+
+    def alert(self, title: str, text: str, *, error: bool = False) -> None:
+        (messagebox.showerror if error else messagebox.showinfo)(title, text)
+
+    def lock_manual_record(self, locked: bool) -> None:
+        pass
+
+    def show_result(self, record: dict) -> None:
+        self._app._show_student_result_view(record)
+
+    def refresh_rows(self) -> None:
+        pass
+
+    def refresh(self) -> None:
+        self._app._sync_student_buttons()
+
+
+class _PracticeAnalysis:
+    """学生练习的分析端口（``AnalysisControl``）：后台分析并保存，保存后回到练习流程。"""
+
+    def __init__(self, app: App) -> None:
+        self._app = app
+
+    def start_practice_analysis(self, request: dict) -> bool:
+        app, token, student_id = self._app, request["token"], request["student_id"]
+
+        def on_saved(record):
+            app._practice_dispatch("record_saved", record_id=record["id"])
+            App._on_student_analysis_saved(app, token=token, student_id=student_id, record=record)
+
+        return app.feedback_controls.analyze_recording(
+            request["identity"], request["front"], request["side"],
+            record_id=request["record_id"], on_saved=on_saved, token=token,
+        )
 
 
 class _RecordingSink:

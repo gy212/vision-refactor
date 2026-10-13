@@ -19,17 +19,20 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from core.exam_clip import align_frame_counts, prepare_exam_pair
-from core.exam_roster import (
+from core.workflows import (
     ExamCandidate,
     ExamResultRow,
     ExamScorebook,
+    ExamSession,
+    ExamSessionConfig,
+    PresenceGate,
+    PresenceGateConfig,
+    align_frame_counts,
     import_roster_xlsx,
+    prepare_exam_pair,
     write_import_template,
     write_scorebook_xlsx,
 )
-from core.exam_session import ExamSession, ExamSessionConfig
-from core.presence_gate import PresenceGate, PresenceGateConfig
 
 PASS = 0
 FAIL = 0

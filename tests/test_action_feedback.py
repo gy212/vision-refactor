@@ -353,24 +353,38 @@ def test_late_cancel_does_not_write_or_replace_result(tmp_path):
 
 
 @pytest.mark.parametrize("waiting", [False, True])
-def test_app_judges_identity_bound_at_recording_start(waiting):
+def test_practice_judges_identity_bound_at_recording_start(waiting, tmp_path):
+    """评判用开录瞬间绑定的身份；开录后改学号不影响本段。等待到位时不评判。"""
     from types import SimpleNamespace
-    from apps.app_ui import App
+    from core.workflows import PracticeSession
 
-    captured = []
     identity = validate_identity("recorded_student", "", "rear_low_kick", "right")
-    app = SimpleNamespace(_student_practice_active=True, _student_judging=False, _student_segment_ready=True,
-        _student_pending_record=waiting,
-        _recording=SimpleNamespace(state="idle"), _student_feedback_identity=identity, _student_feedback_record_id=None,
-        _student_front_video=Path("front.mp4"), _student_side_video=Path("side.mp4"),
-        feedback_controls=SimpleNamespace(analyze_recording=lambda *args, **kw: captured.append((args, kw))))
-    App._student_judge(app)
+    current = {"identity": identity}
+    practice = PracticeSession(lambda: current["identity"])
+    practice.handle("start", now=0.0, session_ready=True)
+    assert [c.kind for c in practice.handle("enter_stable", now=1.0)] == ["BEGIN_SEGMENT"]
+    practice.handle("record_started", now=1.0, segment=SimpleNamespace(segment_id="seg", directory=tmp_path))
+    current["identity"] = validate_identity("someone_else", "", "rear_low_kick", "right")
+    practice.handle("end")
+    front, side = tmp_path / "front.mp4", tmp_path / "side.mp4"
+    front.write_bytes(b"x")
+    side.write_bytes(b"x")
+    practice.handle("segment_update", update=SimpleNamespace(
+        segment_id="seg", status="completed", message="", error_code=None, front_video=front, side_video=side))
+    assert practice.phase == "ready_to_judge"
     if waiting:
-        assert captured == []
+        practice.handle("start", now=2.0, session_ready=True)
+    commands = practice.handle("judge")
+    if waiting:
+        assert commands == []
         return
-    assert captured[0][0][0] == identity
-    captured[0][1]["on_saved"]({"id": "saved_id"})
-    assert app._student_feedback_record_id == "saved_id"
+    (command,) = commands
+    assert command.kind == "START_ANALYSIS"
+    assert command.payload["identity"] == identity
+    assert (command.payload["front"], command.payload["side"]) == (front, side)
+    practice.handle("analysis_saved", token=command.payload["token"],
+                    student_id="recorded_student", record={"id": "saved_id"})
+    assert practice.record_id == "saved_id"
 
 
 def test_corrupt_record_is_reported_without_deleting_unmanaged_files(tmp_path):
@@ -477,6 +491,41 @@ def test_1080p_30fps_analysis_keeps_every_frame(tmp_path):
     assert all(shape == (1080, 1920, 3) for shape, _ in seen)
     assert series["capture"]["sourceFps"] == 30 and series["capture"]["stride"] == 1
     assert series["capture"]["analyzedFrames"] == 12 and not series["valid_mask"].any()
+
+
+def test_real_tk_invalid_config_reports_analysis_not_started(tmp_path, monkeypatch):
+    """feedback_config.json 损坏：analyze_recording 报错并返回 False，修好后重试能真正启动。"""
+    import tkinter as tk
+    import apps.feedback_panel as panel
+    root = tk.Tk()
+    root.withdraw()
+    messages, busy = [], []
+    controls = panel.FeedbackControls(root, root=root, set_busy=busy.append, show_result=messages.append,
+                                      set_status=lambda _: None, can_analyze=lambda: True)
+    controls.store = FeedbackHistory(tmp_path / "history", renderers=practice_report_renderers())
+    controls.student_id.set("001")
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"mock")
+
+    def broken_config():
+        raise ValueError("feedback_config.json 格式错误")
+
+    try:
+        monkeypatch.setattr(panel, "load_feedback_config", broken_config)
+        assert controls.analyze_recording(controls.identity(), source, None) is False
+        assert messages == ["feedback_config.json 格式错误"] and busy == [] and not controls.busy
+        monkeypatch.undo()
+        monkeypatch.setattr(panel, "analyze_feedback", fake_analyzer)
+        assert controls.analyze_recording(controls.identity(), source, None) is True
+        assert busy == [True]
+        deadline = time.monotonic() + 5
+        while controls.busy and time.monotonic() < deadline:
+            root.update()
+            time.sleep(.01)
+        assert not controls.busy and busy == [True, False]
+    finally:
+        controls.close()
+        root.destroy()
 
 
 def test_real_tk_evidence_frames_and_model_choice(tmp_path, monkeypatch):
