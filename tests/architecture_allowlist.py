@@ -55,12 +55,9 @@ PRIMITIVES: dict[str, tuple[int, str]] = {
     'subsequence_dtw: analysis/calibrate_body_core.py': (1, 'P9'),
     'subsequence_dtw: analysis/offline_matching_profile.py': (2, 'P9'),
     'subsequence_dtw: scripts/match_segments_probe.py': (1, 'P9'),
-    'thread: apps/app_ui.py': (4, 'P8'),
+    'thread: apps/app_ui.py': (3, 'P8'),
     'thread: apps/feedback_panel.py': (1, 'P8'),
-    'tk_after: apps/app_ui.py': (15, 'P8'),
     'tk_after: apps/desktop_smoke.py': (2, 'P8'),
-    'tk_after: apps/exam_panel.py': (1, 'P8'),
-    'tk_after: apps/feedback_panel.py': (2, 'P8'),
     'video_capture: analysis/bench_annotate_fps.py': (4, 'P9'),
     'video_capture: analysis/spike_yolo_baseline.py': (2, 'P9'),
     'video_capture: core/qwen_coach.py': (1, 'P9'),  # D-12 未决：保留到 P9 按 D-12 处置
@@ -70,7 +67,7 @@ CLONES: dict[str, tuple[int, str]] = {}
 
 MODULE_SIZE: dict[str, tuple[int, str]] = {
     'analysis/bench_annotate_fps.py': (1018, 'P9'),
-    'apps/app_ui.py': (3528, 'P8'),
+    'apps/app_ui.py': (3501, 'P8'),
     'core/media/camera/pool.py': (1115, 'P9'),  # 原 apps/camera_warmup.py（1125），D-15：P9 按职责拆分
     'core/qwen_coach.py': (916, 'P9'),
 }
@@ -100,7 +97,7 @@ FUNCTION_SIZE: dict[str, tuple[int, str]] = {
 }
 
 DEFENSIVE_GETATTR: dict[str, tuple[int, str]] = {
-    'apps/app_ui.py': (44, 'P8'),
+    'apps/app_ui.py': (43, 'P8'),
 }
 
-ENTRY_CEILING = 41
+ENTRY_CEILING = 38

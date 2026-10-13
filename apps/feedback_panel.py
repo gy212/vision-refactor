@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from pathlib import Path
 from dataclasses import replace
-from queue import Empty, Queue
 import threading
 from tkinter import StringVar, Text, Toplevel, filedialog, messagebox, ttk
 
@@ -14,8 +13,9 @@ from core.reporting import practice_report_renderers
 
 
 class FeedbackControls:
-    def __init__(self, parent, *, root, set_busy, show_result, set_status, can_analyze, on_identity_changed=None, on_cancelled=None):
+    def __init__(self, parent, *, root, post, set_busy, show_result, set_status, can_analyze, on_identity_changed=None, on_cancelled=None):
         self.root = root
+        self.post = post  # UiDispatcher.post：分析线程只经它把结果交回 Tk 线程
         self.set_busy, self.show_result, self.set_status = set_busy, show_result, set_status
         self.can_analyze = can_analyze
         self.on_identity_changed = on_identity_changed
@@ -26,8 +26,6 @@ class FeedbackControls:
         self.closed = False
         self.active_token = None
         self.stop_event = threading.Event()
-        self.queue = Queue()
-        self.poll_id = None
         self.history_window = None
         self.student_id = StringVar(root, value="")
         self.student_name = StringVar(root, value="")
@@ -105,7 +103,7 @@ class FeedbackControls:
 
         def run():
             try:
-                self.queue.put((work(), None, token))
+                item = (work(), None)
             except Exception as exc:
                 if isinstance(exc, InterruptedError):
                     error = "分析已取消"
@@ -113,49 +111,34 @@ class FeedbackControls:
                     error = str(exc)
                 else:
                     error = "分析或保存失败，请检查MediaPipe模型、视频和保存目录后重试。"
-                self.queue.put((None, error, token))
-
-        def poll():
-            if self.closed:
-                return
-            try:
-                item = self.queue.get_nowait()
-                if len(item) == 3:
-                    record, error, task_token = item
-                else:
-                    record, error = item
-                    task_token = None
-            except Empty:
-                self.poll_id = self.root.after(100, poll)
-                return
-            self.poll_id = None
-            self.busy = False
-            self.set_busy(False)
-            self.cancel_button.configure(state="disabled")
-
-            if task_token is not None and task_token != self.active_token:
-                self.set_recording(False)
-                return
-            if self.stop_event.is_set():
-                self.set_recording(False)
-                return
-
-            if error:
-                self.set_status(error)
-                self.show_result(error)
-            else:
-                self.current = record
-                self.show_result(format_report(record))
-                self.set_status("问题说明已保存" + ("；部分证据不足，请重新录制" if record["result"]["needsRerecord"] else ""))
-                if on_saved:
-                    on_saved(record)
-            self.set_recording(False)
-            if self.history_window is not None and self.history_window.winfo_exists():
-                self.refresh_history()
+                item = (None, error)
+            self.post(lambda: self._finish(*item, token, on_saved))
 
         threading.Thread(target=run, name="student-action-feedback", daemon=True).start()
-        self.poll_id = self.root.after(100, poll)
         return True
+
+    def _finish(self, record, error, task_token, on_saved) -> None:
+        """Tk 线程：应用分析结果；面板已关、代次过期或已取消时只恢复控件。"""
+        if self.closed:
+            return
+        self.busy = False
+        self.set_busy(False)
+        self.cancel_button.configure(state="disabled")
+        if (task_token is not None and task_token != self.active_token) or self.stop_event.is_set():
+            self.set_recording(False)
+            return
+        if error:
+            self.set_status(error)
+            self.show_result(error)
+        else:
+            self.current = record
+            self.show_result(format_report(record))
+            self.set_status("问题说明已保存" + ("；部分证据不足，请重新录制" if record["result"]["needsRerecord"] else ""))
+            if on_saved:
+                on_saved(record)
+        self.set_recording(False)
+        if self.history_window is not None and self.history_window.winfo_exists():
+            self.refresh_history()
 
     def analyze_recording(self, identity, front, side, *, record_id=None, on_saved=None, token=None) -> bool:
         """发起后台分析；配置错误等同步失败时返回 False，调用方据此恢复可重试状态。"""
@@ -191,9 +174,6 @@ class FeedbackControls:
         self.closed = True
         self.active_token = None
         self.stop_event.set()
-        if self.poll_id is not None:
-            self.root.after_cancel(self.poll_id)
-            self.poll_id = None
 
     def import_video(self):
         try:

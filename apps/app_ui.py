@@ -7,6 +7,7 @@ import os
 import threading
 import time
 import traceback
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
@@ -87,6 +88,7 @@ from core import foundation
 from core.media import PRIMARY, SECONDARY, CameraService, CaptureSpec, ProcessCamera
 from core.media import CameraDevice as CameraEntry
 from apps.feedback_panel import FeedbackControls
+from apps.tk import ShutdownCoordinator, ShutdownSteps, UiDispatcher
 
 
 # Record_Toggle 三态按钮文本映射，供录制回调（任务 7.1/7.2/7.3）与 UI 重构（任务 9.x）复用。
@@ -136,9 +138,6 @@ def _choose_dual_preview_layout(
 
 # 关窗时给采集线程收尾并等待 H.264 转码的最长时间。等待拆成短 join 片段，
 # 避免 Tk 主线程在单次回调里长时间无响应。
-_CLOSE_JOIN_TIMEOUT_S = 3.0
-_CLOSE_JOIN_SLICE_S = 0.05
-_CLOSE_POLL_MS = 50
 _CAMERA_CANCEL_JOIN_TIMEOUT_S = 0.05
 _CAMERA_RELEASE_WAIT_S = 3.0
 # 普通模式的请求尺寸（各模式的采集格式由 core.workflows.modes 声明）
@@ -227,8 +226,10 @@ class CollapsibleSection:
 
 
 class CompareWindow:
-    def __init__(self, parent: Tk) -> None:
+    def __init__(self, parent: Tk, post: Callable[[Callable[[], object]], object]) -> None:
         self._win = Toplevel(parent)
+        # 后台线程只经 UiDispatcher 回到 Tk 线程；窗口已关时丢弃
+        self._post = lambda cb: post(lambda: self._win.winfo_exists() and cb())
         self._win.title("动作分析（模板比对）")
         self._win.geometry("720x860")
         self._win.minsize(640, 720)
@@ -549,20 +550,20 @@ class CompareWindow:
                 self.progress_bar["value"] = 0.0
                 self.progress_text_var.set(f"{stage}…")
 
-        self._win.after(0, _set)
+        self._post(_set)
 
     def _set_status(self, text: str) -> None:
-        self._win.after(0, lambda: self.status_var.set(text))
+        self._post(lambda: self.status_var.set(text))
 
     def _set_result(self, text: str) -> None:
-        self._win.after(0, lambda: self.result_var.set(text))
+        self._post(lambda: self.result_var.set(text))
 
     def _set_raw(self, text: str) -> None:
         def _set() -> None:
             self.raw_text.delete("1.0", "end")
             self.raw_text.insert("1.0", text)
 
-        self._win.after(0, _set)
+        self._post(_set)
 
     def _copy_raw(self) -> None:
         try:
@@ -580,7 +581,7 @@ class CompareWindow:
             if not running:
                 self._show_progress(False)
 
-        self._win.after(0, _set)
+        self._post(_set)
 
     def _gen_template(self) -> None:
         if self._worker and self._worker.is_alive():
@@ -617,7 +618,7 @@ class CompareWindow:
                     progress_cb=self._progress,
                     stop_evt=self._stop_evt,
                 )
-                self._win.after(0, lambda p=str(tpl_path): self._add_template_path(p))
+                self._post(lambda p=str(tpl_path): self._add_template_path(p))
                 template_meta = load_template(tpl_path, COMPARE).raw_meta
                 start_frame = int(template_meta.get("start_frame") or 0)
                 end_frame = int(template_meta.get("end_frame") or start_frame)
@@ -716,7 +717,7 @@ class CompareWindow:
                 if downgraded:
                     match_info += "\n说明：模板为 VIDEO 模式，已自动使用单线程以保证准确。"
 
-                self._win.after(0, lambda: self._update_score_display(actions, match_info))
+                self._post(lambda: self._update_score_display(actions, match_info))
                 self._set_raw(json.dumps(to_jsonable(payload), ensure_ascii=False, indent=2))
                 self._set_status("分析完成")
             except Exception as e:
@@ -766,8 +767,10 @@ class SettingsWindow:
     会在状态区提示自行解决网络问题（代理 / 加速等）。
     """
 
-    def __init__(self, parent: Tk, *, current_pose: str = "full", hands_enabled: bool = True) -> None:
+    def __init__(self, parent: Tk, post: Callable[[Callable[[], object]], object], *,
+                 current_pose: str = "full", hands_enabled: bool = True) -> None:
         self._win = Toplevel(parent)
+        self._post = lambda cb: post(lambda: self._win.winfo_exists() and cb())
         self._win.title("设置")
         self._win.geometry("560x560")
         self._win.minsize(520, 500)
@@ -931,7 +934,7 @@ class SettingsWindow:
         self.refresh_btn.configure(state=state)
 
     def _set_status(self, text: str) -> None:
-        self._win.after(0, lambda: self.status_var.set(text))
+        self._post(lambda: self.status_var.set(text))
 
     def _set_progress(self, downloaded: int, total: int | None) -> None:
         def _set() -> None:
@@ -947,7 +950,7 @@ class SettingsWindow:
                 self.progress_bar["value"] = 0.0
                 self.progress_text_var.set(f"{downloaded / 1024 / 1024:.1f} MB…")
 
-        self._win.after(0, _set)
+        self._post(_set)
 
     def _download(self, spec: "model_manager.ModelSpec") -> None:
         self._start_download([spec])
@@ -980,7 +983,7 @@ class SettingsWindow:
                             should_stop=self._stop_evt.is_set,
                         )
                         ok += 1
-                        self._win.after(0, self._refresh_states)
+                        self._post(self._refresh_states)
                     except InterruptedError:
                         self._set_status("下载已取消。")
                         return
@@ -989,8 +992,7 @@ class SettingsWindow:
                 if failed:
                     detail = "\n".join(f"- {name}: {err}" for name, err in failed)
                     self._set_status(f"完成 {ok} 个，{len(failed)} 个失败。")
-                    self._win.after(
-                        0,
+                    self._post(
                         lambda: messagebox.showerror(
                             "下载失败",
                             "以下模型下载失败（多为网络无法访问 Google 源，请配置代理后重试）：\n\n"
@@ -1001,8 +1003,8 @@ class SettingsWindow:
                 else:
                     self._set_status(f"全部完成，共下载 {ok} 个模型。")
             finally:
-                self._win.after(0, self._refresh_states)
-                self._win.after(0, lambda: self._set_buttons_enabled(True))
+                self._post(self._refresh_states)
+                self._post(lambda: self._set_buttons_enabled(True))
 
         self._worker = threading.Thread(target=_run, daemon=True)
         self._worker.start()
@@ -1080,8 +1082,8 @@ class App:
         )
 
         self._closing = False
-        self._close_deadline: float | None = None
-        self._close_prepare_worker: threading.Thread | None = None
+        self.ui = UiDispatcher(root)
+        self._shutdown: ShutdownCoordinator | None = None
         self._latest_compare_segment_id: str | None = None
         self._compare_update_queue: Queue[SegmentUpdate] = Queue()
         # 录制与录后处理：结束片段并提交处理计划在 RecordingService 的同一把锁内完成；
@@ -1113,7 +1115,6 @@ class App:
         self._preview_wh2: tuple[int, int] = (0, 0)
         self._compare_win: CompareWindow | None = None
         self._settings_win: SettingsWindow | None = None
-        self._settings_win: SettingsWindow | None = None
 
         # worker 关闭会话前转存尚未被 Tk tick 消费的单摄 writer 错误。
         self._pending_record_errors: list[str] = []
@@ -1123,7 +1124,8 @@ class App:
 
         self._build_ui()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
-        self._tick()
+        self.ui.every_tick(self._tick)
+        self.ui.start()
         # 启动时后台枚举可用摄像头（需求 1.1）。
         self._start_enumeration()
 
@@ -1358,7 +1360,7 @@ class App:
             wraplength=320,
         ).pack(anchor="w", pady=(6, 0))
         self.feedback_controls = FeedbackControls(
-            self._student_block, root=self.root,
+            self._student_block, root=self.root, post=self.ui.post,
             set_busy=self._set_feedback_busy,
             show_result=self._set_student_result_text,
             set_status=self.student_feedback_status,
@@ -1840,7 +1842,7 @@ class App:
         # 比对窗口创建失败时弹框并保持主窗口状态不变（需求 6.3）：
         # 不修改 self._compare_win（保留先前值/None），主窗口控件与录制状态均不受影响。
         try:
-            win = CompareWindow(self.root)
+            win = CompareWindow(self.root, self.ui.post)
         except Exception as e:
             messagebox.showerror("打开失败", f"动作比对窗口创建失败：{e}")
             return
@@ -1853,6 +1855,7 @@ class App:
         try:
             win = SettingsWindow(
                 self.root,
+                self.ui.post,
                 current_pose=self.pose_var.get(),
                 hands_enabled=bool(self.enable_hands_var.get()),
             )
@@ -3283,10 +3286,26 @@ class App:
                 self.status_var.set(f"运行中…（双摄首个标注帧 {elapsed_ms:.0f} ms）")
 
     def _on_close(self) -> None:
-        if self._closing:
-            return
-        # 1) 先中止考试、移交当前面板 scorebook 到 sinks（_closing 仍为 False，discard 可走）
-        #    root.destroy 不会触发面板 WM_DELETE_WINDOW，必须 prepare_for_app_close。
+        if self._shutdown is None:
+            self._shutdown = ShutdownCoordinator(self.root, self.ui, App._shutdown_steps(self))
+        self._shutdown.request()
+
+    def _shutdown_steps(self) -> ShutdownSteps:
+        return ShutdownSteps(
+            prepare_workflows=lambda: App._close_workflows(self),
+            stop_session=lambda: App._enter_closing(self),
+            extra_budget_s=lambda: App._close_extra_budget_s(self),
+            release=lambda: App._release_for_close(self),
+            wait_session_idle=self._live.wait_idle,
+            finalizer_idle=lambda: self._recording.finalizer.idle,
+            flush=lambda: App._flush_for_close(self),
+        )
+
+    def _close_workflows(self) -> None:
+        """关窗第 1 步：中止考试并移交面板台账，取消练习的等待与分析（仍未进入关闭态，discard 可走）。
+
+        root.destroy 不会触发面板 WM_DELETE_WINDOW，必须 prepare_for_app_close。
+        """
         panel = self.exam_panel
         if panel is not None:
             try:
@@ -3308,7 +3327,9 @@ class App:
         if announcer is not None:
             announcer.close()
             self._student_announcer = None
-        # 2) 再进入关闭态
+
+    def _enter_closing(self) -> None:
+        """关窗第 2 步：进入关闭态，取消会话，释放预热并禁用录制控件。"""
         self._closing = True
         self._live.stop(APP_CLOSE)
         self._dual_recording_ready = False
@@ -3327,87 +3348,40 @@ class App:
                     control.configure(state="disabled")
                 except Exception:
                     pass
-        # 考试裁剪、已移交台账（含刚移交的面板台账）的回填与落盘需要更长预算
+
+    def _close_extra_budget_s(self) -> float:
+        """考试裁剪、已移交台账（含刚移交的面板台账）的回填与落盘需要更长预算。"""
         scorebooks = self.exam_scorebooks
         extra = self._recording.finalizer.close_budget_s()
         if scorebooks.has_detached:
             extra = max(extra, 8.0)
         if scorebooks.has_processing:
             extra = max(extra, 12.0)
-        self._close_deadline = time.monotonic() + _CLOSE_JOIN_TIMEOUT_S + extra
+        return extra
 
-        def _prepare_close() -> None:
-            try:
-                # 考试 abort 已在 _closing 前 discard；此处只收尾仍在录的双摄片段，再取消后处理队列。
-                if bool(getattr(self, "_dual_active", False)):
-                    self._recording.finish()
-                self._recording.cancel_all()
-            finally:
-                service = getattr(self, "_camera_service", None)
-                if service is not None:
-                    try:
-                        # 关窗预算内等待采集进程真实退出；超时由诊断日志记录。
-                        service.close(_CAMERA_RELEASE_WAIT_S)
-                    except Exception:
-                        pass
+    def _release_for_close(self) -> None:
+        """关窗第 3–5 步（后台任务）：收尾仍在录的双摄片段、取消后处理队列、释放摄像头。"""
+        try:
+            # 考试 abort 已在进入关闭态前 discard；此处只收尾仍在录的双摄片段，再取消后处理队列。
+            if bool(getattr(self, "_dual_active", False)):
+                self._recording.finish()
+            self._recording.cancel_all()
+        finally:
+            service = getattr(self, "_camera_service", None)
+            if service is not None:
+                try:
+                    # 关窗预算内等待采集进程真实退出；超时由诊断日志记录。
+                    service.close(_CAMERA_RELEASE_WAIT_S)
+                except Exception:
+                    pass
 
-        self._close_prepare_worker = threading.Thread(
-            target=_prepare_close,
-            name="app-close-prepare",
-            daemon=True,
-        )
-        self._close_prepare_worker.start()
-        self._poll_close_workers()
-
-    def _poll_close_workers(self) -> None:
-        """分片等待关窗准备与会话线程、等待录后处理空闲；全部结束或到达期限后销毁 Tk 窗口。"""
-        deadline = self._close_deadline or time.monotonic()
-        remaining = deadline - time.monotonic()
-        close_prepare_worker = getattr(self, "_close_prepare_worker", None)
-        current = threading.current_thread()
-        if (
-            close_prepare_worker is not None
-            and close_prepare_worker is not current
-            and close_prepare_worker.is_alive()
-            and remaining > 0.0
-        ):
-            close_prepare_worker.join(
-                timeout=min(_CLOSE_JOIN_SLICE_S, remaining)
-            )
-
-        remaining = deadline - time.monotonic()
-        if remaining > 0.0:
-            self._live.wait_idle(min(_CLOSE_JOIN_SLICE_S, remaining))
-
-        close_prepare_alive = bool(
-            close_prepare_worker is not None and close_prepare_worker.is_alive()
-        )
-        # 会话线程收尾时会提交最后的片段；决定销毁前重新查看 finalizer 是否空闲。
-        session_alive = not self._live.wait_idle(0)
-        finalizer_busy = not self._recording.finalizer.idle
-
-        if (
-            close_prepare_alive
-            or session_alive
-            or finalizer_busy
-        ) and time.monotonic() < deadline:
-            try:
-                self.root.after(_CLOSE_POLL_MS, self._poll_close_workers)
-            except (TclError, RuntimeError):
-                pass
-            return
-
-        # 最后一轮消费比对更新，并把所有考试台账落盘关闭
+    def _flush_for_close(self) -> None:
+        """关窗第 6 步：最后一轮消费比对更新，并把所有考试台账落盘关闭。"""
         try:
             App._drain_recording_compare_updates(self)
         except Exception:
             pass
         self.exam_scorebooks.close_all()
-
-        try:
-            self.root.destroy()
-        except (TclError, RuntimeError):
-            pass
 
     def _tick(self) -> None:
         self._drain_recording_compare_updates()
@@ -3417,7 +3391,6 @@ class App:
         # 录制状态刷新必须每 tick 执行，与是否有新帧无关（需求 5.9/5.10/5.11）。
         self._refresh_recording_status()
         self._render_preview()
-        self.root.after(16, self._tick)
 
 
 def _model_installed(key: str) -> bool:

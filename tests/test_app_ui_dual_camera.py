@@ -599,7 +599,6 @@ def test_tick_renders_dual_frame_atomically_with_status_once_per_stage(monkeypat
     assert app.status_var.get().startswith("双摄画面已显示")
     assert app.status_var.get().endswith("，模型加载中…")
     assert store.wait_rendered(0)
-    assert len(app.root.after_calls) == 1
 
     app.status_var.set("运行中…")
     store.publish("raw", {app_ui.PRIMARY: frame, app_ui.SECONDARY: frame}, {app_ui.PRIMARY: "again"})

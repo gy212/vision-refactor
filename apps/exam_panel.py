@@ -2,7 +2,7 @@
 """Tk 考试面板：名单、ROI、开考控制与成绩表；叫号状态机与命令执行在 ``core.workflows``。
 
 面板只经 App 的公共接口（``exam_ports``、``exam_preflight``、``set_exam_mode``、``lock_manual_record``、
-``workflows``、``exam_scorebooks``）工作，命令由 ``CommandExecutor`` 映射到端口执行。面板本身实现
+``workflows``、``exam_scorebooks``、``ui``）工作，命令由 ``CommandExecutor`` 映射到端口执行。面板本身实现
 ``WorkflowUi``：状态文字、成绩表刷新与阶段显示。
 """
 
@@ -183,10 +183,8 @@ class ExamPanel:
         )
 
     def _on_announce_text(self, text: str) -> None:
-        try:
-            self.win.after(0, lambda: self.announce_var.set(f"播报：{text}"))
-        except Exception:
-            pass
+        """播报线程回调：经 App 的 UiDispatcher 回到 Tk 线程更新文字。"""
+        self.app.ui.post(lambda: self.win.winfo_exists() and self.announce_var.set(f"播报：{text}"))
 
     def _download_template(self) -> None:
         path = filedialog.asksaveasfilename(

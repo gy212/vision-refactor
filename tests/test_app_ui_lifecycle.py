@@ -12,6 +12,7 @@ import numpy as np
 import pytest
 
 from apps import app_ui
+from apps.tk import UiDispatcher, shutdown
 from core.live import LiveControls, SessionEvent, SessionOutcome
 from core.media import CameraService, CameraWarmupError, CameraWarmupStopped, CatalogSnapshot
 from core.recording import (
@@ -208,8 +209,14 @@ def _closing_app(finalizer=None):
         finalizer or _FinalizerDouble(), plan_for=lambda _segment: None
     )
     app._closing = False
-    app._close_deadline = None
+    return _attach_close(app)
+
+
+def _attach_close(app):
+    """给替身接上关窗所需的根窗口（after 只记录不执行）与 UiDispatcher。"""
     app.root = _QueuedRoot()
+    app.ui = UiDispatcher(app.root)
+    app._shutdown = None
     return app
 
 
@@ -592,9 +599,9 @@ def test_close_permanently_closes_dual_camera_warmup_pool():
     app._camera_service = CameraService(pool=pool)
 
     app_ui.App._on_close(app)
-    app._close_prepare_worker.join(timeout=1.0)
+    app._shutdown.join_release(timeout=1.0)
 
-    assert not app._close_prepare_worker.is_alive()
+    assert not app._shutdown.releasing
     assert pool.close_calls == 1
 
 
@@ -642,15 +649,15 @@ def test_close_poll_window_disables_recording_controls_and_rejects_toggle():
     try:
         app_ui.App._on_close(app)
 
-        assert app._close_prepare_worker.is_alive()
-        assert app.root.after_calls[0][0] == app_ui._CLOSE_POLL_MS
+        assert app._shutdown.releasing
+        assert app.root.after_calls[0][0] == shutdown.POLL_MS
         assert all(control.config["state"] == "disabled" for control in controls.values())
         app_ui.App._on_record_toggle(app)
     finally:
         release_prepare.set()
-        app._close_prepare_worker.join(2.0)
+        app._shutdown.join_release(2.0)
 
-    assert not app._close_prepare_worker.is_alive()
+    assert not app._shutdown.releasing
 
 
 # ---------------------------------------------------------------- 录制服务（P4：RecordingService + SegmentFinalizer）
@@ -772,12 +779,12 @@ def test_close_waits_for_single_camera_transcode_without_blocking_tk_loop(monkey
 
     assert app._live.stops == [app_ui.APP_CLOSE]
     assert app.root.destroy_calls == 0
-    assert app.root.after_calls[0][0] == app_ui._CLOSE_POLL_MS
+    assert app.root.after_calls[0][0] == shutdown.POLL_MS
 
     # 关窗的 cancel_all 不取消 finish_on_close 的单摄转码
     finish.set()
     assert app._recording.finalizer.wait_idle(2.0)
-    app._close_prepare_worker.join(1.0)
+    app._shutdown.join_release(1.0)
     _delay, poll = app.root.after_calls.pop(0)
     poll()
     assert app.root.destroy_calls == 1
@@ -793,11 +800,11 @@ def test_close_destroys_window_after_bounded_deadline(monkeypatch):
     monkeypatch.setattr(app_ui.time, "monotonic", lambda: clock[0])
 
     app_ui.App._on_close(app)
-    app._close_prepare_worker.join(1.0)
+    app._shutdown.join_release(1.0)
     assert app.root.destroy_calls == 0
-    assert app._live.waits == [app_ui._CLOSE_JOIN_SLICE_S, 0]
+    assert app._live.waits == [shutdown.JOIN_SLICE_S, 0]
 
-    clock[0] = app_ui._CLOSE_JOIN_TIMEOUT_S + 0.1
+    clock[0] = shutdown.JOIN_TIMEOUT_S + 0.1
     _delay, poll = app.root.after_calls.pop(0)
     poll()
     assert app.root.destroy_calls == 1
@@ -819,11 +826,11 @@ def test_close_waits_for_transcode_submitted_by_capture_finally(monkeypatch, tmp
     # 采集线程 finally 在关窗后才提交单摄片段：finish_on_close 仍被接受，poll 必须等它
     assert entered.wait(timeout=1.0)
     assert app.root.destroy_calls == 0
-    assert app.root.after_calls[0][0] == app_ui._CLOSE_POLL_MS
+    assert app.root.after_calls[0][0] == shutdown.POLL_MS
 
     finish.set()
     assert app._recording.finalizer.wait_idle(2.0)
-    app._close_prepare_worker.join(1.0)
+    app._shutdown.join_release(1.0)
     _delay, poll = app.root.after_calls.pop(0)
     poll()
     assert app.root.destroy_calls == 1
@@ -833,13 +840,13 @@ def test_close_poll_waits_for_finalizer_idle(monkeypatch):
     finalizer = _FinalizerDouble()
     finalizer.busy = True
     app = _closing_app(finalizer)
-    app._close_deadline = app_ui._CLOSE_JOIN_TIMEOUT_S
     monkeypatch.setattr(app_ui.time, "monotonic", lambda: 0.0)
 
-    app_ui.App._poll_close_workers(app)
+    app_ui.App._on_close(app)
+    assert app._shutdown.join_release(1.0)
 
     assert app.root.destroy_calls == 0
-    assert app.root.after_calls[0][0] == app_ui._CLOSE_POLL_MS
+    assert app.root.after_calls[0][0] == shutdown.POLL_MS
 
     finalizer.busy = False
     _delay, poll = app.root.after_calls.pop(0)
@@ -852,11 +859,19 @@ def test_close_poll_closes_scorebooks_after_deadline_even_if_finalizer_busy(monk
     finalizer.busy = True
     app = _closing_app(finalizer)
     closed: list[bool] = []
-    app.exam_scorebooks = SimpleNamespace(close_all=lambda: closed.append(True))
-    app._close_deadline = 1.0
-    monkeypatch.setattr(app_ui.time, "monotonic", lambda: 2.0)
+    app.exam_scorebooks = SimpleNamespace(
+        close_all=lambda: closed.append(True), has_detached=False, has_processing=False,
+    )
+    clock = [0.0]
+    monkeypatch.setattr(app_ui.time, "monotonic", lambda: clock[0])
 
-    app_ui.App._poll_close_workers(app)
+    app_ui.App._on_close(app)
+    assert app._shutdown.join_release(1.0)
+    assert closed == [] and app.root.destroy_calls == 0
+
+    clock[0] = shutdown.JOIN_TIMEOUT_S + 1.0
+    _delay, poll = app.root.after_calls.pop(0)
+    poll()
 
     assert closed == [True]
     assert app.root.destroy_calls == 1
@@ -1332,11 +1347,10 @@ def test_submit_callback_sees_segment_as_latest_before_submit_returns(tmp_path):
 
 def test_close_finalizes_current_dual_segment_then_cancels_postprocessor(tmp_path):
     app, finalizer, _segment_dir = _dual_submission_app(tmp_path)
-    app._poll_close_workers = lambda: None
-    app._close_deadline = None
+    _attach_close(app)
 
     app_ui.App._on_close(app)
-    app._close_prepare_worker.join(1.0)
+    app._shutdown.join_release(1.0)
 
     assert app._closing is True
     assert app._live.stops == [app_ui.APP_CLOSE]
@@ -1346,8 +1360,7 @@ def test_close_finalizes_current_dual_segment_then_cancels_postprocessor(tmp_pat
 
 def test_close_returns_while_inflight_finalize_finishes_before_cancelling(tmp_path):
     app, finalizer, _segment_dir = _dual_submission_app(tmp_path)
-    app._poll_close_workers = lambda: None
-    app._close_deadline = None
+    _attach_close(app)
     submit_started = threading.Event()
     release_submit = threading.Event()
     original_submit = finalizer.submit
@@ -1375,14 +1388,14 @@ def test_close_returns_while_inflight_finalize_finishes_before_cancelling(tmp_pa
 
     # 结束+提交与 cancel_all 在同一把锁里串行：提交返回前不取消
     assert finalizer.cancel_calls == 0
-    assert app._close_deadline is not None
-    assert app._close_prepare_worker.is_alive()
+    assert app._shutdown.deadline is not None
+    assert app._shutdown.releasing
     release_submit.set()
     finalize_thread.join(2.0)
-    app._close_prepare_worker.join(2.0)
+    app._shutdown.join_release(2.0)
 
     assert not finalize_thread.is_alive()
-    assert not app._close_prepare_worker.is_alive()
+    assert not app._shutdown.releasing
     assert errors == []
     assert len(finalizer.jobs) == 1
     assert finalizer.cancel_calls == 1
@@ -1390,8 +1403,7 @@ def test_close_returns_while_inflight_finalize_finishes_before_cancelling(tmp_pa
 
 def test_close_deadline_is_set_before_blocking_cancel_work(tmp_path):
     app, finalizer, _segment_dir = _dual_submission_app(tmp_path)
-    app._poll_close_workers = lambda: None
-    app._close_deadline = None
+    _attach_close(app)
     cancel_started = threading.Event()
     release_cancel = threading.Event()
     original_cancel = finalizer.cancel_all
@@ -1405,12 +1417,12 @@ def test_close_deadline_is_set_before_blocking_cancel_work(tmp_path):
 
     app_ui.App._on_close(app)
 
-    assert app._close_deadline is not None
+    assert app._shutdown.deadline is not None
     assert cancel_started.wait(1.0)
-    assert app._close_prepare_worker.is_alive()
+    assert app._shutdown.releasing
     release_cancel.set()
-    app._close_prepare_worker.join(2.0)
-    assert not app._close_prepare_worker.is_alive()
+    app._shutdown.join_release(2.0)
+    assert not app._shutdown.releasing
 
 
 def test_recording_status_refresh_returns_without_recording_locks_during_close(tmp_path):

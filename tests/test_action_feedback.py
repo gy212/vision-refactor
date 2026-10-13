@@ -17,6 +17,15 @@ from core.reporting import practice_report_renderers
 from core.feedback_history import FeedbackHistory, validate_identity
 
 
+def _pumped(root):
+    """真实 Tk 根上启动 UiDispatcher，返回其 ``post``；``root.update()`` 时排空。"""
+    from apps.tk import UiDispatcher
+
+    dispatcher = UiDispatcher(root)
+    dispatcher.start()
+    return dispatcher.post
+
+
 def pose_series(n=32):
     lm = np.zeros((n, 33, 4), dtype=np.float32)
     lm[:, :, 3] = 1
@@ -303,7 +312,7 @@ def test_real_tk_panel_background_analysis_history_and_identity_switch(tmp_path)
     root.withdraw()
     messages, statuses = [], []
     busy = []
-    controls = FeedbackControls(root, root=root, set_busy=busy.append, show_result=messages.append,
+    controls = FeedbackControls(root, root=root, post=_pumped(root), set_busy=busy.append, show_result=messages.append,
                                 set_status=statuses.append, can_analyze=lambda: True)
     controls.store = FeedbackHistory(tmp_path / "history", renderers=practice_report_renderers())
     controls.student_id.set("001")
@@ -500,7 +509,7 @@ def test_real_tk_invalid_config_reports_analysis_not_started(tmp_path, monkeypat
     root = tk.Tk()
     root.withdraw()
     messages, busy = [], []
-    controls = panel.FeedbackControls(root, root=root, set_busy=busy.append, show_result=messages.append,
+    controls = panel.FeedbackControls(root, root=root, post=_pumped(root), set_busy=busy.append, show_result=messages.append,
                                       set_status=lambda _: None, can_analyze=lambda: True)
     controls.store = FeedbackHistory(tmp_path / "history", renderers=practice_report_renderers())
     controls.student_id.set("001")
@@ -533,7 +542,7 @@ def test_real_tk_evidence_frames_and_model_choice(tmp_path, monkeypatch):
     import apps.feedback_panel as panel
     root = tk.Tk()
     root.withdraw()
-    controls = panel.FeedbackControls(root, root=root, set_busy=lambda _: None, show_result=lambda _: None,
+    controls = panel.FeedbackControls(root, root=root, post=_pumped(root), set_busy=lambda _: None, show_result=lambda _: None,
                                       set_status=lambda _: None, can_analyze=lambda: True)
     controls.store = FeedbackHistory(tmp_path / "history", renderers=practice_report_renderers())
     controls.student_id.set("evidence-test")

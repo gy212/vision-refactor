@@ -42,6 +42,15 @@ from core.workflows import (
 )
 
 
+def _pumped(root):
+    """真实 Tk 根上启动 UiDispatcher，返回其 ``post``；``root.update()`` 时排空。"""
+    from apps.tk import UiDispatcher
+
+    dispatcher = UiDispatcher(root)
+    dispatcher.start()
+    return dispatcher.post
+
+
 # ---------------------------------------------------------------------------
 # Test Helpers & Fixtures
 # ---------------------------------------------------------------------------
@@ -244,7 +253,7 @@ def test_worker_completion_after_cancellation_feedback_panel_integration():
     panel = None
     try:
         show_result = Mock()
-        panel = FeedbackControls(root, root=root, set_busy=lambda _busy: None, show_result=show_result,
+        panel = FeedbackControls(root, root=root, post=_pumped(root), set_busy=lambda _busy: None, show_result=show_result,
                                  set_status=lambda _text: None, can_analyze=lambda: True)
         on_saved_mock = Mock()
         finish = threading.Event()
@@ -582,7 +591,8 @@ def test_camera_loop_150_ticks_in_result_view():
             # 断言预览槽已被及时取走，无积压
             assert store.take_newer(0) is None, f"Preview not drained at tick {tick_idx}"
 
-        assert tick_after_calls == TICKS_COUNT
+        # 逐帧节奏由 UiDispatcher 调度，_tick 自身不再登记 after
+        assert tick_after_calls == 0
         assert app.actions_var.get() == f"Action Tick {TICKS_COUNT - 1}"
 
         # 4. 从结果页切换回录制预览（点击“再练一次”行为）
