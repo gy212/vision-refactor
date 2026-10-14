@@ -410,6 +410,34 @@ def test_practice_again_does_not_autostart_recording(root, monkeypatch):
     app.window.preview.frame.grid.assert_called_once()
 
 
+def _buttons_with_text(widget, text):
+    found = [widget] if isinstance(widget, tk.Button) and text in str(widget.cget("text")) else []
+    for child in widget.winfo_children():
+        found.extend(_buttons_with_text(child, text))
+    return found
+
+
+def test_assembled_result_page_returns_to_preview_without_resetting_segment(root):
+    """组装后的主窗口结果页有「返回录制预览」按钮；点击只切回预览，保留当前片段，仍可再次评判。"""
+    app = practice_app(root)
+    session = app.practice.practice
+    session.segment = PracticeSegment("record_0", None, ready=True, terminal=True)
+    session.segment.front = "front.mp4"
+    session.segment.side = "side.mp4"
+    session.phase = "showing_result"
+    app.window.result_panel.set_record = Mock()   # 只验证导航，不渲染记录
+    app.practice.show_result_view({"id": "rec1"})
+
+    buttons = _buttons_with_text(app.window.result_panel, "返回录制预览")
+    assert len(buttons) == 1
+    buttons[0].invoke()
+
+    assert not app.window.result_panel.grid_info()
+    assert app.window.left_container.grid_info() and app.window.preview.frame.grid_info()
+    assert session.segment.ready and session.segment.front == "front.mp4" and session.segment.side == "side.mp4"
+    assert session.can_judge
+
+
 # ===========================================================================
 # 6. Result Panel 交互功能自动化测试
 # ===========================================================================

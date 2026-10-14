@@ -97,7 +97,8 @@ class DesktopApp:
                                  choose_dir=recording.choose_record_dir)
         recording.sync_template_status()
         recording.sync_hint()
-        window.connect(compare=self.open_compare, exam=self.exam.open, practice=practice.enter)
+        window.connect(compare=self.open_compare, exam=self.exam.open, practice=practice.enter,
+                       back_to_preview=practice.show_preview_view)
         window.practice.connect(exit=practice.exit, start=practice.start, end=practice.end, judge=practice.judge,
                                 set_busy=practice.analysis_busy, can_analyze=practice.can_analyze,
                                 identity_changed=practice.identity_changed, cancelled=practice.cancelled)

@@ -1,3 +1,13 @@
+## 2026-10-14（America/Los_Angeles）: [fix] P8 评审修复：练习结果页恢复「返回录制预览」按钮
+
+- 问题描述：PR #19 评审一项 P2。旧 `App._build_ui()` 构造结果页时传入 `on_switch_to_preview=self._show_student_preview_view`，结果页顶栏有「📹 返回录制预览」按钮；P8 的 `MainWindow` 构造 `FeedbackResultPanel` 时没传这个回调，组装后的主窗口里按钮消失。剩下的「再练一次」会派发 `practice_again`，清空当前片段的 `ready`/`front`/`side`，回到预览后不能再评判同一片段（例如换了分析模型想重判）。
+- 修改内容：
+  - `apps/tk/views/main_window.py`：构造结果页时传入 `on_switch_to_preview`，转发到 `connect(back_to_preview=…)` 注入的处理函数（注入前默认只切视图）。
+  - `apps/tk/app.py`：`_connect` 注入 `practice.show_preview_view`：只切回预览并把主状态设为练习模式，不派发工作流事件，与旧 `_show_student_preview_view` 一致。
+- 验证方法：
+  - 新增 `tests/test_feedback_result_panel.py::test_assembled_result_page_returns_to_preview_without_resetting_segment`：在真实隐藏 Tk 窗口上组装应用，断言结果页恰有一个按钮；点击后回到预览，片段 `ready`/`front`/`side` 保留、`can_judge` 仍为 True。去掉修复时该用例失败。
+  - 全量 `-m pytest tests -q`：1225 passed（含门禁与架构测试）；`scripts/sim_exam_flow.py`：37 passed、SIMULATION_OK；`git -c core.whitespace=cr-at-eol diff --check` 无空白错误。
+
 ## 2026-10-14（America/Los_Angeles）: [refactor] P8 Tk 拆分：App 拆成 apps/tk 的组合根、控制器与视图，UiDispatcher 与 ShutdownCoordinator，结果页与 HTML 报告模板化
 
 - 问题描述：`apps/app_ui.py` 的 `App` 有 2660 行（P8 开工时；2026-10-03 统计 4855 行、135 个方法），界面、会话、录制、摄像头、考试与练习编排混在一个类里；App `_tick`、`ExamPanel._panel_tick`、`FeedbackControls` 三个轮询循环，以及比对、设置窗口与 `_post_*` 系列从后台线程直接调 `after(0, …)`（Tkinter 不保证跨线程安全）；关窗收尾 `_on_close`/`_poll_close_workers` 共 200 余行；结果页 `FeedbackResultPanel` 1257 行，`render_html_report` 内联 517 行 HTML；测试用 `App.__new__`/`SimpleNamespace` 拼半成品对象 48 处。

@@ -67,7 +67,10 @@ class MainWindow:
 
         self.preview = PreviewSurface(outer)
         self.preview.frame.grid(row=0, column=1, sticky="nsew")
-        self.result_panel = FeedbackResultPanel(outer, history_root=history_root)
+        # 「返回录制预览」只切视图、不重置片段；处理函数在 connect 时注入
+        self._back_to_preview: Callable[[], None] = self.show_preview_page
+        self.result_panel = FeedbackResultPanel(outer, history_root=history_root,
+                                                on_switch_to_preview=lambda: self._back_to_preview())
         self.result_panel.grid_remove()
 
     def _build_scroll_area(self, outer: Any) -> Any:
@@ -94,7 +97,8 @@ class MainWindow:
         return inner
 
     def connect(self, *, compare: Callable[[], None], exam: Callable[[], None],
-                practice: Callable[[], None]) -> None:
+                practice: Callable[[], None], back_to_preview: Callable[[], None]) -> None:
+        self._back_to_preview = back_to_preview
         self.compare_btn.configure(command=compare)
         self.exam_btn.configure(command=exam)
         self.student_practice_btn.configure(command=practice)
