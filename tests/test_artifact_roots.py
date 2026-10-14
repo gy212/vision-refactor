@@ -85,7 +85,8 @@ _FORBIDDEN = (
 def test_no_scattered_parent_literals_in_edited_files():
     root = paths.repo_root()
     offenders: list[str] = []
-    for rel in _EDITED_FILES:
+    tk_files = sorted(p.relative_to(root).as_posix() for p in (root / "apps" / "tk").rglob("*.py"))
+    for rel in (*_EDITED_FILES, *tk_files):
         text = (root / rel).read_text(encoding="utf-8")
         for needle in _FORBIDDEN:
             if needle in text:

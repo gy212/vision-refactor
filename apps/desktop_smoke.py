@@ -89,7 +89,7 @@ def check_feedback_icons(root: Path) -> int:
 def _check_camera_mode_switch(app, root):
     """Exercise real Tk callbacks, pool, spawn and claim with simulated devices."""
     from unittest.mock import patch
-    from apps.app_ui import NO_SECOND_CAMERA
+    from apps.tk.views.capture_panel import NO_SECOND_CAMERA
     from core.media import PRIMARY, SECONDARY, CaptureSpec, ProcessCamera
     from core.media import CameraDevice as CameraEntry
 
@@ -114,67 +114,67 @@ def _check_camera_mode_switch(app, root):
             raise errors[0]
 
     def stopped():
-        return app._session_finished()
+        return app.session.finished()
 
     def ready():
-        return app._dual_recording_ready and bool(app._recording.session_sizes)
+        return app.flags.recording_ready and bool(app.recording.service.session_sizes)
 
     def capture(index, **kwargs):
         return ProcessCamera(index, _factory=_CameraSmokePreview, **kwargs)
 
-    with patch("apps.app_ui.ProcessCamera", side_effect=capture):
+    with patch("apps.tk.controllers.cameras.ProcessCamera", side_effect=capture):
         try:
-            app.record_skeleton_var.set(False)
-            app.auto_compare_var.set(False)
-            app._preferred_primary_camera_index = 0
-            app._preferred_secondary_camera_index = 1
-            app._apply_camera_entries([CameraEntry("摄像头 0", 0), CameraEntry("摄像头 1", 1)], True)
-            app.feedback_controls.student_id.set("offline-switch")
-            service = app._camera_service
+            app.window.recording.record_skeleton_var.set(False)
+            app.window.recording.auto_compare_var.set(False)
+            app.cameras.preferred_primary = 0
+            app.cameras.preferred_secondary = 1
+            app.cameras.apply_entries([CameraEntry("摄像头 0", 0), CameraEntry("摄像头 1", 1)], True)
+            app.window.practice.controls.student_id.set("offline-switch")
+            service = app.cameras.service
             preview = {PRIMARY: CaptureSpec(0, 1280, 720), SECONDARY: CaptureSpec(1, 1280, 720)}
 
             def preview_warm():
                 # 会话结束后设备交回池（V-1）或重新预热，720p 预览帧可用。
                 return service.open_stream(preview).snapshot() is not None
             for _ in range(2):
-                app._start()
+                app.session.start()
                 pump_until(ready)
-                assert app._recording.session_sizes == {"front": (1280, 720), "side": (1280, 720)}
-                app._stop()
+                assert app.recording.service.session_sizes == {"front": (1280, 720), "side": (1280, 720)}
+                app.session.stop()
                 pump_until(stopped)
                 pump_until(preview_warm)
                 # 已有 720p 预热时进入学生练习：池按 1080p 重新协商，旧格式不混入会话。
-                app._enter_student_practice()
-                app._on_practice_start()
-                pump_until(lambda: ready() and app._practice.phase == "waiting_enter")
-                assert app._recording.session_sizes == {"front": (1920, 1080), "side": (1920, 1080)}
-                assert app._recording.state == "idle"  # Blank frames cannot start a recording.
-                app._exit_student_practice()
+                app.practice.enter()
+                app.practice.start()
+                pump_until(lambda: ready() and app.practice.practice.phase == "waiting_enter")
+                assert app.recording.service.session_sizes == {"front": (1920, 1080), "side": (1920, 1080)}
+                assert app.recording.state == "idle"  # Blank frames cannot start a recording.
+                app.practice.exit()
                 pump_until(stopped)
                 pump_until(preview_warm)
             # 开始后立即停止，再开始：无迟到打开，第二次会话正常就绪。
-            app._start()
-            app._stop()
+            app.session.start()
+            app.session.stop()
             pump_until(stopped)
-            app._start()
+            app.session.start()
             pump_until(ready)
-            app._stop()
+            app.session.stop()
             pump_until(stopped)
             # 双摄 → 单摄：第二路不再保留设备，单摄会话按 720p 就绪。
-            app.camera_choice_var_2.set(NO_SECOND_CAMERA)
-            app._on_camera_2_selected()
+            app.window.capture.camera_choice_2.set(NO_SECOND_CAMERA)
+            app.cameras.secondary_selected()
             pump_until(lambda: not service.device_busy(1))
-            app._start()
-            pump_until(lambda: app._recording.session_sizes == {"front": (1280, 720)})
-            app._stop()
+            app.session.start()
+            pump_until(lambda: app.recording.service.session_sizes == {"front": (1280, 720)})
+            app.session.stop()
             pump_until(stopped)
         finally:
-            if app._session_active():
-                app._stop()
+            if app.session.active():
+                app.session.stop()
                 pump_until(stopped)
-            app._release_camera_warmups()
+            app.cameras.release_warmups()
             # 关窗前所有采集进程都必须真实退出，不遗留占用设备的子进程。
-            assert app._camera_service.close(5.0)
+            assert app.cameras.service.close(5.0)
 
 
 def run(report_path: Path) -> int:
@@ -292,21 +292,21 @@ def run(report_path: Path) -> int:
                 report["checks"].append("camera_spawn_error_cleanup_and_reopen")
 
                 from tkinter import Tk
-                from apps.app_ui import App
+                from apps.tk.app import DesktopApp
                 from unittest.mock import patch
                 root = Tk()
                 root.withdraw()
-                with patch.object(App, "_start_enumeration"):
-                    app = App(root)
+                with patch("apps.tk.controllers.cameras.CameraController.start_enumeration"):
+                    app = DesktopApp(root)
                 root.update()
                 _check_camera_mode_switch(app, root)
                 report["checks"].append("tk_preview_student_1080p_switch_twice_with_spawn")
-                app._enter_student_practice()
+                app.practice.enter()
                 root.update()
                 assert app.modes.is_active("practice")
-                assert app.feedback_controls.analysis_model.get() == "Full（精细分析）"
+                assert app.window.practice.controls.analysis_model.get() == "Full（精细分析）"
                 report["checks"].append("tk_student_practice_ui")
-                app._on_close()
+                app.close()
                 root = None
                 report["ok"] = True
     except Exception:

@@ -41,6 +41,7 @@ class UiDispatcher:
         self._closing = False
         self._destroyed = False
         self._started = False
+        self._after_id: Any = None
 
     @property
     def closing(self) -> bool:
@@ -98,10 +99,16 @@ class UiDispatcher:
             self._destroyed = True
             self._queue.clear()
         self._ticks.clear()
+        cancel = getattr(self._root, "after_cancel", None)
+        if self._after_id is not None and cancel is not None:
+            try:
+                cancel(self._after_id)   # 不留下指向已销毁窗口的排空回调
+            except (TclError, RuntimeError):
+                pass
 
     def _schedule(self) -> None:
         try:
-            self._root.after(self._interval_ms, self._loop)
+            self._after_id = self._root.after(self._interval_ms, self._loop)
         except (TclError, RuntimeError):  # 窗口已销毁
             pass
 

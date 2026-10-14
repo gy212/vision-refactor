@@ -53,13 +53,15 @@ def test_plan_docs_do_not_recommend_ui_yolo_controls():
         assert legacy not in combined, f"计划文档仍保留会误导实现 UI YOLO 的旧表述：{legacy}"
 
 
-def test_app_ui_keeps_mediapipe_only_ui_surface():
-    source = APP_UI.read_text(encoding="utf-8")
-    tree = ast.parse(source)
+TK_SOURCES = (APP_UI, *sorted((_REPO_ROOT / "apps" / "tk").rglob("*.py")))
 
+
+def test_app_ui_keeps_mediapipe_only_ui_surface():
+    """Tk 桌面（入口壳与 apps/tk/ 下的组合根、控制器、视图）不出现 YOLO 后端选择与不完整评分提示。"""
     import_names: list[str] = []
     string_literals: list[str] = []
-    for node in ast.walk(tree):
+    nodes = [node for path in TK_SOURCES for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))]
+    for node in nodes:
         if isinstance(node, ast.ImportFrom):
             module = node.module or ""
             import_names.append(module)
