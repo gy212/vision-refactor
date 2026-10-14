@@ -183,7 +183,7 @@ def test_process_pair_survives_warmup_thread_handoff_and_reopens():
 
 def test_tk_preview_student_switch_with_process_cameras(monkeypatch, tmp_path):
     tk = pytest.importorskip("tkinter")
-    from apps import desktop_smoke
+    from apps.tk import self_check
     from apps.tk import app as tk_app
     from apps.tk.controllers import cameras, recording
     from core.foundation import paths
@@ -200,7 +200,7 @@ def test_tk_preview_student_switch_with_process_cameras(monkeypatch, tmp_path):
     try:
         app = tk_app.DesktopApp(root)
         root.update()
-        desktop_smoke._check_camera_mode_switch(app, root)
+        self_check.check_camera_mode_switch(app, root)
     finally:
         if app is not None:
             app.close()

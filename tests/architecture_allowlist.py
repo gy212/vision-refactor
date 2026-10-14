@@ -55,7 +55,6 @@ PRIMITIVES: dict[str, tuple[int, str]] = {
     'subsequence_dtw: analysis/calibrate_body_core.py': (1, 'P9'),
     'subsequence_dtw: analysis/offline_matching_profile.py': (2, 'P9'),
     'subsequence_dtw: scripts/match_segments_probe.py': (1, 'P9'),
-    'tk_after: apps/desktop_smoke.py': (2, 'P8'),
     'video_capture: analysis/bench_annotate_fps.py': (4, 'P9'),
     'video_capture: analysis/spike_yolo_baseline.py': (2, 'P9'),
     'video_capture: core/qwen_coach.py': (1, 'P9'),  # D-12 未决：保留到 P9 按 D-12 处置
@@ -75,7 +74,6 @@ FUNCTION_SIZE: dict[str, tuple[int, str]] = {
     'analysis/bench_annotate_fps.py::main': (131, 'P9'),
     'analysis/calibrate_body_core.py::run': (166, 'P9'),
     'analysis/offline_matching_profile.py::run_fixture_profile': (112, 'P9'),
-    'apps/desktop_smoke.py::run': (142, 'P8'),
     'batch/batch_dual_compare.py::_run_body_core_batch': (115, 'P9'),
     'batch/batch_dual_compare.py::main': (237, 'P9'),
     'batch/batch_export_skeleton.py::main': (120, 'P9'),
@@ -91,4 +89,4 @@ FUNCTION_SIZE: dict[str, tuple[int, str]] = {
 DEFENSIVE_GETATTR: dict[str, tuple[int, str]] = {
 }
 
-ENTRY_CEILING = 29
+ENTRY_CEILING = 27
