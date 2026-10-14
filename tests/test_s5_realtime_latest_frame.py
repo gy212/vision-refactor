@@ -284,6 +284,9 @@ def test_default_run_and_ui_worker_are_not_replaced_by_latest_frame_path():
         for node in ast.walk(run_func)
     )
 
-    app_ui_source = (_REPO_ROOT / "apps" / "app_ui.py").read_text(encoding="utf-8")
-    assert "latest_frame" not in app_ui_source
-    assert "realtime_latest_frame" not in app_ui_source
+    # Tk 桌面：入口壳与 apps/tk/ 下的组合根、控制器、视图都不接 latest-frame 冒烟路径
+    tk_files = [_REPO_ROOT / "apps" / "app_ui.py", *sorted((_REPO_ROOT / "apps" / "tk").rglob("*.py"))]
+    for path in tk_files:
+        source = path.read_text(encoding="utf-8")
+        assert "latest_frame" not in source, path
+        assert "realtime_latest_frame" not in source, path

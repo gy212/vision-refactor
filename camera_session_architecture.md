@@ -83,8 +83,8 @@
 
 | 交接 §7 场景 | 覆盖 |
 | --- | --- |
-| 单/双摄冷启动，首帧后就绪 | `test_camera_warmup` wait/claim；`desktop_smoke._check_camera_mode_switch` |
-| 普通→停止→学生→退出，重复 | `_check_camera_mode_switch` 两轮（真实 Tk mainloop + spawn） |
+| 单/双摄冷启动，首帧后就绪 | `test_camera_warmup` wait/claim；`apps/tk/self_check.check_camera_mode_switch` |
+| 普通→停止→学生→退出，重复 | `check_camera_mode_switch` 两轮（真实 Tk mainloop + spawn） |
 | 已有预热/预热中进入学生 | `test_spec_change_renegotiates_after_old_format_releases`、`test_restart_waits_for_cancelled_capture_release` |
 | 开始后立即停止、停止中再开始 | smoke 开始即停止段；`test_single_camera_stop_during_open_finishes_session_quietly` |
 | 双摄单路失败/首帧失败/断流 | `test_claim_pair_failure_releases_other_ready_capture`、`_exercise_dual_runtime_failure` 系列 |

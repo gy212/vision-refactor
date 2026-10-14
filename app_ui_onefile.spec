@@ -61,6 +61,7 @@ datas = [(str(Path("models") / name), "models") for name in model_names]
 datas += [("templates/online/直拳_左手.npz", "templates/online"),
           ("templates/online/直拳_右手.npz", "templates/online")]
 datas += [("assets/feedback", "assets/feedback")]
+datas += [("core/reporting/html/templates", "core/reporting/html/templates")]
 datas += [(str(info_path), ".")]
 datas += [(imageio_ffmpeg.get_ffmpeg_exe(), "ffmpeg")]
 binaries = []
@@ -109,6 +110,8 @@ hiddenimports += [
     "core.live.preview",
     "core.live.runner",
     "core.live.stages",
+    "core.reporting.html",
+    "core.reporting.html.renderer",
     "analysis.tech_eval",
     "apps.camera_enum",
     "apps.input_source",

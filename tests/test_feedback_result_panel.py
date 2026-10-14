@@ -18,7 +18,9 @@ from types import SimpleNamespace
 from unittest.mock import Mock, call
 import pytest
 
-from apps import app_ui
+from apps.tk.controllers import practice as practice_mod
+from tests.tk_app_doubles import practice_app
+from tests.tk_app_doubles import root  # noqa: F401
 from core.live import LiveControls
 from core.workflows import (
     PRACTICE,
@@ -156,50 +158,27 @@ def make_dummy_record(
     }
 
 
-def make_test_app(monkeypatch):
-    """构建用于测试生命周期与视图切换的轻量 App 替身。"""
-    app = app_ui.App.__new__(app_ui.App)
-    app._closing = False
-    app._recording = SimpleNamespace(state="idle")
-    app._live = SimpleNamespace(state="running", active=lambda: True, token=1)
-    app._live_controls = LiveControls()
-    app.modes = ModeManager()
-    app.modes.enter(PRACTICE)
-    app.exam_scorebooks = ScorebookRegistry()
-    app.workflows = WorkflowHost(app.exam_scorebooks)
-    app.workflows.session_started(app._live.token)
-    app.exam_panel = None
-
-    app.left_container = Mock()
-    app._preview_right = Mock()
-    app.feedback_result_panel = Mock()
-    app.preview = Mock()
-    app.preview2 = Mock()
-    app.student_status_var = Mock()
-    app.student_start_btn = Mock()
-    app.current_student_id = Mock(get=lambda: "001")
-    app.root = Mock(after=lambda _ms, cb: cb())
-    app._sync_student_buttons = Mock()
-
-    # 真实的练习状态机经 WorkflowHost 驱动；最近片段已就绪可评判
-    app._practice = PracticeSession(lambda: {"studentId": app.current_student_id.get()})
-    app._practice.segment = PracticeSegment("record_0", None, ready=True, terminal=True)
-    ports = WorkflowPorts(
-        recorder=app_ui._SegmentPort(app),
-        occupancy=app_ui._OccupancyPort(app, "practice"),
-        announcer=Mock(),
-        ui=app_ui._PracticeUi(app),
-        analysis=app_ui._PracticeAnalysis(app),
-    )
-    app.workflows.activate(app._practice, CommandExecutor(ports))
+def make_test_app(root):
+    """已进入练习、最近片段可评判的应用；结果页、左侧控制区与预览面换成 Mock 以断言切换。"""
+    app = practice_app(root, identity=lambda: {"studentId": app.window.practice.controls.student_id.get()})
+    app.recording.service = SimpleNamespace(state="idle")
+    app.practice.practice.segment = PracticeSegment("record_0", None, ready=True, terminal=True)
+    app.window.left_container = Mock()
+    app.window.preview.frame = Mock()
+    app.window.result_panel = Mock()
     return app
+
+
+def set_current_student(app, student_id):
+    """界面学号变了但不触发学号变更事件（模拟事件未到的竞态）。"""
+    app.window.practice.controls.student_id = Mock(get=lambda: student_id)
 
 
 def dispatch_analysis(app, token, student_id):
     """模拟「动作评判」派发了第 token 代分析任务。"""
-    app._practice.token = token
-    app._practice.active_token = token
-    app._practice.active_student_id = student_id
+    app.practice.practice.token = token
+    app.practice.practice.active_token = token
+    app.practice.practice.active_student_id = student_id
 
 
 # ===========================================================================
@@ -264,42 +243,34 @@ def test_result_panel_clear_resets_content():
 # 2. View Switching: 录制预览 / 分析结果 平滑切换测试
 # ===========================================================================
 
-@pytest.mark.skipif(
-    not hasattr(app_ui.App, "_show_student_result_view"),
-    reason="M2 App._show_student_result_view 尚未在 apps/app_ui.py 中实现",
-)
-def test_view_switching_hides_preview_and_shows_result(monkeypatch):
+def test_view_switching_hides_preview_and_shows_result(root):
     """验证从录制预览切到分析结果视图时：left_container与_preview_right隐藏，result_panel跨列显示。"""
-    app = make_test_app(monkeypatch)
+    app = make_test_app(root)
     record = make_dummy_record()
 
-    app._show_student_result_view(record)
+    app.practice.show_result_view(record)
 
     # 验证 left_container 和 _preview_right 被 grid_remove
-    app.left_container.grid_remove.assert_called_once()
-    app._preview_right.grid_remove.assert_called_once()
+    app.window.left_container.grid_remove.assert_called_once()
+    app.window.preview.frame.grid_remove.assert_called_once()
 
     # 验证 feedback_result_panel 被 grid 到 (row=0, col=0, columnspan=2, sticky='nsew')
-    app.feedback_result_panel.grid.assert_called_once_with(row=0, column=0, columnspan=2, sticky="nsew")
-    app.feedback_result_panel.set_record.assert_called_once_with(record)
+    app.window.result_panel.grid.assert_called_once_with(row=0, column=0, columnspan=2, sticky="nsew")
+    app.window.result_panel.set_record.assert_called_once_with(record)
 
 
-@pytest.mark.skipif(
-    not hasattr(app_ui.App, "_show_student_preview_view"),
-    reason="M2 App._show_student_preview_view 尚未在 apps/app_ui.py 中实现",
-)
-def test_view_switching_restores_preview(monkeypatch):
+def test_view_switching_restores_preview(root, monkeypatch):
     """验证从分析结果切回录制预览时：result_panel被隐藏，恢复原列 0 与列 1 布局。"""
-    app = make_test_app(monkeypatch)
+    app = make_test_app(root)
 
-    app._show_student_preview_view()
+    app.practice.show_preview_view()
 
     # 验证 feedback_result_panel 被隐藏
-    app.feedback_result_panel.grid_remove.assert_called_once()
+    app.window.result_panel.grid_remove.assert_called_once()
 
     # 验证 left_container 和 _preview_right 恢复展示
-    app.left_container.grid.assert_called_once()
-    app._preview_right.grid.assert_called_once()
+    app.window.left_container.grid.assert_called_once()
+    app.window.preview.frame.grid.assert_called_once()
 
 
 # ===========================================================================
@@ -342,121 +313,129 @@ def test_camera_tick_continues_when_preview_hidden(monkeypatch):
 # 4. 任务代次并发安全防御测试 (Generation Token Guard)
 # ===========================================================================
 
-@pytest.mark.skipif(
-    not hasattr(app_ui.App, "_on_student_analysis_saved"),
-    reason="M2 App._on_student_analysis_saved 尚未在 apps/app_ui.py 中实现",
-)
-def test_generation_token_drops_stale_callback_on_cancel(monkeypatch):
+def test_generation_token_drops_stale_callback_on_cancel(root, monkeypatch):
     """验证取消分析后，迟到的 worker 回调被代次拦截器丢弃，不刷新结果页。"""
-    app = make_test_app(monkeypatch)
+    app = make_test_app(root)
 
     # 发起任务代次 1
     dispatch_analysis(app, 1, "001")
 
     # 用户点击取消分析：active_token 清空
-    app._on_student_cancelled()
-    assert app._practice.active_token is None
+    app.practice.cancelled()
+    assert app.practice.practice.active_token is None
 
     record = make_dummy_record(student_id="001")
     # 迟到的工作线程返回代次 1
-    app._on_student_analysis_saved(token=1, student_id="001", record=record)
+    app.practice.analysis_saved(token=1, student_id="001", record=record)
 
     # 断言：绝不切换至结果视图
-    app.feedback_result_panel.set_record.assert_not_called()
-    app.feedback_result_panel.grid.assert_not_called()
+    app.window.result_panel.set_record.assert_not_called()
+    app.window.result_panel.grid.assert_not_called()
 
 
-@pytest.mark.skipif(
-    not hasattr(app_ui.App, "_on_student_analysis_saved"),
-    reason="M2 App._on_student_analysis_saved 尚未在 apps/app_ui.py 中实现",
-)
-def test_generation_token_drops_stale_callback_on_student_switch(monkeypatch):
+def test_generation_token_drops_stale_callback_on_student_switch(root, monkeypatch):
     """验证分析过程中用户切换了学生，旧学生的分析结果绝不上屏覆盖当前学生。"""
-    app = make_test_app(monkeypatch)
+    app = make_test_app(root)
 
     # 为学生 "001" 发起代次 1
     dispatch_analysis(app, 1, "001")
 
     # 用户在界面将学号修改为 "002"
-    app.current_student_id = Mock(get=lambda: "002")
+    set_current_student(app, "002")
 
     record_001 = make_dummy_record(student_id="001")
     # 代次 1 完成返回
-    app._on_student_analysis_saved(token=1, student_id="001", record=record_001)
+    app.practice.analysis_saved(token=1, student_id="001", record=record_001)
 
     # 断言：旧学生 001 的结果被丢弃，当前学生 002 的界面未受污染
-    app.feedback_result_panel.set_record.assert_not_called()
+    app.window.result_panel.set_record.assert_not_called()
 
 
-@pytest.mark.skipif(
-    not hasattr(app_ui.App, "_on_student_analysis_saved"),
-    reason="M2 App._on_student_analysis_saved 尚未在 apps/app_ui.py 中实现",
-)
-def test_generation_token_drops_stale_callback_on_practice_again(monkeypatch):
+def test_generation_token_drops_stale_callback_on_practice_again(root, monkeypatch):
     """验证用户已点击“再练一次”回到预览时，更早任务的迟到回调不得强行切回结果页。"""
-    app = make_test_app(monkeypatch)
+    app = make_test_app(root)
 
     # 用户点击再练一次，active_token 设为 None，处于就绪预览态
     dispatch_analysis(app, 1, "001")
-    app._on_student_practice_again()
-    assert app._practice.active_token is None
+    app.practice.practice_again()
+    assert app.practice.practice.active_token is None
 
     record = make_dummy_record()
-    app._on_student_analysis_saved(token=1, student_id="001", record=record)
+    app.practice.analysis_saved(token=1, student_id="001", record=record)
 
-    app.feedback_result_panel.set_record.assert_not_called()
+    app.window.result_panel.set_record.assert_not_called()
 
 
-@pytest.mark.skipif(
-    not hasattr(app_ui.App, "_on_student_analysis_saved"),
-    reason="M2 App._on_student_analysis_saved 尚未在 apps/app_ui.py 中实现",
-)
-def test_window_closing_drops_all_callbacks(monkeypatch):
+def test_window_closing_drops_all_callbacks(root, monkeypatch):
     """验证窗口正在关闭时 (_closing=True)，丢弃任何迟到回调，不触发 TclError。"""
-    app = make_test_app(monkeypatch)
-    app._closing = True
+    app = make_test_app(root)
+    app.flags.closing = True
 
     record = make_dummy_record()
-    app._on_student_analysis_saved(token=1, student_id="001", record=record)
+    app.practice.analysis_saved(token=1, student_id="001", record=record)
 
-    app.feedback_result_panel.set_record.assert_not_called()
+    app.window.result_panel.set_record.assert_not_called()
 
 
 # ===========================================================================
 # 5. “再练一次” (Practice Again) 确定性非自启测试
 # ===========================================================================
 
-@pytest.mark.skipif(
-    not hasattr(app_ui.App, "_on_student_practice_again"),
-    reason="M2 App._on_student_practice_again 尚未在 apps/app_ui.py 中实现",
-)
-def test_practice_again_does_not_autostart_recording(monkeypatch):
+def test_practice_again_does_not_autostart_recording(root, monkeypatch):
     """验证点击“再练一次”时：安全切回录制预览，重置状态，但严格禁止自动开启摄像头录制。"""
-    app = make_test_app(monkeypatch)
-    app._practice.phase = "showing_result"
-    app._practice.presence.arm_enter()
-    app._live_controls.arm_occupancy("practice", True)
+    app = make_test_app(root)
+    app.practice.practice.phase = "showing_result"
+    app.practice.practice.presence.arm_enter()
+    app.controls.arm_occupancy("practice", True)
 
     record_mock = Mock()
-    monkeypatch.setattr(app_ui.App, "_begin_recording_segment", record_mock)
+    app.recording.begin = record_mock
 
     # 触发“再练一次”
-    app._on_student_practice_again()
+    app.practice.practice_again()
 
     # 1. 状态彻底重置
-    assert app._recording.state == "idle"
-    assert not app._practice.waiting
-    assert app._practice.presence.phase == "idle"
-    assert "practice" not in app._live_controls.occupancy.get().armed_by
-    assert app._practice.active_token is None
+    assert app.recording.state == "idle"
+    assert not app.practice.practice.waiting
+    assert app.practice.practice.presence.phase == "idle"
+    assert "practice" not in app.controls.occupancy.get().armed_by
+    assert app.practice.practice.active_token is None
 
     # 2. 严禁自动启动录制
     record_mock.assert_not_called()
 
     # 3. 视图切换回预览
-    app.feedback_result_panel.grid_remove.assert_called_once()
-    app.left_container.grid.assert_called_once()
-    app._preview_right.grid.assert_called_once()
+    app.window.result_panel.grid_remove.assert_called_once()
+    app.window.left_container.grid.assert_called_once()
+    app.window.preview.frame.grid.assert_called_once()
+
+
+def _buttons_with_text(widget, text):
+    found = [widget] if isinstance(widget, tk.Button) and text in str(widget.cget("text")) else []
+    for child in widget.winfo_children():
+        found.extend(_buttons_with_text(child, text))
+    return found
+
+
+def test_assembled_result_page_returns_to_preview_without_resetting_segment(root):
+    """组装后的主窗口结果页有「返回录制预览」按钮；点击只切回预览，保留当前片段，仍可再次评判。"""
+    app = practice_app(root)
+    session = app.practice.practice
+    session.segment = PracticeSegment("record_0", None, ready=True, terminal=True)
+    session.segment.front = "front.mp4"
+    session.segment.side = "side.mp4"
+    session.phase = "showing_result"
+    app.window.result_panel.set_record = Mock()   # 只验证导航，不渲染记录
+    app.practice.show_result_view({"id": "rec1"})
+
+    buttons = _buttons_with_text(app.window.result_panel, "返回录制预览")
+    assert len(buttons) == 1
+    buttons[0].invoke()
+
+    assert not app.window.result_panel.grid_info()
+    assert app.window.left_container.grid_info() and app.window.preview.frame.grid_info()
+    assert session.segment.ready and session.segment.front == "front.mp4" and session.segment.side == "side.mp4"
+    assert session.can_judge
 
 
 # ===========================================================================
@@ -476,13 +455,13 @@ def test_result_panel_phase_filtering():
         assert len(panel.check_tree.get_children()) == 4
 
         # 切换到 "start" (开始实战式: 1项)
-        panel._on_phase_clicked("start")
+        panel.select_phase("start")
         children = panel.check_tree.get_children()
         assert len(children) == 1
         assert "chk:start:front:stance_elbow" in children
 
         # 切换回全部
-        panel._on_phase_clicked(None)
+        panel.select_phase(None)
         assert len(panel.check_tree.get_children()) == 4
     finally:
         panel.destroy()
@@ -500,15 +479,14 @@ def test_result_panel_review_action_triggers_callback():
         panel.set_record(record)
 
         # 选中第一项
-        panel.check_tree.selection_set("chk:start:front:stance_elbow")
-        panel._on_tree_select()
+        panel.select_check("chk:start:front:stance_elbow")
 
         panel.teacher_entry.delete(0, "end")
         panel.teacher_entry.insert(0, "王老师")
         panel.reason_entry.delete(0, "end")
         panel.reason_entry.insert(0, "动作幅度符合标准")
 
-        panel._on_review_action_clicked("confirmed")
+        panel.review("confirmed")
         on_review_toggle.assert_called_once_with(
             record["id"],
             "chk:start:front:stance_elbow",
@@ -539,14 +517,35 @@ def test_result_panel_bottom_actions_trigger_callbacks():
         record = make_dummy_record()
         panel.set_record(record)
 
-        panel._on_practice_again_clicked()
+        panel.practice_again()
         on_practice_again.assert_called_once()
 
-        panel._on_export_clicked()
+        panel.export()
         on_export_report.assert_called_once_with(record)
 
-        panel._on_history_clicked()
+        panel.view_history()
         on_view_history.assert_called_once()
     finally:
         panel.destroy()
         root.destroy()
+
+
+def test_export_report_from_result_page_writes_html(root, monkeypatch, tmp_path):
+    """结果页「导出图文报告」：默认文件名用动作中文名，写出 HTML（修复前 ACTIONS 未导入，点击即 NameError）。"""
+    app = make_test_app(root)
+    history = SimpleNamespace(root=tmp_path / "history")
+    app.window.practice.controls.history = lambda: history
+    asked = {}
+    target = tmp_path / "report.html"
+
+    def _ask(**kwargs):
+        asked.update(kwargs)
+        return str(target)
+
+    monkeypatch.setattr(practice_mod.filedialog, "asksaveasfilename", _ask)
+    monkeypatch.setattr(practice_mod.messagebox, "showinfo", Mock())
+    record = make_dummy_record()
+    app.practice.export_report(record)
+    assert asked["initialfile"] == f"{record['studentId']}_{practice_mod.ACTIONS[record['action']]}_练习分析报告"
+    assert "散打学生练习分析图文报告" in target.read_text(encoding="utf-8")
+    assert app.window.practice.status_var.get() == "报告已成功导出至：report.html"

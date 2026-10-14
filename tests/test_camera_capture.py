@@ -183,12 +183,14 @@ def test_process_pair_survives_warmup_thread_handoff_and_reopens():
 
 def test_tk_preview_student_switch_with_process_cameras(monkeypatch, tmp_path):
     tk = pytest.importorskip("tkinter")
-    from apps import app_ui, desktop_smoke
+    from apps.tk import self_check
+    from apps.tk import app as tk_app
+    from apps.tk.controllers import cameras, recording
     from core.foundation import paths
 
-    monkeypatch.setattr(app_ui.App, "_start_enumeration", lambda self: None)
+    monkeypatch.setattr(cameras.CameraController, "start_enumeration", lambda self: None)
     monkeypatch.setattr(paths, "outputs_dir", lambda: tmp_path)
-    monkeypatch.setattr(app_ui, "outputs_dir", lambda: tmp_path)
+    monkeypatch.setattr(recording, "outputs_dir", lambda: tmp_path)
     try:
         root = tk.Tk()
     except tk.TclError as exc:
@@ -196,12 +198,12 @@ def test_tk_preview_student_switch_with_process_cameras(monkeypatch, tmp_path):
     root.withdraw()
     app = None
     try:
-        app = app_ui.App(root)
+        app = tk_app.DesktopApp(root)
         root.update()
-        desktop_smoke._check_camera_mode_switch(app, root)
+        self_check.check_camera_mode_switch(app, root)
     finally:
         if app is not None:
-            app._on_close()
+            app.close()
         try:
             root.destroy()
         except tk.TclError:

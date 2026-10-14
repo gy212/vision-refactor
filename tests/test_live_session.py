@@ -20,7 +20,9 @@ from core.live import (
     video_session,
 )
 from core.live.preview import PreviewStore
+from core.live.stages import apply_rotation, rotated_size
 from core.media import PRIMARY, SECONDARY, CameraReadError, CaptureSpec
+from core.recording import fit_frame_to_size
 
 WAIT = 5.0
 
@@ -701,3 +703,43 @@ def test_normal_stop_keeps_device_warm_but_app_close_releases(reason, keep_warm)
     h.manager.stop(reason)
     assert h.outcome().outcome == "stopped"
     assert h.source.keep_warm is keep_warm
+
+
+# --- 旋转与尺寸适配（原 test_app_ui_dual_camera.py，与 Tk 无关）---------------------------
+
+def test_fit_frame_to_size_resizes_when_mismatch():
+    frame = np.zeros((4, 6, 3), dtype=np.uint8)
+    fitted = fit_frame_to_size(frame, (3, 2))
+    assert fitted.shape[:2] == (2, 3)
+
+
+def test_fit_frame_to_size_returns_same_when_match():
+    frame = np.zeros((4, 6, 3), dtype=np.uint8)
+    assert fit_frame_to_size(frame, (6, 4)) is frame
+
+
+@pytest.mark.parametrize(
+    ("degrees", "turns"),
+    [(90, -1), (180, 2), (270, 1)],
+)
+def test_apply_rotation_matches_clockwise_degree_contract(degrees, turns):
+    frame = np.arange(18, dtype=np.uint8).reshape(2, 3, 3)
+
+    rotated = apply_rotation(frame, degrees)
+
+    np.testing.assert_array_equal(rotated, np.rot90(frame, k=turns))
+
+
+@pytest.mark.parametrize("degrees", [0, 45])
+def test_apply_rotation_returns_original_frame_when_no_rotation_applies(degrees):
+    frame = np.zeros((2, 3, 3), dtype=np.uint8)
+
+    assert apply_rotation(frame, degrees) is frame
+
+
+@pytest.mark.parametrize(
+    ("degrees", "expected"),
+    [(0, (1280, 720)), (90, (720, 1280)), (180, (1280, 720)), (270, (720, 1280))],
+)
+def test_rotated_size_matches_rotated_frame_dimensions(degrees, expected):
+    assert rotated_size(1280, 720, degrees) == expected

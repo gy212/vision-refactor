@@ -12,8 +12,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from apps import app_ui  # noqa: E402
-from core.workflows import ModeManager  # noqa: E402
+from apps.tk.controllers.session import UiState, session_config  # noqa: E402
 from apps.cli import main as app_main  # noqa: E402
 
 
@@ -79,46 +78,6 @@ def test_cli_no_hands_disables_parallel_offline_pipeline(monkeypatch):
     assert calls[0]["workers"] == 2
 
 
-def test_ui_state_defaults_to_hands_enabled():
-    app = object.__new__(app_ui.App)
-    app.source_var = _Var("0")
-    app.pose_var = _Var("full")
-    app.workers_var = _Var(2)
-    app.enable_hands_var = _Var(True)
-    app.save_var = _Var(False)
-    app.out_var = _Var("")
-    app._source_state = app_ui.InputSourceState()
-    app._source_state.select_camera(0)
-    app._camera_entries = []
-    app.modes = ModeManager()
-
-    state = app_ui.App._collect_state(app)
-
-    assert state.enable_hands is True
-    assert state.source == "0"
-    assert state.pose_variant == "full"
-
-
-def test_ui_state_can_disable_hands():
-    app = object.__new__(app_ui.App)
-    app.source_var = _Var("video.mp4")
-    app.pose_var = _Var("heavy")
-    app.workers_var = _Var(4)
-    app.enable_hands_var = _Var(False)
-    app.save_var = _Var(True)
-    app.out_var = _Var("out.mp4")
-    app._source_state = app_ui.InputSourceState()
-    app._source_state.select_video("video.mp4")
-    app._camera_entries = []
-    app.modes = ModeManager()
-
-    state = app_ui.App._collect_state(app)
-
-    assert state.enable_hands is False
-    assert state.workers == 4
-    assert state.out_path == "out.mp4"
-
-
 def test_ui_session_pipelines_use_state_enable_hands(monkeypatch):
     """界面的手部开关进入会话配置，推理 stage 按配置构造引擎；站位检测固定 lite、不跑手部（bf8c908）。
 
@@ -151,9 +110,9 @@ def test_ui_session_pipelines_use_state_enable_hands(monkeypatch):
 
     for source, source2 in (("0", None), ("0", "1"), ("video.mp4", None)):
         for hands in (True, False):
-            state = app_ui.UiState(source=source, source2=source2, pose_variant="heavy", workers=1,
+            state = UiState(source=source, source2=source2, pose_variant="heavy", workers=1,
                                    enable_hands=hands, record_skeleton=True)
-            config = app_ui.App._session_config(state)
+            config = session_config(state)
             assert config.enable_hands is hands
             specs.clear()
             PoseStage(config.roles).open(StageContext(config, LiveControls(), lambda *_: None))
@@ -161,8 +120,8 @@ def test_ui_session_pipelines_use_state_enable_hands(monkeypatch):
             assert all(spec.pose_variant == "heavy" for spec in specs)
 
     # 站位检测管线：骨架关的双摄会话里启用后构造，恰一个，lite + 无手部，与界面开关无关。
-    state = app_ui.UiState(source="0", source2="1", pose_variant="heavy", workers=1, enable_hands=True)
-    config = app_ui.App._session_config(state)
+    state = UiState(source="0", source2="1", pose_variant="heavy", workers=1, enable_hands=True)
+    config = session_config(state)
     controls = LiveControls()
     controls.arm_occupancy("exam", True)
     specs.clear()
@@ -172,11 +131,3 @@ def test_ui_session_pipelines_use_state_enable_hands(monkeypatch):
                   StageContext(config, controls, lambda *_: None))
     assert len(specs) == 1
     assert specs[0].pose_variant == "lite" and specs[0].enable_hands is False
-
-
-class _Var:
-    def __init__(self, value: object) -> None:
-        self.value = value
-
-    def get(self) -> object:
-        return self.value

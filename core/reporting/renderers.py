@@ -4,6 +4,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 
+from core.reporting.html import render_html_report
 from core.reporting.text import format_report
 
 ReportRenderer = Callable[[dict, Path], str]  # (历史记录, 历史根目录) -> 报告全文
@@ -14,7 +15,6 @@ def _text(record: dict, history_root: Path) -> str:
 
 
 def _html(record: dict, history_root: Path) -> str:
-    from core.feedback_report import render_html_report  # 图文报告依赖 cv2/PIL，导出时才加载
     return render_html_report(record, history_root=history_root)
 
 

@@ -17,6 +17,15 @@ from core.reporting import practice_report_renderers
 from core.feedback_history import FeedbackHistory, validate_identity
 
 
+def _pumped(root):
+    """真实 Tk 根上启动 UiDispatcher，返回其 ``post``；``root.update()`` 时排空。"""
+    from apps.tk import UiDispatcher
+
+    dispatcher = UiDispatcher(root)
+    dispatcher.start()
+    return dispatcher.post
+
+
 def pose_series(n=32):
     lm = np.zeros((n, 33, 4), dtype=np.float32)
     lm[:, :, 3] = 1
@@ -297,21 +306,21 @@ def test_cancel_failure_and_invalid_path_never_publish_history(tmp_path):
 
 def test_real_tk_panel_background_analysis_history_and_identity_switch(tmp_path):
     import tkinter as tk
-    from apps.feedback_panel import FeedbackControls
+    from apps.tk.views import PracticeControls
 
     root = tk.Tk()
     root.withdraw()
     messages, statuses = [], []
     busy = []
-    controls = FeedbackControls(root, root=root, set_busy=busy.append, show_result=messages.append,
+    controls = PracticeControls(root, root=root, post=_pumped(root), set_busy=busy.append, show_result=messages.append,
                                 set_status=statuses.append, can_analyze=lambda: True)
-    controls.store = FeedbackHistory(tmp_path / "history", renderers=practice_report_renderers())
+    controls.analysis.store = FeedbackHistory(tmp_path / "history", renderers=practice_report_renderers())
     controls.student_id.set("001")
     source = tmp_path / "source.mp4"
     source.write_bytes(b"mock")
     identity = controls.identity()
     try:
-        controls._start(lambda: controls.store.add(identity, source, None, analyzer=fake_analyzer))
+        controls.analysis.start(lambda: controls.history().add(identity, source, None, analyzer=fake_analyzer))
         deadline = time.monotonic() + 5
         while controls.busy and time.monotonic() < deadline:
             root.update()
@@ -320,10 +329,10 @@ def test_real_tk_panel_background_analysis_history_and_identity_switch(tmp_path)
         assert messages and "动作问题说明" in messages[-1]
         controls.open_history()
         root.update()
-        assert len(controls.history_tree.get_children()) == 1
-        controls.history_tree.selection_set(controls.current["id"])
+        assert len(controls.history_window.history_tree.get_children()) == 1
+        controls.history_window.history_tree.selection_set(controls.current["id"])
         root.update()
-        assert controls.check_tree.get_children()
+        assert controls.history_window.check_tree.get_children()
         controls.student_id.set("002")
         assert controls.current is None and str(controls.export_button.cget("state")) == "disabled"
     finally:
@@ -496,13 +505,14 @@ def test_1080p_30fps_analysis_keeps_every_frame(tmp_path):
 def test_real_tk_invalid_config_reports_analysis_not_started(tmp_path, monkeypatch):
     """feedback_config.json 损坏：analyze_recording 报错并返回 False，修好后重试能真正启动。"""
     import tkinter as tk
-    import apps.feedback_panel as panel
+    import apps.tk.controllers.practice_analysis as panel
+    from apps.tk.views import PracticeControls
     root = tk.Tk()
     root.withdraw()
     messages, busy = [], []
-    controls = panel.FeedbackControls(root, root=root, set_busy=busy.append, show_result=messages.append,
+    controls = PracticeControls(root, root=root, post=_pumped(root), set_busy=busy.append, show_result=messages.append,
                                       set_status=lambda _: None, can_analyze=lambda: True)
-    controls.store = FeedbackHistory(tmp_path / "history", renderers=practice_report_renderers())
+    controls.analysis.store = FeedbackHistory(tmp_path / "history", renderers=practice_report_renderers())
     controls.student_id.set("001")
     source = tmp_path / "source.mp4"
     source.write_bytes(b"mock")
@@ -530,32 +540,33 @@ def test_real_tk_invalid_config_reports_analysis_not_started(tmp_path, monkeypat
 
 def test_real_tk_evidence_frames_and_model_choice(tmp_path, monkeypatch):
     import tkinter as tk
-    import apps.feedback_panel as panel
+    import apps.tk.controllers.practice_analysis as panel
+    from apps.tk.views import PracticeControls
     root = tk.Tk()
     root.withdraw()
-    controls = panel.FeedbackControls(root, root=root, set_busy=lambda _: None, show_result=lambda _: None,
+    controls = PracticeControls(root, root=root, post=_pumped(root), set_busy=lambda _: None, show_result=lambda _: None,
                                       set_status=lambda _: None, can_analyze=lambda: True)
-    controls.store = FeedbackHistory(tmp_path / "history", renderers=practice_report_renderers())
+    controls.analysis.store = FeedbackHistory(tmp_path / "history", renderers=practice_report_renderers())
     controls.student_id.set("evidence-test")
     controls.action.set(af.ACTIONS["stance"])
     try:
         source = video(tmp_path / "source.avi")
         side = video(tmp_path / "side.avi")
-        saved = controls.store.add(controls.identity(), source, side, analyzer=fake_analyzer)
-        controls.current = saved
+        saved = controls.history().add(controls.identity(), source, side, analyzer=fake_analyzer)
+        controls.set_current(saved)
         controls.open_history()
         root.update()
-        controls.history_tree.selection_set(saved["id"])
+        controls.history_window.history_tree.selection_set(saved["id"])
         root.update()
-        controls.check_tree.selection_set(_check(saved["result"])["id"])
-        controls.show_evidence()
+        controls.history_window.check_tree.selection_set(_check(saved["result"])["id"])
+        controls.history_window.show_evidence()
         root.update()
         window = next(w for w in root.winfo_children() if isinstance(w, tk.Toplevel) and w.title().startswith("证据帧"))
         assert len(window._photos) == 6
         captured = []
         monkeypatch.setattr(panel, "analyze_feedback", lambda *args, **kwargs: captured.append(kwargs["config"]))
         controls.analysis_model.set("Lite（快速对比）")
-        analyze = controls._analyzer()
+        analyze = controls.analysis.analyzer(controls.analysis_model.get())
         controls.analysis_model.set("Full（精细分析）")
         analyze()
         assert captured[0].pose_variant == "lite"  # 主线程选择快照，不在工作线程读取Tk变量。

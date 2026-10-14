@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>学生练习分析报告 - 001</title>
+  <style>
+    /* Style A 简洁教学风 - 离线专用打印友好样式表 */
+    :root {
+      --bg-page: #F5F7FB;
+      --bg-card: #FFFFFF;
+      --color-ink: #1F2937;
+      --color-muted: #475569;
+      --color-subtle: #64748B;
+      --color-border: #D8E0EA;
+      --color-primary: #2563EB;
+      --color-primary-bg: #EFF6FF;
+      --color-warn: #92400E;
+      --color-warn-bg: #FFF7ED;
+      --color-warn-border: #FED7AA;
+      --color-ok: #166534;
+      --color-ok-bg: #F0FDF4;
+      --color-ok-border: #BBF7D0;
+      --color-unable: #475569;
+      --color-unable-bg: #F1F5F9;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background-color: var(--bg-page);
+      color: var(--color-ink);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+      font-size: 14px;
+      line-height: 1.6;
+      padding: 24px;
+    }
+    .report-container {
+      max-width: 980px;
+      margin: 0 auto;
+      background: var(--bg-card);
+      border: 1px solid var(--color-border);
+      border-radius: 8px;
+      padding: 32px;
+    }
+    .header-bar {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      padding-bottom: 20px;
+      border-bottom: 1px solid var(--color-border);
+      margin-bottom: 24px;
+    }
+    .header-meta h1 { font-size: 20px; font-weight: 700; color: var(--color-ink); margin-bottom: 6px; }
+    .header-meta .student-info { font-size: 14px; font-weight: 600; color: var(--color-ink); margin-bottom: 4px; }
+    .header-meta .action-info { font-size: 13px; color: var(--color-muted); }
+    .header-date { text-align: right; font-size: 12px; color: var(--color-subtle); line-height: 1.8; }
+    .headline-banner {
+      padding: 16px 20px;
+      border-radius: 6px;
+      margin-bottom: 24px;
+      border: 1px solid transparent;
+    }
+    .banner-warning { background: var(--color-warn-bg); border-color: var(--color-warn-border); }
+    .banner-warning h2 { color: var(--color-warn); font-size: 16px; margin-bottom: 4px; }
+    .banner-caution { background: var(--color-warn-bg); border-color: var(--color-warn-border); }
+    .banner-caution h2 { color: var(--color-warn); font-size: 16px; margin-bottom: 4px; }
+    .banner-notice { background: var(--color-primary-bg); border-color: #BFDBFE; }
+    .banner-notice h2 { color: var(--color-primary); font-size: 16px; margin-bottom: 4px; }
+    .banner-info { background: var(--color-primary-bg); border-color: #BFDBFE; }
+    .banner-info h2 { color: var(--color-primary); font-size: 16px; margin-bottom: 4px; }
+    .banner-success { background: var(--color-ok-bg); border-color: var(--color-ok-border); }
+    .banner-success h2 { color: var(--color-ok); font-size: 16px; margin-bottom: 4px; }
+    .banner-unable { background: var(--color-unable-bg); border-color: #E2E8F0; }
+    .banner-unable h2 { color: var(--color-unable); font-size: 16px; margin-bottom: 4px; }
+    .headline-banner p { font-size: 13px; color: var(--color-muted); }
+    .counts-bar {
+      display: flex;
+      gap: 12px;
+      margin-bottom: 24px;
+      flex-wrap: wrap;
+    }
+    .count-pill {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 14px;
+      border-radius: 6px;
+      border: 1px solid var(--color-border);
+      background: #FFFFFF;
+      font-size: 13px;
+      font-weight: 500;
+    }
+    .count-pill strong { font-weight: 700; }
+    .pill-candidate { background: var(--color-warn-bg); border-color: var(--color-warn-border); color: var(--color-warn); }
+    .pill-not-observed { background: var(--color-ok-bg); border-color: var(--color-ok-border); color: var(--color-ok); }
+    .pill-unable { background: var(--color-unable-bg); border-color: #E2E8F0; color: var(--color-unable); }
+    .pill-pending { background: var(--color-primary-bg); border-color: #BFDBFE; color: var(--color-primary); }
+    .pill-revoked { background: #F9FAFB; border-color: #E5E7EB; color: #6B7280; }
+    .timeline-section { margin-bottom: 28px; }
+    .section-title {
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--color-ink);
+      margin-bottom: 14px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .issue-card {
+      background: #FFFFFF;
+      border: 1px solid var(--color-border);
+      border-radius: 6px;
+      padding: 18px;
+      margin-bottom: 16px;
+    }
+    .issue-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 10px;
+    }
+    .issue-name {
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--color-ink);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .issue-tag {
+      font-size: 12px;
+      font-weight: 600;
+      padding: 2px 8px;
+      border-radius: 4px;
+    }
+    .tag-confirmed { background: #DCFCE7; color: #166534; border: 1px solid #BBF7D0; }
+    .tag-pending { background: #FEF3C7; color: #92400E; border: 1px solid #FED7AA; }
+    .issue-standard { font-size: 13px; color: var(--color-muted); margin-bottom: 6px; }
+    .issue-reason { font-size: 13px; color: var(--color-warn); font-weight: 500; margin-bottom: 12px; }
+    .evidence-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      margin-bottom: 12px;
+    }
+    @media (max-width: 680px) { .evidence-grid { grid-template-columns: 1fr; } }
+    .evidence-box {
+      background: #F8FAFC;
+      border: 1px solid var(--color-border);
+      border-radius: 6px;
+      overflow: hidden;
+      text-align: center;
+    }
+    .evidence-box img {
+      width: 100%;
+      height: auto;
+      display: block;
+      border-bottom: 1px solid var(--color-border);
+    }
+    .evidence-caption {
+      padding: 6px 10px;
+      font-size: 12px;
+      color: var(--color-muted);
+      background: #FFFFFF;
+    }
+    .evidence-placeholder {
+      height: 180px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--color-subtle);
+      font-size: 12px;
+      background: #F1F5F9;
+      padding: 16px;
+    }
+    details {
+      background: #F8FAFC;
+      border: 1px solid var(--color-border);
+      border-radius: 6px;
+      margin-bottom: 12px;
+      overflow: hidden;
+    }
+    summary {
+      padding: 10px 14px;
+      font-weight: 600;
+      font-size: 13px;
+      color: var(--color-ink);
+      cursor: pointer;
+      background: #FFFFFF;
+      border-bottom: 1px solid transparent;
+    }
+    details[open] summary { border-bottom-color: var(--color-border); }
+    .details-content { padding: 12px 14px; font-size: 12px; color: var(--color-muted); line-height: 1.7; }
+    .item-list { list-style: none; }
+    .item-row {
+      display: flex;
+      justify-content: space-between;
+      padding: 8px 0;
+      border-bottom: 1px solid #EDF2F7;
+      font-size: 13px;
+    }
+    .item-row:last-child { border-bottom: none; }
+    .footer-note {
+      margin-top: 32px;
+      padding-top: 16px;
+      border-top: 1px solid var(--color-border);
+      font-size: 11px;
+      color: var(--color-subtle);
+      text-align: center;
+      line-height: 1.6;
+    }
+    @media print {
+      @page { size: A4 portrait; margin: 15mm 12mm 15mm 12mm; }
+      body { background: #FFFFFF !important; padding: 0 !important; color: #000000 !important; font-size: 10pt; }
+      .report-container { max-width: 100% !important; border: none !important; padding: 0 !important; }
+      .no-print, button { display: none !important; }
+      .issue-card, .evidence-grid, .timeline-section { break-inside: avoid; page-break-inside: avoid; }
+      details { display: block !important; border: 1px solid #E2E8F0 !important; }
+      summary { display: none !important; }
+      .details-content { display: block !important; }
+    }
+  </style>
+</head>
+<body>
+  <div class="report-container">
+    <!-- Header -->
+    <header class="header-bar">
+      <div class="header-meta">
+        <h1>散打学生练习分析图文报告</h1>
+        <div class="student-info">学员：001 · 张同学</div>
+        <div class="action-info">动作：前后手直拳组合 · 左式（左手、左脚在前）</div>
+      </div>
+      <div class="header-date">
+        <div>记录时间：时间未记录</div>
+        <div>记录版本：Rev 1</div>
+        <div>规则版本：sanda-feedback-mediapipe-2026-09-20-v4</div>
+      </div>
+    </header>
+    <!-- Headline Banner -->
+    <div class="headline-banner banner-caution">
+      <h2>分析完成，部分项目暂无法判断</h2>
+      <p>优先展示发现的 1 项疑似问题；另有 1 项因视角或标定不足未判定。</p>
+    </div>
+    <!-- Conserved Counts Bar -->
+    <div class="counts-bar">
+      <div class="count-pill pill-candidate"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" role="img" aria-label="疑似问题"><path d="M12 4L4 19.5H20L12 4Z" stroke="#92400E" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="#FFF7ED"/><line x1="12" y1="9" x2="12" y2="13.5" stroke="#92400E" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="16.5" r="1" fill="#92400E"/></svg> 发现疑似问题：<strong>1</strong>项</div>
+      <div class="count-pill pill-not-observed"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" role="img" aria-label="未发现问题"><circle cx="12" cy="12" r="9.5" stroke="#166534" stroke-width="2" fill="#F0FDF4"/><path d="M7 12L10.5 15.5L17 9" stroke="#166534" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg> 已检查未发现：<strong>1</strong>项</div>
+      <div class="count-pill pill-unable"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" role="img" aria-label="暂无法判断"><circle cx="12" cy="12" r="9.5" stroke="#475569" stroke-width="2" fill="#F1F5F9"/><path d="M9.5 9.5C9.5 7.8 10.6 6.5 12 6.5C13.5 6.5 14.5 7.6 14.5 9C14.5 10.5 12 11.5 12 13" stroke="#475569" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="16.5" r="1" fill="#475569"/></svg> 暂无法判断：<strong>1</strong>项</div>
+      <div class="count-pill pill-pending"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" role="img" aria-label="需教师判断"><rect x="4.5" y="5.5" width="15" height="15" rx="2" stroke="#1D4ED8" stroke-width="2" fill="#EFF6FF"/><path d="M8.5 3.5H15.5V6.5H8.5V3.5Z" stroke="#1D4ED8" stroke-width="1.8" fill="#FFFFFF"/><path d="M7.5 12.5L10.5 15.5L16.5 9.5" stroke="#1D4ED8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg> 需教师判断：<strong>1</strong>项</div>
+
+      <div class="count-pill">检查项总计：<strong>4</strong>项 (守恒)</div>
+    </div>
+    <!-- Diagram-Design Action Phase Timeline -->
+    <section class="timeline-section">
+      <div class="section-title">动作阶段时序流向图</div>
+      <svg viewBox="0 0 800 132" width="100%" height="auto" role="img" aria-labelledby="flow-title flow-desc">
+  <title id="flow-title">动作阶段时序流图</title>
+  <desc id="flow-desc">展示散打动作各阶段起止时间、检查项与疑似问题分布时序图。</desc>
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#475569"/>
+    </marker>
+    <marker id="arrow-warn" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#92400E"/>
+    </marker>
+  </defs>
+  <rect width="100%" height="100%" rx="6" fill="#F8FAFC" stroke="#D8E0EA" stroke-width="1"/>
+  <line x1="196" y1="70" x2="216" y2="70" stroke="#92400E" stroke-width="2" stroke-linecap="round" marker-end="url(#arrow-warn)"/>
+  <line x1="388" y1="70" x2="408" y2="70" stroke="#475569" stroke-width="2" stroke-linecap="round" marker-end="url(#arrow)"/>
+  <line x1="580" y1="70" x2="600" y2="70" stroke="#475569" stroke-width="2" stroke-linecap="round" marker-end="url(#arrow)"/>
+  <!-- Stage 01: 开始实战式 -->
+  <rect x="24" y="36" width="172" height="68" rx="6" fill="#FFFFFF"/>
+  <rect x="24" y="36" width="172" height="68" rx="6" fill="#FFF7ED" stroke="#FED7AA" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <line x1="28" y1="44" x2="28" y2="96" stroke="#92400E" stroke-width="2" stroke-linecap="round"/>
+  <text x="36" y="56" fill="#475569" font-size="10" font-weight="600" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei UI', sans-serif">01</text>
+  <rect x="150" y="44" width="40" height="16" rx="4" fill="#FEF3C7" stroke="#92400E" stroke-width="1"/>
+  <text x="170" y="56" fill="#92400E" font-size="9" font-weight="600" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei UI', sans-serif">⚠ 1项</text>
+  <text x="36" y="76" fill="#1F2937" font-size="12" font-weight="600" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei UI', sans-serif">开始实战式</text>
+  <text x="36" y="94" fill="#64748B" font-size="10" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei UI', sans-serif">0.00s ～ 0.35s</text>
+  <!-- Stage 02: 前手直拳 -->
+  <rect x="216" y="36" width="172" height="68" rx="6" fill="#FFFFFF"/>
+  <rect x="216" y="36" width="172" height="68" rx="6" fill="#FFFFFF" stroke="#D8E0EA" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <line x1="220" y1="44" x2="220" y2="96" stroke="#10B981" stroke-width="2" stroke-linecap="round"/>
+  <text x="228" y="56" fill="#475569" font-size="10" font-weight="600" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei UI', sans-serif">02</text>
+  <rect x="360" y="44" width="22" height="16" rx="4" fill="#F0FDF4" stroke="#166534" stroke-width="1"/>
+  <text x="371" y="56" fill="#166534" font-size="9" font-weight="600" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei UI', sans-serif">✓</text>
+  <text x="228" y="76" fill="#1F2937" font-size="12" font-weight="600" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei UI', sans-serif">前手直拳</text>
+  <text x="228" y="94" fill="#64748B" font-size="10" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei UI', sans-serif">0.35s ～ 0.80s</text>
+  <!-- Stage 03: 后手直拳 -->
+  <rect x="408" y="36" width="172" height="68" rx="6" fill="#FFFFFF"/>
+  <rect x="408" y="36" width="172" height="68" rx="6" fill="#F1F5F9" stroke="#E2E8F0" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <line x1="412" y1="44" x2="412" y2="96" stroke="#475569" stroke-width="2" stroke-linecap="round"/>
+  <text x="420" y="56" fill="#475569" font-size="10" font-weight="600" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei UI', sans-serif">03</text>
+  <rect x="534" y="44" width="40" height="16" rx="4" fill="#E2E8F0" stroke="#475569" stroke-width="1"/>
+  <text x="554" y="56" fill="#475569" font-size="9" font-weight="600" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei UI', sans-serif">? 1项</text>
+  <text x="420" y="76" fill="#1F2937" font-size="12" font-weight="600" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei UI', sans-serif">后手直拳</text>
+  <text x="420" y="94" fill="#64748B" font-size="10" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei UI', sans-serif">0.80s ～ 1.25s</text>
+  <!-- Stage 04: 结束实战式 -->
+  <rect x="600" y="36" width="172" height="68" rx="6" fill="#FFFFFF"/>
+  <rect x="600" y="36" width="172" height="68" rx="6" fill="#FFFFFF" stroke="#D8E0EA" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <line x1="604" y1="44" x2="604" y2="96" stroke="#10B981" stroke-width="2" stroke-linecap="round"/>
+  <text x="612" y="56" fill="#475569" font-size="10" font-weight="600" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei UI', sans-serif">04</text>
+  <rect x="744" y="44" width="22" height="16" rx="4" fill="#F0FDF4" stroke="#166534" stroke-width="1"/>
+  <text x="755" y="56" fill="#166534" font-size="9" font-weight="600" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei UI', sans-serif">✓</text>
+  <text x="612" y="76" fill="#1F2937" font-size="12" font-weight="600" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei UI', sans-serif">结束实战式</text>
+  <text x="612" y="94" fill="#64748B" font-size="10" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei UI', sans-serif">1.25s ～ 1.60s</text>
+</svg>
+    </section>
+    <!-- Candidate Issues -->
+    <section class="issues-section">
+      <div class="section-title">需要关注的问题项 (1项)</div>
+      <div class="issue-card">
+        <div class="issue-header">
+          <div class="issue-name"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" role="img" aria-label="疑似问题"><path d="M12 4L4 19.5H20L12 4Z" stroke="#92400E" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="#FFF7ED"/><line x1="12" y1="9" x2="12" y2="13.5" stroke="#92400E" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="16.5" r="1" fill="#92400E"/></svg> 1. 实战式 / 开始实战式：测试问题-stance_elbow</div>
+          <div><span class="issue-tag tag-pending">待教师复核</span></div>
+        </div>
+        <div class="issue-standard"><strong>标准：</strong>前手大小臂夹角90°～135°（部位：前侧臂肘（左））</div>
+        <div class="issue-reason"><strong>依据：</strong>前手大小臂夹角不足90°</div>
+        <div class="evidence-grid">
+          <div class="evidence-box">
+            <div class="evidence-placeholder">未指定历史目录，跳过截帧</div>
+            <div class="evidence-caption">未指定历史目录，跳过截帧</div>
+          </div>
+        </div>
+        <details>
+          <summary>查看测量数据与复核日志</summary>
+          <div class="details-content">
+            <div>视角基础权重：正面50% / 侧面50%（工程初值，待标定）</div>
+            <div>正面：有效帧20/24，问题帧占比80%</div>
+            <div>  肘角：中位82.50，范围78.00～88.00 °</div>
+            <div>实际权重：正面50% / 侧面50%；问题支持度80%（非成绩、非准确率）</div>
+          </div>
+        </details>
+      </div>
+    </section>
+    <!-- Incomplete / Unable Checks -->
+    <section class="incomplete-section">
+      <details >
+        <summary>未完成判断的项目 (2项：无法判断1项，需教师判断1项)</summary>
+        <div class="details-content">
+          <ul class="item-list">
+            <li class="item-row">
+              <div><svg width="14" height="14" viewBox="0 0 24 24" fill="none" role="img" aria-label="暂无法判断"><circle cx="12" cy="12" r="9.5" stroke="#475569" stroke-width="2" fill="#F1F5F9"/><path d="M9.5 9.5C9.5 7.8 10.6 6.5 12 6.5C13.5 6.5 14.5 7.6 14.5 9C14.5 10.5 12 11.5 12 13" stroke="#475569" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="16.5" r="1" fill="#475569"/></svg> <strong>后手直拳/动作过程</strong> · 测试问题-guard_back (前侧臂肘（左）)</div>
+              <div style="color: var(--color-subtle);">暂无法判断：侧面视角被遮挡</div>
+            </li>
+            <li class="item-row">
+              <div><svg width="14" height="14" viewBox="0 0 24 24" fill="none" role="img" aria-label="需教师判断"><rect x="4.5" y="5.5" width="15" height="15" rx="2" stroke="#1D4ED8" stroke-width="2" fill="#EFF6FF"/><path d="M8.5 3.5H15.5V6.5H8.5V3.5Z" stroke="#1D4ED8" stroke-width="1.8" fill="#FFFFFF"/><path d="M7.5 12.5L10.5 15.5L16.5 9.5" stroke="#1D4ED8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg> <strong>前手直拳/动作过程</strong> · 测试问题-vertical_fist (前侧臂肘（左）)</div>
+              <div style="color: var(--color-subtle);">需教师判断：需教师人工查看立拳</div>
+            </li>
+          </ul>
+        </div>
+      </details>
+    </section>
+    <!-- Not Observed Checks -->
+    <section class="not-observed-section">
+      <details>
+        <summary>已检查未发现问题的项目 (1项)</summary>
+        <div class="details-content">
+          <p style="margin-bottom: 8px; color: var(--color-subtle);">说明：以下项目按二维几何规则检查完毕，未发现明显动作问题（不代表全部实战标准合格）。</p>
+          <ul class="item-list">
+            <li class="item-row">
+              <div><svg width="14" height="14" viewBox="0 0 24 24" fill="none" role="img" aria-label="未发现问题"><circle cx="12" cy="12" r="9.5" stroke="#166534" stroke-width="2" fill="#F0FDF4"/><path d="M7 12L10.5 15.5L17 9" stroke="#166534" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg> <strong>前手直拳/动作过程</strong> · 测试问题-guard_low</div>
+              <div style="color: var(--color-ok);">已检查未发现</div>
+            </li>
+          </ul>
+        </div>
+      </details>
+    </section>
+    <!-- Diagnostics & Alignment -->
+    <section class="diagnostics-section">
+      <details>
+        <summary>采集与分段技术诊断 (离线分析元数据)</summary>
+        <div class="details-content">
+          <div>分析后端说明：MediaPipe关键点规则检查；二维投影与工程阈值待标定，不作为正式成绩。</div>
+          <div>正面录像：录像640×480 / 30.0fps；可见躯干链 45/48 帧；分段原因：正常</div>
+          <div>侧面录像：无元数据</div>
+          <div>时间对齐：action_peaks；侧面偏移 0.020s；可靠性：可靠</div>
+        </div>
+      </details>
+    </section>
+    <footer class="footer-note">
+      <div>武术散打动作识别系统 · 报告生成时间：时间未记录 · 记录ID：aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa</div>
+      <div>声明：本报告由规则与几何算法辅助生成，不计算成绩分值，评定结论需由专业教师核实。</div>
+    </footer>
+  </div>
+</body>
+</html>

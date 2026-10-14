@@ -24,6 +24,9 @@ ENTRY_TOPS = ("apps", "batch", "analysis", "scripts")
 MODULE_MAX_LINES = 800
 MODULE_WARN_LINES = 600
 FUNCTION_MAX_LINES = 100
+TK_APP_MAX_LINES = 300
+TK_CONTROLLER_MAX_LINES = 400
+TK_VIEW_MAX_LINES = 600
 CLONE_MIN_STATEMENTS = 6
 PHASES = {f"P{i}" for i in range(1, 10)}
 
@@ -390,7 +393,7 @@ def function_sizes() -> dict[str, int]:
 
 
 def defensive_getattr() -> Counter:
-    """``apps/`` 中 ``getattr(self, "_…")`` 的个数（Tk 层目前在 apps/ 下，P8 起在 apps/tk/）。"""
+    """``apps/`` 中 ``getattr(self, "_…")`` 的个数（含 ``apps/tk/``），只减不增。"""
     found: Counter = Counter()
     for mod in modules().values():
         if not mod.rel.startswith("apps/"):
@@ -470,6 +473,33 @@ def test_module_size_budget():
     for rel, lines in sorted(sizes.items()):
         if MODULE_WARN_LINES < lines <= MODULE_MAX_LINES:
             warnings.warn(f"{rel} 有 {lines} 行，超过 600 行预警线，不再接收新职责", stacklevel=1)
+
+
+def tk_budget(rel: str) -> int | None:
+    """P8 起 Tk 层更严的模块上限：组合根 300 行、控制器 400 行、视图 600 行；其余模块不在此列。"""
+    if rel == "apps/tk/app.py":
+        return TK_APP_MAX_LINES
+    if rel.startswith("apps/tk/controllers/"):
+        return TK_CONTROLLER_MAX_LINES
+    if rel.startswith("apps/tk/views/"):
+        return TK_VIEW_MAX_LINES
+    return None
+
+
+def test_tk_layer_size_budget():
+    over = []
+    for rel, lines in sorted(module_sizes().items()):
+        limit = tk_budget(rel)
+        if limit is not None and lines > limit:
+            over.append(f"{rel} 有 {lines} 行，超过 Tk 层上限 {limit}")
+    assert not over, "Tk 层体量超限（无 allowlist，须按职责拆分）：\n" + "\n".join(over)
+
+
+def test_tk_budget_covers_root_controllers_and_views():
+    assert tk_budget("apps/tk/app.py") == 300
+    assert tk_budget("apps/tk/controllers/exam.py") == 400
+    assert tk_budget("apps/tk/views/practice_result/panel.py") == 600
+    assert tk_budget("apps/tk/self_check.py") is None
 
 
 def test_function_size_budget():

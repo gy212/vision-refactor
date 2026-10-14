@@ -1,13 +1,14 @@
 # -*- coding: utf-8 -*-
+"""考试控制器：名单导入/恢复、换名单时的台账移交、表格刷新、重考与开考、关窗收尾（假视图 + 假主窗口）。"""
 from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
 
-from apps import exam_panel
+from apps.tk.controllers import exam_rules as exam_mod
+from apps.tk.controllers.exam import ExamController
 from core.foundation import prefs as user_prefs
 from core.workflows import (
-    CommandExecutor,
     ExamCandidate,
     ExamScorebook,
     ExamSession,
@@ -17,459 +18,379 @@ from core.workflows import (
 )
 
 
-class _Var:
-    def __init__(self, value="") -> None:
-        self.value = value
+class _View:
+    """``ExamView`` 替身：表格按台账顺序记录行，弹框按类型记录文字。"""
 
-    def get(self):
-        return self.value
-
-    def set(self, value) -> None:
-        self.value = value
-
-
-class _Tree:
     def __init__(self) -> None:
-        self.items: dict[str, tuple[object, ...]] = {}
+        self.phase = ""
+        self.status = ""
+        self.present = ""
+        self.rows: dict[str, tuple] = {}
         self.order: list[str] = []
-        self.selected: list[str] = []
-        self.focused = ""
-        self.seen = ""
+        self.selection: list[str] = []
+        self.infos: list[str] = []
+        self.errors: list[str] = []
+        self.answer = False
+        self.destroyed = False
 
-    def get_children(self):
-        return tuple(self.order)
+    def info(self, _title, text) -> None:
+        self.infos.append(str(text))
 
-    def insert(self, _parent, _where, *, iid, values) -> None:
-        key = str(iid)
-        self.items[key] = tuple(values)
-        self.order.append(key)
+    def error(self, _title, text) -> None:
+        self.errors.append(str(text))
 
-    def item(self, iid, option=None, **kwargs):
-        key = str(iid)
-        if "values" in kwargs:
-            self.items[key] = tuple(kwargs["values"])
-        if option == "values":
-            return self.items[key]
-        return {"values": self.items[key]}
+    def ask(self, _title, _text) -> bool:
+        return self.answer
 
-    def move(self, iid, _parent, _where) -> None:
-        key = str(iid)
-        self.order.remove(key)
-        self.order.append(key)
+    def set_phase(self, text) -> None:
+        self.phase = text
 
-    def delete(self, iid) -> None:
-        key = str(iid)
-        self.items.pop(key, None)
-        if key in self.order:
-            self.order.remove(key)
-        if key in self.selected:
-            self.selected.remove(key)
+    def set_status(self, text) -> None:
+        self.status = text
 
-    def selection(self):
-        return tuple(self.selected)
+    def set_present(self, text) -> None:
+        self.present = text
 
-    def selection_set(self, *iids) -> None:
-        self.selected = [str(iid) for iid in iids]
+    def set_announce(self, _text) -> None:
+        pass
 
-    def focus(self, iid=None):
-        if iid is not None:
-            self.focused = str(iid)
-        return self.focused
+    def set_roi(self, _roi) -> None:
+        pass
 
-    def see(self, iid) -> None:
-        self.seen = str(iid)
+    def show_rows(self, rows) -> None:
+        from apps.tk.views.exam_window import row_values
+
+        self.order = [r.row_id for r in rows]
+        self.rows = {r.row_id: row_values(r) for r in rows}
+        self.selection = [i for i in self.selection if i in self.rows]
+
+    def select_row(self, row_id) -> None:
+        self.selection = [row_id]
+
+    def selected(self):
+        if not self.selection:
+            return None
+        return self.selection[0], str(self.rows.get(self.selection[0], ("", ""))[1])
+
+    def is_open(self) -> bool:
+        return not self.destroyed
+
+    def destroy(self) -> None:
+        self.destroyed = True
 
 
-def _bare_panel(session: ExamSession | None = None, lifecycle: list | None = None) -> exam_panel.ExamPanel:
-    """不建 Tk 窗口的面板；命令经真实 CommandExecutor 执行，端口记录到 ``lifecycle``。"""
+def _controller(session: ExamSession | None = None, lifecycle: list | None = None, **host_kw) -> ExamController:
+    """命令经真实 CommandExecutor 执行，端口与主窗口回调记录到 ``lifecycle``。"""
     events = lifecycle if lifecycle is not None else []
-    panel = object.__new__(exam_panel.ExamPanel)
-    panel.session = session or ExamSession()
-    panel.executor = CommandExecutor(
-        WorkflowPorts(
+    registry = ScorebookRegistry()
+    host = SimpleNamespace(
+        workflows=SimpleNamespace(activate=lambda *_a: None, deactivate=lambda s: events.append(("deactivated", s))),
+        exam_scorebooks=registry,
+        exam_ports=lambda *, ui, announcer: WorkflowPorts(
             recorder=SimpleNamespace(),
             occupancy=SimpleNamespace(
                 arm=lambda armed: events.append(("armed", armed)),
                 set_roi=lambda roi: events.append(("roi", roi)),
             ),
-            announcer=SimpleNamespace(announce=lambda text: events.append(("announce", text))),
-            ui=panel,
-        )
-    )
-    panel.app = SimpleNamespace(
+            announcer=announcer,
+            ui=ui,
+        ),
+        exam_preflight=lambda: [],
         set_exam_mode=lambda active: events.append(("active", active)),
         lock_manual_record=lambda locked: events.append(("locked", locked)),
+        exam_primary_rotation=lambda: 0,
+        exam_record_dir=lambda: Path("."),
+        post=lambda cb: cb(),
+        exam_closed=lambda c: events.append(("closed", c)),
     )
-    panel.scorebook = None
-    panel.run_dir = None
-    panel._row_by_id = {row.row_id: row for row in panel.session.rows}
-    panel.tree = _Tree()
-    panel.phase_var = _Var(f"阶段：{panel.session.phase}")
-    panel.status_var = _Var("")
-    panel.win = object()
-    return panel
+    for key, value in host_kw.items():
+        setattr(host, key, value)
+    announcer = SimpleNamespace(announce=lambda text: events.append(("announce", text)),
+                                close=lambda: events.append(("announcer_closed",)))
+    controller = ExamController(host, _View(), prefs={}, announcer=announcer, restore=False)
+    if session is not None:
+        controller.session = session
+        controller.refresh_rows()
+    return controller
 
 
 def test_close_callback_detaches_and_destroys_window() -> None:
-    """WM_DELETE_WINDOW 回调：释放工作流后必须销毁窗口，不留下脱管的面板。"""
+    """WM_DELETE_WINDOW 回调：释放工作流、通知主窗口后必须销毁窗口，不留下脱管的面板。"""
     events: list = []
-    panel = _bare_panel(lifecycle=events)
-    deactivated: list = []
-    panel.app.workflows = SimpleNamespace(deactivate=deactivated.append)
-    panel.app.exam_panel = panel
-    panel._announcer = SimpleNamespace(close=lambda: events.append(("announcer_closed",)))
-    panel.win = SimpleNamespace(destroy=lambda: events.append(("destroyed",)))
+    controller = _controller(lifecycle=events)
 
-    panel._on_close()
+    controller.close()
 
-    assert deactivated == [panel.session]
-    assert panel.app.exam_panel is None
-    assert events[-1] == ("destroyed",)
+    assert ("deactivated", controller.session) in events
+    assert ("closed", controller) in events
     assert ("announcer_closed",) in events
+    assert controller.view.destroyed
 
 
-def test_imported_roster_path_is_saved_and_restored(
-    monkeypatch, tmp_path: Path
-) -> None:
+def test_imported_roster_path_is_saved_and_restored(tmp_path: Path) -> None:
     roster_path = write_import_template(tmp_path / "roster.xlsx")
-    panel = _bare_panel()
+    controller = _controller()
 
-    count = panel._load_roster_path(roster_path, persist=True)
+    count = controller.load_roster(roster_path, persist=True)
 
     assert count == 2
-    assert panel.session.phase == "ready"
-    assert len(panel.session.rows) == 2
+    assert controller.session.phase == "ready"
+    assert len(controller.session.rows) == 2
     store = user_prefs.PreferenceStore()
     assert store.get(user_prefs.EXAM_ROSTER_PATH) == str(roster_path.resolve())
 
-    restored = _bare_panel()
-    restored._restore_roster(store.get(user_prefs.EXAM_ROSTER_PATH))
+    restored = _controller()
+    restored.restore_roster(store.get(user_prefs.EXAM_ROSTER_PATH))
 
     assert restored.session.phase == "ready"
     assert len(restored.session.rows) == 2
-    assert "已恢复上次名单" in restored.status_var.get()
+    assert "已恢复上次名单" in restored.view.status
 
 
 def test_missing_saved_roster_stays_idle_with_actionable_status(tmp_path: Path) -> None:
-    panel = _bare_panel()
+    controller = _controller()
 
-    panel._restore_roster(str(tmp_path / "missing.xlsx"))
+    controller.restore_roster(str(tmp_path / "missing.xlsx"))
 
-    assert panel.session.phase == "idle"
-    assert panel.session.rows == []
-    assert "请重新导入" in panel.status_var.get()
+    assert controller.session.phase == "idle"
+    assert controller.session.rows == []
+    assert "请重新导入" in controller.view.status
 
 
-def test_import_roster_is_blocked_while_exam_is_active(monkeypatch) -> None:
+def test_import_roster_is_blocked_while_exam_is_active() -> None:
     session = ExamSession()
     session.load_roster([ExamCandidate(1, "S1", "甲")])
     session.phase = "recording"
-    panel = _bare_panel(session)
-    dialog_calls: list[str] = []
-    errors: list[str] = []
-    monkeypatch.setattr(
-        exam_panel.filedialog,
-        "askopenfilename",
-        lambda **_kwargs: dialog_calls.append("open") or "roster.xlsx",
-    )
-    monkeypatch.setattr(
-        exam_panel.messagebox,
-        "showerror",
-        lambda _title, message, **_kwargs: errors.append(str(message)),
-    )
+    controller = _controller(session)
 
-    panel._import_roster()
+    assert controller.can_import() is False
 
-    assert dialog_calls == []
-    assert len(errors) == 1
-    assert "先中止当前考试" in errors[0]
+    assert len(controller.view.errors) == 1
+    assert "先中止当前考试" in controller.view.errors[0]
+
+
+class _Book:
+    def __init__(self, status: str) -> None:
+        self.rows = [SimpleNamespace(status=status)]
+        self.flush_calls = 0
+        self.close_calls = 0
+
+    def flush(self) -> None:
+        self.flush_calls += 1
+
+    def close(self) -> None:
+        self.close_calls += 1
 
 
 def test_replacing_roster_hands_processing_scorebook_to_registry() -> None:
-    class _Book:
-        def __init__(self) -> None:
-            self.rows = [SimpleNamespace(status="processing")]
-            self.flush_calls = 0
-            self.close_calls = 0
-
-        def flush(self) -> None:
-            self.flush_calls += 1
-
-        def close(self) -> None:
-            self.close_calls += 1
-
-    book = _Book()
+    book = _Book("processing")
     registered = []
-    lifecycle: list[tuple[str, bool]] = []
-    panel = _bare_panel(lifecycle=lifecycle)
-    panel.scorebook = book
-    panel.run_dir = Path("old-run")
-    panel.app.exam_scorebooks = SimpleNamespace(detach=registered.append)
+    lifecycle: list = []
+    controller = _controller(lifecycle=lifecycle, exam_scorebooks=SimpleNamespace(detach=registered.append))
+    controller.scorebook = book
+    controller.run_dir = Path("old-run")
 
-    panel._replace_roster([ExamCandidate(1, "NEW", "新考生")])
+    controller.replace_roster([ExamCandidate(1, "NEW", "新考生")])
 
     assert book.flush_calls == 1
     assert book.close_calls == 0
     assert registered == [book]
-    assert panel.scorebook is None
-    assert panel.run_dir is None
-    assert panel.session.phase == "ready"
-    assert lifecycle == [
-        ("armed", False),
-        ("active", False),
-        ("locked", False),
-    ]
+    assert controller.scorebook is None
+    assert controller.run_dir is None
+    assert controller.session.phase == "ready"
+    assert lifecycle == [("armed", False), ("active", False), ("locked", False)]
 
 
 def test_replacing_roster_closes_terminal_scorebook() -> None:
-    class _Book:
-        rows = [SimpleNamespace(status="completed")]
+    book = _Book("completed")
+    controller = _controller()
+    controller.scorebook = book
 
-        def __init__(self) -> None:
-            self.flush_calls = 0
-            self.close_calls = 0
-
-        def flush(self) -> None:
-            self.flush_calls += 1
-
-        def close(self) -> None:
-            self.close_calls += 1
-
-    book = _Book()
-    panel = _bare_panel()
-    panel.scorebook = book
-
-    panel._replace_roster([ExamCandidate(1, "NEW", "新考生")])
+    controller.replace_roster([ExamCandidate(1, "NEW", "新考生")])
 
     assert book.flush_calls == 1
     assert book.close_calls == 1
-    assert panel.scorebook is None
-    assert panel.session.phase == "ready"
+    assert controller.scorebook is None
+    assert controller.session.phase == "ready"
 
 
 def test_tree_refresh_preserves_selected_candidate() -> None:
     session = ExamSession()
-    session.load_roster(
-        [
-            ExamCandidate(1, "S1", "甲"),
-            ExamCandidate(2, "S2", "乙"),
-        ]
-    )
-    panel = _bare_panel(session)
-    panel._refresh_tree()
+    session.load_roster([ExamCandidate(1, "S1", "甲"), ExamCandidate(2, "S2", "乙")])
+    controller = _controller(session)
     selected_id = session.rows[0].row_id
-    panel.tree.selection_set(selected_id)
+    controller.view.select_row(selected_id)
 
     session.rows[0].status = "processing"
-    panel._refresh_tree()
+    controller.refresh_rows()
 
-    assert panel.tree.selection() == (selected_id,)
-    assert panel.tree.item(selected_id, "values")[3] == "processing"
+    assert controller.view.selected()[0] == selected_id
+    assert controller.view.rows[selected_id][3] == "processing"
 
 
-def test_aborted_retest_becomes_startable_without_skipping_remaining_roster(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    candidates = [
-        ExamCandidate(1, "S1", "甲"),
-        ExamCandidate(2, "S2", "乙"),
-    ]
+def _book_session(candidates, phase: str, *, pointer: int = 0, run_id: str | None = None):
     book = ExamScorebook(path=None)
     book.load_candidates(candidates)
-    first = book.rows[0]
-    book.update_row(first, status="skipped", error_code="exam_aborted")
-
     session = ExamSession()
     session.rows = book.rows
-    session.phase = "aborted"
-    session.pointer = 0
-    session.run_id = "run-existing"
-    panel = _bare_panel(session)
-    panel.scorebook = book
-    panel.run_dir = tmp_path
-    panel._row_by_id = {row.row_id: row for row in session.rows}
-    panel._refresh_tree()
-    panel.tree.selection_set(first.row_id)
-    active_calls: list[bool] = []
-    registry = ScorebookRegistry()
-    panel.app.exam_preflight = lambda: []
-    panel.app.set_exam_mode = active_calls.append
-    panel.app.exam_scorebooks = registry
-    panel._save_roi = lambda: True
-    commands = []
-    panel._dispatch = commands.extend
-    # 测「入队后手动再开考」；不自动点是
-    monkeypatch.setattr(
-        exam_panel.messagebox, "askyesno", lambda *a, **k: False
+    session.phase = phase
+    session.pointer = pointer
+    session.run_id = run_id
+    return book, session
+
+
+def test_aborted_retest_becomes_startable_without_skipping_remaining_roster(tmp_path: Path) -> None:
+    book, session = _book_session(
+        [ExamCandidate(1, "S1", "甲"), ExamCandidate(2, "S2", "乙")], "aborted", run_id="run-existing",
     )
+    first = book.rows[0]
+    book.update_row(first, status="skipped", error_code="exam_aborted")
+    events: list = []
+    controller = _controller(session, lifecycle=events)
+    controller.scorebook = book
+    controller.run_dir = tmp_path
+    controller.view.select_row(first.row_id)
+    commands = []
+    controller.dispatch = commands.extend
+    controller.view.answer = False  # 测「入队后手动再开考」；不自动点是
 
-    panel._retest_current()
+    controller.retest(lambda: True)
 
-    assert panel.session.phase == "ready"
-    assert panel.session.pointer == 0
-    assert len(panel.session.rows) == 3
-    assert panel.session.rows[-1].attempt_index == 2
-    assert panel.tree.selection() == (panel.session.rows[-1].row_id,)
+    assert controller.session.phase == "ready"
+    assert controller.session.pointer == 0
+    assert len(controller.session.rows) == 3
+    assert controller.session.rows[-1].attempt_index == 2
+    assert controller.view.selected()[0] == controller.session.rows[-1].row_id
 
-    panel._start_exam()
+    controller.start_exam(lambda: True)
 
-    assert panel.session.phase == "calling"
-    assert panel.session.pointer == 1
-    assert panel.session.current is panel.session.rows[1]
-    assert active_calls == [True]
-    assert panel.session.run_id == "run-existing"
-    assert panel.run_dir == tmp_path
+    assert controller.session.phase == "calling"
+    assert controller.session.pointer == 1
+    assert controller.session.current is controller.session.rows[1]
+    assert [e for e in events if e[0] == "active"] == [("active", True)]
+    assert controller.session.run_id == "run-existing"
+    assert controller.run_dir == tmp_path
     # 沿用的台账登记到新场次，录后结果按 run_id 回填到它
+    registry = controller.host.exam_scorebooks
     assert registry.apply(SimpleNamespace(segment_id="none", exam_run_id="run-existing", status="queued")) is None
     assert registry._by_run["run-existing"] is book
     assert any(command.kind == "ANNOUNCE" for command in commands)
     book.close()
 
 
-def test_completed_retest_can_auto_start_when_confirmed(
-    tmp_path: Path, monkeypatch
-) -> None:
-    candidates = [ExamCandidate(1, "S1", "甲")]
-    book = ExamScorebook(path=None)
-    book.load_candidates(candidates)
+def test_completed_retest_can_auto_start_when_confirmed(tmp_path: Path) -> None:
+    book, session = _book_session([ExamCandidate(1, "S1", "甲")], "completed", pointer=1, run_id="run-done")
     first = book.rows[0]
-    book.update_row(
-        first,
-        status="completed",
-        combined_percent=88,
-        combined_score=0.88,
-    )
-
-    session = ExamSession()
-    session.rows = book.rows
-    session.phase = "completed"
-    session.pointer = 1
-    session.run_id = "run-done"
-    panel = _bare_panel(session)
-    panel.scorebook = book
-    panel.run_dir = tmp_path
-    panel._row_by_id = {row.row_id: row for row in session.rows}
-    panel._refresh_tree()
-    panel.tree.selection_set(first.row_id)
-    panel.app.exam_preflight = lambda: []
-    panel.app.exam_scorebooks = ScorebookRegistry()
-    panel._save_roi = lambda: True
+    book.update_row(first, status="completed", combined_percent=88, combined_score=0.88)
+    controller = _controller(session)
+    controller.scorebook = book
+    controller.run_dir = tmp_path
+    controller.view.select_row(first.row_id)
     commands: list = []
-    panel._dispatch = commands.extend
-    monkeypatch.setattr(exam_panel.messagebox, "askyesno", lambda *a, **k: True)
+    controller.dispatch = commands.extend
+    controller.view.answer = True
 
-    panel._retest_current()
+    controller.retest(lambda: True)
 
-    assert panel.session.phase == "calling"
-    assert panel.session.pointer == 1
-    assert panel.session.current is not None
-    assert panel.session.current.attempt_index == 2
+    assert controller.session.phase == "calling"
+    assert controller.session.pointer == 1
+    assert controller.session.current is not None
+    assert controller.session.current.attempt_index == 2
     assert any(c.kind == "ANNOUNCE" for c in commands)
     book.close()
 
 
-def test_retest_without_scorebook_explains_workflow(monkeypatch) -> None:
+def test_retest_without_scorebook_explains_workflow() -> None:
     session = ExamSession()
     session.load_roster([ExamCandidate(1, "S1", "甲")])
-    panel = _bare_panel(session)
-    panel._refresh_tree()
-    panel.tree.selection_set(session.rows[0].row_id)
-    errors: list[str] = []
-    monkeypatch.setattr(
-        exam_panel.messagebox,
-        "showerror",
-        lambda _t, message, **_k: errors.append(str(message)),
-    )
+    controller = _controller(session)
+    controller.view.select_row(session.rows[0].row_id)
 
-    panel._retest_current()
+    controller.retest(lambda: True)
 
-    assert len(errors) == 1
-    assert "成绩台账" in errors[0]
-    assert "开始考试" in errors[0]
+    assert len(controller.view.errors) == 1
+    assert "成绩台账" in controller.view.errors[0]
+    assert "开始考试" in controller.view.errors[0]
 
 
-def test_retest_rejects_pure_pending_candidate(monkeypatch) -> None:
-    candidates = [ExamCandidate(1, "S1", "甲")]
-    book = ExamScorebook(path=None)
-    book.load_candidates(candidates)
-    session = ExamSession()
-    session.rows = book.rows
-    session.phase = "ready"
-    panel = _bare_panel(session)
-    panel.scorebook = book
-    panel._row_by_id = {row.row_id: row for row in session.rows}
-    panel._refresh_tree()
-    panel.tree.selection_set(session.rows[0].row_id)
-    infos: list[str] = []
-    monkeypatch.setattr(
-        exam_panel.messagebox,
-        "showinfo",
-        lambda _t, message, **_k: infos.append(str(message)),
-    )
+def test_retest_rejects_pure_pending_candidate() -> None:
+    book, session = _book_session([ExamCandidate(1, "S1", "甲")], "ready")
+    controller = _controller(session)
+    controller.scorebook = book
+    controller.view.select_row(session.rows[0].row_id)
 
-    panel._retest_current()
+    controller.retest(lambda: True)
 
-    assert len(panel.session.rows) == 1
-    assert any("无需重考" in msg for msg in infos)
+    assert len(controller.session.rows) == 1
+    assert any("无需重考" in msg for msg in controller.view.infos)
     book.close()
 
 
-def test_retest_falls_back_to_session_current_when_no_selection(
-    monkeypatch,
-) -> None:
-    candidates = [
-        ExamCandidate(1, "S1", "甲"),
-        ExamCandidate(2, "S2", "乙"),
-    ]
-    book = ExamScorebook(path=None)
-    book.load_candidates(candidates)
+def test_retest_falls_back_to_session_current_when_no_selection() -> None:
+    book, session = _book_session([ExamCandidate(1, "S1", "甲"), ExamCandidate(2, "S2", "乙")], "wait_enter")
     book.update_row(book.rows[0], status="failed", error_code="begin_failed")
-    session = ExamSession()
-    session.rows = book.rows
-    session.phase = "wait_enter"
-    session.pointer = 0
-    panel = _bare_panel(session)
-    panel.scorebook = book
-    panel._row_by_id = {row.row_id: row for row in session.rows}
-    panel._refresh_tree()
-    # 故意不选中
-    panel.tree.selected = []
-    infos: list[str] = []
-    monkeypatch.setattr(
-        exam_panel.messagebox,
-        "showinfo",
-        lambda _t, message, **_k: infos.append(str(message)),
-    )
+    controller = _controller(session)
+    controller.scorebook = book
+    controller.view.selection = []  # 故意不选中
 
-    panel._retest_current()
+    controller.retest(lambda: True)
 
-    assert len(panel.session.rows) == 3
-    assert panel.session.rows[-1].attempt_index == 2
-    assert panel.session.rows[-1].candidate.student_id == "S1"
-    assert any("队尾" in msg for msg in infos)
+    assert len(controller.session.rows) == 3
+    assert controller.session.rows[-1].attempt_index == 2
+    assert controller.session.rows[-1].candidate.student_id == "S1"
+    assert any("队尾" in msg for msg in controller.view.infos)
     book.close()
 
 
-def test_nonempty_aborted_session_does_not_claim_roster_is_missing(
-    monkeypatch,
-) -> None:
+def test_nonempty_aborted_session_does_not_claim_roster_is_missing() -> None:
     session = ExamSession()
     session.load_roster([ExamCandidate(1, "S1", "甲")])
     session.phase = "aborted"
-    panel = _bare_panel(session)
-    panel.app.exam_preflight = lambda: (_ for _ in ()).throw(
-        AssertionError("phase validation must run before preflight")
-    )
-    errors: list[str] = []
-    monkeypatch.setattr(
-        exam_panel.messagebox,
-        "showerror",
-        lambda _title, message, **_kwargs: errors.append(str(message)),
-    )
 
-    panel._start_exam()
+    def preflight():
+        raise AssertionError("phase validation must run before preflight")
 
-    assert len(errors) == 1
-    assert "中止" in errors[0]
-    assert "导入名单" not in errors[0]
+    controller = _controller(session, exam_preflight=preflight)
+
+    controller.start_exam(lambda: True)
+
+    assert len(controller.view.errors) == 1
+    assert "中止" in controller.view.errors[0]
+    assert "导入名单" not in controller.view.errors[0]
+
+
+def test_retest_and_start_refusal_texts() -> None:
+    row = SimpleNamespace(candidate=SimpleNamespace(name="甲"), status="processing", attempt_index=1)
+    assert "processing" in exam_mod.retest_refusal(row, [row])
+    row.status = "completed"
+    assert exam_mod.retest_refusal(row, [row]) is None
+    assert exam_mod.roi_problem((0.5, 0.0, 0.4, 1.0)) is not None
+    assert exam_mod.roi_problem((0.1, 0.1, 0.9, 0.9)) is None
+    assert exam_mod.start_refusal(ExamSession()) == "请先导入名单"
+
+
+def test_exam_window_builds_on_real_tk() -> None:
+    import tkinter as tk
+
+    import pytest
+
+    from apps.tk.views import ExamWindow
+
+    try:
+        root = tk.Tk()
+    except tk.TclError as exc:  # pragma: no cover - 无显示环境
+        pytest.skip(f"Tk 不可用：{exc}")
+    root.withdraw()
+    try:
+        host = _controller().host
+        window = ExamWindow(root, host)
+        controller = window.controller
+        controller.replace_roster([ExamCandidate(1, "S1", "甲"), ExamCandidate(2, "S2", "乙")])
+        assert window.tree.get_children() == tuple(r.row_id for r in controller.session.rows)
+        assert window.phase_var.get() == "阶段：ready"
+        window.select_row(controller.session.rows[1].row_id)
+        assert window.selected() == (controller.session.rows[1].row_id, "S2")
+        controller.close()
+        assert not window.is_open()
+    finally:
+        root.destroy()

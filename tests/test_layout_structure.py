@@ -2,7 +2,7 @@
 """控制区布局结构断言单元测试（任务 9.4）。
 
 设计来源：``.kiro/specs/ui-layout-redesign/design.md``
-（Architecture「控制区布局结构」图、Components 2「App._build_ui() 重构」）。
+（Architecture「控制区布局结构」图、Components 2「主窗口布局」）。
 
 本文件在**真实 Tk 控件树**上断言左侧控制区的布局结构：
   1. ``controls_inner`` 顶层分区顺序为
@@ -30,7 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 
 # ---------------------------------------------------------------------------
-# 夹具：构造真实 Tk root + App，无显示环境跳过
+# 夹具：构造真实 Tk root + DesktopApp，无显示环境跳过
 # ---------------------------------------------------------------------------
 
 
@@ -40,25 +40,10 @@ def app():
 
     teardown 调用 root.destroy()；不调用 mainloop。
     """
-    try:
-        import tkinter as tk
-    except Exception as exc:  # pragma: no cover - 环境缺 tkinter
-        pytest.skip(f"tkinter 不可用：{exc}")
+    from tests.tk_app_doubles import build_app, tk_root
 
-    from apps.app_ui import App
-
-    try:
-        root = tk.Tk()
-    except tk.TclError as exc:
-        pytest.skip(f"无显示环境，无法创建 Tk 窗口：{exc}")
-
-    try:
-        root.withdraw()  # 不显示窗口
-        application = App(root)
-    except tk.TclError as exc:  # pragma: no cover - 构建期窗口错误
-        root.destroy()
-        pytest.skip(f"构建 App 失败（无显示）：{exc}")
-
+    root = tk_root()
+    application = build_app(root)
     root.update_idletasks()  # 计算几何后再读取 winfo_*
     try:
         yield application
@@ -108,7 +93,7 @@ def test_controls_inner_section_order(app):
     （需求 1.2、1.4）。"""
     from tkinter import ttk
 
-    slaves = app.controls_inner.pack_slaves()
+    slaves = app.window.controls_inner.pack_slaves()
 
     # 至少包含四个顶层分区。
     assert len(slaves) >= 4, f"顶层分区数量不足：{slaves}"
@@ -135,15 +120,15 @@ def test_primary_controls_five_in_vertical_order(app):
     app.root.update_idletasks()
 
     ordered = [
-        app.camera_combo,
-        app.model_combo,
-        app.start_btn,
-        app.record_btn,
-        app.compare_btn,
+        app.window.capture.camera_combo,
+        app.window.capture.model_combo,
+        app.window.capture.start_btn,
+        app.window.recording.record_btn,
+        app.window.compare_btn,
     ]
 
     # 定位 Primary Labelframe。
-    primary = _find_labelframe(app.controls_inner.pack_slaves(), "主要操作")
+    primary = _find_labelframe(app.window.controls_inner.pack_slaves(), "主要操作")
     assert primary is not None, "未找到 Primary Labelframe（主要操作）"
 
     # 每项均为 Primary 组的后代（需求 1.1）。
@@ -160,19 +145,19 @@ def test_separator_between_primary_and_secondary(app):
     """分隔线存在且位于 Primary 与 Secondary 之间（index 1）（需求 1.2）。"""
     from tkinter import ttk
 
-    assert isinstance(app.primary_secondary_separator, ttk.Separator)
+    assert isinstance(app.window.primary_secondary_separator, ttk.Separator)
 
-    slaves = app.controls_inner.pack_slaves()
-    assert slaves[1] is app.primary_secondary_separator
+    slaves = app.window.controls_inner.pack_slaves()
+    assert slaves[1] is app.window.primary_secondary_separator
     # Primary 在前（index 0），Secondary 在后（index 2）。
-    assert app.primary_secondary_separator is slaves[1]
+    assert app.window.primary_secondary_separator is slaves[1]
 
 
 def test_secondary_below_primary_and_contains_workers(app):
     """Secondary 组位于 Primary 组之后，workers_spin 为 Secondary 后代（需求 1.4）。"""
     app.root.update_idletasks()
 
-    slaves = app.controls_inner.pack_slaves()
+    slaves = app.window.controls_inner.pack_slaves()
     primary = _find_labelframe(slaves, "主要操作")
     secondary = _find_labelframe(slaves, "次要选项")
     assert primary is not None and secondary is not None
@@ -181,7 +166,7 @@ def test_secondary_below_primary_and_contains_workers(app):
     assert secondary.winfo_rooty() > primary.winfo_rooty()
 
     # workers_spin 为 Secondary 组后代。
-    assert _is_descendant(app.workers_spin, secondary)
+    assert _is_descendant(app.window.capture.workers_spin, secondary)
 
 
 def test_minsize_sanity(app):

@@ -17,7 +17,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from apps.desktop_smoke import check_feedback_icons, load_build_info  # noqa: E402
+from apps.tk.self_check import check_feedback_icons, load_build_info  # noqa: E402
 from core.evaluation import RULE_VERSION  # noqa: E402
 from core.feedback_geometry import FeedbackConfig  # noqa: E402
 

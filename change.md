@@ -1,3 +1,33 @@
+## 2026-10-14（America/Los_Angeles）: [fix] P8 评审修复：练习结果页恢复「返回录制预览」按钮
+
+- 问题描述：PR #19 评审一项 P2。旧 `App._build_ui()` 构造结果页时传入 `on_switch_to_preview=self._show_student_preview_view`，结果页顶栏有「📹 返回录制预览」按钮；P8 的 `MainWindow` 构造 `FeedbackResultPanel` 时没传这个回调，组装后的主窗口里按钮消失。剩下的「再练一次」会派发 `practice_again`，清空当前片段的 `ready`/`front`/`side`，回到预览后不能再评判同一片段（例如换了分析模型想重判）。
+- 修改内容：
+  - `apps/tk/views/main_window.py`：构造结果页时传入 `on_switch_to_preview`，转发到 `connect(back_to_preview=…)` 注入的处理函数（注入前默认只切视图）。
+  - `apps/tk/app.py`：`_connect` 注入 `practice.show_preview_view`：只切回预览并把主状态设为练习模式，不派发工作流事件，与旧 `_show_student_preview_view` 一致。
+- 验证方法：
+  - 新增 `tests/test_feedback_result_panel.py::test_assembled_result_page_returns_to_preview_without_resetting_segment`：在真实隐藏 Tk 窗口上组装应用，断言结果页恰有一个按钮；点击后回到预览，片段 `ready`/`front`/`side` 保留、`can_judge` 仍为 True。去掉修复时该用例失败。
+  - 全量 `-m pytest tests -q`：1225 passed（含门禁与架构测试）；`scripts/sim_exam_flow.py`：37 passed、SIMULATION_OK；`git -c core.whitespace=cr-at-eol diff --check` 无空白错误。
+
+## 2026-10-14（America/Los_Angeles）: [refactor] P8 Tk 拆分：App 拆成 apps/tk 的组合根、控制器与视图，UiDispatcher 与 ShutdownCoordinator，结果页与 HTML 报告模板化
+
+- 问题描述：`apps/app_ui.py` 的 `App` 有 2660 行（P8 开工时；2026-10-03 统计 4855 行、135 个方法），界面、会话、录制、摄像头、考试与练习编排混在一个类里；App `_tick`、`ExamPanel._panel_tick`、`FeedbackControls` 三个轮询循环，以及比对、设置窗口与 `_post_*` 系列从后台线程直接调 `after(0, …)`（Tkinter 不保证跨线程安全）；关窗收尾 `_on_close`/`_poll_close_workers` 共 200 余行；结果页 `FeedbackResultPanel` 1257 行，`render_html_report` 内联 517 行 HTML；测试用 `App.__new__`/`SimpleNamespace` 拼半成品对象 48 处。
+- 修改内容（分 8 批提交，见 `重构阶段任务/P8-Tk拆分.md` §5）：
+  - B1 报告：`core/reporting/practice_model.py`、`evidence.py`、`html/`（`string.Template` 模板 + 渲染器 + 时间线 SVG + 图标 + 脱敏），`core/feedback_report.py` 改门面；HTML 差分基准 14 例逐字节一致。
+  - B2 结果页：拆成 `apps/tk/views/practice_result/` 的 10 个组件，`apps/feedback_result_panel.py` 改门面；控件树快照差分。
+  - B3 `apps/tk/dispatcher.py`（`UiDispatcher`）与 `apps/tk/shutdown.py`（`ShutdownCoordinator`）；三个轮询与跨线程 `after(0)` 全部改走 dispatcher。
+  - B4 比对窗口、设置窗口 → `views/compare_dialog.py`、`settings_dialog.py` + `controllers/compare.py`、`settings.py`。
+  - B5 考试面板 → `views/exam_window.py` + `controllers/exam.py`；练习控件 → `views/practice_controls.py`、`practice_history.py` + `controllers/practice_analysis.py`（分析任务 `Epoch` 取代 `_active_feedback_token`）。
+  - B6 删除 `App` 类：视图 `main_window`、`capture_panel`、`preview_surface`、`recording_panel`、`status_panel`、`practice_block`；控制器 `session`、`recording`、`cameras`、`practice`、`exam_host`、`flags`；组合根 `apps/tk/app.py`（181 行）；`apps/app_ui.py` 留入口壳。
+  - B7 `apps/desktop_smoke.py` → `apps/tk/self_check.py`，`run` 拆成按检查项命名的函数，新增图文报告导出与模板随包检查；`desktop_launcher` 改启动 `apps.tk.app`。
+  - B8 `controllers/exam.py` 拆出 `exam_rules.py`（454 → 391 行）；架构测试加 Tk 层体量预算（app ≤ 300、控制器 ≤ 400、视图 ≤ 600）；附录 A 14 项能力走查（P8 §6）；设计文档 §9.1.4/§12、阶段 README 更新。
+  - allowlist 49 → 27 条；可见行为不变（V-5 之外无新行为）。
+- 被替换的测试（D-13）：`test_app_ui_lifecycle.py`、`test_app_ui_dual_camera.py`、`test_app_controls.py` 删除，行为断言迁入 `test_tk_session.py`、`test_tk_recording.py`、`test_tk_cameras.py`、`test_tk_close.py`；`test_exam_panel.py` 改为对 `ExamController` 的假视图测试；只断言私有字段或已删死代码的用例删去（逐项见 P8 §5 B3–B6）；新增 `test_tk_dispatcher.py`、`test_tk_shutdown.py`、`test_tk_compare_settings.py`、`test_report_html_golden.py`、`test_result_page_snapshot.py`。
+- 验证方法：
+  - 门禁与架构测试通过；全量 `-m pytest tests -q` 1224 passed（开工基线 1197 passed、1 skipped；B5 时 1234，B6 删去私有字段用例后下降，无新增失败）。
+  - `scripts/sim_exam_flow.py`：37 passed、SIMULATION_OK；`test_camera_capture.py::test_tk_preview_student_switch_with_process_cameras`（真实 Tk + spawn）通过。
+  - EXE：用干净的 commit 3f0771d 构建 dist/vision_ui_20261014_3f0771d/，--offline-self-check ok=true、frozen=true，13 项检查全部通过（含新增的 html_report_export_with_bundled_templates），build_info clean=true、规则 sanda-feedback-mediapipe-2026-09-20-v4。
+  - `git -c core.whitespace=cr-at-eol diff --check` 无空白错误。
+
 ## 2026-10-13（America/Los_Angeles）: [fix] P7 评审修复：考试面板关窗不销毁窗口；动作评判启动失败后卡在 analyzing
 
 - 问题描述：PR #18 评审两项 P2。

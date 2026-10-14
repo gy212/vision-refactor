@@ -8,7 +8,7 @@
   1. ``RECORD_BTN_TEXT`` 三态文本映射（纯数据断言，安全 import）。
   2. 三态按钮文本随 ``RecordingController.request_toggle()`` 循环演进的序列
      （驱动真实 ``RecordingController``，无需 Tk 窗口）。
-  3. ``App._set_running_controls`` 运行态 enable/disable 联动（需真实 Tk；
+  3. ``SessionController.set_running_controls`` 运行态 enable/disable 联动（需真实 Tk；
      无显示环境时 ``pytest.skip``，并对尚未创建的控件做存在性容错）。录制按钮
      另受录制就绪标志把关：单摄会话立即可录，双摄会话等两路首帧就绪。
 
@@ -23,7 +23,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from apps.app_ui import RECORD_BTN_TEXT  # noqa: E402
+from apps.tk.views.recording_panel import RECORD_BTN_TEXT  # noqa: E402
 from core.recording_controller import RecordingController  # noqa: E402
 
 
@@ -103,34 +103,18 @@ def test_toggle_noop_before_session():
 
 
 # ---------------------------------------------------------------------------
-# 3. App._set_running_controls 运行态 enable/disable 联动（需真实 Tk）
+# 3. SessionController.set_running_controls 运行态 enable/disable 联动（需真实 Tk）
 # ---------------------------------------------------------------------------
 
 def _make_app_or_skip():
-    """尝试构造 Tk root 与 App；无显示环境（TclError）时 skip。
+    """在隐藏的真实 Tk 根窗口上组装应用（摄像头池替身、不枚举）；无显示环境时 skip。
 
     返回 (root, app)。调用方负责在 finally 中 root.destroy()。
     """
-    try:
-        import tkinter as tk
-    except Exception as exc:  # pragma: no cover - 环境缺 tkinter
-        pytest.skip(f"tkinter 不可用：{exc}")
+    from tests.tk_app_doubles import build_app, tk_root
 
-    from apps.app_ui import App
-
-    try:
-        root = tk.Tk()
-    except tk.TclError as exc:
-        pytest.skip(f"无显示环境，无法创建 Tk 窗口：{exc}")
-
-    try:
-        root.withdraw()  # 不显示窗口
-        app = App(root)
-    except tk.TclError as exc:  # pragma: no cover - 构建期窗口错误
-        root.destroy()
-        pytest.skip(f"构建 App 失败（无显示）：{exc}")
-
-    return root, app
+    root = tk_root()
+    return root, build_app(root)
 
 
 def _state_str(widget) -> str:
@@ -149,43 +133,43 @@ def test_set_running_controls_enable_disable_linkage():
         # 真实启动路径 _start 先设置录制就绪标志，再调用
         # _set_running_controls(True)：单摄会话为 True，双摄会话为 False（两路首帧
         # 就绪后才置 True，见下一个测试）。这里模拟单摄会话。
-        app._dual_recording_ready = True
+        app.flags.recording_ready = True
 
         # ---- 运行中 ----
-        app._set_running_controls(True)
+        app.session.set_running_controls(True)
 
         # Camera_Selector 禁用（需求 2.5）。
-        camera_combo = getattr(app, "camera_combo", None)
+        camera_combo = app.window.capture.camera_combo
         if camera_combo is not None:
             assert _state_str(camera_combo) == "disabled"
 
         # Model_Selector 禁用（需求 3.5）—— 控件可能尚未创建（任务 9.x）。
-        model_combo = getattr(app, "model_combo", None)
+        model_combo = app.window.capture.model_combo
         if model_combo is not None:
             assert _state_str(model_combo) == "disabled"
 
         # Record_Toggle 启用并置「开始录制」（需求 5.2）—— 可能尚未创建。
-        record_btn = getattr(app, "record_btn", None)
+        record_btn = app.window.recording.record_btn
         if record_btn is not None:
             assert _state_str(record_btn) == "normal"
             assert str(record_btn.cget("text")) == RECORD_BTN_TEXT["idle"]
 
         # Start_Control 文本切「停止」、禁用（需求 4.3）。
-        start_btn = getattr(app, "start_btn", None)
+        start_btn = app.window.capture.start_btn
         if start_btn is not None:
             assert str(start_btn.cget("text")) == "停止"
             assert _state_str(start_btn) == "disabled"
 
         # Compare_Control 始终 enabled（需求 6.4）—— 可能尚未创建。
-        compare_btn = getattr(app, "compare_btn", None)
+        compare_btn = app.window.compare_btn
         if compare_btn is not None:
             assert _state_str(compare_btn) == "normal"
 
         # ---- 未运行 ----
-        app._set_running_controls(False)
+        app.session.set_running_controls(False)
 
         # Status_Area 显示「就绪」（需求 4.5）。
-        assert app.status_var.get() == "就绪"
+        assert app.window.status.status_var.get() == "就绪"
 
         # Start_Control 恢复「开始」、启用。
         if start_btn is not None:
@@ -216,13 +200,13 @@ def test_set_running_controls_defers_record_until_dual_ready():
     root, app = _make_app_or_skip()
     try:
         # _start 对双摄会话把录制就绪标志置为 False。
-        app._dual_recording_ready = False
-        app._set_running_controls(True)
+        app.flags.recording_ready = False
+        app.session.set_running_controls(True)
 
-        assert _state_str(app.record_btn) == "disabled"
-        assert str(app.start_btn.cget("text")) == "停止"
-        assert _state_str(app.start_btn) == "disabled"
-        camera_combo = getattr(app, "camera_combo", None)
+        assert _state_str(app.window.recording.record_btn) == "disabled"
+        assert str(app.window.capture.start_btn.cget("text")) == "停止"
+        assert _state_str(app.window.capture.start_btn) == "disabled"
+        camera_combo = app.window.capture.camera_combo
         if camera_combo is not None:
             assert _state_str(camera_combo) == "disabled"
     finally:
