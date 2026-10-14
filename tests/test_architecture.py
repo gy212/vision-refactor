@@ -317,6 +317,7 @@ PRIMITIVES = {
             "core/foundation/tasks.py",
             "core/pose/parallel.py",
             "core/media/camera/pool.py",
+            "core/media/camera/slot_lifecycle.py",
             "core/media/camera/capture_process.py",
         ),
     ),

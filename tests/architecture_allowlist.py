@@ -17,13 +17,11 @@ PRIMITIVES: dict[str, tuple[int, str]] = {
 
 CLONES: dict[str, tuple[int, str]] = {}
 
-MODULE_SIZE: dict[str, tuple[int, str]] = {
-    'core/media/camera/pool.py': (1115, 'P9'),  # 原 apps/camera_warmup.py（1125），D-15：P9 按职责拆分
-}
+MODULE_SIZE: dict[str, tuple[int, str]] = {}
 
 FUNCTION_SIZE: dict[str, tuple[int, str]] = {}
 
 DEFENSIVE_GETATTR: dict[str, tuple[int, str]] = {
 }
 
-ENTRY_CEILING = 1
+ENTRY_CEILING = 0
