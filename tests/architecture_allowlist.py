@@ -24,9 +24,6 @@ MODULE_SIZE: dict[str, tuple[int, str]] = {
 FUNCTION_SIZE: dict[str, tuple[int, str]] = {
     'analysis/calibrate_body_core.py::run': (166, 'P9'),
     'analysis/offline_matching_profile.py::run_fixture_profile': (112, 'P9'),
-    'batch/batch_dual_compare.py::main': (237, 'P9'),
-    'batch/batch_export_skeleton.py::main': (120, 'P9'),
-    'batch/batch_tech_eval.py::main': (190, 'P9'),
     'core/evaluation/techeval/cog.py::eval_cog_front': (101, 'P9'),  # 原 analysis/tech_eval.py，P3 迁入
     'core/evaluation/techeval/cog.py::eval_cog_side': (139, 'P9'),
     'core/evaluation/techeval/com.py::_compute_body_com_single': (176, 'P9'),
@@ -38,4 +35,4 @@ FUNCTION_SIZE: dict[str, tuple[int, str]] = {
 DEFENSIVE_GETATTR: dict[str, tuple[int, str]] = {
 }
 
-ENTRY_CEILING = 12
+ENTRY_CEILING = 9
