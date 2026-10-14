@@ -22,7 +22,7 @@ _T = TypeVar("_T")
 
 @dataclass(frozen=True)
 class CaptureFormat:
-    """模式要求的采集尺寸与给不出时的处理（D-6：``require`` 直接失败，``prefer`` 接受实际尺寸）。"""
+    """模式要求的采集尺寸与给不出时的处理（D-6、D-17：``require`` 直接失败，``prefer`` 接受实际尺寸）。"""
 
     width: int
     height: int
@@ -100,15 +100,15 @@ def practice_preflight(ctx: PreflightContext) -> list[str]:
     return problems
 
 
-PREVIEW_FORMAT = CaptureFormat(1280, 720)
-STUDENT_FORMAT = CaptureFormat(1920, 1080, "require")
+# D-17：三种模式统一按 1080p 采集，给不出即失败；正面竖屏、侧面横屏由各路旋转设置得到
+CAPTURE_FORMAT = CaptureFormat(1920, 1080, "require")
 
-NORMAL = Mode("normal", SessionRequirements(cameras="any", fmt=PREVIEW_FORMAT))
+NORMAL = Mode("normal", SessionRequirements(cameras="any", fmt=CAPTURE_FORMAT))
 EXAM = Mode(
     "exam",
     SessionRequirements(
         cameras="dual",
-        fmt=PREVIEW_FORMAT,
+        fmt=CAPTURE_FORMAT,
         overrides=MappingProxyType({"record_skeleton": False}),
         segment_auto_compare=True,
         preflight=exam_preflight,
@@ -118,7 +118,7 @@ PRACTICE = Mode(
     "practice",
     SessionRequirements(
         cameras="dual",
-        fmt=STUDENT_FORMAT,
+        fmt=CAPTURE_FORMAT,
         overrides=MappingProxyType(
             {"record_skeleton": False, "enable_hands": False, "online_match_enabled": False, "auto_compare": False}
         ),

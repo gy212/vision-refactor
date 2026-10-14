@@ -419,7 +419,7 @@ class _Snapshot:
 def test_mode_manager_overrides_session_settings_without_touching_user_snapshot():
     modes = ModeManager()
     user = _Snapshot()
-    assert modes.session_settings(user) == _Snapshot(capture_size=(1280, 720))
+    assert modes.session_settings(user) == _Snapshot(capture_size=(1920, 1080), capture_policy="require")
     assert modes.segment_auto_compare is None
     modes.enter(PRACTICE)
     # V-5：只锁会话参数，用户勾选的快照本身不变
@@ -430,6 +430,9 @@ def test_mode_manager_overrides_session_settings_without_touching_user_snapshot(
     assert modes.is_active("practice")
     modes.enter(EXAM)
     assert modes.session_settings(user).record_skeleton is False
+    # D-17：考试与普通、学生练习同为 1080p require
+    assert modes.session_settings(user).capture_size == (1920, 1080)
+    assert modes.session_settings(user).capture_policy == "require"
     assert modes.session_settings(user).auto_compare is True
     assert modes.segment_auto_compare is True
     modes.leave()

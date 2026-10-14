@@ -169,7 +169,7 @@ class CameraController:
         return self.modes.current.requirements.fmt.size
 
     def capture_policy(self) -> str:
-        """学生练习严格要求 1080p，驱动给不出时失败并提示（D-6）；其余模式接受实际尺寸。"""
+        """三种模式都严格要求 1080p，驱动给不出时失败并提示设备不支持（D-6、D-17）。"""
         return self.modes.current.requirements.fmt.policy
 
     def camera_names(self) -> tuple[tuple[int, str], ...]:

@@ -35,7 +35,6 @@ from core.workflows import NORMAL, ModeManager, WorkflowHost, hip_midpoint_in_ro
 from apps.tk.controllers.flags import LiveFlags
 
 ROTATIONS = (0, 90, 180, 270)
-PREVIEW_CAPTURE_SIZE = NORMAL.requirements.fmt.size   # 普通模式的请求尺寸
 
 
 def clamp_workers(n: int) -> int:
@@ -74,8 +73,8 @@ class UiState:
     rotate2: int = 0
     record_skeleton: bool = False
     auto_compare: bool = True                # 双摄录制结束后是否自动比对；False 为仅录制
-    capture_size: tuple[int, int] = PREVIEW_CAPTURE_SIZE
-    capture_policy: str = "prefer"           # 驱动给不出请求尺寸时的处理（D-6）
+    capture_size: tuple[int, int] = NORMAL.requirements.fmt.size
+    capture_policy: str = NORMAL.requirements.fmt.policy   # 驱动给不出请求尺寸时的处理（D-6、D-17）
     camera_names: tuple[tuple[int, str], ...] = ()   # 按编号记下的设备名（V-3）
 
 

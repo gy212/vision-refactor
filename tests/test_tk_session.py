@@ -96,7 +96,7 @@ def test_ui_defaults_record_skeleton_off_and_auto_compare_on(root):
 
 @pytest.mark.parametrize(("student", "size", "policy"), [(False, (1280, 720), "prefer"), (True, (1920, 1080), "require")])
 def test_dual_session_config_freezes_capture_specs(student, size, policy):
-    """开始时冻结的请求尺寸与策略原样进入两路 CaptureSpec（学生练习 1080p、require，D-6）。"""
+    """开始时冻结的请求尺寸与策略原样进入两路 CaptureSpec（D-17 起各模式都是 1080p、require，这里也验证任意冻结值原样传递）。"""
     state = UiState(source="0", source2="1", pose_variant="full", workers=4, enable_hands=True,
                     capture_size=size, capture_policy=policy, camera_names=((1, "Side Cam"),))
     config = session_config(state)
@@ -113,7 +113,7 @@ def test_session_spec_uses_frozen_size_policy_and_name(root):
     app.modes.leave()
     base = UiState(source="1", pose_variant="full", workers=1, enable_hands=True)
     from dataclasses import replace
-    assert session_spec(replace(base, capture_size=size), "1") == CaptureSpec(1, 1920, 1080)
+    assert session_spec(replace(base, capture_size=size), "1") == CaptureSpec(1, 1920, 1080, policy="require")
     frozen = replace(base, capture_size=(1920, 1080), capture_policy="require", camera_names=((1, "Side"),))
     assert session_spec(frozen, "1") == CaptureSpec(1, 1920, 1080, expected_name="Side", policy="require")
 

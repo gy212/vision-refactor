@@ -161,7 +161,7 @@ def test_failed_or_explicit_release_closes_the_device(service):
 
 
 def test_spec_change_after_return_reopens_with_new_format(service):
-    _session(service, {PRIMARY: CaptureSpec(0)}, keep_warm=True)
+    _session(service, {PRIMARY: CaptureSpec(0, 1280, 720)}, keep_warm=True)
     service.prepare({PRIMARY: CaptureSpec(0, 1920, 1080)})
 
     stream = service.open_stream({PRIMARY: CaptureSpec(0, 1920, 1080)})
@@ -431,9 +431,10 @@ def test_cli_camera_source_opens_through_camera_service(monkeypatch):
         assert isinstance(source, CameraInput)
         source.wait_ready(token)
         source.start(token)
-        assert source.actual_sizes() == {PRIMARY: (1280, 720)}
+        # CLI 按默认采集尺寸打开（D-17：1080p，策略仍为 prefer）
+        assert source.actual_sizes() == {PRIMARY: (1920, 1080)}
         frames = source.read(token)
-        assert frames[PRIMARY].shape == (720, 1280, 3)
+        assert frames[PRIMARY].shape == (1080, 1920, 3)
     finally:
         source.close(keep_warm=True)
 
