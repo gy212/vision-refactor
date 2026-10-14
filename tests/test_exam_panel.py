@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
-from apps.tk.controllers import exam as exam_mod
+from apps.tk.controllers import exam_rules as exam_mod
 from apps.tk.controllers.exam import ExamController
 from core.foundation import prefs as user_prefs
 from core.workflows import (
