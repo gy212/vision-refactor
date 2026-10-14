@@ -1,3 +1,16 @@
+## 2026-10-14（America/Los_Angeles）: [docs] 记录 D-2、D-3、D-5、D-11 的决定，新增 D-17 与样本视频采集清单
+
+- 问题描述：用户在 issue #20–#23 回复了决定，并在会话中补充：考试一律先直立再摆左式（左手在前、右手护脸）；拳峰高度、站距的阈值暂定，现场测试后微调；各模式核心逻辑一致，只有流程不同；现行拍摄规格是正面竖屏 1080p、侧面横屏 1080p；D-11 需要甲方按现行规格新拍样本。设计文档 §11.2 与阶段 README 的决策表仍是"未决"。
+- 修改内容：
+  - 设计文档：§11.2 将 D-2、D-3、D-5、D-11 划线并写明决定；§1.3 增加第 5 条收敛结论（同一动作的评估在各模式只有一套核心逻辑，命名策略只用于迁移期）；§7.2 增加 D-3、D-5 的决策补充（统一规则目录、按左右式取手、考试固定左式、按相位窗口取帧、拳峰高度与站距用正式规则的相对量、各模式用宽高比修正坐标、阈值暂不变）；§1.2、§6 的 `GapPolicy` 表和提取对照表标注 D-2 已决待实施；状态行同步。
+  - 新增待决项 D-17：考试模式仍按 1280×720 `prefer` 采集（`core/workflows/modes.py` 的 `PREVIEW_FORMAT`），与现行拍摄规格不符，未决时维持现状。
+  - `重构阶段任务/README.md`：决策表同步，加 D-17。
+  - 新增 `docs/样本视频采集清单.md`：拍摄规格、交付与标注表、A–D 四类样本清单和数量估算。
+  - 只改文档，不改代码和数值；各决定按 §1.3 单独 PR 实施（D-2；D-3 + D-5；D-11 等新样本）。
+- 验证方法：
+  - 同步依据：issue #20–#23 的用户回复与 2026-10-14 会话中的补充；`core/workflows/modes.py`（考试 `PREVIEW_FORMAT` 1280×720、练习 `STUDENT_FORMAT` 1920×1080 `require`）；`core/evaluation/rules/practice_v4.py` 的检查项目录（清单 C 类逐项对应）；`docs/yolo_eval_samples.json`（旧样本 720×1280 竖屏，本机不存在）。
+  - `grep -n "D-2\|D-3\|D-5\|D-11\|D-17"` 检查设计文档与阶段 README 中的引用一致；门禁测试与架构测试通过；`git -c core.whitespace=cr-at-eol diff --check` 无空白错误。
+
 ## 2026-10-14（America/Los_Angeles）: [refactor] P9 收尾：删除门面与 qwen_coach，拆完超限项，CameraPool 按 D-15 拆分，练习 profile 按 D-16 经 evaluate_rules，allowlist 清零，重构完成
 
 - 问题描述：P8 后仍有 31 个只做转发的旧路径门面（`core/` 25 个、`apps/` 5 个、`analysis/tech_eval.py`）；`core/qwen_coach.py`（D-12）已无生产调用；架构测试 allowlist 27 条（`pool.py` 1115 行、`bench_annotate_fps.py` 等超限模块，batch/analysis/techeval/scripts 的 15 个超长函数，9 条原语过渡项）；练习 profile 仍由 `evaluation/practice.py` 逐项调用 `measure_check`，没有经 `evaluate_rules`（D-16）；`python apps/main.py`、`python batch/*.py` 按路径运行时找不到 `apps`/`core` 包（旧项目同样如此）。
