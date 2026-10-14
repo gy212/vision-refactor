@@ -20,8 +20,7 @@ class GapPolicy(str, Enum):
 
     ZERO = "zero"                            # 全 0，自然被判为无效（tech_eval、练习分析）
     HOLD_LAST_FEATURE = "hold_last_feature"  # 特征：沿用上一帧特征，首个有效帧之前补 0（模板特征）
-    HOLD_LAST_LEGACY = "hold_last_legacy"    # 原始序列：复制上一帧 33×4 含 visibility，补帧会被判为有效（D-2）
-    HOLD_LAST_INVALID = "hold_last_invalid"  # 原始序列：复制坐标但 visibility 置 0，补帧判为无效（D-2 批准后用）
+    HOLD_LAST_INVALID = "hold_last_invalid"  # 原始序列：复制坐标但 visibility 置 0，补帧判为无效（正式规则、踢腿质量，D-2）
     HOLD_LAST = "hold_last"                  # 视角分数：沿用上一值（模板特征提取）
     NAN = "nan"                              # 视角分数：记为 NaN（tech_eval）
 
@@ -113,7 +112,7 @@ class PoseSequence:
         out = lm.astype(np.float32)
         if gap is GapPolicy.ZERO:
             return out
-        if gap not in (GapPolicy.HOLD_LAST_LEGACY, GapPolicy.HOLD_LAST_INVALID):
+        if gap is not GapPolicy.HOLD_LAST_INVALID:
             raise ValueError(f"原始序列不支持补帧策略 {gap}")
         last = None
         for t in range(out.shape[0]):
@@ -121,8 +120,7 @@ class PoseSequence:
                 last = out[t]
             elif last is not None:
                 out[t] = last
-                if gap is GapPolicy.HOLD_LAST_INVALID:
-                    out[t, :, 3] = 0.0
+                out[t, :, 3] = 0.0  # 补帧不得当作有效检测（D-2）
         return out
 
     # ------------------------------------------------------------------ 特征
