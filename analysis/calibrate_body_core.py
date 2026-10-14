@@ -10,7 +10,7 @@ r"""S3 标定与基准报告：body_core_v1 三路对照 + 阈值标定（YOLO �
 
 并据此产出**对照数字**，用于：
   - 判定 ``body_core_v1`` 是否可用于评分（结论四选一）；
-  - 重标定 ``body_core_v1`` DTW baseline（替换全局占位 2.0）；
+  - 重标定 ``body_core_v1`` DTW baseline；
   - 标定 YOLO 侧 ``valid_conf_thr``（替换 #7 占位值 0.5）。
 
 方法论（与报告头部预注册口径一致）
@@ -28,8 +28,9 @@ r"""S3 标定与基准报告：body_core_v1 三路对照 + 阈值标定（YOLO �
 
 baseline 标定
 =============
-pose33_v3 已标定 baseline=2.0。body_core_v1 的 avg_cost 尺度与 pose33 不同，故按
-**尺度对齐**标定：``baseline_bodycore = 2.0 * median(avg_cost_bodycore) / median(avg_cost_pose33)``
+pose33_v3 的 baseline 取自布局注册表（``POSE33_V3.default_baseline``，2026-07-11 起为 3.0；D-11）。
+body_core_v1 的 avg_cost 尺度与 pose33 不同，故按**尺度对齐**标定：
+``baseline_bodycore = POSE33_BASELINE * median(avg_cost_bodycore) / median(avg_cost_pose33)``
 （在跨样本对上统计，self 对 avg_cost≈0 不计入），使 body_core 分数与 pose33 分数同尺度，
 共享阈值即可保持 pass/fail 一致。
 
@@ -84,11 +85,8 @@ if str(_REPO_ROOT) not in sys.path:
 from core.pose import BODY_CORE_V1, POSE33_V3  # noqa: E402
 from core.foundation import find_active_range, load_npz, motion_energy, npz_meta  # noqa: E402
 from core.pose import normalize_pose_body_core_v1, normalize_pose_xy_v3  # noqa: E402
-from core.evaluation import match_query  # noqa: E402
+from core.evaluation import POSE33_BASELINE, match_query  # noqa: E402
 from core.pose.backends.yolo import evaluate_multi_person_gate  # noqa: E402
-
-# pose33_v3 已标定 baseline（固定参照）。
-POSE33_BASELINE: float = 2.0
 
 # YOLO valid_conf_thr 扫描网格（标定用）。
 YOLO_CONF_THR_GRID: tuple[float, ...] = (0.2, 0.3, 0.4, 0.5, 0.6, 0.7)

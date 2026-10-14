@@ -1,3 +1,15 @@
+## 2026-10-14（America/Los_Angeles）: [fix] D-11 第一步：body_core 标定的 pose33 参照改取注册表的 3.0（issue #23）
+
+- 问题描述：`analysis/calibrate_body_core.py` 写死 `POSE33_BASELINE = 2.0`，而 pose33_v3 的 baseline 自 2026-07-11 起是 3.0（`core/pose/layouts.py`，经 `core.evaluation.POSE33_BASELINE` 导出）。body_core_v1 的 baseline 1.2826 是按 2.0 尺度对齐反推的。用户决定（issue #23）：以最新的 3.0 为准，用甲方按现行规格新拍的样本重跑标定。
+- 修改内容：
+  - `analysis/calibrate_body_core.py`：删去本地常量，改从 `core.evaluation` 导入 `POSE33_BASELINE`（注册表的唯一来源）；模块说明同步。
+  - `core/pose/layouts.py`：`BODY_CORE_V1` 的标定说明注明 1.2826 的参照已过时、待重跑替换。数值不改。
+  - 新增 `tests/test_yolo_analysis_artifact_metadata.py::test_calibration_uses_registered_pose33_baseline`：断言标定脚本的参照等于注册表的 3.0，尺度对齐公式按它计算。
+  - 设计文档 §11.2 D-11、阶段 README 决策表注明第一步已实施；issue #23 保持打开，等新样本重跑标定。
+- 验证方法：
+  - `python -m pytest tests -q` 全量通过；门禁与架构测试通过。
+  - 尺度对齐公式对参照是线性的：同一批样本上用 3.0 重跑的结果等于 1.2826 × 1.5 ≈ 1.9239。仍按决定等新样本重标，不在旧样本（720×1280 竖屏，本机没有）上推算替换。
+
 ## 2026-10-14（America/Los_Angeles）: [docs] 记录 D-17 的决定：三种模式统一按 1080p 采集
 
 - 问题描述：PR #25 新增的待决项 D-17：考试与普通模式按 1280×720 `prefer` 采集，与现行拍摄规格（正面竖屏 1080p、侧面横屏 1080p）和学生练习的 1080p `require` 不一致。用户决定录制规格统一：普通、考试、学生练习三种模式都用 1080p，设备不支持时失败并提示。
