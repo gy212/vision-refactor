@@ -1,3 +1,24 @@
+## 2026-10-14（America/Los_Angeles）: [refactor] P9 收尾：删除门面与 qwen_coach，拆完超限项，CameraPool 按 D-15 拆分，练习 profile 按 D-16 经 evaluate_rules，allowlist 清零，重构完成
+
+- 问题描述：P8 后仍有 31 个只做转发的旧路径门面（`core/` 25 个、`apps/` 5 个、`analysis/tech_eval.py`）；`core/qwen_coach.py`（D-12）已无生产调用；架构测试 allowlist 27 条（`pool.py` 1115 行、`bench_annotate_fps.py` 等超限模块，batch/analysis/techeval/scripts 的 15 个超长函数，9 条原语过渡项）；练习 profile 仍由 `evaluation/practice.py` 逐项调用 `measure_check`，没有经 `evaluate_rules`（D-16）；`python apps/main.py`、`python batch/*.py` 按路径运行时找不到 `apps`/`core` 包（旧项目同样如此）。
+- 修改内容（逐提交见 `重构阶段任务/P9-收尾.md` §5）：
+  - D-12（用户决定删除）：删 `core/qwen_coach.py`、`tests/test_qwen_coach.py`、`scripts/start_qwen_server.ps1`。
+  - 门面：全部删除，调用方改用各包 `__init__` 的公共 API；`apps/input_source.py` → `apps/tk/input_source.py`，`core/body_core_compare.py` → `core/services/body_core_templates.py`，YOLO 适配收进 `core/pose/backends/yolo/` 子包；新增 `core/foundation/npz.py` 与 `evaluation.matching.match_query`，analysis/scripts 不再直接 `np.load`、`subsequence_dtw`、`cv2.VideoCapture`；spec 的 hiddenimports/excludes 同步。
+  - 体量：`bench_annotate_fps.py` 拆为 cases/metrics/yolo；batch 三个 `main`、techeval 五个函数、`calibrate_body_core.run`、`run_fixture_profile`、`scenario_5` 按职责拆分。
+  - D-15：`media/camera/pool.py` 只搬代码拆为 `slot.py`（`WarmupSlot`）、`slot_lifecycle.py`（reader、释放与隔离重试）、`pool_checks.py`（参数校验）与 `pool.py`（708 行）。
+  - D-16：`RuleState` 增加练习六态，新增 `RuleContext`、`PhaseVerdict`；`practice_v4.practice_profile` 把检查清单登记为 `RuleSpec`；`practice.py` 逐视角调用 `evaluate_rules`，`adapters.to_practice_check` 写回 `checks` 字典；旧的逐项路径删除。
+  - 入口：`apps/app_ui.py`、`main.py`、`make_template.py`、`match_template.py` 与 `batch/batch_*.py` 按 scripts/analysis 的既有做法把仓库根加入 `sys.path`。
+  - 架构测试：入口层可用任意包（含子包）`__init__`；`np.load` 允许 `foundation/npz.py`；线程例外加 `slot_lifecycle.py`；allowlist 27 → 0 条。
+  - 文档：AGENTS.md（现状、门面与 allowlist 规则、路径、代码地图、测试门禁表）、设计文档（状态、§3、§7.2 P9 实现补充、§8.4、§11 D-12、§12、§13.2）、阶段 README 与 P9 文件；D-2、D-3、D-5、D-11 建 issue #20–#23。
+- 被替换的测试（D-13）：`test_qwen_coach.py`（21 项）随被测代码删除；`test_facade_only_forwards`、`test_legacy_import_paths_only_forward`、`test_tech_eval_reexports_the_single_implementation` 只验证门面转发，随门面删除；`test_importing_pose_facades_…` 改为 `test_importing_pose_packages_…`；新增 `tests/test_rule_engine_entry.py`（4 项）。其余测试只改导入路径或改用公共 API。
+- 验证方法：
+  - 门禁、架构测试、`test_p3_eval_differential.py`、`test_action_feedback.py`、`test_rule_availability.py` 通过（D-16 零漂移）；全量 `-m pytest tests -q` 1213 passed（P8 合入后 1224；减 21 + 3，加 4 及参数化）。
+  - 拆分的差分：batch 三个入口在合成视频上 CSV/JSONL/manifest 与旧版一致；techeval 16 例（fixtures 与扰动、掩码、镜像、倒序变体）输出逐项相等；`run_fixture_profile` 除计时外一致；`sim_exam_flow` 输出除临时路径外一致；`pool.py` 68 个方法 AST 与拆分前相同。
+  - 摄像头套件与 `test_tk_preview_student_switch_with_process_cameras`（真实 Tk + spawn）通过；`scripts/sim_exam_flow.py` 37 passed、SIMULATION_OK。
+  - 文档记载的命令在真实练习录像上跑通（`apps/main.py`、`make_template`、`match_template`、`batch_dual_compare`（含 `--paired`）、`batch_tech_eval --full`、`batch_export_skeleton`）；`apps/app_ui.py` 启动并正常退出。
+  - EXE：EXE_RESULT_PLACEHOLDER
+  - `git -c core.whitespace=cr-at-eol diff --check` 无空白错误。
+
 ## 2026-10-14（America/Los_Angeles）: [fix] P8 评审修复：练习结果页恢复「返回录制预览」按钮
 
 - 问题描述：PR #19 评审一项 P2。旧 `App._build_ui()` 构造结果页时传入 `on_switch_to_preview=self._show_student_preview_view`，结果页顶栏有「📹 返回录制预览」按钮；P8 的 `MainWindow` 构造 `FeedbackResultPanel` 时没传这个回调，组装后的主窗口里按钮消失。剩下的「再练一次」会派发 `practice_again`，清空当前片段的 `ready`/`front`/`side`，回到预览后不能再评判同一片段（例如换了分析模型想重判）。

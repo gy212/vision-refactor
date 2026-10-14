@@ -4,7 +4,7 @@
 
 ## 仓库现状
 
-武术散打动作识别与评分系统，包括 Tk 桌面（实时预览、双摄录制、考试、学生练习）、CLI、batch 与 analysis 离线工具，以 Windows 单文件 EXE 交付。正式评分以 MediaPipe 为准。本仓库按 `整体架构重构设计.md`（下称设计文档）重构这个系统，各阶段状态见 `重构阶段任务/README.md`。
+武术散打动作识别与评分系统，包括 Tk 桌面（实时预览、双摄录制、考试、学生练习）、CLI、batch 与 analysis 离线工具，以 Windows 单文件 EXE 交付。正式评分以 MediaPipe 为准。本仓库按 `整体架构重构设计.md`（下称设计文档）重构了这个系统，P0–P9 已全部完成（各阶段记录见 `重构阶段任务/README.md`）；之后的改动按设计文档的分层与本文件的规则在新结构上进行。
 
 - 本仓库：工作区的 `new/` 目录，远端 `https://github.com/gy212/vision-refactor`（私有）。现有内容是设计文档、`重构阶段任务/`（P0–P9 执行清单）、摄像头设计 `camera_session_architecture.md` 和 `摄像头架构设计交接说明.md`、变更记录 `change.md`。代码由 P0 从旧仓库导出。
 - 旧项目：工作区的 `old/` 目录（相对本仓库是 `../old/`），内部结构就是整理前的仓库根：代码、测试、`.venv`、`models/`、`dist/`，以及旧文档（`old/README.md`、`old/docs/`、change 归档）。它属于外层仓库（工作区根目录的 `.git`，远端 `YGuo-2/vision`）。
@@ -21,35 +21,35 @@
 - 代码位置：重构的代码全部在本仓库。P0 按 P0-4 从旧仓库导出参与重构的部分作为基线，之后按设计文档在本仓库内迁移。文档里的"旧实现""门面""删除"都指本仓库里的副本，`old/` 始终不动。
 - 行为不变（设计文档 §1.3）：每项能力只留一个实现。同一能力在各入口的现有差异改写为命名策略，默认值复现当前输出；用差分测试证明新旧输出一致后，删除旧实现。改变行为（合并策略、修正数值）属于 §11 的决策项，单独提 PR、单独重新生成 golden，不和重构混在一起。需要新行为时新增策略和测试，不要复制一份旧代码再改。
 - 待决策项没有结论时，按清单总表"未决时的做法"保持现状，不要自行决定。需要拍板的问用户，结论记入设计文档 §11，已决的条目划线。
-- 分层（设计文档 §2.1）：`foundation → media → pose → evaluation → {services, recording, live, reporting} → workflows → 入口`。只能依赖更低层；L4 的四个包互不导入（要共用的纯逻辑下沉到 L0/L1，要调另一个 L4 包的函数时由调用方注入）；L4 不向上调用 L5（finalizer 的处理步骤由构建计划的一方注入）；入口层只用各包 `__init__` 导出的公共 API；不跨模块导入下划线开头的符号（`tests/` 除外）；`core/` 不导入 tkinter。P1 起由 `tests/test_architecture.py` 强制，allowlist 只减不增。
-- 门面：迁移期间，旧导入路径可以保留为只做转发的门面，门面里不能有逻辑；按设计文档 §12 和清单附录 B 在对应阶段删除，大部分在 P9。阶段结束时，被取代的旧实现必须删除，不长期双轨。
+- 分层（设计文档 §2.1）：`foundation → media → pose → evaluation → {services, recording, live, reporting} → workflows → 入口`。只能依赖更低层；L4 的四个包互不导入（要共用的纯逻辑下沉到 L0/L1，要调另一个 L4 包的函数时由调用方注入）；L4 不向上调用 L5（finalizer 的处理步骤由构建计划的一方注入）；入口层只用各包 `__init__` 导出的公共 API；不跨模块导入下划线开头的符号（`tests/` 除外）；`core/` 不导入 tkinter。由 `tests/test_architecture.py` 强制；P9 起 allowlist 已清零，只保留设计文档 §13.2 记载的线程例外。
+- 门面：迁移期间的旧导入路径门面已在 P9 全部删除。以后搬迁模块时，调用方在同一 PR 内改用新路径，不再新增门面；被取代的旧实现同一 PR 内删除，不长期双轨。
 - 迁移期间的新功能一律写在新结构上，不往旧结构加代码，并遵守下一节的职责与体量规则。
 
 ## 模块职责与体量
 
-不再出现 `App`（4855 行、135 个方法）这样的文件：一个文件只做一件事，体量有硬上限，超限项只许变小。能机器检查的部分 P1 起由 `tests/test_architecture.py` 强制（设计文档 §13.2），其余在评审时把关。
+不再出现 `App`（4855 行、135 个方法）这样的文件：一个文件只做一件事，体量有硬上限，超限项只许变小。能机器检查的部分由 `tests/test_architecture.py` 强制（设计文档 §13.2），其余在评审时把关。
 
 - 单一职责：`core/`、`apps/`、`batch/`、`analysis/`、`scripts/` 下的每个模块都有模块 docstring，第一句写明它负责什么。要用"和""以及"连接两件不相关的事才说得清，就该拆。新代码放进设计文档 §2.2 指定的模块；不属于现有模块职责的，按 §2.2 新建模块，不顺手塞进手边的文件。
 - 不建杂物模块：不新增 `utils`、`helpers`、`common`、`misc` 这类名字的模块（含 `pose_utils.py` 这样的后缀形式），共用代码按用途放进具体模块，如 `foundation/geometry.py`、`foundation/signal.py`。`__init__.py` 只做导出，只含 docstring、导入和 `__all__`。
 - 体量上限（不含 `tests/`）：模块不超过 800 行，函数不超过 100 行，按物理行计数（含注释、docstring 和空行）。P8 起 Tk 层更严：`apps/tk/app.py` 不超过 300 行，每个控制器不超过 400 行，每个视图不超过 600 行。
 - 预警线 600 行：超过 600 行的模块不再接收新职责。改动使模块越过 600 行时，同一 PR 内按职责拆分，或在 PR 说明里写明暂不拆的原因和拆分时点。
 - 拆分按职责：拆出的每个模块、每个函数都能用一句话说清职责，并据此命名，如 `eval_force_sequence` 按"事件检测 → 时序 → 判定"拆。不按行数机械切片（`xxx_part2.py`、`xxx_impl.py`、`_step1()`），也不靠删注释、多条语句并成一行、写超长表达式来压行数。
-- 现有超限项按棘轮处理：P1 把现有超限的模块和函数登记进 allowlist，记下当时的行数作为上限，写明计划消除的阶段，之后只许变小。超过上限即失败；实际行数低于上限也判失败，提示在同一提交里把上限改成实际行数，防止降下来又涨回去。修 bug 必须在超限文件里加行时，同一 PR 从该文件移出不少于新增的行数。搬迁超限文件时优先按职责拆到上限以内；拆不完的，allowlist 条目随文件改到新路径，上限沿用原值，不新增条目、不调高上限。allowlist 条数只减不增，P9 清零。
+- 体量 allowlist（`tests/architecture_allowlist.py`）已于 P9 清零，不再新增条目：超限的模块或函数在同一 PR 内按职责拆分。allowlist 的棘轮机制保留（登记值即上限，低于上限也判失败），只作为历史机制，不用于新代码。
 
 ## 硬约束
 
 - MediaPipe 默认路径、`pose33_v3` 模板兼容和 `infer()`/`annotate()` 语义不变。`tests/test_pose33_v3_golden.py`、`test_tech_eval_contract.py`、`test_valid_mask_migration.py` 必须零漂移。只有已批准的决策可以改变数值。
-- YOLO 不进入正式评分、规则评分、full tech_eval，也不进入 Tk 与 CLI 的默认路径：`apps/main.py` 不加 `--backend yolo`，`apps/app_ui.py` 不加 YOLO 后端选项，Hybrid（`yolo_body_mp_pose_supplement`）不实现。凡有后端选择的入口都经过 router（现为 `core/backend_router.py`），入口层不复制分叉判断。
-- 点位有效性只由 `derive_valid_mask`（`core/pose_features.py`）判定，不要散落 `lm[idx, 3] >= thr`。缺失点不得伪造成有效点（COCO17 缺嘴角、脚跟脚尖和手指）。现有一处违反按 D-2 处理。
+- YOLO 不进入正式评分、规则评分、full tech_eval，也不进入 Tk 与 CLI 的默认路径：`apps/main.py` 不加 `--backend yolo`，`apps/app_ui.py` 不加 YOLO 后端选项，Hybrid（`yolo_body_mp_pose_supplement`）不实现。凡有后端选择的入口都经过 router（`core/pose/backends/router.py`，经 `core.pose.backends` 导出），入口层不复制分叉判断。YOLO 适配在 `core/pose/backends/yolo/`，桌面 EXE 的 spec 把它排除在外。
+- 点位有效性只由 `derive_valid_mask`（`core/pose/validity.py`）判定，不要散落 `lm[idx, 3] >= thr`。缺失点不得伪造成有效点（COCO17 缺嘴角、脚跟脚尖和手指）。现有一处违反按 D-2 处理。
 - YOLO 与 `body_core_v1` 的产物必须带 `backend`、`raw_layout`、`feature_layout`、`capability`、`score_authorized`、`calibration_status`、`display_scope`。`body_core_v1` 的 baseline `1.2826`、YOLO `valid_conf_thr=0.6` 已落库，但仍是 `calibration_status=unvalidated`、`score_authorized=False`，未标定的分数不得进入对外报告。这些结论出自旧仓库的 `docs/yolo_*.md`（已从工作区删除），需要原文时在工作区根目录运行 `git show 5a6d99c:docs/yolo_default_switch_decision.md` 之类的命令。
 - 用户数据兼容：`%LOCALAPPDATA%\VisionSanda` 目录结构、`user_prefs.json` 键名、片段目录与文件名、练习历史 `schemaVersion=1`、成绩表列格式，以及 `feedback_config.json` 的文件名与字段。分数口径：内部 0..1，导出时 ×100，综合列用 `combined_percent`。
-- 测试隔离：偏好文件路径只由 `_prefs_path()` 提供，`tests/conftest.py` 的 autouse fixture 把它钉到临时文件。测试不得读写真实的 `user_prefs.json`。P1 迁移 `core/paths.py` 时，在同一个提交内把补丁目标改到新位置。
+- 测试隔离：偏好文件路径只由 `core/foundation/prefs.py` 的 `_prefs_path()` 提供，`tests/conftest.py` 的 autouse fixture 把它钉到临时文件。测试不得读写真实的 `user_prefs.json`；以后移动该函数时，在同一个提交内把补丁目标改到新位置。
 - 不新增运行时依赖。冻结 EXE 必须能运行：子进程入口是模块顶层函数，参数可 pickle，保留 `freeze_support()`。
 - `old/README.md` 和本文件记载的命令在本仓库中保持可用，必要时保留为不超过 30 行的入口壳。
 
 ## 环境与命令
 
-命令在本仓库根运行，按 PowerShell 写；P0 导出代码之前，本仓库还没有代码。用 Git Bash 时，路径写成 `./.venv/Scripts/python.exe`，环境变量用 `export`。
+命令在本仓库根运行，按 PowerShell 写。用 Git Bash 时，路径写成 `./.venv/Scripts/python.exe`，环境变量用 `export`。
 
 - 联网下载（pip 包、模型 `.task`/`.pt`、GitHub、HuggingFace）一律走本地代理 `http://127.0.0.1:7879`（端口以 Windows 系统代理设置为准）：
 
@@ -80,7 +80,7 @@
 每个 PR 都要过：
 
 - golden 与契约：`.\.venv\Scripts\python.exe -m pytest tests/test_pose33_v3_golden.py tests/test_valid_mask_migration.py tests/test_tech_eval_contract.py tests/test_rule_availability.py -q`
-- 架构测试（P1 起）：`.\.venv\Scripts\python.exe -m pytest tests/test_architecture.py -q`
+- 架构测试：`.\.venv\Scripts\python.exe -m pytest tests/test_architecture.py -q`
 - 受影响模块的套件（见下表）；改动面大时跑全量 `-m pytest tests -q`
 - `git diff --check`：行尾提示可以接受，空白错误不行
 
@@ -92,8 +92,9 @@ CI（`.github/workflows/gates.yml`，检查名 `gates`）在每个 PR 和 `main`
 | batch paired / 双流 | `test_batch_backend_args.py test_compare_dual_streams.py` |
 | YOLO / layout / router | `test_yolo_backend_contract.py test_yolo_landmark_mapping.py test_body_core_layout.py test_backend_routing_contract.py` |
 | 录制 | `test_recording_controller.py test_recording_postprocess.py` |
-| 学生练习 | `test_action_feedback.py test_student_presence.py` |
-| 摄像头与运行时（P0、P5、P6、P8、P9） | 源码模式跑 `test_camera_capture.py::test_tk_preview_student_switch_with_process_cameras`（真实 Tk + spawn），再构建 EXE 跑 `--offline-self-check`；整套自检只能在冻结包里跑 |
+| 学生练习 | `test_action_feedback.py test_student_presence.py test_rule_engine_entry.py` |
+| 规则引擎 / 评估 | `test_rule_availability.py test_rule_engine_entry.py test_p3_eval_differential.py` |
+| 摄像头与运行时 | `test_camera_warmup.py test_camera_service.py test_camera_enum.py test_tk_cameras.py`；源码模式跑 `test_camera_capture.py::test_tk_preview_student_switch_with_process_cameras`（真实 Tk + spawn），再构建 EXE 跑 `--offline-self-check`；整套自检只能在冻结包里跑 |
 
 全量基线和已知失败见 `重构阶段任务/README.md` 的"通用任务前检查"，不得新增失败。替换掉的测试要在 PR 里列出对应的新测试（D-13）。
 
@@ -116,20 +117,20 @@ CI（`.github/workflows/gates.yml`，检查名 `gates`）在每个 PR 和 `main`
 - `change.md` 过长时，用 `git mv` 把它归档为 `change（<起>~<止月>）.md`，再新建一个空的 `change.md`，把"归档与重建"作为新文件的第一条记录，并更新下面的归档清单。
 - 历史归档在旧项目里：`old/change（start~2026.5）.md`、`old/change（2026.5~2026.6）.md`、`old/change（2026.6~2026.7）.md`。
 
-## 现有代码地图
+## 代码地图
 
-路径相对于项目根，`old/` 和 P0 导出后的本仓库相同。每个文件的去向见设计文档附录 B，需要保留的能力清单见附录 A。
+路径相对于本仓库根。分层与各模块职责见设计文档 §2；旧项目文件的去向见设计文档附录 B，需要保留的能力清单见附录 A。
 
-- `core/`：
-  - 姿态与匹配：`vision_pipeline.py`（MediaPipe Tasks 封装）、`pose_features.py`（归一化、DTW、`derive_valid_mask`）、`feature_layout.py`、`action_compare.py`（单/双模板对比、`compare_dual_streams`）、`online_matcher.py`、`parallel_pose_engine.py`、`preview_smoother.py`。
-  - 评分与练习：`rule_scoring.py`、`kick_quality.py`、`action_feedback.py`（学生练习 v4，`RULE_VERSION`）、`feedback_geometry.py`、`feedback_phases.py`、`feedback_history.py`、`feedback_report.py`。
-  - 后端：`backend_router.py`、`yolo_adapter.py`、`body_core_compare.py`、`model_manager.py`。
-  - 录制与考试：`recording_controller.py`、`exam_session.py`、`exam_roster.py`、`presence_gate.py`、`exam_clip.py`、`exam_announcer.py`。
-  - 其它：`paths.py`、`video_writer.py`、`qwen_coach.py`（去留见 D-12）。
-- `apps/`：
-  - 桌面：`app_ui.py`（Tk 主程序）、`desktop_launcher.py`（打包入口，`--offline-self-check`）、`desktop_smoke.py`（自检内容）、`exam_panel.py`、`feedback_panel.py`、`feedback_result_panel.py`、`recording_postprocess.py`（双摄录后处理与池级比对）。
-  - 摄像头：`camera_enum.py`、`camera_capture.py`、`camera_warmup.py`（PR #75 的池 + 租约）。
-  - CLI：`main.py`、`make_template.py`、`match_template.py`。`ui_backend.py` 已弃用。
-- `batch/`、`analysis/`：离线批处理、tech_eval、标定和 benchmark，不接入默认的生产评分路径。
-- `scripts/`：`sim_exam_flow.py`、`match_segments_probe.py`、`generate_feedback_icons.py`；其余是 web 端和 qwen 的脚本。
-- 其它：`tests/` 是 pytest 回归与 fixtures；`assets/feedback/` 是结果页状态图标；`packaging/pyinstaller/` 是单文件 spec 也要用的 runtime hook。
+- `core/`（按层，从低到高；各包经 `__init__` 导出公共 API）：
+  - `foundation/`（L0）：路径（`paths.py`）、用户偏好（`prefs.py`）、原子写、几何与信号基元、任务取消、JSON 化、非模板 npz 读取（`npz.py`）、诊断日志。
+  - `media/`（L1）：视频读取（`video_source.py`）、视频写出与转码（`writer.py`）、帧校验、片段布局；`media/camera/` 是摄像头：设备目录（`devices.py`）、采集子进程（`capture_process.py`）、池（`pool.py` 占用表与租约，`slot.py`、`slot_lifecycle.py` reader 与释放重试，`pool_checks.py` 参数校验）与 `CameraService`（`service.py`）。
+  - `pose/`（L2）：MediaPipe 引擎与模型、`PoseSequence` 提取、`derive_valid_mask`（`validity.py`）、特征与布局（`pose33_v3`、`body_core_v1`）、归一化、并行引擎、平滑与绘制；`pose/backends/` 是 router、body_core 特征与 YOLO 适配（`yolo/`，不进 EXE）。
+  - `evaluation/`（L3）：模板（`templates.py`）、匹配（`matching/`：DTW、单/双模板、双流、在线匹配、body_core）、切分与相位、测量（`measures/`）、规则（`rules/`：`spec.py`、唯一引擎 `engine.py` 的 `evaluate_rules`、`formal_v1.py`、`practice_v4.py`、`adapters.py`）、评分口径（`scoring/`）、学生练习分析（`practice.py`）、技术指标（`techeval/`）。
+  - L4：`services/`（离线分析、模板生成、练习历史）、`recording/`（录制控制、录后 finalizer 与步骤）、`live/`（实时会话 `SessionRunner` 与预览）、`reporting/`（练习文本与 HTML 报告）。
+  - `workflows/`（L5）：考试（`exam/`：会话、名册、片段、成绩表）、学生练习会话、命令执行器与工作流宿主、在场闸门、播报。
+- `apps/`（入口）：
+  - 桌面：`app_ui.py`（入口壳）→ `tk/`（`app.py` 组合根、`controllers/`、`views/`、`dispatcher.py`、`shutdown.py`、`self_check.py` 自检内容）；`desktop_launcher.py` 是打包入口（`--offline-self-check`）。
+  - CLI：`main.py`、`make_template.py`、`match_template.py`（入口壳）→ `cli/`。
+- `batch/`、`analysis/`：离线批处理、tech_eval、标定和 benchmark，只用 `core` 各包的公共 API，不接入默认的生产评分路径。
+- `scripts/`：`sim_exam_flow.py`（无摄像头模拟考试）、`match_segments_probe.py`、`generate_feedback_icons.py`。
+- 其它：`tests/` 是 pytest 回归与 fixtures（架构测试 `test_architecture.py`、allowlist `architecture_allowlist.py`、差分基准 `eval_diff/`）；`assets/feedback/` 是结果页状态图标；`packaging/pyinstaller/` 是单文件 spec 也要用的 runtime hook。
