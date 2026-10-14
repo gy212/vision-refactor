@@ -55,6 +55,7 @@ from core.evaluation.rules.practice_v4 import (
     FeedbackConfig,
     build_checks,
     load_feedback_config,
+    practice_profile,
 )
 from core.evaluation.scoring import exam_pool, schemes
 from core.evaluation.scoring.cost import POSE33_BASELINE, avg_cost_of, baseline_for, score_from_avg_cost
@@ -161,6 +162,7 @@ __all__ = [
     "avg_cost_of",
     "baseline_for",
     "build_checks",
+    "practice_profile",
     "center_x",
     "classify_single_view",
     "compare_dual_streams",
