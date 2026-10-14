@@ -31,7 +31,6 @@ LEGACY_TARGETS = {
     "core.recording_controller": "core.recording",
     "core.feedback_history": "core.services",
     "core.feedback_report": "core.reporting",
-    "core.qwen_coach": "core.services",
     "core.exam_session": "core.workflows",
     "core.exam_roster": "core.workflows",
     "core.exam_clip": "core.workflows",
@@ -57,7 +56,6 @@ PRIMITIVES: dict[str, tuple[int, str]] = {
     'subsequence_dtw: scripts/match_segments_probe.py': (1, 'P9'),
     'video_capture: analysis/bench_annotate_fps.py': (4, 'P9'),
     'video_capture: analysis/spike_yolo_baseline.py': (2, 'P9'),
-    'video_capture: core/qwen_coach.py': (1, 'P9'),  # D-12 未决：保留到 P9 按 D-12 处置
 }
 
 CLONES: dict[str, tuple[int, str]] = {}
@@ -65,7 +63,6 @@ CLONES: dict[str, tuple[int, str]] = {}
 MODULE_SIZE: dict[str, tuple[int, str]] = {
     'analysis/bench_annotate_fps.py': (1018, 'P9'),
     'core/media/camera/pool.py': (1115, 'P9'),  # 原 apps/camera_warmup.py（1125），D-15：P9 按职责拆分
-    'core/qwen_coach.py': (916, 'P9'),
 }
 
 FUNCTION_SIZE: dict[str, tuple[int, str]] = {
@@ -89,4 +86,4 @@ FUNCTION_SIZE: dict[str, tuple[int, str]] = {
 DEFENSIVE_GETATTR: dict[str, tuple[int, str]] = {
 }
 
-ENTRY_CEILING = 27
+ENTRY_CEILING = 25
