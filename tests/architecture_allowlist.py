@@ -21,18 +21,9 @@ MODULE_SIZE: dict[str, tuple[int, str]] = {
     'core/media/camera/pool.py': (1115, 'P9'),  # 原 apps/camera_warmup.py（1125），D-15：P9 按职责拆分
 }
 
-FUNCTION_SIZE: dict[str, tuple[int, str]] = {
-    'analysis/calibrate_body_core.py::run': (166, 'P9'),
-    'analysis/offline_matching_profile.py::run_fixture_profile': (112, 'P9'),
-    'core/evaluation/techeval/cog.py::eval_cog_front': (101, 'P9'),  # 原 analysis/tech_eval.py，P3 迁入
-    'core/evaluation/techeval/cog.py::eval_cog_side': (139, 'P9'),
-    'core/evaluation/techeval/com.py::_compute_body_com_single': (176, 'P9'),
-    'core/evaluation/techeval/com.py::eval_cog_com': (128, 'P9'),
-    'core/evaluation/techeval/events.py::detect_retract_events_side': (103, 'P9'),
-    'scripts/sim_exam_flow.py::scenario_5': (107, 'P9'),
-}
+FUNCTION_SIZE: dict[str, tuple[int, str]] = {}
 
 DEFENSIVE_GETATTR: dict[str, tuple[int, str]] = {
 }
 
-ENTRY_CEILING = 9
+ENTRY_CEILING = 1

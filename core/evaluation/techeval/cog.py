@@ -13,6 +13,172 @@ from core.pose import DEFAULT_VALID_CONF_THR
 from core.pose.landmarks import L_ANKLE, L_FOOT_INDEX, L_HIP, L_KNEE, R_ANKLE, R_FOOT_INDEX, R_HIP, R_KNEE
 
 
+def _no_frames_result() -> IndicatorResult:
+    detail = {
+        "primary_cause": "无有效帧",
+        "valid_frames": 0,
+        "total_frames": 0,
+    }
+    return IndicatorResult(status="无法判定", reason="无有效帧", detail=detail)
+
+
+def _knee_angle(lm: np.ndarray, mask_row: np.ndarray, leg: str) -> float | None:
+    """髋—膝—踝夹角；三点任一无效时为 None。"""
+    hip, knee, ankle = (L_HIP, L_KNEE, L_ANKLE) if leg == "L" else (R_HIP, R_KNEE, R_ANKLE)
+    if not all_valid(mask_row, (hip, knee, ankle)):
+        return None
+    return angle_deg(landmark_xy(lm, hip), landmark_xy(lm, knee), landmark_xy(lm, ankle))
+
+
+def _side_frame_class(
+    lm: np.ndarray,
+    mask_row: np.ndarray,
+    front_leg: str,
+    *,
+    knee_straight_thr: float,
+    hip_r_back: float,
+    hip_r_front: float,
+) -> str:
+    """侧面单帧重心归类：``forward``/``backward``/``center``/``unknown``。"""
+    d = facing_direction(lm, mask_row)
+    if d is None:
+        return "unknown"
+    back_leg = "R" if front_leg == "L" else "L"
+    ang_front = _knee_angle(lm, mask_row, front_leg)
+    ang_back = _knee_angle(lm, mask_row, back_leg)
+
+    # Scheme 2 (side): straight back-leg => forward; straight front-leg => backward.
+    if ang_back is not None and float(ang_back) >= float(knee_straight_thr):
+        return "forward"
+    if ang_front is not None and float(ang_front) >= float(knee_straight_thr):
+        return "backward"
+
+    # Center by knee projection on the front foot.
+    knee_idx = L_KNEE if front_leg == "L" else R_KNEE
+    foot_edges = foot_edges_x(lm, mask_row, side=front_leg, dir_x=d)
+    if foot_edges is not None and bool(mask_row[knee_idx]):
+        fb, ff = foot_edges
+        foot_len = float(ff - fb)
+        if foot_len >= 0.02:
+            kx = float(landmark_xy(lm, knee_idx)[0]) * float(d)
+            t = (kx - fb) / (foot_len + 1e-9)
+            if 0.25 <= float(t) <= 0.75:
+                return "center"
+
+    # Scheme 1: hip projection ratio in the overall support area.
+    hip_x = center_x(lm, mask_row, L_HIP, R_HIP)
+    if hip_x is None:
+        return "unknown"
+    left_edges = foot_edges_x(lm, mask_row, side="L", dir_x=d)
+    right_edges = foot_edges_x(lm, mask_row, side="R", dir_x=d)
+    if left_edges is None or right_edges is None:
+        return "unknown"
+    support_back = float(min(left_edges[0], right_edges[0]))
+    support_front = float(max(left_edges[1], right_edges[1]))
+    denom = float(support_front - support_back)
+    if denom < 0.02:
+        return "unknown"
+    r = ((float(hip_x) * float(d)) - support_back) / (denom + 1e-9)
+    if float(r) <= float(hip_r_back):
+        return "backward"
+    if float(r) >= float(hip_r_front):
+        return "forward"
+    return "center"
+
+
+def _front_frame_class(
+    lm: np.ndarray,
+    mask_row: np.ndarray,
+    front_leg: str,
+    *,
+    knee_straight_thr: float,
+    ankle_acute_thr: float,
+) -> str:
+    """正面单帧重心归类：前膝伸直判偏后，前踝锐角判偏前，两者同时成立或都无法测量为 ``unknown``。"""
+    if front_leg == "L":
+        hip, knee, ankle, toe = L_HIP, L_KNEE, L_ANKLE, L_FOOT_INDEX
+    else:
+        hip, knee, ankle, toe = R_HIP, R_KNEE, R_ANKLE, R_FOOT_INDEX
+    knee_ang = None
+    ankle_ang = None
+    if all_valid(mask_row, (hip, knee, ankle)):
+        knee_ang = angle_deg(landmark_xy(lm, hip), landmark_xy(lm, knee), landmark_xy(lm, ankle))
+    if all_valid(mask_row, (knee, ankle, toe)):
+        ankle_ang = angle_deg(landmark_xy(lm, knee), landmark_xy(lm, ankle), landmark_xy(lm, toe))
+    if knee_ang is None and ankle_ang is None:
+        return "unknown"
+
+    # Front rules (from requirements):
+    # - front knee ~180 => backward
+    # - front ankle acute (<90) => forward
+    k_back = (knee_ang is not None) and (float(knee_ang) >= float(knee_straight_thr))
+    a_fwd = (ankle_ang is not None) and (float(ankle_ang) < float(ankle_acute_thr))
+    if k_back and a_fwd:
+        return "unknown"
+    if k_back:
+        return "backward"
+    if a_fwd:
+        return "forward"
+    return "center"
+
+
+def _cog_verdict(
+    view: str,
+    counts: dict[str, int],
+    total_frames: int,
+    front_leg: str,
+    params: dict[str, float],
+    *,
+    trigger_ratio: float,
+    min_valid_frames: int,
+) -> IndicatorResult:
+    """按逐帧归类计数判定重心：有效帧不足或前后冲突为无法判定，偏前/偏后达到触发比例为不合格。"""
+    forward, backward, center, unknown = (counts[k] for k in ("forward", "backward", "center", "unknown"))
+    valid = forward + backward + center
+    detail = {
+        "valid_frames": int(valid),
+        "total_frames": int(total_frames),
+        "forward_frames": int(forward),
+        "backward_frames": int(backward),
+        "center_frames": int(center),
+        "unknown_frames": int(unknown),
+        "front_leg": str(front_leg),
+        **{k: float(v) for k, v in params.items()},
+        "trigger_ratio": float(trigger_ratio),
+    }
+
+    f_ratio = float(forward / max(1, valid))
+    b_ratio = float(backward / max(1, valid))
+    c_ratio = float(center / max(1, valid))
+    detail["forward_ratio"] = float(f_ratio)
+    detail["backward_ratio"] = float(b_ratio)
+    detail["center_ratio"] = float(c_ratio)
+    detail["unknown_ratio"] = float(unknown / max(1, int(total_frames)))
+
+    if valid < int(min_valid_frames):
+        detail["primary_cause"] = "有效帧不足"
+        return IndicatorResult(status="无法判定", reason=f"{view}：有效帧不足/遮挡", detail=detail)
+
+    if f_ratio >= float(trigger_ratio) and b_ratio >= float(trigger_ratio):
+        detail["primary_cause"] = "冲突"
+        return IndicatorResult(status="无法判定", reason=f"{view}：前后判断冲突（可能斜拍/遮挡）", detail=detail)
+    if f_ratio >= float(trigger_ratio):
+        detail["primary_cause"] = "偏前"
+        return IndicatorResult(status="不合格", reason=f"{view}：重心偏前", detail=detail)
+    if b_ratio >= float(trigger_ratio):
+        detail["primary_cause"] = "偏后"
+        return IndicatorResult(status="不合格", reason=f"{view}：重心偏后", detail=detail)
+    detail["primary_cause"] = "居中"
+    return IndicatorResult(status="合格", reason=f"{view}：重心居中", detail=detail)
+
+
+def _count_classes(classes) -> dict[str, int]:
+    counts = {"forward": 0, "backward": 0, "center": 0, "unknown": 0}
+    for c in classes:
+        counts[c] += 1
+    return counts
+
+
 def eval_cog_side(
     landmarks: np.ndarray,
     *,
@@ -27,131 +193,17 @@ def eval_cog_side(
     valid_mask: np.ndarray | None = None,
 ) -> IndicatorResult:
     if landmarks.size == 0:
-        detail = {
-            "primary_cause": "无有效帧",
-            "valid_frames": 0,
-            "total_frames": 0,
-        }
-        return IndicatorResult(status="无法判定", reason="无有效帧", detail=detail)
-
+        return _no_frames_result()
     mask = resolve_mask(landmarks, valid_mask, vis_thr)
     front_leg = infer_front_leg(landmarks, mask, fallback=stance_fallback)
-    back_leg = "R" if front_leg == "L" else "L"
-
-    forward = backward = center = unknown = 0
-
-    for i, lm in enumerate(landmarks):
-        mask_row = mask[i]
-        d = facing_direction(lm, mask_row)
-        if d is None:
-            unknown += 1
-            continue
-
-        def knee_angle(leg: str) -> float | None:
-            if leg == "L":
-                idxs = (L_HIP, L_KNEE, L_ANKLE)
-                hip, knee, ankle = L_HIP, L_KNEE, L_ANKLE
-            else:
-                idxs = (R_HIP, R_KNEE, R_ANKLE)
-                hip, knee, ankle = R_HIP, R_KNEE, R_ANKLE
-            if not all_valid(mask_row, idxs):
-                return None
-            return angle_deg(landmark_xy(lm, hip), landmark_xy(lm, knee), landmark_xy(lm, ankle))
-
-        ang_front = knee_angle(front_leg)
-        ang_back = knee_angle(back_leg)
-
-        # Scheme 2 (side): straight back-leg => forward; straight front-leg => backward.
-        if ang_back is not None and float(ang_back) >= float(knee_straight_thr):
-            forward += 1
-            continue
-        if ang_front is not None and float(ang_front) >= float(knee_straight_thr):
-            backward += 1
-            continue
-
-        # Center by knee projection on the front foot.
-        if front_leg == "L":
-            knee_idx = L_KNEE
-            foot_edges = foot_edges_x(lm, mask_row, side="L", dir_x=d)
-        else:
-            knee_idx = R_KNEE
-            foot_edges = foot_edges_x(lm, mask_row, side="R", dir_x=d)
-
-        if foot_edges is not None and bool(mask_row[knee_idx]):
-            fb, ff = foot_edges
-            foot_len = float(ff - fb)
-            if foot_len >= 0.02:
-                kx = float(landmark_xy(lm, knee_idx)[0]) * float(d)
-                t = (kx - fb) / (foot_len + 1e-9)
-                if 0.25 <= float(t) <= 0.75:
-                    center += 1
-                    continue
-
-        # Scheme 1: hip projection ratio in the overall support area.
-        hip_x = center_x(lm, mask_row, L_HIP, R_HIP)
-        if hip_x is None:
-            unknown += 1
-            continue
-
-        left_edges = foot_edges_x(lm, mask_row, side="L", dir_x=d)
-        right_edges = foot_edges_x(lm, mask_row, side="R", dir_x=d)
-        if left_edges is None or right_edges is None:
-            unknown += 1
-            continue
-
-        support_back = float(min(left_edges[0], right_edges[0]))
-        support_front = float(max(left_edges[1], right_edges[1]))
-        denom = float(support_front - support_back)
-        if denom < 0.02:
-            unknown += 1
-            continue
-
-        r = ((float(hip_x) * float(d)) - support_back) / (denom + 1e-9)
-        if float(r) <= float(hip_r_back):
-            backward += 1
-        elif float(r) >= float(hip_r_front):
-            forward += 1
-        else:
-            center += 1
-
-    valid = forward + backward + center
-    detail = {
-        "valid_frames": int(valid),
-        "total_frames": int(landmarks.shape[0]),
-        "forward_frames": int(forward),
-        "backward_frames": int(backward),
-        "center_frames": int(center),
-        "unknown_frames": int(unknown),
-        "front_leg": str(front_leg),
-        "knee_straight_thr": float(knee_straight_thr),
-        "hip_r_back": float(hip_r_back),
-        "hip_r_front": float(hip_r_front),
-        "trigger_ratio": float(trigger_ratio),
-    }
-
-    f_ratio = float(forward / max(1, valid))
-    b_ratio = float(backward / max(1, valid))
-    c_ratio = float(center / max(1, valid))
-    detail["forward_ratio"] = float(f_ratio)
-    detail["backward_ratio"] = float(b_ratio)
-    detail["center_ratio"] = float(c_ratio)
-    detail["unknown_ratio"] = float(unknown / max(1, int(landmarks.shape[0])))
-
-    if valid < int(min_valid_frames):
-        detail["primary_cause"] = "有效帧不足"
-        return IndicatorResult(status="无法判定", reason="侧面：有效帧不足/遮挡", detail=detail)
-
-    if f_ratio >= float(trigger_ratio) and b_ratio >= float(trigger_ratio):
-        detail["primary_cause"] = "冲突"
-        return IndicatorResult(status="无法判定", reason="侧面：前后判断冲突（可能斜拍/遮挡）", detail=detail)
-    if f_ratio >= float(trigger_ratio):
-        detail["primary_cause"] = "偏前"
-        return IndicatorResult(status="不合格", reason="侧面：重心偏前", detail=detail)
-    if b_ratio >= float(trigger_ratio):
-        detail["primary_cause"] = "偏后"
-        return IndicatorResult(status="不合格", reason="侧面：重心偏后", detail=detail)
-    detail["primary_cause"] = "居中"
-    return IndicatorResult(status="合格", reason="侧面：重心居中", detail=detail)
+    counts = _count_classes(
+        _side_frame_class(lm, mask[i], front_leg, knee_straight_thr=knee_straight_thr,
+                          hip_r_back=hip_r_back, hip_r_front=hip_r_front)
+        for i, lm in enumerate(landmarks)
+    )
+    params = {"knee_straight_thr": knee_straight_thr, "hip_r_back": hip_r_back, "hip_r_front": hip_r_front}
+    return _cog_verdict("侧面", counts, int(landmarks.shape[0]), front_leg, params,
+                        trigger_ratio=trigger_ratio, min_valid_frames=min_valid_frames)
 
 
 def eval_cog_front(
@@ -167,94 +219,17 @@ def eval_cog_front(
     valid_mask: np.ndarray | None = None,
 ) -> IndicatorResult:
     if landmarks.size == 0:
-        detail = {
-            "primary_cause": "无有效帧",
-            "valid_frames": 0,
-            "total_frames": 0,
-        }
-        return IndicatorResult(status="无法判定", reason="无有效帧", detail=detail)
-
+        return _no_frames_result()
     mask = resolve_mask(landmarks, valid_mask, vis_thr)
     stance = (stance or "left").lower()
     front_leg = "L" if stance == "left" else "R"
-
-    forward = backward = center = unknown = 0
-
-    for i, lm in enumerate(landmarks):
-        mask_row = mask[i]
-        if front_leg == "L":
-            knee_idxs = (L_HIP, L_KNEE, L_ANKLE)
-            ankle_idxs = (L_KNEE, L_ANKLE, L_FOOT_INDEX)
-            hip, knee, ankle, toe = L_HIP, L_KNEE, L_ANKLE, L_FOOT_INDEX
-        else:
-            knee_idxs = (R_HIP, R_KNEE, R_ANKLE)
-            ankle_idxs = (R_KNEE, R_ANKLE, R_FOOT_INDEX)
-            hip, knee, ankle, toe = R_HIP, R_KNEE, R_ANKLE, R_FOOT_INDEX
-
-        knee_ang = None
-        ankle_ang = None
-        if all_valid(mask_row, knee_idxs):
-            knee_ang = angle_deg(landmark_xy(lm, hip), landmark_xy(lm, knee), landmark_xy(lm, ankle))
-        if all_valid(mask_row, ankle_idxs):
-            ankle_ang = angle_deg(landmark_xy(lm, knee), landmark_xy(lm, ankle), landmark_xy(lm, toe))
-
-        if knee_ang is None and ankle_ang is None:
-            unknown += 1
-            continue
-
-        # Front rules (from requirements):
-        # - front knee ~180 => backward
-        # - front ankle acute (<90) => forward
-        k_back = (knee_ang is not None) and (float(knee_ang) >= float(knee_straight_thr))
-        a_fwd = (ankle_ang is not None) and (float(ankle_ang) < float(ankle_acute_thr))
-
-        if k_back and a_fwd:
-            unknown += 1
-            continue
-        if k_back:
-            backward += 1
-        elif a_fwd:
-            forward += 1
-        else:
-            center += 1
-
-    valid = forward + backward + center
-    detail = {
-        "valid_frames": int(valid),
-        "total_frames": int(landmarks.shape[0]),
-        "forward_frames": int(forward),
-        "backward_frames": int(backward),
-        "center_frames": int(center),
-        "unknown_frames": int(unknown),
-        "front_leg": str(front_leg),
-        "knee_straight_thr": float(knee_straight_thr),
-        "ankle_acute_thr": float(ankle_acute_thr),
-        "trigger_ratio": float(trigger_ratio),
-    }
-
-    f_ratio = float(forward / max(1, valid))
-    b_ratio = float(backward / max(1, valid))
-    c_ratio = float(center / max(1, valid))
-    detail["forward_ratio"] = float(f_ratio)
-    detail["backward_ratio"] = float(b_ratio)
-    detail["center_ratio"] = float(c_ratio)
-    detail["unknown_ratio"] = float(unknown / max(1, int(landmarks.shape[0])))
-
-    if valid < int(min_valid_frames):
-        detail["primary_cause"] = "有效帧不足"
-        return IndicatorResult(status="无法判定", reason="正面：有效帧不足/遮挡", detail=detail)
-
-    if f_ratio >= float(trigger_ratio) and b_ratio >= float(trigger_ratio):
-        detail["primary_cause"] = "冲突"
-        return IndicatorResult(status="无法判定", reason="正面：前后判断冲突（可能斜拍/遮挡）", detail=detail)
-    if f_ratio >= float(trigger_ratio):
-        detail["primary_cause"] = "偏前"
-        return IndicatorResult(status="不合格", reason="正面：重心偏前", detail=detail)
-    if b_ratio >= float(trigger_ratio):
-        detail["primary_cause"] = "偏后"
-        return IndicatorResult(status="不合格", reason="正面：重心偏后", detail=detail)
-    detail["primary_cause"] = "居中"
-    return IndicatorResult(status="合格", reason="正面：重心居中", detail=detail)
+    counts = _count_classes(
+        _front_frame_class(lm, mask[i], front_leg, knee_straight_thr=knee_straight_thr, ankle_acute_thr=ankle_acute_thr)
+        for i, lm in enumerate(landmarks)
+    )
+    params = {"knee_straight_thr": knee_straight_thr, "ankle_acute_thr": ankle_acute_thr}
+    return _cog_verdict("正面", counts, int(landmarks.shape[0]), front_leg, params,
+                        trigger_ratio=trigger_ratio, min_valid_frames=min_valid_frames)
 
 
 def eval_cog_side_prefer_punch_windows(

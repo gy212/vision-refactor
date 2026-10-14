@@ -418,6 +418,76 @@ def _load_fixture_raw(name: str) -> np.ndarray:
     return np.asarray(load_npz(path)["landmarks"], dtype=np.float32)
 
 
+def _segment(seg) -> list[int] | None:
+    return None if seg is None else [int(seg[0]), int(seg[1])]
+
+
+def _replay_production(videos: dict[str, np.ndarray], fps: float, stages: StageSet, stage: str, call):
+    """在 golden 回放环境里计时调用生产函数：登记 ``golden://`` 视频，结束后清空登记。"""
+    from tests import golden_harness as H
+
+    try:
+        H.clear_registry()
+        for name, raw in videos.items():
+            H.register_video(f"golden://{name}", raw, fps=fps)
+        with H.replay_context(), stages.time(stage):
+            return call()
+    finally:
+        try:
+            H.clear_registry()
+        except Exception:
+            pass
+
+
+def _fixture_production_record(fixture_dir: Path, front_raw: np.ndarray, student_raw: np.ndarray, fps: float) -> dict[str, Any]:
+    """生产路径 ``compare_video_to_dual_templates`` 在 fixture 上的一次计时调用。"""
+    stages = StageSet()
+    videos = {"front_src.mp4": front_raw, "side_src.mp4": _load_fixture_raw("side_src_raw.npz"), "student.mp4": student_raw}
+    res = _replay_production(videos, fps, stages, "production_compare_video_to_dual_templates", lambda: (
+        compare_video_to_dual_templates(
+            fixture_dir / "front_template.npz",
+            fixture_dir / "side_template.npz",
+            "golden://student.mp4",
+            pose_variant="full",
+            enable_rules=False,
+            enable_error_analysis=False,
+        )
+    ))
+    return {
+        "profile_id": "fixture_pose33_production",
+        "target": "compare_video_to_dual_templates",
+        "mode": "production_call",
+        "frames": int(student_raw.shape[0]),
+        "combined_percent": int(res.combined_percent),
+        "combined_score": float(res.combined_score),
+        "front_score": float(res.front_score),
+        "side_score": float(res.side_score),
+        "front_segment": _segment(res.front_segment),
+        "side_segment": _segment(res.side_segment),
+        "front_matches": int(len(res.front_matches)),
+        "side_matches": int(len(res.side_matches)),
+        "stages": stages.records(),
+    }
+
+
+def _fixture_body_core_production_record(body_tpl: Path, student_raw: np.ndarray, fps: float) -> dict[str, Any]:
+    """生产路径 ``match_body_core_template`` 在 fixture 上的一次计时调用。"""
+    stages = StageSet()
+    res = _replay_production({"student.mp4": student_raw}, fps, stages, "production_match_body_core_template",
+                             lambda: match_body_core_template(body_tpl, "golden://student.mp4", backend="mediapipe"))
+    return {
+        "profile_id": "fixture_body_core_production",
+        "target": "match_body_core_template",
+        "mode": "production_call",
+        "frames": int(student_raw.shape[0]),
+        "score": None if res.score is None else float(res.score),
+        "avg_cost": float(res.avg_cost),
+        "start_frame": int(res.start_frame),
+        "end_frame": int(res.end_frame),
+        "stages": stages.records(),
+    }
+
+
 def run_fixture_profile(out_dir: Path) -> dict[str, Any]:
     fixture_dir = _REPO_ROOT / "tests" / "fixtures" / "pose33_v3"
     front_tpl = fixture_dir / "front_template.npz"
@@ -425,47 +495,7 @@ def run_fixture_profile(out_dir: Path) -> dict[str, Any]:
     student_raw = _load_fixture_raw("student_raw.npz")
     front_raw = _load_fixture_raw("front_src_raw.npz")
     fps = 30.0
-    records: list[dict[str, Any]] = []
-
-    prod_stages = StageSet()
-    try:
-        from tests import golden_harness as H
-
-        H.clear_registry()
-        H.register_video("golden://front_src.mp4", front_raw, fps=fps)
-        H.register_video("golden://side_src.mp4", _load_fixture_raw("side_src_raw.npz"), fps=fps)
-        H.register_video("golden://student.mp4", student_raw, fps=fps)
-        with H.replay_context(), prod_stages.time("production_compare_video_to_dual_templates"):
-            prod_res = compare_video_to_dual_templates(
-                front_tpl,
-                side_tpl,
-                "golden://student.mp4",
-                pose_variant="full",
-                enable_rules=False,
-                enable_error_analysis=False,
-            )
-        records.append(
-            {
-                "profile_id": "fixture_pose33_production",
-                "target": "compare_video_to_dual_templates",
-                "mode": "production_call",
-                "frames": int(student_raw.shape[0]),
-                "combined_percent": int(prod_res.combined_percent),
-                "combined_score": float(prod_res.combined_score),
-                "front_score": float(prod_res.front_score),
-                "side_score": float(prod_res.side_score),
-                "front_segment": None if prod_res.front_segment is None else [int(prod_res.front_segment[0]), int(prod_res.front_segment[1])],
-                "side_segment": None if prod_res.side_segment is None else [int(prod_res.side_segment[0]), int(prod_res.side_segment[1])],
-                "front_matches": int(len(prod_res.front_matches)),
-                "side_matches": int(len(prod_res.side_matches)),
-                "stages": prod_stages.records(),
-            }
-        )
-    finally:
-        try:
-            H.clear_registry()  # type: ignore[name-defined]
-        except Exception:
-            pass
+    records: list[dict[str, Any]] = [_fixture_production_record(fixture_dir, front_raw, student_raw, fps)]
 
     pose_stages = StageSet()
     normalizer, normalizer_version = _normalizer_for_dual_templates(front_tpl, side_tpl)
@@ -489,43 +519,15 @@ def run_fixture_profile(out_dir: Path) -> dict[str, Any]:
     )
 
     body_tpl = _write_fixture_body_core_template(out_dir / "fixture_body_core_template.npz", front_raw, fps=fps)
-    body_stages = StageSet()
     records.append(
         _profile_body_core_from_raw(
             label="fixture_body_core_staged",
             template_path=body_tpl,
             landmarks=student_raw,
-            stages=body_stages,
+            stages=StageSet(),
         )
     )
-
-    body_prod_stages = StageSet()
-    try:
-        from tests import golden_harness as H
-
-        H.clear_registry()
-        H.register_video("golden://student.mp4", student_raw, fps=fps)
-        with H.replay_context(), body_prod_stages.time("production_match_body_core_template"):
-            body_res = match_body_core_template(body_tpl, "golden://student.mp4", backend="mediapipe")
-        records.append(
-            {
-                "profile_id": "fixture_body_core_production",
-                "target": "match_body_core_template",
-                "mode": "production_call",
-                "frames": int(student_raw.shape[0]),
-                "score": None if body_res.score is None else float(body_res.score),
-                "avg_cost": float(body_res.avg_cost),
-                "start_frame": int(body_res.start_frame),
-                "end_frame": int(body_res.end_frame),
-                "stages": body_prod_stages.records(),
-            }
-        )
-    finally:
-        try:
-            H.clear_registry()  # type: ignore[name-defined]
-        except Exception:
-            pass
-
+    records.append(_fixture_body_core_production_record(body_tpl, student_raw, fps))
     return {
         "profile_kind": "fixture_smoke",
         "records": records,
