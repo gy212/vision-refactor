@@ -3,7 +3,7 @@
 """测试左侧标准动作视频"""
 
 from pathlib import Path
-from analysis.tech_eval import evaluate_video_full
+from core.evaluation import evaluate_video_full
 
 # 尝试找到左侧视频
 possible_paths = [

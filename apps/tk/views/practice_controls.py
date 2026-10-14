@@ -10,7 +10,7 @@ from pathlib import Path
 from tkinter import StringVar, filedialog, messagebox, ttk
 from typing import Any
 
-from core.action_feedback import ACTIONS, STANCES
+from core.evaluation import ACTIONS, STANCES
 from core.services import HistoryStore, validate_identity
 
 from apps.tk.controllers.practice_analysis import DEFAULT_MODEL, MODEL_CHOICES, PracticeAnalysis

@@ -101,13 +101,13 @@ def test_issue44_does_not_modify_core_dtw_or_baselines():
     diff_paths = [
         _REPO_ROOT / "core" / "evaluation" / "matching" / "dtw.py",  # P3：DTW 原在 core/pose_features.py
         _REPO_ROOT / "core" / "pose" / "layouts.py",  # P2：原 core/feature_layout.py
-        _REPO_ROOT / "core" / "body_core_compare.py",
+        _REPO_ROOT / "core" / "evaluation" / "matching" / "body_core.py",  # P9：原 core/body_core_compare.py
     ]
     # Regression intent: this issue adds profiling/reporting only. The test keeps
     # the expected source of Issue #44 edits away from DTW, baselines, thresholds.
     for path in diff_paths:
         assert path.exists()
-    assert offline_matching_profile.subsequence_dtw.__module__ == "core.evaluation.matching.dtw"
+    assert offline_matching_profile.match_query.__module__ == "core.evaluation.matching.engine"
     assert offline_matching_profile.POSE33_BASELINE == 3.0  # 2026-07-11 校准更新
 
 

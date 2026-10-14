@@ -1,7 +1,7 @@
 import sys
 from pathlib import Path
 
-from core import paths
+from core.foundation import paths
 
 
 def test_offline_bundle_seeds_writable_data_without_overwriting_user_files(tmp_path, monkeypatch):

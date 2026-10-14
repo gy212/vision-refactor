@@ -92,5 +92,5 @@ def score_segment(front_video: str | Path, side_video: str | Path, front_templat
 
 def tech_eval_video(video_path: str | Path, *, pose_variant: str = "full", stance: str = "left",
                     view_hint: str = "auto") -> dict:
-    """一段视频的直拳技术指标（JSON 字典，与 ``analysis.tech_eval.evaluate_video_full`` 相同）。"""
+    """一段视频的直拳技术指标（JSON 字典，与 ``core.evaluation.evaluate_video_full`` 相同）。"""
     return evaluate_video_full(Path(video_path), pose_variant=pose_variant, stance=stance, view_hint=view_hint)

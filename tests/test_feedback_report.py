@@ -11,9 +11,9 @@ import numpy as np
 from PIL import Image
 import pytest
 
-from core.action_feedback import ACTIONS, STANCES, build_checks
+from core.evaluation import ACTIONS, STANCES, build_checks
 from core.reporting import practice_report_renderers
-from core.feedback_history import FeedbackHistory
+from core.services import HistoryStore as FeedbackHistory
 from core.reporting import (
     StatusCounts,
     HeadlineSummary,

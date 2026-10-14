@@ -32,7 +32,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from core.yolo_adapter import (  # noqa: E402
+from core.pose.backends.yolo import (  # noqa: E402
     BLAZE33_MISSING_IN_COCO17,
     COCO17_TO_BLAZE33,
     DEFAULT_YOLO_VALID_CONF_THR,

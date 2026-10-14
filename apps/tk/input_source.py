@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Tk 输入源状态模型 ``InputSourceState``：摄像头 / 视频 / 无 三态互斥（原 ``apps/camera_enum.py``，P8 随 Tk 层迁入 ``apps/tk/``）。"""
+"""Tk 输入源状态模型 ``InputSourceState``：摄像头 / 视频 / 无 三态互斥（原 ``apps/camera_enum.py``，P9 迁入 ``apps/tk/``）。"""
 from __future__ import annotations
 
 

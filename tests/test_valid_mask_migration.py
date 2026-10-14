@@ -39,9 +39,9 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from core.pose_features import DEFAULT_VALID_CONF_THR, derive_valid_mask  # noqa: E402
-from core.rule_scoring import score_rules  # noqa: E402
-from analysis.tech_eval import (  # noqa: E402
+from core.pose import DEFAULT_VALID_CONF_THR, derive_valid_mask  # noqa: E402
+from core.evaluation.rules.formal_v1 import score_rules  # noqa: E402
+from core.evaluation import (  # noqa: E402
     eval_cog_com,
     eval_cog_front,
     eval_cog_side,
@@ -49,8 +49,8 @@ from analysis.tech_eval import (  # noqa: E402
     eval_retract_speed_side,
     eval_wrist_angle,
     evaluate_video_full,
-    to_jsonable,
 )
+from core.foundation import to_jsonable  # noqa: E402
 from tests import golden_harness as H  # noqa: E402
 
 FIX_DIR = Path(__file__).resolve().parent / "fixtures" / "pose33_v3"
@@ -196,7 +196,7 @@ _INDICATORS = ("cog_side", "cog_front", "cog_final", "cog_com", "retract_speed",
 def test_evaluate_video_full_legacy_vs_explicit(registered_student):
     # ① 旧式：不传 valid_mask（内部按 visibility>=0.5 推导）。
     # ② 显式：先取出整段 landmarks，按 derive_valid_mask 生成 mask 显式传入。
-    from analysis.tech_eval import extract_pose_and_view_scores
+    from core.evaluation import extract_pose_and_view_scores
 
     with H.replay_context():
         legacy = evaluate_video_full(STUDENT, pose_variant="full", stance="left", view_hint="auto")

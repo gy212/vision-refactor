@@ -33,18 +33,19 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from core.action_compare import _assert_feature_layout_match  # noqa: E402
-from core.body_core_compare import (  # noqa: E402
+from core.evaluation import assert_feature_layout_match as _assert_feature_layout_match  # noqa: E402
+from core.evaluation import (  # noqa: E402
     BODY_CORE_V1_CALIBRATED_BASELINE,
     CALIBRATION_STATUS_UNVALIDATED,
     MultiPersonReviewRequiredError,
-    create_body_core_template,
-    extract_body_core_features,
     match_body_core_template,
 )
-from core.feature_layout import BODY_CORE_V1, POSE33_V3, get_layout, has_layout  # noqa: E402
-from core.pose_features import mirror_pose_features, normalize_pose_body_core_v1  # noqa: E402
-from core.yolo_adapter import BODY_CORE_V1_VALID_INDICES  # noqa: E402
+from core.services import create_body_core_template  # noqa: E402
+from core.pose.backends import extract_body_core_features  # noqa: E402
+from core.pose import BODY_CORE_V1, POSE33_V3, get_layout  # noqa: E402
+from core.pose.layouts import has_layout  # noqa: E402
+from core.pose import mirror_pose_features, normalize_pose_body_core_v1  # noqa: E402
+from core.pose.backends.yolo import BODY_CORE_V1_VALID_INDICES  # noqa: E402
 from tests import golden_harness as H  # noqa: E402
 from tests.yolo_fakes import FakeYoloAdapter, FakeYoloResult, patch_cv2_capture  # noqa: E402
 

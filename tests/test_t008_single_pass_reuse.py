@@ -11,15 +11,12 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from core import action_compare as ac  # noqa: E402
+from core.evaluation import compare_dual_templates as compare_video_to_dual_templates  # noqa: E402
 from core.evaluation.matching import dual as dual_mod  # noqa: E402
-from core.body_core_compare import (  # noqa: E402
-    CALIBRATION_STATUS_UNVALIDATED,
-    create_body_core_template,
-    extract_body_core_features,
-    match_body_core_template,
-)
-from core.rule_scoring import extract_pose_raw, extract_pose_raw_series, slice_pose_raw_series  # noqa: E402
+from core.evaluation import CALIBRATION_STATUS_UNVALIDATED, match_body_core_template  # noqa: E402
+from core.services import create_body_core_template  # noqa: E402
+from core.pose.backends import extract_body_core_features  # noqa: E402
+from core.pose import extract_pose_raw, extract_pose_raw_series, slice_pose_raw_series  # noqa: E402
 from tests import golden_harness as H  # noqa: E402
 
 
@@ -75,7 +72,7 @@ def test_dual_compare_reuses_one_raw_series_for_rules_and_joint_errors(monkeypat
     monkeypatch.setattr(dual_mod, "extract_pose_raw_series", counted_extract)
 
     with H.replay_context():
-        res = ac.compare_video_to_dual_templates(
+        res = compare_video_to_dual_templates(
             FRONT_TPL,
             SIDE_TPL,
             STUDENT,

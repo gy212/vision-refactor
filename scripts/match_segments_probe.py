@@ -22,10 +22,9 @@ from pathlib import Path
 
 import numpy as np
 
-from core.evaluation import COMPARE, POSE33_BASELINE, load_template, score_from_avg_cost
+from core.evaluation import COMPARE, POSE33_BASELINE, load_template, match_query, score_from_avg_cost
 from core.media import VideoOpenError
 from core.pose import FORMAL, POSE33_V3, extract_pose_sequence, formal_engine, normalize_pose_xy_v3
-from core.pose_features import subsequence_dtw
 
 TEMPL_DIR = Path("templates/segments")
 
@@ -74,9 +73,9 @@ def main() -> None:
     rows = []
     for tpl in tpls:
         q = load_template(tpl, COMPARE).features.reshape(-1, 44)
-        cost, s, e = subsequence_dtw(q, seq)
-        avg = cost / max(1, q.shape[0])
-        score = score_from_avg_cost(avg, POSE33_BASELINE)
+        m = match_query(q, seq)
+        s, e = m.start_frame, m.end_frame
+        score = score_from_avg_cost(m.avg_cost, POSE33_BASELINE)
         rows.append((tpl.stem, score, s, e, q.shape[0]))
 
     rows.sort(key=lambda x: (x[2] if x[2] is not None else 1 << 30))

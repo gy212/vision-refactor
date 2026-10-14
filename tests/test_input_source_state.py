@@ -10,7 +10,7 @@ from hypothesis import given, settings, strategies as st
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from apps.camera_enum import InputSourceState  # noqa: E402
+from apps.tk.input_source import InputSourceState  # noqa: E402
 
 
 def _assert_invariant(state: InputSourceState) -> None:

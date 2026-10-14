@@ -4,7 +4,7 @@
 
 import json
 from pathlib import Path
-from analysis.tech_eval import evaluate_video_full
+from core.evaluation import evaluate_video_full
 
 # 测试样本目录
 SAMPLE_DIR = Path("学员样本")

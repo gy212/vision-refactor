@@ -1,25 +1,9 @@
 # -*- coding: utf-8 -*-
-"""
-body_core_v1 离线模板生成（YOLO 迁移 Issue #8 / S2）；匹配已迁入 ``core.evaluation.matching.body_core``。
+"""``body_core_v1`` 离线模板生成（YOLO 或 MediaPipe）：提取特征、按运动能量定活动区间、写模板与未标定 meta（原 ``core/body_core_compare.py``）。
 
-定位
-----
-本模块打通**一条** YOLO ``body_core_v1`` 离线模板闭环（生成 → 匹配），并让
-MediaPipe 也能生成同一布局模板（供 #10 三方对比）。它是 ``body_core_v1`` 这个共享
-布局（12 点躯干四肢核心）的唯一消费者入口，故 normalizer / baseline 的「真正用途」
-都在此体现（见 docs/yolo_migration_plan_optimized.md 三审拆层说明）。
-
-硬约束（来自 AGENTS.md / 迁移计划，必须守住）
---------------------------------------------
-- **不动 MediaPipe 默认 ``pose33_v3`` 路径**：``apps/make_template.py`` /
-  ``compare_video_to_template`` 等旧默认行为完全不变；本模块是显式 opt-in 的独立入口。
-- **YOLO 只允许 ``body_core_v1``**：本模块的 YOLO 路径只产出 / 匹配该布局。
-- **S3（#10）只落参数，不授权出分**：``body_core_v1`` baseline=1.2826（取自
-  ``feature_layout.BODY_CORE_V1.default_baseline``），YOLO 侧 ``valid_conf_thr``=0.6。
-  但跨视频预注册判据未通过，结论为「仅预览 / 内部标定参考」，因此本模块分数 meta
-  仍标 ``calibration_status="unvalidated"``，不得进入用户报告 / 正式评分。
-- **不同 layout 比对报清晰错误**：复用 ``matching.engine.assert_feature_layout_match``，
-  绝不静默把 ``body_core_v1`` 模板与 ``pose33_v3`` 序列比对。
+只供 batch/analysis 显式选用，不动 MediaPipe 默认 ``pose33_v3`` 路径。baseline 1.2826、YOLO ``valid_conf_thr``=0.6
+已落库，但跨视频判据未通过：模板 meta 标 ``calibration_status=unvalidated``、``score_authorized=False``，
+分数不得进入用户报告或正式评分。匹配在 ``core.evaluation.matching.body_core``。
 """
 
 from __future__ import annotations
@@ -28,29 +12,17 @@ from pathlib import Path
 
 import numpy as np
 
-from .evaluation.matching.body_core import (  # noqa: F401  （匹配已迁入评估层，旧导入路径保留）
+from core.evaluation.matching.body_core import (
     BODY_CORE_CALIBRATION_NOTE,
     BODY_CORE_V1_CALIBRATED_BASELINE,
     CALIBRATION_STATUS_UNVALIDATED,
-    BodyCoreMatchResult,
-    MultiPersonReviewRequiredError,
-    match_body_core_template,
 )
-from .pose.layouts import BODY_CORE_V1
-from .paths import templates_dir
-from .foundation.signal import find_active_range, motion_energy
-from .pose.backends.body_core import (  # noqa: F401  （提取已迁入姿态层，旧导入路径保留）
-    BACKEND_MEDIAPIPE,
-    BACKEND_YOLO,
-    extract_body_core_features,
-)
-
-DEFAULT_YOLO26L_MODEL_NAME = "yolo26l-pose.pt"
+from core.foundation.paths import templates_dir
+from core.foundation.signal import find_active_range, motion_energy
+from core.pose.backends import BACKEND_MEDIAPIPE, BACKEND_YOLO, extract_body_core_features
+from core.pose.layouts import BODY_CORE_V1
 
 
-# --------------------------------------------------------------------------- #
-# 模板生成
-# --------------------------------------------------------------------------- #
 def create_body_core_template(
     video_path: str | Path,
     *,

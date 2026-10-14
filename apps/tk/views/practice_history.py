@@ -9,7 +9,8 @@ from pathlib import Path
 from tkinter import StringVar, Text, Toplevel, messagebox, ttk
 from typing import Any
 
-from core.action_feedback import ACTIONS, STATE_LABELS, format_fusion, format_report
+from core.evaluation import ACTIONS, STATE_LABELS
+from core.reporting import format_fusion, format_report
 
 _RETENTION_NOTE = "已存副本与结果从首次导入/分析起保留14天；重分析不延长。外部原视频不由此模块删除。"
 

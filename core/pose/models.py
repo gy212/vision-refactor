@@ -4,7 +4,7 @@
 为什么需要它
 ------------
 打包成单文件 exe 后，模型文件不再随程序分发。用户首次使用前需要把模型文件放到
-可执行文件同级的 ``models/`` 目录下（见 ``core.paths.models_dir()``）。
+可执行文件同级的 ``models/`` 目录下（见 ``core.foundation.paths.models_dir()``）。
 本模块集中维护：
 
 - 每个自动下载模型的官方下载地址（MediaPipe 使用 Google 官方资产）。
@@ -15,7 +15,7 @@
 
 约束
 ----
-- 仅依赖标准库 + ``core.paths``，不导入 mediapipe / cv2 等重依赖，便于 UI 早期加载与单测。
+- 仅依赖标准库 + ``core.foundation.paths``，不导入 mediapipe / cv2 等重依赖，便于 UI 早期加载与单测。
 - 下载源固定使用官方直链；开发侧默认走本机代理 ``http://127.0.0.1:7890``，可通过
   ``VISION_MODEL_PROXY`` 覆盖或置空。
 """

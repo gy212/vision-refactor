@@ -7,14 +7,15 @@ import json
 import sys
 from pathlib import Path
 
+import cv2
 import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from analysis import bench_annotate_fps  # noqa: E402
-from core.yolo_adapter import BODY_CORE_V1_VALID_INDICES, FrameResult, Landmark  # noqa: E402
+from analysis import bench_annotate_cases, bench_annotate_fps, bench_annotate_metrics, bench_annotate_yolo  # noqa: E402
+from core.pose.backends.yolo import BODY_CORE_V1_VALID_INDICES, FrameResult, Landmark  # noqa: E402
 
 
 REPORT = _REPO_ROOT / "docs" / "yolo_gpu_recheck_report.md"
@@ -79,18 +80,18 @@ def test_benchmark_env_only_writes_probe_json(tmp_path, monkeypatch):
 
 
 def test_body_core_jitter_helper_uses_only_consecutive_full_valid_frames():
-    row_0 = bench_annotate_fps._body_core_xy_from_frame(_frame_with_shift(0.0), 0.6)
-    row_1 = bench_annotate_fps._body_core_xy_from_frame(_frame_with_shift(0.01), 0.6)
+    row_0 = bench_annotate_yolo.body_core_xy_from_frame(_frame_with_shift(0.0), 0.6)
+    row_1 = bench_annotate_yolo.body_core_xy_from_frame(_frame_with_shift(0.01), 0.6)
     assert row_0 is not None
     assert row_1 is not None
 
-    jitter = bench_annotate_fps._body_core_jitter_median([row_0, row_1, None, row_1])
+    jitter = bench_annotate_yolo.body_core_jitter_median([row_0, row_1, None, row_1])
     assert jitter == pytest.approx(0.01, abs=1e-6)
 
 
 def test_csv_schema_contains_gpu_recheck_metric_fields(tmp_path):
     csv_path = tmp_path / "bench.csv"
-    bench_annotate_fps._write_csv(
+    bench_annotate_metrics.write_csv(
         csv_path,
         [
             {
@@ -148,7 +149,7 @@ def test_csv_schema_contains_gpu_recheck_metric_fields(tmp_path):
 
 
 def test_default_cases_keep_cpu_baseline_when_cuda_is_requested():
-    cases = {case.name: case for case in bench_annotate_fps._default_cases("cuda")}
+    cases = {case.name: case for case in bench_annotate_cases.default_cases("cuda")}
 
     assert cases["mediapipe_pose_only"].backend == "mediapipe"
     assert cases["mediapipe_pose_only"].device == "cpu"
@@ -179,13 +180,13 @@ def test_default_cases_keep_cpu_baseline_when_cuda_is_requested():
 
 
 def test_mediapipe_gpu_cases_are_explicit_opt_in():
-    default_cases = {case.name: case for case in bench_annotate_fps._default_cases("cuda")}
+    default_cases = {case.name: case for case in bench_annotate_cases.default_cases("cuda")}
     assert "mediapipe_gpu_pose_only" not in default_cases
     assert "mediapipe_gpu_pose_hands" not in default_cases
 
     gpu_cases = {
         case.name: case
-        for case in bench_annotate_fps._default_cases("cuda", include_mediapipe_gpu=True)
+        for case in bench_annotate_cases.default_cases("cuda", include_mediapipe_gpu=True)
     }
 
     assert gpu_cases["mediapipe_pose_only"].delegate == "cpu"
@@ -254,7 +255,7 @@ def test_mediapipe_runner_passes_delegate_to_pipeline(tmp_path, monkeypatch):
     monkeypatch.setattr(engine, "PoseEngine", FakePipeline)
 
     runner = bench_annotate_fps._make_runner(
-        bench_annotate_fps.BenchCase("mediapipe_gpu_pose_only", "mediapipe", False, "gpu", "gpu"),
+        bench_annotate_cases.BenchCase("mediapipe_gpu_pose_only", "mediapipe", False, "gpu", "gpu"),
         models_dir=tmp_path,
         pose_variant="full",
         yolo_model=tmp_path / "model.pt",
@@ -268,15 +269,15 @@ def test_mediapipe_runner_passes_delegate_to_pipeline(tmp_path, monkeypatch):
 
 
 def test_exported_yolo_model_delegate_is_inferred_from_suffix():
-    assert bench_annotate_fps._infer_yolo_delegate(Path("yolo11n-pose.pt")) == "pytorch"
-    assert bench_annotate_fps._infer_yolo_delegate(Path("yolo11n-pose.onnx")) == "onnxruntime"
-    assert bench_annotate_fps._infer_yolo_delegate(Path("yolo11n-pose.engine")) == "tensorrt"
+    assert bench_annotate_cases.infer_yolo_delegate(Path("yolo11n-pose.pt")) == "pytorch"
+    assert bench_annotate_cases.infer_yolo_delegate(Path("yolo11n-pose.onnx")) == "onnxruntime"
+    assert bench_annotate_cases.infer_yolo_delegate(Path("yolo11n-pose.engine")) == "tensorrt"
 
 
 def test_exported_yolo_default_cases_skip_pytorch_only_fp16_variants():
     cases = {
         case.name: case
-        for case in bench_annotate_fps._default_cases("cuda", yolo_delegate="onnxruntime")
+        for case in bench_annotate_cases.default_cases("cuda", yolo_delegate="onnxruntime")
     }
 
     assert cases["yolo_body_only"].delegate == "onnxruntime"
@@ -290,20 +291,20 @@ def test_exported_yolo_default_cases_skip_pytorch_only_fp16_variants():
 
 
 def test_timing_metrics_separate_warmup_and_timed_latency():
-    warmup = bench_annotate_fps.FrameLoopStats(
+    warmup = bench_annotate_metrics.FrameLoopStats(
         frames=2,
         wall_sec=0.9,
         wall_latencies_sec=(0.5, 0.4),
         infer_latencies_sec=(0.3, 0.2),
     )
-    timed = bench_annotate_fps.FrameLoopStats(
+    timed = bench_annotate_metrics.FrameLoopStats(
         frames=3,
         wall_sec=0.06,
         wall_latencies_sec=(0.01, 0.02, 0.03),
         infer_latencies_sec=(0.004, 0.006, 0.008),
     )
 
-    metrics = bench_annotate_fps._timing_metrics(timed=timed, warmup=warmup)
+    metrics = bench_annotate_metrics.timing_metrics(timed=timed, warmup=warmup)
 
     assert metrics["frames"] == 3
     assert metrics["timed_frames"] == 3
@@ -319,16 +320,6 @@ def test_timing_metrics_separate_warmup_and_timed_latency():
 def test_frame_loop_records_peak_process_rss(monkeypatch):
     rss_values = iter((100, 120, 115))
 
-    class FakeCap:
-        def __init__(self) -> None:
-            self.frames = 0
-
-        def read(self):
-            if self.frames >= 2:
-                return False, None
-            self.frames += 1
-            return True, object()
-
     class FakeRunner:
         last_yolo_raw_infer_sec = None
 
@@ -338,7 +329,7 @@ def test_frame_loop_records_peak_process_rss(monkeypatch):
     monkeypatch.setattr(bench_annotate_fps, "_process_rss_bytes", lambda: next(rss_values))
 
     stats = bench_annotate_fps._run_frame_loop(
-        cap=FakeCap(),
+        frames=[object(), object()],
         runner=FakeRunner(),
         fps_for_ts=30.0,
         frame_limit=None,
@@ -350,7 +341,7 @@ def test_frame_loop_records_peak_process_rss(monkeypatch):
 def test_bench_sample_yolo_warmup_is_reset_before_timed_metrics(tmp_path, monkeypatch):
     video_path = tmp_path / "sample.mp4"
     video_path.write_bytes(b"fake video")
-    sample = bench_annotate_fps.Sample("s", video_path, expected_frames=2)
+    sample = bench_annotate_cases.Sample("s", video_path, expected_frames=2)
     calls: list[str] = []
 
     class FakeCap:
@@ -421,7 +412,7 @@ def test_bench_sample_yolo_warmup_is_reset_before_timed_metrics(tmp_path, monkey
         def close(self) -> None:
             self.closed = True
 
-    monkeypatch.setattr(bench_annotate_fps.cv2, "VideoCapture", FakeCap)
+    monkeypatch.setattr(cv2, "VideoCapture", FakeCap)  # core.media 解码时取 cv2.VideoCapture
     monkeypatch.setattr(bench_annotate_fps, "time", _FakeTime())
     monkeypatch.setattr(
         bench_annotate_fps,
@@ -431,7 +422,7 @@ def test_bench_sample_yolo_warmup_is_reset_before_timed_metrics(tmp_path, monkey
 
     record = bench_annotate_fps.bench_sample(
         sample,
-        bench_annotate_fps.BenchCase("yolo_body_only", "yolo", False, "cuda", "pytorch"),
+        bench_annotate_cases.BenchCase("yolo_body_only", "yolo", False, "cuda", "pytorch"),
         models_dir=tmp_path,
         pose_variant="full",
         yolo_model=tmp_path / "model.pt",

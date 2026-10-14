@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """MediaPipe 的延迟导入：第一次真正推理或绘制时才压低原生日志级别并导入 ``mediapipe``。
 
-只导入 ``core.pose`` 包（如旧路径门面 ``core.pose_features``）不再加载 mediapipe（约 0.3 s），
+只导入 ``core.pose`` 包不再加载 mediapipe（约 0.3 s），
 也不在导入时改写 ``TF_CPP_MIN_LOG_LEVEL``/``GLOG_minloglevel``（P2 评审遗留第 1 项）。
 """
 from __future__ import annotations

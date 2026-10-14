@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""core.foundation.jsonable：结果对象转 JSON 结构；tech_eval 沿用同一实现。"""
+"""core.foundation.jsonable：结果对象转 JSON 结构。"""
 from __future__ import annotations
 
 import json
@@ -8,7 +8,6 @@ from pathlib import Path
 
 import numpy as np
 
-from analysis import tech_eval
 from core.foundation import to_jsonable
 
 
@@ -36,7 +35,3 @@ def test_nested_structures_become_plain_json():
     }
     json.dumps(out)
     assert type(out["n"]) is int and type(out["1"]["score"]) is float
-
-
-def test_tech_eval_reexports_the_single_implementation():
-    assert tech_eval.to_jsonable is to_jsonable

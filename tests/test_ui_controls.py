@@ -24,7 +24,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from apps.tk.views.recording_panel import RECORD_BTN_TEXT  # noqa: E402
-from core.recording_controller import RecordingController  # noqa: E402
+from core.recording import RecordingController  # noqa: E402
 
 
 # ---------------------------------------------------------------------------

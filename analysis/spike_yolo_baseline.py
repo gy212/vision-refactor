@@ -61,6 +61,8 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:  # 直接运行脚本时也能导入 core
     sys.path.insert(0, str(_REPO_ROOT))
 
+from core.media import open_video  # noqa: E402
+
 
 # ---------------------------------------------------------------------------
 # COCO17 → BlazePose33 映射（与迁移计划映射表一致）
@@ -150,14 +152,12 @@ class BackendRun:
 def run_mediapipe(video_path: Path, *, pose_variant: str, models_dir: Path) -> BackendRun:
     import mediapipe as mp
 
-    cap = cv2.VideoCapture(str(video_path))
-    if not cap.isOpened():
-        raise RuntimeError(f"无法打开视频：{video_path}")
-    fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0) or 30.0
+    source = open_video(video_path)  # 打不开时抛 VideoOpenError
+    fps = source.meta.fps
 
     pose_path = models_dir / f"pose_landmarker_{pose_variant}.task"
     if not pose_path.exists():
-        cap.release()
+        source.close()
         from core.pose import missing_model_message  # 提示文案唯一来源
 
         raise FileNotFoundError(missing_model_message("pose_path", path=pose_path))
@@ -177,10 +177,8 @@ def run_mediapipe(video_path: Path, *, pose_variant: str, models_dir: Path) -> B
     masks: list[np.ndarray] = []
 
     i = 0
-    while True:
-        ok, frame = cap.read()
-        if not ok:
-            break
+    for decoded in source:
+        frame = decoded.bgr
         t_wall = time.perf_counter()
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
@@ -209,7 +207,7 @@ def run_mediapipe(video_path: Path, *, pose_variant: str, models_dir: Path) -> B
         run.wall_sec += time.perf_counter() - t_wall
         i += 1
 
-    cap.release()
+    source.close()
     landmarker.close()
     run.n_frames = i
     run.landmarks = np.stack(lms, axis=0) if lms else np.zeros((0, 33, 4), np.float32)
@@ -275,12 +273,8 @@ def run_yolo(
 ) -> BackendRun:
     from ultralytics import YOLO
 
-    cap = cv2.VideoCapture(str(video_path))
-    if not cap.isOpened():
-        raise RuntimeError(f"无法打开视频：{video_path}")
-    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
-    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
-    fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0) or 30.0
+    source = open_video(video_path)  # 打不开时抛 VideoOpenError
+    w, h, fps = source.meta.width, source.meta.height, source.meta.fps
 
     t_init = time.perf_counter()
     model = YOLO(yolo_model)
@@ -292,10 +286,8 @@ def run_yolo(
     track_assigner = SimpleTrackAssigner()
 
     i = 0
-    while True:
-        ok, frame = cap.read()
-        if not ok:
-            break
+    for decoded in source:
+        frame = decoded.bgr
         t_wall = time.perf_counter()
         t_inf = time.perf_counter()
         results = model.predict(frame, imgsz=imgsz, verbose=False, device="cpu")
@@ -337,7 +329,7 @@ def run_yolo(
         run.wall_sec += time.perf_counter() - t_wall
         i += 1
 
-    cap.release()
+    source.close()
     run.n_frames = i
     run.landmarks = np.stack(lms, axis=0) if lms else np.zeros((0, 33, 4), np.float32)
     run.valid_mask = np.stack(masks, axis=0) if masks else np.zeros((0, 33), bool)

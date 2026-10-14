@@ -369,7 +369,8 @@ def test_dual_compare_paired_mode_uses_dual_streams_and_skips_raw_export(tmp_pat
 
 
 def test_dual_compare_body_core_parallel_keeps_order_and_yolo_metadata(tmp_path, monkeypatch):
-    from core import body_core_compare
+    from core import evaluation, services
+    from core.pose import backends
 
     student_dir = tmp_path / "students"
     student_dir.mkdir()
@@ -426,9 +427,10 @@ def test_dual_compare_body_core_parallel_keeps_order_and_yolo_metadata(tmp_path,
             },
         )
 
-    monkeypatch.setattr(body_core_compare, "create_body_core_template", fake_create_body_core_template)
-    monkeypatch.setattr(body_core_compare, "extract_body_core_features", fake_extract_body_core_features)
-    monkeypatch.setattr(body_core_compare, "match_body_core_template", fake_match_body_core_template)
+    # batch_dual_compare 在函数内从各包 __init__ 导入，补丁打在这些公共入口上
+    monkeypatch.setattr(services, "create_body_core_template", fake_create_body_core_template)
+    monkeypatch.setattr(backends, "extract_body_core_features", fake_extract_body_core_features)
+    monkeypatch.setattr(evaluation, "match_body_core_template", fake_match_body_core_template)
 
     batch_dual_compare._run_body_core_batch(
         args=SimpleNamespace(pose="full", rules=False, workers=2),

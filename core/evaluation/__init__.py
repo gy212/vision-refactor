@@ -10,6 +10,9 @@ from core.evaluation.body_sides import (
     sides_for_stance,
 )
 from core.evaluation.matching.body_core import (
+    BODY_CORE_CALIBRATION_NOTE,
+    BODY_CORE_V1_CALIBRATED_BASELINE,
+    CALIBRATION_STATUS_UNVALIDATED,
     BodyCoreMatchResult,
     MultiPersonReviewRequiredError,
     match_body_core_template,
@@ -18,8 +21,10 @@ from core.evaluation.matching.dtw import subsequence_dtw, subsequence_dtw_with_p
 from core.evaluation.matching.dual import DualCompareResult, compare_dual_streams, compare_dual_templates
 from core.evaluation.matching.engine import (
     CompareResult,
+    QueryMatch,
     TemplateMatch,
     assert_feature_layout_match,
+    match_query,
     match_templates,
     match_video,
     template_features,
@@ -105,6 +110,9 @@ from core.evaluation.templates import (
 from core.evaluation.templates import EXAM_POOL as EXAM_POOL_TEMPLATES
 
 __all__ = [
+    "BODY_CORE_CALIBRATION_NOTE",
+    "BODY_CORE_V1_CALIBRATED_BASELINE",
+    "CALIBRATION_STATUS_UNVALIDATED",
     "ACTIONS",
     "ActionTemplate",
     "BACKEND_MEDIAPIPE",
@@ -130,6 +138,7 @@ __all__ = [
     "OnlineActionMatcher",
     "PHASES",
     "POSE33_BASELINE",
+    "QueryMatch",
     "RETRACT_REQUIRED_INDICES",
     "RULE_VERSION",
     "RepetitionMatch",
@@ -183,6 +192,7 @@ __all__ = [
     "load_template",
     "load_template_library",
     "match_body_core_template",
+    "match_query",
     "match_templates",
     "match_video",
     "match_window",

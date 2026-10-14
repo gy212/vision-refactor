@@ -26,8 +26,10 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-import core.action_compare as ac  # noqa: E402
-import core.pose_features as pf  # noqa: E402
+from core.evaluation import LEGACY_DEFAULT_FEATURE_LAYOUT, compare_dual_streams  # noqa: E402
+from core.pose import POSE33_V3  # noqa: E402
+from core.pose.features import extract_features as _extract_pose_features  # noqa: E402
+from core.evaluation import subsequence_dtw, subsequence_dtw_with_path  # noqa: E402
 from core.evaluation.matching import dtw as dtw_mod  # noqa: E402
 from core.evaluation.matching import dual as dual_mod  # noqa: E402
 from tests import golden_harness as H  # noqa: E402
@@ -112,13 +114,13 @@ def tracked_extraction(monkeypatch):
 
 
 def test_single_thread_extraction_closes_resources_on_success(tracked_extraction):
-    features, fps, view_scores = ac._extract_pose_features(
+    features, fps, view_scores = _extract_pose_features(
         Path("tracked-success.mp4"),
         pose_variant="full",
         workers=1,
     )
 
-    assert features.shape == (3, *ac.POSE33_V3.shape)
+    assert features.shape == (3, *POSE33_V3.shape)
     assert fps == pytest.approx(25.0)
     assert view_scores is None
     assert len(_TrackedCapture.instances) == 1
@@ -131,7 +133,7 @@ def test_single_thread_extraction_closes_resources_on_inference_error(tracked_ex
     _TrackedPipeline.fail_on_infer = True
 
     with pytest.raises(RuntimeError, match="inference failed"):
-        ac._extract_pose_features(
+        _extract_pose_features(
             Path("tracked-error.mp4"),
             pose_variant="full",
             workers=1,
@@ -153,7 +155,7 @@ def test_cancelled_extraction_closes_resources_without_scoring(tracked_extractio
     monkeypatch.setattr(dual_mod, "score_view", unexpected_score)
 
     with pytest.raises(InterruptedError, match="姿态特征提取已取消"):
-        ac.compare_dual_streams(
+        compare_dual_streams(
             FRONT_TPL,
             SIDE_TPL,
             Path("tracked-front.mp4"),
@@ -170,8 +172,8 @@ def test_cancelled_extraction_closes_resources_without_scoring(tracked_extractio
 
 def test_cancel_during_front_scoring_skips_side_and_returns_no_result(monkeypatch):
     stop_evt = Event()
-    front_seq = np.zeros((3, *ac.POSE33_V3.shape), dtype=np.float32)
-    side_seq = np.ones((3, *ac.POSE33_V3.shape), dtype=np.float32)
+    front_seq = np.zeros((3, *POSE33_V3.shape), dtype=np.float32)
+    side_seq = np.ones((3, *POSE33_V3.shape), dtype=np.float32)
     extracted = iter(((front_seq, 30.0, None), (side_seq, 30.0, None)))
     score_calls: list[np.ndarray] = []
 
@@ -187,7 +189,7 @@ def test_cancel_during_front_scoring_skips_side_and_returns_no_result(monkeypatc
     monkeypatch.setattr(dual_mod, "score_view", score_once_then_cancel)
 
     with pytest.raises(InterruptedError, match="动作比对已取消"):
-        ac.compare_dual_streams(
+        compare_dual_streams(
             FRONT_TPL,
             SIDE_TPL,
             Path("front-scoring-cancel.mp4"),
@@ -200,7 +202,7 @@ def test_cancel_during_front_scoring_skips_side_and_returns_no_result(monkeypatc
     assert score_calls[0] is front_seq
 
 
-@pytest.mark.parametrize("dtw", [pf.subsequence_dtw, pf.subsequence_dtw_with_path])
+@pytest.mark.parametrize("dtw", [subsequence_dtw, subsequence_dtw_with_path])
 def test_dtw_cancel_callback_is_checked_during_dynamic_programming(dtw):
     checks = 0
 
@@ -218,7 +220,7 @@ def test_dtw_cancel_callback_is_checked_during_dynamic_programming(dtw):
     assert checks == 4
 
 
-@pytest.mark.parametrize("dtw", [pf.subsequence_dtw, pf.subsequence_dtw_with_path])
+@pytest.mark.parametrize("dtw", [subsequence_dtw, subsequence_dtw_with_path])
 def test_dtw_cancel_event_is_checked_after_local_cost(monkeypatch, dtw):
     stop_evt = Event()
     original_local_cost = dtw_mod._dtw_local_cost  # P3：DTW 迁入 evaluation.matching.dtw
@@ -237,13 +239,13 @@ def test_dtw_cancel_event_is_checked_after_local_cost(monkeypatch, dtw):
 
 
 def test_multi_worker_extraction_closes_all_resources_on_success(tracked_extraction):
-    features, fps, view_scores = ac._extract_pose_features(
+    features, fps, view_scores = _extract_pose_features(
         Path("tracked-multi-success.mp4"),
         pose_variant="full",
         workers=2,
     )
 
-    assert features.shape == (3, *ac.POSE33_V3.shape)
+    assert features.shape == (3, *POSE33_V3.shape)
     assert fps == pytest.approx(25.0)
     assert view_scores is None
     assert len(_TrackedCapture.instances) == 3
@@ -257,7 +259,7 @@ def test_multi_worker_cancellation_closes_resources_and_raises(tracked_extractio
     _TrackedPipeline.cancel_evt = stop_evt
 
     with pytest.raises(InterruptedError, match="姿态特征提取已取消"):
-        ac._extract_pose_features(
+        _extract_pose_features(
             Path("tracked-multi-cancel.mp4"),
             pose_variant="full",
             workers=2,
@@ -276,7 +278,7 @@ def test_multi_worker_inference_error_closes_resources_and_propagates(
     _TrackedPipeline.fail_on_infer = True
 
     with pytest.raises(RuntimeError, match="inference failed"):
-        ac._extract_pose_features(
+        _extract_pose_features(
             Path("tracked-multi-error.mp4"),
             pose_variant="full",
             workers=2,
@@ -310,7 +312,7 @@ def test_no_split_and_high_score_for_matching_streams(registered_videos):
     side_n = int(_load_raw("side_src_raw.npz").shape[0])
 
     with H.replay_context():
-        res = ac.compare_dual_streams(
+        res = compare_dual_streams(
             FRONT_TPL,
             SIDE_TPL,
             FRONT_SRC,
@@ -338,8 +340,8 @@ def test_no_split_and_high_score_for_matching_streams(registered_videos):
 def test_swapped_streams_score_worse_than_correct_pairing(registered_videos):
     """正确配对应明显优于把 front/side 视频喂反，防止通道接反的回归。"""
     with H.replay_context():
-        correct = ac.compare_dual_streams(FRONT_TPL, SIDE_TPL, FRONT_SRC, SIDE_SRC, pose_variant="full")
-        swapped = ac.compare_dual_streams(FRONT_TPL, SIDE_TPL, SIDE_SRC, FRONT_SRC, pose_variant="full")
+        correct = compare_dual_streams(FRONT_TPL, SIDE_TPL, FRONT_SRC, SIDE_SRC, pose_variant="full")
+        swapped = compare_dual_streams(FRONT_TPL, SIDE_TPL, SIDE_SRC, FRONT_SRC, pose_variant="full")
 
     assert correct.front_score > swapped.front_score
     assert correct.side_score > swapped.side_score
@@ -357,7 +359,7 @@ def test_raw_series_extracted_once_per_stream_no_cross_contamination(registered_
     monkeypatch.setattr(dual_mod, "extract_pose_raw_series", spy)
 
     with H.replay_context():
-        ac.compare_dual_streams(
+        compare_dual_streams(
             FRONT_TPL,
             SIDE_TPL,
             FRONT_SRC,
@@ -375,10 +377,10 @@ def test_layout_version_mismatch_raises_value_error(registered_videos, tmp_path)
     """正/侧模板 layout 版本不一致（v3 vs v1）应抛 ValueError，沿用既有守卫。"""
     d = np.load(FRONT_TPL, allow_pickle=True)
     meta = dict(d["meta"].item())
-    meta["feature_layout"] = ac.LEGACY_DEFAULT_FEATURE_LAYOUT
+    meta["feature_layout"] = LEGACY_DEFAULT_FEATURE_LAYOUT
     mutated_front_tpl = tmp_path / "front_template_v1.npz"
     np.savez_compressed(mutated_front_tpl, features=d["features"], meta=np.array(meta, dtype=object))
 
     with H.replay_context():
         with pytest.raises(ValueError):
-            ac.compare_dual_streams(mutated_front_tpl, SIDE_TPL, FRONT_SRC, SIDE_SRC, pose_variant="full")
+            compare_dual_streams(mutated_front_tpl, SIDE_TPL, FRONT_SRC, SIDE_SRC, pose_variant="full")

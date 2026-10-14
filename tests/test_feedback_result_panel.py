@@ -33,9 +33,7 @@ from core.workflows import (
     WorkflowPorts,
 )
 
-# 尝试导入 feedback_result_panel 模块 (M2 产物)
-feedback_result_panel_mod = pytest.importorskip("apps.feedback_result_panel", reason="apps.feedback_result_panel 尚未实现")
-FeedbackResultPanel = getattr(feedback_result_panel_mod, "FeedbackResultPanel", None)
+from apps.tk.views.practice_result import FeedbackResultPanel
 
 
 # ---------------------------------------------------------------------------

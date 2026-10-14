@@ -12,7 +12,7 @@ YOLO adapter + COCO17 → Pose33-like 映射（YOLO 迁移 Issue #7 / S2）。
   一律 ``synthetic=True`` / ``visibility=0.0``。
 - **不改变 MediaPipe 旧默认路径**：本模块独立存在，懒加载 ultralytics
   （``from ultralytics import YOLO`` 只在方法内部执行），未安装 ultralytics 时
-  ``import core.yolo_adapter`` 不受影响，MediaPipe 路径与既有测试照常工作。
+  ``import core.pose.backends.yolo`` 不受影响，MediaPipe 路径与既有测试照常工作。
 
 synthetic 信息的存放位置（写死契约，解决「序列热路径只返回 numpy」冲突）
 ----------------------------------------------------------------------
@@ -62,45 +62,31 @@ from typing import Any
 import numpy as np
 
 from core.foundation.paths import models_dir
-from core.pose.backends.yolo_mapping import (  # noqa: F401  （映射契约，经本模块转出以保持旧导入路径）
+from core.pose.backends.yolo.mapping import (
     DEFAULT_YOLO_VALID_CONF_THR,
     YOLO_CONFIDENCE_KIND,
     YOLO_VALIDITY_POLICY,
-    YOLO_CALIBRATION_STATUS,
-    YOLO_RAW_LAYOUT,
-    YOLO_FEATURE_LAYOUT,
-    YOLO_CAPABILITY,
-    YOLO_DISPLAY_SCOPE_LIMITED,
     YOLO_DISPLAY_SCOPE_INTERNAL,
     YOLO_REALTIME_TARGET_POLICY,
     DEFAULT_YOLO_MODEL_NAME,
     TRACK_RESET_NOTE,
-    GATE_STATUS_OK,
-    GATE_STATUS_MULTI_PERSON,
-    MULTI_PERSON_GATE_NOTE,
     CALIBRATION_NOTE,
-    COCO17_TO_BLAZE33,
-    BLAZE33_MISSING_IN_COCO17,
     NUM_BLAZE33,
-    NUM_COCO17,
     BODY_CORE_V1_VALID_INDICES,
     Landmark,
     FrameResult,
-    map_coco17_to_blaze33,
-    coco17_to_landmarks,
     map_coco17_person,
-    boundary_meta,
     yolo_authorization_meta,
     empty_frame_result,
-    empty_sequence_row,
     evaluate_multi_person_gate,
     extract_persons,
     select_main_person,
     yolo_result_to_arrays,
-    yolo_result_to_frame,
     SingleTargetTracker,
 )
 
+
+DEFAULT_YOLO26L_MODEL_NAME = "yolo26l-pose.pt"
 
 def _device_supports_half(device: str) -> bool:
     value = str(device).strip().lower()
@@ -133,7 +119,7 @@ class YoloPoseAdapter:
     懒加载约束
     ----------
     ``from ultralytics import YOLO`` 只在 ``_load()`` 内执行，因此
-    ``import core.yolo_adapter`` 不需要 ultralytics，也不会影响 MediaPipe 路径
+    ``import core.pose.backends.yolo`` 不需要 ultralytics，也不会影响 MediaPipe 路径
     或既有测试（ultralytics 缺失时本模块仍可正常 import）。
 
     单人选择

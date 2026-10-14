@@ -15,8 +15,8 @@ import numpy as np
 
 from core.evaluation import COMPARE, DUAL_STREAM, DUAL_TEMPLATE, load_template
 from core.services import compare_dual, create_template_from_video
-from core.rule_scoring import extract_pose_raw
-from core.paths import outputs_dir
+from core.pose import extract_pose_raw
+from core.foundation import outputs_dir
 from batch.backend_options import (
     BACKEND_YOLO,
     FEATURE_LAYOUT_BODY_CORE,
@@ -465,42 +465,101 @@ def _body_core_row(v: Path, front_res: Any, side_res: Any, *, meta: dict[str, An
     return row
 
 
+def _body_core_yolo_model(backend: str) -> tuple[str | None, Path | None]:
+    """YOLO 后端用的权重名与路径；MediaPipe 返回 ``(None, None)``。"""
+    if backend != BACKEND_YOLO:
+        return None, None
+    from core.foundation import models_dir
+    from core.pose.backends.yolo import DEFAULT_YOLO26L_MODEL_NAME
+
+    return DEFAULT_YOLO26L_MODEL_NAME, models_dir() / DEFAULT_YOLO26L_MODEL_NAME
+
+
+def _body_core_templates(args, backend: str, front_video: Path, side_video: Path, out_dir: Path, yolo_model):
+    """从标准正、侧视频各生成一个 body_core_v1 模板，返回两条模板路径。"""
+    from core.services import create_body_core_template
+
+    return tuple(
+        create_body_core_template(
+            video,
+            backend=backend,
+            pose_variant=args.pose,
+            out_path=out_dir / "templates" / f"standard_{view}_{backend}_{FEATURE_LAYOUT_BODY_CORE}.npz",
+            yolo_model=yolo_model,
+        )
+        for view, video in (("front", front_video), ("side", side_video))
+    )
+
+
+def _body_core_student(v: Path, *, args, backend: str, templates, yolo_model, batch_meta: dict) -> tuple[dict, dict]:
+    """一个学员视频：提取一次 body_core 特征，分别匹配正、侧模板，返回 CSV 行与 JSONL 记录。"""
+    from core.evaluation import match_body_core_template
+    from core.pose.backends import extract_body_core_features
+
+    precomputed = extract_body_core_features(v, backend=backend, pose_variant=args.pose, yolo_model=yolo_model)
+    front_res, side_res = (
+        match_body_core_template(
+            tpl,
+            v,
+            backend=backend,
+            pose_variant=args.pose,
+            reject_multi_person=False,
+            yolo_model=yolo_model,
+            precomputed_features=precomputed,
+        )
+        for tpl in templates
+    )
+    row = _body_core_row(v, front_res, side_res, meta=batch_meta)
+    payload = {
+        "video_path": str(v),
+        "backend": backend,
+        "feature_layout": FEATURE_LAYOUT_BODY_CORE,
+        "meta": {**batch_meta, "review_required": bool(row["review_required"])},
+        "front_debug_match": _body_core_result_dict(front_res, meta=batch_meta),
+        "side_debug_match": _body_core_result_dict(side_res, meta=batch_meta),
+    }
+    return row, payload
+
+
+def _in_order(videos: list[Path], process, workers: int) -> list:
+    """逐个或用线程池处理视频，结果按输入顺序返回。"""
+    if workers <= 1:
+        return [process(v) for v in videos]
+    results: dict[int, Any] = {}
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        futures = {ex.submit(process, v): i for i, v in enumerate(videos)}
+        for fut in as_completed(futures):
+            results[futures[fut]] = fut.result()
+    return [results[i] for i in range(len(videos))]
+
+
+def _write_body_core_outputs(out_dir: Path, results: list[tuple[dict, dict]]) -> tuple[Path, Path]:
+    """写 ``compare_results.jsonl`` 与 ``compare_results.csv``，返回两条路径。"""
+    jsonl_path = out_dir / "compare_results.jsonl"
+    with jsonl_path.open("w", encoding="utf-8") as jf:
+        for _row, payload in results:
+            jf.write(json.dumps(_jsonable(payload), ensure_ascii=False) + "\n")
+    rows = [row for row, _payload in results]
+    csv_path = out_dir / "compare_results.csv"
+    with csv_path.open("w", encoding="utf-8-sig", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+        w.writeheader()
+        w.writerows(rows)
+    return csv_path, jsonl_path
+
+
 def _run_body_core_batch(*, args, backend: str, front_video: Path, side_video: Path, student_dir: Path, out_dir: Path) -> None:
     """body_core_v1 debug/calibration batch path.
 
     Scores are written only as ``*_debug_score`` with ``score_authorized=False``.
     They never populate the pose33 outward-facing score columns.
     """
-    from core.body_core_compare import create_body_core_template, extract_body_core_features, match_body_core_template
-
     if backend == BACKEND_YOLO and args.rules:
         print("YOLO body_core_v1 不支持规则评分；本批次仅输出调试/标定分数。")
 
-    yolo_model_name = None
-    if backend == BACKEND_YOLO:
-        from core.body_core_compare import DEFAULT_YOLO26L_MODEL_NAME
-        from core.paths import models_dir
-
-        yolo_model_name = DEFAULT_YOLO26L_MODEL_NAME
-        yolo_model = models_dir() / DEFAULT_YOLO26L_MODEL_NAME
-    else:
-        yolo_model = None
-
-    front_tpl = create_body_core_template(
-        front_video,
-        backend=backend,
-        pose_variant=args.pose,
-        out_path=out_dir / "templates" / f"standard_front_{backend}_{FEATURE_LAYOUT_BODY_CORE}.npz",
-        yolo_model=yolo_model,
-    )
-    side_tpl = create_body_core_template(
-        side_video,
-        backend=backend,
-        pose_variant=args.pose,
-        out_path=out_dir / "templates" / f"standard_side_{backend}_{FEATURE_LAYOUT_BODY_CORE}.npz",
-        yolo_model=yolo_model,
-    )
-    template_meta = _load_npz_meta(front_tpl)
+    yolo_model_name, yolo_model = _body_core_yolo_model(backend)
+    templates = _body_core_templates(args, backend, front_video, side_video, out_dir, yolo_model)
+    template_meta = _load_npz_meta(templates[0])
     if yolo_model_name:
         template_meta.setdefault("model_name", yolo_model_name)
     batch_meta = meta_for_backend(backend, template_meta, pose_variant=args.pose)
@@ -509,78 +568,15 @@ def _run_body_core_batch(*, args, backend: str, front_video: Path, side_video: P
     if not student_videos:
         raise FileNotFoundError(f"No student videos found in: {student_dir}")
 
-    rows: list[dict[str, Any]] = []
-    jsonl_path = out_dir / "compare_results.jsonl"
-    video_workers = max(1, int(getattr(args, "workers", 1)))
+    def process(v: Path) -> tuple[dict, dict]:
+        return _body_core_student(
+            v, args=args, backend=backend, templates=templates, yolo_model=yolo_model, batch_meta=batch_meta)
 
-    def _process_body_core_video(idx: int, v: Path) -> tuple[int, dict[str, Any], dict[str, Any]]:
-        precomputed = extract_body_core_features(
-            v,
-            backend=backend,
-            pose_variant=args.pose,
-            yolo_model=yolo_model,
-        )
-        front_res = match_body_core_template(
-            front_tpl,
-            v,
-            backend=backend,
-            pose_variant=args.pose,
-            reject_multi_person=False,
-            yolo_model=yolo_model,
-            precomputed_features=precomputed,
-        )
-        side_res = match_body_core_template(
-            side_tpl,
-            v,
-            backend=backend,
-            pose_variant=args.pose,
-            reject_multi_person=False,
-            yolo_model=yolo_model,
-            precomputed_features=precomputed,
-        )
-        row = _body_core_row(v, front_res, side_res, meta=batch_meta)
-        payload = {
-            "video_path": str(v),
-            "backend": backend,
-            "feature_layout": FEATURE_LAYOUT_BODY_CORE,
-            "meta": {**batch_meta, "review_required": bool(row["review_required"])},
-            "front_debug_match": _body_core_result_dict(front_res, meta=batch_meta),
-            "side_debug_match": _body_core_result_dict(side_res, meta=batch_meta),
-        }
-        return idx, row, payload
-
-    body_core_results: list[tuple[int, dict[str, Any], dict[str, Any]]] = []
-    if video_workers <= 1:
-        for i, v in enumerate(student_videos):
-            body_core_results.append(_process_body_core_video(i, v))
-    else:
-        with ThreadPoolExecutor(max_workers=video_workers) as ex:
-            futures = [ex.submit(_process_body_core_video, i, v) for i, v in enumerate(student_videos)]
-            for fut in as_completed(futures):
-                body_core_results.append(fut.result())
-    body_core_results.sort(key=lambda item: item[0])
-
-    with jsonl_path.open("w", encoding="utf-8") as jf:
-        for _idx, row, payload in body_core_results:
-            rows.append(row)
-            jf.write(
-                json.dumps(
-                    _jsonable(payload),
-                    ensure_ascii=False,
-                )
-                + "\n"
-            )
-
-    csv_path = out_dir / "compare_results.csv"
-    with csv_path.open("w", encoding="utf-8-sig", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
-        w.writeheader()
-        w.writerows(rows)
-
-    print(f"Saved templates: {front_tpl} , {side_tpl}")
+    results = _in_order(student_videos, process, max(1, int(getattr(args, "workers", 1))))
+    csv_path, jsonl_path = _write_body_core_outputs(out_dir, results)
+    print(f"Saved templates: {templates[0]} , {templates[1]}")
     print(f"Saved debug/calibration results: {csv_path}")
     print(f"Saved jsonl: {jsonl_path}")
-
 
 if __name__ == "__main__":
     main()

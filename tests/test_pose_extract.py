@@ -17,7 +17,8 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from core import action_compare as ac  # noqa: E402
+from core.pose.features import extract_features as _extract_pose_features  # noqa: E402
+from core.pose import normalize_pose_xy  # noqa: E402
 from core.foundation.tasks import Cancelled, CancelToken  # noqa: E402
 from core.media import DecodeOptions, UndecodableFrame, VideoOpenError, open_video  # noqa: E402
 from core.pose import (  # noqa: E402
@@ -192,7 +193,7 @@ def test_array_inputs_match_landmark_objects():
     raw = _student_raw()
     for row in raw[:20]:
         objs = [RowLandmark(r) for r in row]
-        for fn in (normalize_pose_xy_v3, ac.normalize_pose_xy):
+        for fn in (normalize_pose_xy_v3, normalize_pose_xy):
             a, b = fn(row.astype(np.float64)), fn(objs)
             assert (a is None) == (b is None)
             if a is not None:
@@ -221,7 +222,7 @@ def test_raw_gap_policies(counted_replay):
 
 def test_pose_cache_infers_each_video_once(counted_replay):
     with pose_cache():
-        feats, _fps, views = ac._extract_pose_features(
+        feats, _fps, views = _extract_pose_features(
             Path(STUDENT), pose_variant="full", normalizer=normalize_pose_xy_v3, compute_view=True)
         series = extract_pose_raw_series(STUDENT, pose_variant="full")
         part, _meta = extract_pose_raw(STUDENT, pose_variant="full", start_frame=3, end_frame=9)
@@ -358,9 +359,9 @@ def test_cache_hit_when_end_exceeds_video_length(counted_replay):
 
 def test_segmented_features_match_legacy_warmup_semantics(counted_replay):
     """分段特征：段内首个归一化失败的帧沿用预热帧的特征，而非补零。"""
-    feats, _fps, views = ac._extract_pose_features(
+    feats, _fps, views = _extract_pose_features(
         Path(STUDENT), pose_variant="full", workers=3, normalizer=normalize_pose_xy_v3, compute_view=True)
-    seq_feats, _fps, _ = ac._extract_pose_features(
+    seq_feats, _fps, _ = _extract_pose_features(
         Path(STUDENT), pose_variant="full", workers=1, normalizer=normalize_pose_xy_v3)
     # golden 回放无跟踪状态，分段与顺序逐帧结果应一致（第 5 帧 NaN 由上一帧补）
     assert np.array_equal(feats, seq_feats)

@@ -15,12 +15,12 @@ import numpy as np
 
 sys.path.insert(0, str(Path.cwd()))
 
-from analysis.tech_eval import extract_pose_and_view_scores  # noqa: E402
-from core import action_compare as ac  # noqa: E402
-from core import feedback_geometry as fg  # noqa: E402
-from core import pose_features as pf  # noqa: E402
-from core.body_core_compare import extract_body_core_features  # noqa: E402
-from core.rule_scoring import extract_pose_raw, extract_pose_raw_series  # noqa: E402
+from core.evaluation import extract_pose_and_view_scores  # noqa: E402
+from core.pose.features import extract_features as _extract_pose_features  # noqa: E402
+from core.evaluation import FeedbackConfig, extract_series  # noqa: E402
+from core.pose import normalize_pose_xy, normalize_pose_xy_v3  # noqa: E402
+from core.pose.backends import extract_body_core_features  # noqa: E402
+from core.pose import extract_pose_raw, extract_pose_raw_series  # noqa: E402
 
 VIDEOS: dict[str, Path] = {}
 
@@ -49,8 +49,8 @@ def main() -> None:
     for key in ("single", "front", "side"):
         video = VIDEOS[key]
         for workers in (1, 3):
-            for norm_name, norm in (("v2", pf.normalize_pose_xy), ("v3", pf.normalize_pose_xy_v3)):
-                feats, fps, views = ac._extract_pose_features(
+            for norm_name, norm in (("v2", normalize_pose_xy), ("v3", normalize_pose_xy_v3)):
+                feats, fps, views = _extract_pose_features(
                     video, pose_variant="lite", workers=workers, normalizer=norm, compute_view=True)
                 save(out, f"feat_{key}_w{workers}_{norm_name}", feats=feats, fps=fps, views=views)
         series = extract_pose_raw_series(video, pose_variant="lite")
@@ -67,12 +67,12 @@ def main() -> None:
         save(out, f"bodycore_{key}", feats=feats, fps=fps)
 
     for name, cfg in (
-        ("default", fg.FeedbackConfig(pose_variant="lite")),
-        ("resize", fg.FeedbackConfig(pose_variant="lite", max_edge=1280)),
-        ("sampled", fg.FeedbackConfig(pose_variant="lite", sample_fps=10)),
+        ("default", FeedbackConfig(pose_variant="lite")),
+        ("resize", FeedbackConfig(pose_variant="lite", max_edge=1280)),
+        ("sampled", FeedbackConfig(pose_variant="lite", sample_fps=10)),
     ):
         for key in ("practice", "single"):
-            data = fg.extract_series(VIDEOS[key], cfg, lambda: False)
+            data = extract_series(VIDEOS[key], cfg, lambda: False)
             cap = data["capture"]
             save(out, f"practice_{name}_{key}", landmarks=data["landmarks"], valid_mask=data["valid_mask"],
                  frames=data["frames"], times=data["times"],

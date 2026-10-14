@@ -36,7 +36,7 @@ pose33_v3 已标定 baseline=2.0。body_core_v1 的 avg_cost 尺度与 pose33 �
 强约束（来自迁移计划 / AGENTS.md）
 ================================
 - 本脚本**不改主代码默认行为**：只调用既有 ``extract_pose_raw`` /
-  ``extract_yolo_landmark_series`` / 共享 normalizer / ``subsequence_dtw`` 等生产函数。
+  ``extract_yolo_landmark_series`` / 共享 normalizer / ``match_query`` 等生产函数。
 - **先预注册阈值、后对照数据**：阈值/判定口径写死在 ``docs/yolo_body_core_calibration.md``
   头部（跑数据前），本脚本只产出数字供报告逐条引用。
 - **未标定不得对外评分**：本脚本所有分数仅供 S3 标定/审计。
@@ -81,14 +81,11 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from core.feature_layout import BODY_CORE_V1, POSE33_V3  # noqa: E402
-from core.foundation import find_active_range, motion_energy  # noqa: E402
-from core.pose_features import (  # noqa: E402
-    normalize_pose_body_core_v1,
-    normalize_pose_xy_v3,
-    subsequence_dtw,
-)
-from core.yolo_adapter import evaluate_multi_person_gate  # noqa: E402
+from core.pose import BODY_CORE_V1, POSE33_V3  # noqa: E402
+from core.foundation import find_active_range, load_npz, motion_energy, npz_meta  # noqa: E402
+from core.pose import normalize_pose_body_core_v1, normalize_pose_xy_v3  # noqa: E402
+from core.evaluation import match_query  # noqa: E402
+from core.pose.backends.yolo import evaluate_multi_person_gate  # noqa: E402
 
 # pose33_v3 已标定 baseline（固定参照）。
 POSE33_BASELINE: float = 2.0
@@ -149,8 +146,8 @@ def extract_or_load_cache(
     vp = Path(sample["path"])
     cf = _cache_file(out_dir, sid)
     if cf.exists() and not force:
-        d = np.load(cf, allow_pickle=True)
-        meta = dict(d["meta"].item())
+        d = load_npz(cf)
+        meta = npz_meta(d)
         print(f"[cache] {sid} <- {cf.name}")
         return RawCache(
             sample_id=sid,
@@ -169,8 +166,8 @@ def extract_or_load_cache(
             yolo_num_persons_per_frame=list(meta.get("yolo_num_persons_per_frame", [])),
         )
 
-    from core.rule_scoring import extract_pose_raw
-    from core.yolo_adapter import extract_yolo_landmark_series
+    from core.pose import extract_pose_raw
+    from core.pose.backends.yolo import extract_yolo_landmark_series
 
     print(f"[extract] {sid} <- {vp}")
     t0 = time.perf_counter()
@@ -305,8 +302,7 @@ def _match(query_feats: np.ndarray, seq_feats: np.ndarray) -> float | None:
     if query_feats.shape[0] == 0 or seq_feats.shape[0] == 0:
         return None
     q = _active_query(query_feats)
-    cost, _s, _e = subsequence_dtw(q, seq_feats)
-    return float(cost) / max(1, int(q.shape[0]))
+    return match_query(q, seq_feats).avg_cost
 
 
 def _score(avg_cost: float | None, baseline: float) -> float | None:

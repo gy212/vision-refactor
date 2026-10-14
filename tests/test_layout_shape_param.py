@@ -36,16 +36,13 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-import core.action_compare as ac  # noqa: E402
-from core.action_compare import _extract_pose_features, _select_representative_cycle  # noqa: E402
-from core.action_compare import _assert_feature_layout_match  # noqa: E402
-from core.feature_layout import (  # noqa: E402
-    POSE33_V3,
-    FeatureLayoutSpec,
-    get_layout,
-    has_layout,
-)
-from core.pose_features import mirror_pose_features  # noqa: E402
+from core.pose import normalize_pose_xy_v3  # noqa: E402
+from core.pose.features import extract_features as _extract_pose_features  # noqa: E402
+from core.evaluation import select_representative_cycle as _select_representative_cycle  # noqa: E402
+from core.evaluation import assert_feature_layout_match as _assert_feature_layout_match  # noqa: E402
+from core.pose import POSE33_V3, FeatureLayoutSpec, get_layout  # noqa: E402
+from core.pose.layouts import has_layout  # noqa: E402
+from core.pose import mirror_pose_features  # noqa: E402
 from tests import golden_harness as H  # noqa: E402
 
 ABS_TOL = 1e-6
@@ -178,7 +175,7 @@ def test_missing_frame_padding_uses_layout_shape():
                 Path(key),
                 pose_variant="full",
                 workers=1,
-                normalizer=ac.normalize_pose_xy_v3,
+                normalizer=normalize_pose_xy_v3,
             )
     finally:
         H.clear_registry()
@@ -254,11 +251,19 @@ def _int_literal_22_calls(tree: ast.AST) -> list[ast.AST]:
     return found
 
 
-def test_no_22_2_literal_in_action_compare_hotpath():
-    src = (_REPO_ROOT / "core" / "action_compare.py").read_text(encoding="utf-8")
-    tree = ast.parse(src)
-    assert _tuple_22_2_literals(tree) == [], "action_compare 热路径不得出现 (22,2) 字面量"
-    assert _int_literal_22_calls(tree) == [], "action_compare 热路径不得出现 range(...,22,...) 魔法值"
+# P9：原 core/action_compare.py 的热路径已拆入评估层的匹配、切分与姿态层的特征提取。
+_COMPARE_HOTPATH = (
+    *sorted((_REPO_ROOT / "core" / "evaluation" / "matching").glob("*.py")),
+    _REPO_ROOT / "core" / "evaluation" / "segmentation.py",
+    _REPO_ROOT / "core" / "pose" / "features.py",
+)
+
+
+@pytest.mark.parametrize("path", _COMPARE_HOTPATH, ids=lambda p: p.name)
+def test_no_22_2_literal_in_action_compare_hotpath(path):
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    assert _tuple_22_2_literals(tree) == [], f"{path.name} 热路径不得出现 (22,2) 字面量"
+    assert _int_literal_22_calls(tree) == [], f"{path.name} 热路径不得出现 range(...,22,...) 魔法值"
 
 
 def test_no_22_2_literal_in_pose_features_hotpath():

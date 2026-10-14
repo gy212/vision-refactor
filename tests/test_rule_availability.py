@@ -36,16 +36,15 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from core.pose_features import (  # noqa: E402
-    COCO17_SUPPORTED_CAPABILITIES,
-    landmarks_missing_for_capabilities,
-)
-from core.rule_scoring import (  # noqa: E402
+from core.pose.validity import COCO17_SUPPORTED_CAPABILITIES, landmarks_missing_for_capabilities  # noqa: E402
+from core.evaluation.rules.spec import (  # noqa: E402
     RULE_STATE_EVALUATED,
     RULE_STATE_SKIPPED,
     SKIP_INSUFFICIENT_VALID_FRAMES,
     SKIP_LOW_CONFIDENCE,
     SKIP_MISSING_LANDMARKS,
+)
+from core.pose import (  # noqa: E402
     NOSE,
     MOUTH_L,
     MOUTH_R,
@@ -65,8 +64,8 @@ from core.rule_scoring import (  # noqa: E402
     R_HEEL,
     L_FOOT_INDEX,
     R_FOOT_INDEX,
-    score_rules,
 )
+from core.evaluation.rules.formal_v1 import score_rules  # noqa: E402
 
 # 站立姿态的合成坐标（仅需 finite + 大致合理，状态分类不依赖具体几何）。
 _STANCE_COORDS: dict[int, tuple[float, float]] = {

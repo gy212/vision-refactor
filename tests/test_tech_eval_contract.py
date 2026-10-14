@@ -37,15 +37,15 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from analysis.tech_eval import (  # noqa: E402
+from core.evaluation import (  # noqa: E402
     BACKEND_MEDIAPIPE,
     COG_REQUIRED_INDICES,
-    _attach_contract,
+    attach_contract as _attach_contract,
     eval_cog_side,
     evaluate_video_full,
-    to_jsonable,
 )
-from core.pose_features import derive_valid_mask  # noqa: E402
+from core.foundation import to_jsonable  # noqa: E402
+from core.pose import derive_valid_mask  # noqa: E402
 from tests import golden_harness as H  # noqa: E402
 
 FIX_DIR = Path(__file__).resolve().parent / "fixtures" / "pose33_v3"

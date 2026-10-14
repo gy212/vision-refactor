@@ -12,7 +12,7 @@ from typing import Any
 
 from core.evaluation import evaluate_video_assets, evaluate_video_detail, export_debug_video
 from core.foundation import to_jsonable
-from core.paths import outputs_dir
+from core.foundation import outputs_dir
 from batch.backend_options import (
     FEATURE_LAYOUT_BODY_CORE,
     add_backend_layout_args,
@@ -276,7 +276,7 @@ def _body_core_unvalidated_row(v: Path, meta: dict[str, Any]) -> dict[str, Any]:
 
 def _body_core_meta_for_video(v: Path, *, backend: str, pose_variant: str) -> dict[str, Any]:
     if backend == "yolo":
-        from core.yolo_adapter import extract_yolo_landmark_series
+        from core.pose.backends.yolo import extract_yolo_landmark_series
 
         _landmarks, _valid_mask, source_meta = extract_yolo_landmark_series(v)
         return meta_for_backend(backend, source_meta, pose_variant=pose_variant) | {
@@ -285,7 +285,7 @@ def _body_core_meta_for_video(v: Path, *, backend: str, pose_variant: str) -> di
             if key in source_meta
         }
 
-    from core.body_core_compare import extract_body_core_features
+    from core.pose.backends import extract_body_core_features
 
     _features, _fps, source_meta = extract_body_core_features(
         v,

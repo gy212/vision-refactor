@@ -77,6 +77,7 @@ def test_app_ui_keeps_mediapipe_only_ui_surface():
     for forbidden in (
         "YoloPoseAdapter",
         "core.yolo_adapter",
+        "core.pose.backends.yolo",
         "batch.backend_options",
     ):
         assert forbidden not in joined_imports

@@ -125,12 +125,12 @@ def check_build_info(report: dict) -> None:
 def check_models_and_inference(report: dict, temporary: Path) -> None:
     """内置的 4 个模型已种到临时数据目录，三档姿态加手部都能在 CPU 上推理。"""
     import numpy as np
-    from core import model_manager, paths
+    from core import foundation, pose
     from core.pose import EngineSpec, create_engine
 
-    model_dir = paths.models_dir()
+    model_dir = foundation.models_dir()
     assert model_dir.is_relative_to(temporary)
-    assert all(model_manager.is_installed(spec) for spec in model_manager.MEDIAPIPE_MODELS)
+    assert all(pose.is_installed(spec) for spec in pose.MEDIAPIPE_MODELS)
     report["checks"].append("four_bundled_models_seeded")
     frame = np.zeros((240, 320, 3), dtype=np.uint8)
     for variant in ("lite", "full", "heavy"):
@@ -146,31 +146,31 @@ def check_models_and_inference(report: dict, temporary: Path) -> None:
 
 def check_templates_and_preferences(report: dict) -> None:
     """在线模板库可加载；摄像头选择与录像目录偏好能写入并读回。"""
-    from core import online_matcher, paths
-    templates = online_matcher.load_template_library(paths.templates_dir() / "online")
+    from core import evaluation, foundation
+    templates = evaluation.load_template_library(foundation.templates_dir() / "online")
     assert len(templates) == 2
-    paths.save_camera_selection(0, None)
-    assert paths.load_camera_selection() == (0, None)
-    paths.save_record_dir(paths.outputs_dir())
-    assert paths.load_record_dir() == paths.outputs_dir()
+    foundation.save_camera_selection(0, None)
+    assert foundation.load_camera_selection() == (0, None)
+    foundation.save_record_dir(foundation.outputs_dir())
+    assert foundation.load_record_dir() == foundation.outputs_dir()
     report["checks"].append("templates_and_persistent_preferences")
 
 
 def check_video_record(report: dict) -> Path:
     """写一段空白录像，经内置 FFmpeg 转成 MP4 并能解码；返回 MP4 路径。"""
     import numpy as np
-    from core import paths, video_writer
+    from core import foundation, media
     from core.media import first_frame_ok
 
     frame = np.zeros((240, 320, 3), dtype=np.uint8)
-    writer, video, _codec = video_writer.open_video_writer(
-        paths.outputs_dir() / "空白 测试.avi", fps=12, size=(320, 240))
+    writer, video, _codec = media.open_video_writer(
+        foundation.outputs_dir() / "空白 测试.avi", fps=12, size=(320, 240))
     try:
         for _ in range(24):
             writer.write(frame)
     finally:
         writer.release()
-    video = video_writer.transcode_to_h264(video)
+    video = media.transcode_to_h264(video)
     assert video.suffix == ".mp4", "内置 FFmpeg 转码失败"
     assert first_frame_ok(video), "录制文件不能解码"
     report["checks"].append("video_record_transcode_decode")
@@ -179,7 +179,7 @@ def check_video_record(report: dict) -> Path:
 
 def check_practice_history(report: dict, video: Path) -> tuple[object, dict]:
     """双视角录像走 MediaPipe 练习分析写入历史，结果字段齐全，文字报告能导出；返回历史库与记录。"""
-    from core import paths
+    from core import foundation
     from core.evaluation import ACTIONS, STANCES
     from core.reporting import practice_report_renderers
     from core.services import HistoryStore
@@ -200,8 +200,8 @@ def check_practice_history(report: dict, video: Path) -> tuple[object, dict]:
     report["feedbackVersion"] = result["ruleVersion"]
     report["feedbackCapture"] = result["capture"]
     assert history.get(record["id"])["id"] == record["id"]
-    history.export(record["id"], paths.outputs_dir() / "问题说明.txt")
-    assert (paths.outputs_dir() / "问题说明.txt").stat().st_size > 0
+    history.export(record["id"], foundation.outputs_dir() / "问题说明.txt")
+    assert (foundation.outputs_dir() / "问题说明.txt").stat().st_size > 0
     assert not any("qwen" in name or name == "torch" for name in sys.modules)
     report["checks"].append("mediapipe_feedback_history_export")
     return history, record
@@ -209,18 +209,18 @@ def check_practice_history(report: dict, video: Path) -> tuple[object, dict]:
 
 def check_html_report(report: dict, history, record: dict) -> None:
     """图文报告的模板全部随包分发，导出的 HTML 已填充、不引用外部资源、不泄露本机数据目录。"""
-    from core import paths
+    from core import foundation
 
     template_dir = _package_root() / "core" / "reporting" / "html" / "templates"
     missing = [name for name in REPORT_TEMPLATES if not (template_dir / f"{name}.html").is_file()]
     assert not missing, f"包内缺少图文报告模板：{missing}"
-    target = paths.outputs_dir() / "图文报告.html"
+    target = foundation.outputs_dir() / "图文报告.html"
     history.export(record["id"], target)
     text = target.read_text(encoding="utf-8")
     assert text.lstrip().lower().startswith("<!doctype html"), "图文报告不是完整的 HTML 文档"
     assert "打包检查" in text and "${" not in text, "图文报告模板未填充"
     assert "http://" not in text and "https://" not in text, "图文报告引用了外部资源"
-    assert str(paths.repo_root()) not in text, "图文报告泄露了本机路径"
+    assert str(foundation.repo_root()) not in text, "图文报告泄露了本机路径"
     report["htmlReportBytes"] = len(text.encode("utf-8"))
     report["checks"].append("html_report_export_with_bundled_templates")
 
@@ -362,9 +362,9 @@ def check_tk_desktop(report: dict, root) -> None:
 def run_checks(report: dict, temporary: Path) -> None:
     """按顺序跑全部检查；任一失败即抛出，由 ``run`` 记入报告。"""
     from tkinter import Tk
-    from core import paths
+    from core import foundation
 
-    report["dataRoot"] = str(paths.repo_root())
+    report["dataRoot"] = str(foundation.repo_root())
     check_build_info(report)
     check_models_and_inference(report, temporary)
     check_templates_and_preferences(report)

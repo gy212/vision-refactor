@@ -15,8 +15,8 @@ def main() -> None:
 
     log_path = None
     try:
-        # core.paths 经 core.foundation 会导入 numpy，失败也要走下面的报错路径
-        from core.paths import repo_root
+        # core.foundation 会导入 numpy，失败也要走下面的报错路径
+        from core.foundation import repo_root
         log_path = repo_root() / "desktop.log"
         if sys.stdout is None:
             sys.stdout = sys.stderr = log_path.open("a", encoding="utf-8", buffering=1)

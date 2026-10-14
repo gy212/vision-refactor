@@ -23,7 +23,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from analysis.tech_eval import (  # noqa: E402
+from core.pose import (  # noqa: E402
     L_ANKLE,
     L_ELBOW,
     L_FOOT_INDEX,
@@ -41,6 +41,8 @@ from analysis.tech_eval import (  # noqa: E402
     R_KNEE,
     R_SHOULDER,
     R_WRIST,
+)
+from core.evaluation import (  # noqa: E402
     eval_cog_front,
     eval_cog_side,
     eval_force_sequence,

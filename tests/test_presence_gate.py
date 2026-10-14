@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from core.presence_gate import PresenceGate, PresenceGateConfig, hip_midpoint_in_roi
+from core.workflows import PresenceGate, PresenceGateConfig, hip_midpoint_in_roi
 
 
 def test_enter_stable_requires_duration() -> None:

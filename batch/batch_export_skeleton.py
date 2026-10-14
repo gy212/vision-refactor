@@ -12,7 +12,7 @@ import cv2
 import numpy as np
 
 from core.media import probe_video
-from core.paths import outputs_dir
+from core.foundation import load_npz, npz_meta, outputs_dir
 from core.pose import FORMAL, GapPolicy, draw_skeleton, extract_pose_sequence, formal_engine
 from batch.backend_options import (
     FEATURE_LAYOUT_BODY_CORE,
@@ -134,7 +134,7 @@ def _video_basic_meta(video_path: Path) -> dict:
 
 
 def _extract_body_core_features(video_path: Path, *, backend: str, pose_variant: str) -> tuple[np.ndarray, dict]:
-    from core.body_core_compare import extract_body_core_features
+    from core.pose.backends import extract_body_core_features
 
     features, fps, backend_meta = extract_body_core_features(
         video_path,
@@ -199,8 +199,7 @@ def _manifest_row(
 
 def _read_npz_meta(path: Path) -> dict:
     try:
-        data = np.load(path, allow_pickle=True)
-        return dict(data["meta"].item() or {})
+        return npz_meta(load_npz(path))
     except Exception:  # noqa: BLE001 - stale/corrupt skipped files still get a manifest row.
         return {}
 

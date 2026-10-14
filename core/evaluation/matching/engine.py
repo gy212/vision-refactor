@@ -115,6 +115,22 @@ class TemplateMatch:
     end_frame: int
 
 
+@dataclass(frozen=True)
+class QueryMatch:
+    """一段查询特征的子序列 DTW 结果：总代价、按查询帧数平均的代价与匹配区间（含端点）。"""
+
+    cost: float
+    avg_cost: float
+    start_frame: int
+    end_frame: int
+
+
+def match_query(query: np.ndarray, seq: np.ndarray, *, stop_evt: Event | None = None) -> QueryMatch:
+    """查询特征 ``query`` 对视频特征 ``seq`` 做一次子序列 DTW（不校验布局；模板比对用 ``match_templates``）。"""
+    cost, start, end = subsequence_dtw(query, seq, stop_evt=stop_evt)
+    return QueryMatch(float(cost), float(avg_cost_of(cost, query.shape[0])), int(start), int(end))
+
+
 def match_templates(
     seq: np.ndarray,
     templates: Sequence[Template],
@@ -135,10 +151,9 @@ def match_templates(
             template.features, seq, left_label=f"template {template.path}", right_label=video_label,
             left_layout=layout, right_layout=layout,
         )
-        cost, start, end = subsequence_dtw(template.features, seq, stop_evt=stop_evt)
-        avg_cost = avg_cost_of(cost, template.features.shape[0])
-        out.append(TemplateMatch(template, float(cost), float(avg_cost),
-                                 score_from_avg_cost(avg_cost, baseline), int(start), int(end)))
+        m = match_query(template.features, seq, stop_evt=stop_evt)
+        out.append(TemplateMatch(template, m.cost, m.avg_cost,
+                                 score_from_avg_cost(m.avg_cost, baseline), m.start_frame, m.end_frame))
     return out
 
 

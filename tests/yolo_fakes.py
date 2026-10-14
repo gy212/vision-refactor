@@ -98,7 +98,7 @@ class FakeYoloAdapter:
     """替身 adapter：按预置逐帧结果驱动序列层，不加载 ultralytics。
 
     ``frames`` 每项是一个 ``FakeYoloResult``；``infer_arrays`` 依次消费。
-    复用真实解析 / tracker 逻辑（从 core.yolo_adapter 导入），只替换「模型推理」。
+    复用真实解析 / tracker 逻辑（从 core.pose.backends.yolo 导入），只替换「模型推理」。
     """
 
     frames: list[Any]
@@ -110,7 +110,7 @@ class FakeYoloAdapter:
     last_num_persons: int = 0
 
     def __post_init__(self) -> None:
-        from core.yolo_adapter import SingleTargetTracker
+        from core.pose.backends.yolo import SingleTargetTracker
 
         self._tracker = SingleTargetTracker()
 
@@ -120,7 +120,7 @@ class FakeYoloAdapter:
         self.last_num_persons = 0
 
     def infer_arrays(self, _frame: np.ndarray):
-        from core.yolo_adapter import yolo_result_to_arrays
+        from core.pose.backends.yolo import yolo_result_to_arrays
 
         res = self.frames[self._cursor] if self._cursor < len(self.frames) else None
         self._cursor += 1
@@ -170,7 +170,7 @@ class FakeCapture:
 
 @contextlib.contextmanager
 def patch_cv2_capture(n_frames: int, *, fps: float = 30.0):
-    """临时把 core.yolo_adapter 内的 cv2.VideoCapture 换成 FakeCapture。
+    """临时把 YOLO 序列提取用到的 cv2.VideoCapture 换成 FakeCapture。
 
     extract_yolo_landmark_series 内部 ``import cv2`` 后调用 ``cv2.VideoCapture``，
     故 patch 全局 cv2 模块的该符号即可。

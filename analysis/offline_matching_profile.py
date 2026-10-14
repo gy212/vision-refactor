@@ -28,24 +28,23 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from core.evaluation import (  # noqa: E402
-    POSE33_BASELINE,
-    multi_subsequence_matches,
-    normalize_template_meta,
-    normalizer_version_from_layout,
-    runtime_feature_layout,
-)
-from core.evaluation import compare_dual_templates as compare_video_to_dual_templates  # noqa: E402
-from core.body_core_compare import (  # noqa: E402
+    BODY_CORE_CALIBRATION_NOTE,
     BODY_CORE_V1_CALIBRATED_BASELINE,
     CALIBRATION_STATUS_UNVALIDATED,
-    BODY_CORE_CALIBRATION_NOTE,
+    POSE33_BASELINE,
+    active_window,
+    load_template,
     match_body_core_template,
+    match_query,
+    multi_subsequence_matches,
+    select_representative_cycle,
+    split_front_side,
 )
-from core.feature_layout import BODY_CORE_V1, POSE33_V3  # noqa: E402
-from core.evaluation import active_window, select_representative_cycle, split_front_side  # noqa: E402
-from core.foundation import find_active_range, motion_energy, trimmed_mean  # noqa: E402
+from core.evaluation import compare_dual_templates as compare_video_to_dual_templates  # noqa: E402
+from core.foundation import find_active_range, load_npz, motion_energy, trimmed_mean  # noqa: E402
+from core.pose import BODY_CORE_V1, POSE33_V3  # noqa: E402
 from core.media import DecodeOptions, open_video  # noqa: E402
-from core.pose_features import (  # noqa: E402
+from core.pose import (  # noqa: E402
     DEFAULT_VALID_CONF_THR,
     derive_valid_mask,
     normalize_pose_body_core_v1,
@@ -53,7 +52,6 @@ from core.pose_features import (  # noqa: E402
     normalize_pose_xy_v1,
     normalize_pose_xy_v3,
     pose_view_score,
-    subsequence_dtw,
 )
 from core.pose import create_engine, formal_engine  # noqa: E402
 
@@ -147,16 +145,8 @@ def _profile_env() -> dict[str, Any]:
 
 
 def _normalizer_for_dual_templates(front_template: Path, side_template: Path) -> tuple[Callable[[Any], np.ndarray | None], str]:
-    with np.load(front_template, allow_pickle=True) as tpl_f:
-        raw_meta_f = dict(tpl_f["meta"].item() or {})
-    with np.load(side_template, allow_pickle=True) as tpl_s:
-        raw_meta_s = dict(tpl_s["meta"].item() or {})
-    meta_f = normalize_template_meta(dict(raw_meta_f))
-    meta_s = normalize_template_meta(dict(raw_meta_s))
-    layout_f = runtime_feature_layout(raw_meta_f, meta_f)
-    layout_s = runtime_feature_layout(raw_meta_s, meta_s)
-    version_f = normalizer_version_from_layout(layout_f)
-    version_s = normalizer_version_from_layout(layout_s)
+    version_f = load_template(front_template).normalizer_version
+    version_s = load_template(side_template).normalizer_version
     if version_f != version_s:
         raise ValueError("Front/side templates use different normalizer versions; cannot stage-profile as one production path.")
     if version_f == "v3":
@@ -264,12 +254,12 @@ def _profile_multi_view(
     baseline: float = POSE33_BASELINE,
 ) -> dict[str, Any]:
     with stages.time("template_load_pose33"):
-        tpl_f = np.load(front_template, allow_pickle=True)
-        tpl_s = np.load(side_template, allow_pickle=True)
-        feat_f = np.asarray(tpl_f["features"], dtype=np.float32)
-        feat_s = np.asarray(tpl_s["features"], dtype=np.float32)
-        meta_f = dict(tpl_f["meta"].item() or {})
-        meta_s = dict(tpl_s["meta"].item() or {})
+        tpl_f = load_template(front_template)
+        tpl_s = load_template(side_template)
+        feat_f = np.asarray(tpl_f.features, dtype=np.float32)
+        feat_s = np.asarray(tpl_s.features, dtype=np.float32)
+        meta_f = dict(tpl_f.raw_meta)
+        meta_s = dict(tpl_s.raw_meta)
 
     front_seg, side_seg = _split_views(seq, view_scores, fps, stages)
 
@@ -293,8 +283,8 @@ def _profile_multi_view(
             )
         if not matches and seg_seq.size > 0:
             with stages.time(f"{name}_fallback_subsequence_dtw"):
-                cost, s, e = subsequence_dtw(query, seg_seq)
-            avg = float(cost / max(1, int(query.shape[0])))
+                m = match_query(query, seg_seq)
+            s, e, avg = m.start_frame, m.end_frame, m.avg_cost
             score = _score(avg, baseline)
             return score, [], {
                 "query_frames": int(query.shape[0]),
@@ -396,16 +386,16 @@ def _profile_body_core_from_raw(
     stages: StageSet,
 ) -> dict[str, Any]:
     with stages.time("template_load_body_core"):
-        tpl = np.load(template_path, allow_pickle=True)
-        query = np.asarray(tpl["features"], dtype=np.float32)
-        meta = dict(tpl["meta"].item() or {})
+        tpl = load_template(template_path)
+        query = np.asarray(tpl.features, dtype=np.float32)
+        meta = dict(tpl.raw_meta)
     with stages.time("valid_mask_derivation"):
         valid_mask = derive_valid_mask(landmarks, DEFAULT_VALID_CONF_THR)
     seq, valid_frames = _body_core_from_raw(landmarks, valid_mask, stages)
     baseline = float(meta.get("baseline", BODY_CORE_V1_CALIBRATED_BASELINE))
     with stages.time("subsequence_dtw_body_core"):
-        cost, start, end = subsequence_dtw(query, seq)
-    avg = float(cost / max(1, int(query.shape[0])))
+        m = match_query(query, seq)
+    start, end, avg = m.start_frame, m.end_frame, m.avg_cost
     return {
         "profile_id": label,
         "target": "match_body_core_template",
@@ -425,8 +415,7 @@ def _profile_body_core_from_raw(
 
 def _load_fixture_raw(name: str) -> np.ndarray:
     path = _REPO_ROOT / "tests" / "fixtures" / "pose33_v3" / name
-    d = np.load(path, allow_pickle=True)
-    return np.asarray(d["landmarks"], dtype=np.float32)
+    return np.asarray(load_npz(path)["landmarks"], dtype=np.float32)
 
 
 def run_fixture_profile(out_dir: Path) -> dict[str, Any]:

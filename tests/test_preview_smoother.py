@@ -6,7 +6,7 @@ import math
 
 import numpy as np
 
-from core.preview_smoother import PreviewLandmarkSmoother, SmoothedLandmark
+from core.pose import PreviewLandmarkSmoother, SmoothedLandmark
 
 
 class _LM:
