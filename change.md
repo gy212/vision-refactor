@@ -1,3 +1,20 @@
+## 2026-10-14（America/Los_Angeles）: [fix] D-3、D-5：考试、练习、离线处理共用一套规则目录，宽高比修正坐标（issue #21、#22）
+
+- 问题描述：`formal_v1`（batch `--rules` 用，归一化坐标，"任一手满足"，整段取比例）与 `practice_v4`（学生练习，宽高比修正坐标，按左右式、相位窗口）对同一检查项结论不同：拳峰高度、站距一边扣分一边判"证据不足"。用户决定（issue #21、#22）：同一动作只有一套规则目录，各模式核心逻辑一致，只有流程与呈现不同；按左右式取手、考试固定左式；先直立再摆实战式，按相位窗口取帧；各模式用宽高比修正坐标。会话中补充决定：考试的规则结论只报告、不计入分数；batch 用命令行参数指定动作。
+- 修改内容：
+  - 规则目录：`rules/practice_v4.py` → `rules/sanda_v5.py`（`RULE_VERSION` 升为 `sanda-rules-mediapipe-2026-10-14-v5`），删除 `rules/formal_v1.py`。拳峰高度、站距改为按原正式规则的相对量判定（阈值暂定），站距只在正面测量；新增检查项 `punch_extension`（直拳出拳伸直，原正式规则）；每个检查项按左右式声明所需关键点，引擎对相位规则也做后端缺点判定。`FeedbackConfig` 新增 `fist_height`、`stance_width_min/max`、`punch_elbow`、`guard_wrist_height`（`feedback_config.json` 原字段不变，示例文件同步）。删除 `RatioDeduction`、两态结论、`RuleScore`/`RuleViolation` 与只给正式规则用的单帧测量函数。
+  - 新增 `evaluation/rule_checks.py`：规则输入序列（宽高比修正、有效掩码）与单视角判定 `judge_view`，练习、考试、batch 共用；练习在此之上照旧做正侧融合。
+  - 相位：起始实战式窗口要求至少一只手抬到护位，直立双手下垂的帧不算实战式。
+  - 考试：模板名属于目录动作的匹配，在匹配窗口前后各放宽 1 秒、按左式逐视角检查，结论写进片段结果 JSON 的 `result.rule_checks`（配置无效时写 `rule_error`）；考试分数与成绩表列不变。
+  - batch：`--rules` 按 `--rule-action`（默认 `stance`）、`--rule-stance`（默认 `left`）检查；汇总 CSV 的规则分、扣分列改为问题项数、证据不足项数，`error_rules.csv` 每个检查项一行；`--action` 保留但不再起作用。`DualCompareResult` 的规则字段改为 `front/side_rule_checks`。
+  - 文档：设计文档 §1.3、§2.2、§3、§7.2、§10、§11.2，阶段 README，AGENTS.md 代码地图与 batch 命令，交付包使用说明。
+  - 测试（D-13）：`test_rule_availability.py` 改为针对统一目录（结构化 `unable` 原因、COCO17 缺点、按左右式声明关键点）；`test_rule_engine_entry.py` 删去 formal_v1 用例，新增"只有一个 RuleProfile""batch/考试与练习同一入口"；`test_valid_mask_migration.py` 的规则节改为断言规则输入掩码只来自 `derive_valid_mask` 且坐标经宽高比修正；`test_pose33_v3_golden.py` 的规则扣分断言改为逐视角规则结论；新增 `test_exam_pool_scoring.py::test_catalog_actions_get_rule_checks_without_changing_the_score`、`test_action_feedback.py` 的拳峰高度/站距阈值与"先直立后实战式"用例。
+  - 基准：重新生成 `pose33_v3/golden.json`（只有规则字段变化）、P3 差分基准与 2 个 HTML 报告基准（旧记录回填清单时拳峰高度、站距不再写"缺少真实长度标定"）。
+- 验证方法：
+  - `python -m pytest tests -q` 全量通过；门禁与架构测试通过；`scripts/sim_exam_flow.py` 37 passed。
+  - 差分基准逐项核对：去掉规则字段后，单/多模板、双模板、双流、考试池的分数与匹配区间零漂移；练习结果只有拳峰高度、站距由 `pending_rule` 变为 `candidate`/`unable`（各 24 处）、新增 `punch_extension`（9 处），其余检查项状态与相位窗口不变。
+  - 真实视频上的阈值微调待甲方 C 类样本（`docs/样本视频采集清单.md`）。
+
 ## 2026-10-14（America/Los_Angeles）: [fix] D-2：正式规则的原始序列把补帧判为无效（issue #20）
 
 - 问题描述：正式规则与考试踢腿质量用的原始序列（`core/pose/raw_series.py`）按 `HOLD_LAST_LEGACY` 补未检出帧，复制上一帧的 33×4（含 visibility），补帧被 `derive_valid_mask` 判为有效，违反"缺失点不得伪造成有效点"。用户决定（issue #20）：补帧不得当作有效检测。

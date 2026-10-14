@@ -20,7 +20,7 @@ CLEAN_PATHS: tuple[str, ...] = (
     "core", "apps", "analysis", "batch", "assets", "templates", "packaging", "app_ui_onefile.spec",
 )
 
-RULE_VERSION_SOURCE = "core/evaluation/rules/practice_v4.py"  # 学生练习规则版本（P3 起由此定义）
+RULE_VERSION_SOURCE = "core/evaluation/rules/sanda_v5.py"  # 规则版本（D-3 起考试、练习、离线共用）
 _RULE_VERSION_RE = re.compile(r'^RULE_VERSION\s*=\s*"([^"]+)"', re.MULTILINE)
 
 

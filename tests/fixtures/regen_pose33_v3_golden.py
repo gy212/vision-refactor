@@ -21,7 +21,7 @@
   tests/fixtures/pose33_v3/golden.json         三类回归基线：
       1) 单模板 compare_video_to_template 分数
       2) 双模板 compare_video_to_dual_templates 的 combined_percent + 各视角分
-         （含规则扣分、关节误差统计）
+         （含统一规则目录的逐视角结论、关节误差统计）
       3) tech_eval evaluate_video_full 各指标 status + 关键 detail
 
 运行：
@@ -121,12 +121,8 @@ def compute_golden() -> dict:
             "side_score": float(dual.side_score),
             "front_segment": None if dual.front_segment is None else list(dual.front_segment),
             "side_segment": None if dual.side_segment is None else list(dual.side_segment),
-            "front_rule_score": dual.front_rule_score,
-            "side_rule_score": dual.side_rule_score,
-            "front_rule_deduction": dual.front_rule_deduction,
-            "side_rule_deduction": dual.side_rule_deduction,
-            "front_rule_violations": _violations_to_list(dual.front_rule_violations),
-            "side_rule_violations": _violations_to_list(dual.side_rule_violations),
+            "front_rule_checks": _rule_checks_to_list(dual.front_rule_checks),
+            "side_rule_checks": _rule_checks_to_list(dual.side_rule_checks),
             "front_joint_errors": _joint_errors_to_list(dual.front_joint_errors),
             "side_joint_errors": _joint_errors_to_list(dual.side_joint_errors),
         }
@@ -138,23 +134,22 @@ def compute_golden() -> dict:
     return golden
 
 
-def _violations_to_list(violations) -> list | None:
-    if violations is None:
+def _rule_checks_to_list(checks) -> list | None:
+    """统一规则目录（D-3，默认检查实战式、左式）的逐视角结论。"""
+    if checks is None:
         return None
-    out = []
-    for v in violations:
-        out.append(
-            {
-                "rule_id": v.rule_id,
-                "name": v.name,
-                "penalty": int(v.penalty),
-                "violation_ratio": float(v.violation_ratio),
-                "valid_frames": int(v.valid_frames),
-                "total_frames": int(v.total_frames),
-                "detail": v.detail,
-            }
-        )
-    return out
+    return [
+        {
+            "check_id": c.check_id,
+            "state": c.state,
+            "skip_reason": c.skip_reason,
+            "violation_ratio": float(c.violation_ratio),
+            "valid_frames": int(c.valid_frames),
+            "total_frames": int(c.total_frames),
+            "detail": c.detail,
+        }
+        for c in checks
+    ]
 
 
 def _joint_errors_to_list(joint_errors) -> list | None:

@@ -1,19 +1,17 @@
 # -*- coding: utf-8 -*-
 """
-规则可用性 / 结构化三态回归（YOLO 迁移 S4 / Issue #11）。
+规则可用性 / 结构化结论回归（YOLO 迁移 S4 / Issue #11；D-3 起针对唯一的规则目录 ``sanda_v5``）。
 
 为什么需要它
 ------------
-此前 ``RuleViolation`` 的三态（已评估 / 合格 / 未评估）只靠 ``detail`` 中文字符串拼出
-（ （合格） / （有效帧不足，未评估） ），下游无法用稳定字段判断。本期给
-``RuleViolation`` 补结构化字段：
+下游（考试结果、batch 报告）只读结构化字段判断一个检查项的结论，不解析中文 ``detail``：
 
-  - ``state ∈ {evaluated, skipped}``
-  - ``skip_reason ∈ {missing_landmarks, low_confidence, insufficient_valid_frames}``
+  - ``state ∈ {pass, violation, unable, pending_rule}``
+  - ``unable`` 时 ``skip_reason ∈ {missing_landmarks, insufficient_valid_frames, phase_not_found}``
   - ``required_landmarks`` / ``required_capabilities`` / ``missing_landmarks``
 
-本测试覆盖每种 ``skip_reason`` 与「后端能力受限 → 缺点规则 skipped」的判定，并守住
-向后兼容：不传 ``supported_capabilities``（MediaPipe full）时不产生 backend 级缺点。
+本测试覆盖每种 ``skip_reason`` 与「后端能力受限 → 缺点检查项 unable」的判定，并守住：不传
+``supported_capabilities``（MediaPipe full）时不产生 backend 级缺点；取手按左右式，只声明前手的点。
 
 确定性
 ------
@@ -30,19 +28,18 @@ import sys
 from pathlib import Path
 
 import numpy as np
-import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from core.pose.validity import COCO17_SUPPORTED_CAPABILITIES, landmarks_missing_for_capabilities  # noqa: E402
+from core.evaluation import FeedbackConfig, judge_view, series_from_raw  # noqa: E402
 from core.evaluation.rules.spec import (  # noqa: E402
-    RULE_STATE_EVALUATED,
-    RULE_STATE_SKIPPED,
+    RULE_STATE_UNABLE,
     SKIP_INSUFFICIENT_VALID_FRAMES,
-    SKIP_LOW_CONFIDENCE,
     SKIP_MISSING_LANDMARKS,
+    SKIP_PHASE_NOT_FOUND,
 )
 from core.pose import (  # noqa: E402
     NOSE,
@@ -65,7 +62,6 @@ from core.pose import (  # noqa: E402
     L_FOOT_INDEX,
     R_FOOT_INDEX,
 )
-from core.evaluation.rules.formal_v1 import score_rules  # noqa: E402
 
 # 站立姿态的合成坐标（仅需 finite + 大致合理，状态分类不依赖具体几何）。
 _STANCE_COORDS: dict[int, tuple[float, float]] = {
@@ -107,128 +103,96 @@ def _make_seq(n_valid: int, n_invalid: int) -> np.ndarray:
     return np.stack(frames, axis=0)
 
 
-def _by_id(rs) -> dict:
-    return {v.rule_id: v for v in rs.violations}
+def _judge(seq: np.ndarray, *, caps=None) -> dict:
+    """左式实战式在正面的开始阶段各项结论（以检查项编码为键）。"""
+    series = series_from_raw(seq, {"width": 100, "height": 100, "fps": 30.0, "start_frame": 0})
+    checks, _diag = judge_view(series, "front", "stance", "left", FeedbackConfig(), supported_capabilities=caps)
+    return {c.code: c for c in checks if c.phase == "start"}
+
+
+def _measured(by_code: dict) -> dict:
+    return {code: c for code, c in by_code.items() if c.state != "pending_rule"}
 
 
 # --------------------------------------------------------------------------- #
-# 1) state=evaluated：有效帧充足时为已评估，skip_reason=None
+# 1) 有效帧充足：给出 pass/violation，skip_reason=None
 # --------------------------------------------------------------------------- #
-def test_state_evaluated_when_enough_valid_frames():
-    seq = _make_seq(n_valid=10, n_invalid=0)
-    rs = score_rules(seq, view="front", action_scope="stance")
-    assert len(rs.violations) > 0
-    for v in rs.violations:
-        assert v.state == RULE_STATE_EVALUATED
-        assert v.skip_reason is None
+def test_judged_when_enough_valid_frames():
+    by_code = _measured(_judge(_make_seq(n_valid=10, n_invalid=0)))
+    assert {"stance_elbow", "stance_height", "stance_width", "stance_knee", "stance_toes"} <= set(by_code)
+    for c in by_code.values():
+        assert c.state in {"pass", "violation"}
+        assert c.skip_reason is None
         # 声明字段必须非空，且 missing 在 MediaPipe full（默认）下为空。
-        assert len(v.required_landmarks) > 0
-        assert len(v.required_capabilities) > 0
-        assert v.missing_landmarks == ()
+        assert len(c.required_landmarks) > 0
+        assert len(c.required_capabilities) > 0
+        assert c.missing_landmarks == ()
 
 
 # --------------------------------------------------------------------------- #
-# 2) skip_reason=low_confidence：所需点全程不可见（valid_cnt==0）
+# 2) skip_reason=phase_not_found：全程不可见，找不到实战式阶段
 # --------------------------------------------------------------------------- #
-def test_skip_low_confidence_when_no_valid_frames():
-    seq = _make_seq(n_valid=0, n_invalid=10)
-    rs = score_rules(seq, view="front", action_scope="stance")
-    assert len(rs.violations) > 0
-    for v in rs.violations:
-        assert v.state == RULE_STATE_SKIPPED
-        assert v.skip_reason == SKIP_LOW_CONFIDENCE
-        assert v.valid_frames == 0
-        assert v.penalty == 0
-        # detail 中文保留供 UI。
-        assert "未评估" in v.detail
-    # 整体不应扣分（全部 skipped）。
-    assert rs.total_deduction == 0
+def test_unable_phase_not_found_when_no_valid_frames():
+    by_code = _measured(_judge(_make_seq(n_valid=0, n_invalid=10)))
+    assert by_code
+    for c in by_code.values():
+        assert c.state == RULE_STATE_UNABLE
+        assert c.skip_reason == SKIP_PHASE_NOT_FOUND
+        assert c.valid_frames == 0
+        assert "未找到该阶段" in c.detail  # 中文保留供 UI。
 
 
 # --------------------------------------------------------------------------- #
-# 3) skip_reason=insufficient_valid_frames：有效帧 0<cnt<min_valid
+# 3) skip_reason=insufficient_valid_frames：阶段找到了，但该项所需的点不可见
 # --------------------------------------------------------------------------- #
-def test_skip_insufficient_valid_frames():
-    # 3 个有效帧 < 默认 min_valid=5，但 >0 → insufficient_valid_frames。
-    seq = _make_seq(n_valid=3, n_invalid=7)
-    rs = score_rules(seq, view="front", action_scope="stance")
-    assert len(rs.violations) > 0
-    for v in rs.violations:
-        assert v.state == RULE_STATE_SKIPPED
-        assert v.skip_reason == SKIP_INSUFFICIENT_VALID_FRAMES
-        assert 0 < v.valid_frames < 5
-
-
-# --------------------------------------------------------------------------- #
-# 4) skip_reason=missing_landmarks：后端能力受限（COCO17）→ 缺点规则跳过
-# --------------------------------------------------------------------------- #
-def test_skip_missing_landmarks_under_coco17():
+def test_unable_insufficient_valid_frames():
     seq = _make_seq(n_valid=10, n_invalid=0)
-    rs = score_rules(
-        seq,
-        view="front",
-        action_scope="both",
-        supported_capabilities=COCO17_SUPPORTED_CAPABILITIES,
-    )
-    by_id = _by_id(rs)
-
-    # 依赖 feet（脚跟/脚尖）的规则在 COCO17 下结构性缺失。
-    feet_rule = by_id["stance_feet"]
-    assert feet_rule.state == RULE_STATE_SKIPPED
-    assert feet_rule.skip_reason == SKIP_MISSING_LANDMARKS
-    assert set(feet_rule.missing_landmarks) == {
-        "left_heel",
-        "left_foot_index",
-        "right_heel",
-        "right_foot_index",
-    }
-
-    # 依赖 mouth（嘴角）的规则也缺点。
-    for rid in ("stance_back_arm", "punch_guard"):
-        v = by_id[rid]
-        assert v.state == RULE_STATE_SKIPPED
-        assert v.skip_reason == SKIP_MISSING_LANDMARKS
-        assert "mouth_left" in v.missing_landmarks
-        assert "mouth_right" in v.missing_landmarks
-
-    # 仅依赖 arms/legs/face_center 的规则在 COCO17 下仍可评估。
-    for rid in ("stance_elbow", "stance_knee", "stance_width", "stance_fist_height"):
-        v = by_id[rid]
-        assert v.state == RULE_STATE_EVALUATED
-        assert v.skip_reason is None
-        assert v.missing_landmarks == ()
-
-    # 缺点规则不得贡献扣分（不当合格也不当不合格）。
-    for rid in ("stance_feet", "stance_back_arm", "punch_guard"):
-        assert by_id[rid].penalty == 0
+    seq[:, [MOUTH_L, MOUTH_R], 3] = 0.0
+    by_code = _judge(seq)
+    rear = by_code["stance_rear_guard"]
+    assert rear.state == RULE_STATE_UNABLE
+    assert rear.skip_reason == SKIP_INSUFFICIENT_VALID_FRAMES
+    assert rear.valid_frames == 0 < rear.total_frames
+    assert by_code["stance_elbow"].state in {"pass", "violation"}
 
 
 # --------------------------------------------------------------------------- #
-# 5) required_landmarks / required_capabilities 声明正确
+# 4) skip_reason=missing_landmarks：后端能力受限（COCO17）→ 缺点检查项 unable
+# --------------------------------------------------------------------------- #
+def test_unable_missing_landmarks_under_coco17():
+    by_code = _judge(_make_seq(n_valid=10, n_invalid=0), caps=COCO17_SUPPORTED_CAPABILITIES)
+
+    # 依赖 feet（脚跟/脚尖）的检查项在 COCO17 下结构性缺失。
+    toes = by_code["stance_toes"]
+    assert toes.state == RULE_STATE_UNABLE
+    assert toes.skip_reason == SKIP_MISSING_LANDMARKS
+    assert set(toes.missing_landmarks) == {"left_heel", "left_foot_index", "right_heel", "right_foot_index"}
+
+    # 依赖 mouth（嘴角）的检查项也缺点。
+    rear = by_code["stance_rear_guard"]
+    assert rear.state == RULE_STATE_UNABLE and rear.skip_reason == SKIP_MISSING_LANDMARKS
+    assert {"mouth_left", "mouth_right"} <= set(rear.missing_landmarks)
+
+    # 仅依赖 arms/legs/face_center 的检查项在 COCO17 下仍可判定。
+    for code in ("stance_elbow", "stance_knee", "stance_width", "stance_height"):
+        c = by_code[code]
+        assert c.state in {"pass", "violation"}
+        assert c.skip_reason is None and c.missing_landmarks == ()
+
+
+# --------------------------------------------------------------------------- #
+# 5) required_landmarks / required_capabilities 声明正确；取手按左右式（D-3）
 # --------------------------------------------------------------------------- #
 def test_required_landmarks_and_capabilities_declared():
-    seq = _make_seq(n_valid=10, n_invalid=0)
-    rs = score_rules(seq, view="front", action_scope="both")
-    by_id = _by_id(rs)
+    by_code = _judge(_make_seq(n_valid=10, n_invalid=0))
 
-    feet = by_id["stance_feet"]
-    assert set(feet.required_landmarks) == {
-        "left_heel",
-        "left_foot_index",
-        "right_heel",
-        "right_foot_index",
-    }
-    assert feet.required_capabilities == ("feet",)
+    toes = by_code["stance_toes"]
+    assert set(toes.required_landmarks) == {"left_heel", "left_foot_index", "right_heel", "right_foot_index"}
+    assert toes.required_capabilities == ("feet",)
 
-    elbow = by_id["stance_elbow"]
-    assert set(elbow.required_landmarks) == {
-        "left_shoulder",
-        "left_elbow",
-        "left_wrist",
-        "right_shoulder",
-        "right_elbow",
-        "right_wrist",
-    }
+    # 左式只看前手（左手），不再"任一手满足"。
+    elbow = by_code["stance_elbow"]
+    assert set(elbow.required_landmarks) == {"left_shoulder", "left_elbow", "left_wrist"}
     assert elbow.required_capabilities == ("arms",)
 
 
@@ -236,12 +200,10 @@ def test_required_landmarks_and_capabilities_declared():
 # 6) 向后兼容：不传 supported_capabilities 时不产生 backend 级缺点
 # --------------------------------------------------------------------------- #
 def test_backward_compatible_no_backend_gating_by_default():
-    seq = _make_seq(n_valid=10, n_invalid=0)
-    rs = score_rules(seq, view="front", action_scope="both")
-    for v in rs.violations:
-        # 默认（MediaPipe full）不应出现 missing_landmarks 级跳过。
-        assert v.skip_reason != SKIP_MISSING_LANDMARKS
-        assert v.missing_landmarks == ()
+    for c in _judge(_make_seq(n_valid=10, n_invalid=0)).values():
+        # 默认（MediaPipe full）不应出现 missing_landmarks 级 unable。
+        assert c.skip_reason != SKIP_MISSING_LANDMARKS
+        assert c.missing_landmarks == ()
 
 
 # --------------------------------------------------------------------------- #

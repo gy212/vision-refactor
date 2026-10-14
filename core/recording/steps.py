@@ -332,6 +332,9 @@ def result_payload(result: Any) -> dict[str, Any]:
         "front_segment": _segment(getattr(result, "front_segment", None)),
         "side_segment": _segment(getattr(result, "side_segment", None)),
         "action_scores": to_jsonable(getattr(result, "action_scores", ())),
+        # 统一规则目录的逐视角结论：只报告，不计入分数，成绩表列不变（D-3）。
+        "rule_checks": to_jsonable(getattr(result, "rule_checks", ())),
+        "rule_error": str(getattr(result, "rule_error", "") or ""),
     }
 
 

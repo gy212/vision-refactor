@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """学生练习分析：逐帧序列提取、相位窗口、经规则引擎的单视角判定与正侧证据融合，产出练习结果字典（设计文档 §7.8）。
 
-复刻 v4（原 ``feedback_geometry.extract_series``/``evaluate_series``/``analyze_geometry``）：丢失帧全无效，
-绝不复用上一帧；结论只是待教师确认的问题说明，``scoreAuthorized=False``。
+规则输入与单视角判定和考试、离线处理共用 ``rule_checks``（统一目录 ``sanda_v5``，D-3、D-5）；练习在此之上做正侧证据融合。
+丢失帧全无效，绝不复用上一帧；结论只是待教师确认的问题说明，``scoreAuthorized=False``。
 """
 from __future__ import annotations
 
@@ -11,20 +11,18 @@ import time
 from pathlib import Path
 from typing import Callable
 
-import numpy as np
-
 from core.evaluation.phases import align_views, phase_windows, share_phase_timing
+from core.evaluation.rule_checks import rule_series, view_outcomes
 from core.evaluation.rules.adapters import to_practice_check
-from core.evaluation.rules.engine import evaluate_rules
-from core.evaluation.rules.practice_v4 import (
+from core.evaluation.rules.sanda_v5 import (
     RULE_VERSION,
     FeedbackConfig,
     build_checks,
     check_view_weights,
     load_feedback_config,
-    practice_profile,
+    rule_profile,
 )
-from core.evaluation.rules.spec import RuleContext, RuleOutcome, RuleProfile
+from core.evaluation.rules.spec import RuleOutcome
 from core.foundation.geometry import torso_length
 from core.foundation.paths import models_dir
 from core.foundation.signal import contiguous_runs
@@ -33,7 +31,6 @@ from core.media.video_source import UndecodableFrame, VideoFpsUnavailable, Video
 from core.pose.engine import create_engine
 from core.pose.extract import extract_pose_sequence, practice_engine, practice_v4_profile
 from core.pose.sequence import Coords, GapPolicy
-from core.pose.validity import derive_valid_mask
 
 _VIEW_LABELS = {"front": "正面", "side": "侧面"}
 
@@ -66,18 +63,15 @@ def extract_series(path: Path, cfg: FeedbackConfig, stopped: Callable[[], bool],
         raise InterruptedError("分析已取消") from None
     if len(seq) == 0:
         raise ValueError("视频没有可读取的帧，请重新录制")
-    lm = seq.raw(GapPolicy.ZERO, Coords.ASPECT_CORRECTED).copy()
     w, h = (int(v) for v in seq.source_wh[-1])
     fps = seq.meta.fps_reported
-    frames = [int(i) for i in seq.frame_index]
-    mask = derive_valid_mask(lm) & np.isfinite(lm[:, :, :3]).all(axis=2)
-    mask &= (lm[:, :, 0] >= 0) & (lm[:, :, 0] <= w / h) & (lm[:, :, 1] >= 0) & (lm[:, :, 1] <= 1)
+    series = rule_series(seq.raw(GapPolicy.ZERO, Coords.ASPECT_CORRECTED).copy(), seq.frame_index, fps, w / h)
     inference_w, inference_h = seq.meta.inference_size
-    return {"landmarks": lm, "valid_mask": mask, "frames": frames, "times": [i / fps for i in frames],
-            "capture": {"sourceFps": fps, "sourceFrames": seq.meta.frames_scanned, "analyzedFrames": len(frames),
-                        "stride": seq.meta.stride, "width": w, "height": h,
-                        "inferenceWidth": inference_w, "inferenceHeight": inference_h,
-                        "analysisSeconds": round(time.monotonic() - started, 3)}}
+    series["capture"] = {"sourceFps": fps, "sourceFrames": seq.meta.frames_scanned,
+                         "analyzedFrames": len(series["frames"]), "stride": seq.meta.stride, "width": w, "height": h,
+                         "inferenceWidth": inference_w, "inferenceHeight": inference_h,
+                         "analysisSeconds": round(time.monotonic() - started, 3)}
+    return series
 
 
 def _observe_view(c: dict, view: str, series: dict, view_windows: dict, view_diagnostics: dict, alignment: dict,
@@ -167,18 +161,6 @@ def _evaluate_check(c: dict, views: dict, windows: dict, diagnostics: dict, alig
     _fuse(c, views, ranges, outcomes, weights, alignment, cfg)
 
 
-def _view_outcomes(view: str, series: dict, view_windows: dict, profile: RuleProfile, action: str, stance: str,
-                   cfg: FeedbackConfig) -> dict[str, RuleOutcome]:
-    """一路视角上全部检查项经 ``evaluate_rules`` 的结论（以检查项 id 为键）；基线取起始实战式窗口，缺失时取开头几帧。"""
-    baseline = view_windows.get(("stance", "start"), np.arange(min(cfg.min_valid, len(series["times"]))))
-    ctx = RuleContext(view=view, action_scope=action, stance=stance,
-                      phase_windows={f"{segment}:{phase}": idx for (segment, phase), idx in view_windows.items()},
-                      baseline=baseline, params=cfg)
-    outcomes = evaluate_rules(series["landmarks"], series["valid_mask"], profile, view=view, action_scope="both",
-                              context=ctx)
-    return {o.spec.code: o for o in outcomes}
-
-
 def _view_diagnostics(views: dict, diagnostics: dict, phase_sources: dict) -> dict:
     return {view: {**diagnostics[view], "phaseSource": phase_sources[view],
                    "bodyValidFrames": int((torso_length(s["landmarks"], s["valid_mask"], "visible_side_chain") > 1e-4).sum()),
@@ -203,8 +185,8 @@ def evaluate_series(action: str, stance: str, views: dict, cfg: FeedbackConfig |
     windows = {view: phase_windows(s, action, stance, cfg, diagnostics[view]) for view, s in views.items()}
     alignment = align_views(views, windows, cfg)
     phase_sources = share_phase_timing(views, windows, alignment, diagnostics, cfg)
-    profile = practice_profile(action, stance, cfg)
-    outcomes_by_view = {view: _view_outcomes(view, s, windows[view], profile, action, stance, cfg)
+    profile = rule_profile(action, stance, cfg)
+    outcomes_by_view = {view: view_outcomes(view, s, windows[view], profile, action, stance, cfg)
                         for view, s in views.items()}
     evidence = {}
     for c in checks:

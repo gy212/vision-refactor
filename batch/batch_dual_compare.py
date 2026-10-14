@@ -19,7 +19,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from core.evaluation import COMPARE, DUAL_STREAM, DUAL_TEMPLATE, load_template
+from core.evaluation import ACTIONS, COMPARE, DEFAULT_STANCE, DUAL_STREAM, DUAL_TEMPLATE, STANCES, load_template
 from core.services import compare_dual, create_template_from_video
 from core.pose import extract_pose_raw
 from core.foundation import outputs_dir
@@ -153,7 +153,8 @@ def _compare_pose33(item, paired_mode: bool, front_tpl: Path, side_tpl: Path, ar
             side_student_video,
             workers=1,
             enable_rules=bool(args.rules),
-            action_scope=str(args.action),
+            rule_action=str(args.rule_action),
+            rule_stance=str(args.rule_stance),
             enable_error_analysis=enable_error_analysis,
         )
         video_label = str(student_id)
@@ -172,7 +173,8 @@ def _compare_pose33(item, paired_mode: bool, front_tpl: Path, side_tpl: Path, ar
             v,
             workers=1,
             enable_rules=bool(args.rules),
-            action_scope=str(args.action),
+            rule_action=str(args.rule_action),
+            rule_stance=str(args.rule_stance),
             enable_error_analysis=enable_error_analysis,
         )
         video_label = str(v)
@@ -181,8 +183,8 @@ def _compare_pose33(item, paired_mode: bool, front_tpl: Path, side_tpl: Path, ar
     return res, video_label, error_video_label, payload_extra
 
 
-_ERROR_RULE_FIELDS = ["video", "view", "rule_id", "rule_name", "violation_ratio", "penalty", "valid_frames",
-                      "total_frames", "state", "skip_reason", "missing_landmarks"]
+_ERROR_RULE_FIELDS = ["video", "view", "check_id", "rule_name", "state", "skip_reason", "violation_ratio",
+                      "valid_frames", "total_frames", "detail", "missing_landmarks"]
 _ERROR_JOINT_FIELDS = ["video", "view", "joint", "mean_dist", "p90_dist", "max_dist", "valid_frames"]
 
 
@@ -195,8 +197,14 @@ def _parse_args() -> argparse.Namespace:
     ap.add_argument("--pose", default="full", choices=["lite", "full", "heavy"], help="Pose model variant")
     ap.add_argument("--out_dir", type=str, default=None, help="Output folder (default: ./outputs/dual_compare_<ts>)")
     ap.add_argument("--export_raw", action="store_true", help="Export raw pose landmarks (.npz) for std + student segments")
-    ap.add_argument("--rules", action="store_true", help="Enable rule-based scoring")
-    ap.add_argument("--action", default="both", choices=["stance", "punch", "both"], help="Rule action scope")
+    ap.add_argument("--rules", action="store_true",
+                    help="Check the unified rule catalog per view (report only, not scored)")
+    ap.add_argument("--rule-action", default="stance", choices=list(ACTIONS),
+                    help="Action checked by --rules for every video (default: stance)")
+    ap.add_argument("--rule-stance", default=DEFAULT_STANCE, choices=list(STANCES),
+                    help="Stance for --rules (default: left, same as the exam)")
+    ap.add_argument("--action", default="both", choices=["stance", "punch", "both"],
+                    help="Deprecated (D-3): no longer used; pick the checked action with --rule-action")
     ap.add_argument("--error-analysis", action="store_true", help="Export error analysis CSVs (rules + joints)")
     ap.add_argument("--workers", type=int, default=1, help="Number of videos to process concurrently (default: 1)")
     ap.add_argument("--paired", action="store_true", help="Pair student front/side files by filename and compare two streams")
@@ -229,25 +237,28 @@ def _prepare_out_dir(args) -> Path:
 
 
 def _rule_error_rows(res, label: str) -> list[dict[str, Any]]:
+    """统一规则目录的逐视角结论，每个检查项一行；``unable`` 的原因写在 ``skip_reason``/``detail``，不当作合格或不合格。"""
     rows = []
-    for view, violations in (("front", res.front_rule_violations), ("side", res.side_rule_violations)):
-        for rv in violations or ():
+    for view, checks in (("front", res.front_rule_checks), ("side", res.side_rule_checks)):
+        for rc in checks or ():
             rows.append({
                 "video": label,
                 "view": str(view),
-                "rule_id": str(rv.rule_id),
-                "rule_name": str(rv.name),
-                "violation_ratio": float(rv.violation_ratio),
-                "penalty": int(rv.penalty),
-                "valid_frames": int(rv.valid_frames),
-                "total_frames": int(rv.total_frames),
-                # YOLO 迁移 S4 / Issue #11：结构化三态写入报告，
-                # 未评估原因清晰，不把不可评估当合格/不合格。
-                "state": str(getattr(rv, "state", "") or ""),
-                "skip_reason": str(getattr(rv, "skip_reason", "") or ""),
-                "missing_landmarks": ",".join(getattr(rv, "missing_landmarks", ()) or ()),
+                "check_id": str(rc.check_id),
+                "rule_name": str(rc.name),
+                "state": str(rc.state),
+                "skip_reason": str(rc.skip_reason or ""),
+                "violation_ratio": float(rc.violation_ratio),
+                "valid_frames": int(rc.valid_frames),
+                "total_frames": int(rc.total_frames),
+                "detail": str(rc.detail),
+                "missing_landmarks": ",".join(rc.missing_landmarks),
             })
     return rows
+
+
+def _count_state(checks, state: str) -> int | str:
+    return "" if checks is None else sum(1 for rc in checks if rc.state == state)
 
 
 def _joint_error_rows(res, label: str) -> list[dict[str, Any]]:
@@ -273,10 +284,11 @@ def _pose33_row(res, label: str) -> dict[str, Any]:
         "front_score": float(res.front_score),
         "side_score": float(res.side_score),
         "combined_percent": int(res.combined_percent),
-        "front_rule_score": "" if res.front_rule_score is None else int(res.front_rule_score),
-        "side_rule_score": "" if res.side_rule_score is None else int(res.side_rule_score),
-        "front_rule_deduction": "" if res.front_rule_deduction is None else int(res.front_rule_deduction),
-        "side_rule_deduction": "" if res.side_rule_deduction is None else int(res.side_rule_deduction),
+        # 规则只报告（D-3）：问题项数与证据不足项数，不折算分数。
+        "front_rule_issues": _count_state(res.front_rule_checks, "violation"),
+        "side_rule_issues": _count_state(res.side_rule_checks, "violation"),
+        "front_rule_unable": _count_state(res.front_rule_checks, "unable"),
+        "side_rule_unable": _count_state(res.side_rule_checks, "unable"),
         "front_segment": "" if res.front_segment is None else f"{res.front_segment[0]}..{res.front_segment[1]}",
         "side_segment": "" if res.side_segment is None else f"{res.side_segment[0]}..{res.side_segment[1]}",
         "front_matches": int(len(res.front_matches)),
@@ -394,6 +406,8 @@ def _run_pose33_batch(args, front_video: Path, side_video: Path, student_dir: Pa
 
 def main() -> None:
     args = _parse_args()
+    if args.action != "both":
+        print("--action 已不再使用（D-3）：规则按 --rule-action 指定的动作检查。")
     backend, feature_layout = normalize_backend_layout(args.backend, args.feature_layout)
     student_dir = Path(args.student_dir)
     if not student_dir.exists():

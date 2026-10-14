@@ -331,8 +331,8 @@ def test_no_split_and_high_score_for_matching_streams(registered_videos):
     assert 0 <= res.combined_percent <= 100
     assert res.front_score > 0.9
     assert res.side_score > 0.9
-    assert res.front_rule_violations is not None
-    assert res.side_rule_violations is not None
+    assert res.front_rule_checks is not None
+    assert res.side_rule_checks is not None
     assert res.front_joint_errors is not None
     assert res.side_joint_errors is not None
 

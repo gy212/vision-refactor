@@ -290,6 +290,8 @@ def test_fifo_single_consumer_and_atomic_completed_results(tmp_path: Path) -> No
             "front_segment",
             "side_segment",
             "action_scores",
+            "rule_checks",
+            "rule_error",
         }
         # 正/侧各 1 模板，各出 0.86 → 加权综合仍 0.86 → 86
         assert payload["result"]["front_score"] == pytest.approx(0.86)

@@ -46,8 +46,11 @@ from core.evaluation.matching.repetition import (
 )
 from core.evaluation.phases import align_views, phase_windows, share_phase_timing
 from core.evaluation.practice import analyze_practice, create_practice_engine, evaluate_series, extract_series
-from core.evaluation.rules.practice_v4 import (
+from core.evaluation.rule_checks import ACTION_BY_NAME, judge_view, rule_series, series_from_raw
+from core.evaluation.rules.adapters import RuleCheck
+from core.evaluation.rules.sanda_v5 import (
     ACTIONS,
+    DEFAULT_STANCE,
     PHASES,
     RULE_VERSION,
     STANCES,
@@ -55,7 +58,7 @@ from core.evaluation.rules.practice_v4 import (
     FeedbackConfig,
     build_checks,
     load_feedback_config,
-    practice_profile,
+    rule_profile,
 )
 from core.evaluation.scoring import exam_pool, schemes
 from core.evaluation.scoring.cost import POSE33_BASELINE, avg_cost_of, baseline_for, score_from_avg_cost
@@ -115,6 +118,7 @@ __all__ = [
     "BODY_CORE_V1_CALIBRATED_BASELINE",
     "CALIBRATION_STATUS_UNVALIDATED",
     "ACTIONS",
+    "ACTION_BY_NAME",
     "ActionTemplate",
     "BACKEND_MEDIAPIPE",
     "BodyCoreMatchResult",
@@ -142,6 +146,7 @@ __all__ = [
     "QueryMatch",
     "RETRACT_REQUIRED_INDICES",
     "RULE_VERSION",
+    "RuleCheck",
     "RepetitionMatch",
     "SCHEMES",
     "STANCES",
@@ -162,7 +167,11 @@ __all__ = [
     "avg_cost_of",
     "baseline_for",
     "build_checks",
-    "practice_profile",
+    "rule_profile",
+    "rule_series",
+    "judge_view",
+    "series_from_raw",
+    "DEFAULT_STANCE",
     "center_x",
     "classify_single_view",
     "compare_dual_streams",
