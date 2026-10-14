@@ -15,7 +15,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from core.parallel_pose_engine import ParallelPoseEngine, InferResult  # noqa: E402
+from core.pose import ParallelPoseEngine, InferResult  # noqa: E402
 
 
 class FakePipeline:

@@ -7,19 +7,21 @@
 新的 reader 只在后台等待，绝不重叠打开同一设备。会话正常结束时 lease 可以
 归还池（``CameraLease.restore``），已打开的设备转回预热 reader（V-1）。
 
+reader 线程、设备释放与隔离重试见 :mod:`slot_lifecycle`，参数校验见 :mod:`pool_checks`。
+
 ``cancel()`` 只请求停止；“可以重新打开”以设备真实释放为准。释放失败的设备
 保持隔离，下一次打开同编号时有间隔地重试释放，而不是遗弃句柄后重开。
 """
 from __future__ import annotations
 
-import inspect
 import threading
 import time
-from dataclasses import dataclass, field
-from numbers import Integral
 from typing import Any, Callable, Final, Mapping
 
 from core.media.camera.capture_process import ProcessCamera
+from core.media.camera.pool_checks import CaptureFactory, PoolArgumentChecks
+from core.media.camera.slot import WarmupSlot
+from core.media.camera.slot_lifecycle import SlotLifecycle
 from core.media.camera.spec import (
     PRIMARY,
     ROLES,
@@ -30,48 +32,16 @@ from core.media.camera.spec import (
     CaptureSpec,
     WarmFrame,
 )
-from core.media.frames import is_valid_bgr
 
 _RELEASE_RETRY_INTERVAL_S: Final = 1.0
-_FACTORY_KEYWORDS: Final = ("stop_event", "width", "height", "expected_name", "policy")
 
-CaptureFactory = Callable[..., Any]
 CameraLog = Callable[[dict], None]
-
-
-@dataclass(eq=False)
-class _WarmupSlot:
-    role: str
-    spec: CaptureSpec
-    generation: int
-    stop_event: threading.Event = field(default_factory=threading.Event)
-    cap: Any | None = None
-    latest: WarmFrame | None = None
-    error: BaseException | None = None
-    thread: threading.Thread | None = None
-    claim_token: object | None = None
-    sequence: int = 0
-    release_lock: threading.Lock = field(default_factory=threading.Lock)
-    released: bool = False
-    reaper_started: bool = False
-    # 会话持有 lease 期间只能由 lease.release() 释放，池不得代为释放。
-    leased: bool = False
-    release_attempted_at: float | None = None
-    open_started_at: float | None = None
-
-    @property
-    def index(self) -> int:
-        return self.spec.index
-
-    @property
-    def claimed(self) -> bool:
-        return self.claim_token is not None
 
 
 class CameraLease:
     """会话独占的已就绪采集；release() 成功前设备保持占用，失败可再次调用重试。"""
 
-    def __init__(self, pool: "CameraPool", slot: _WarmupSlot, capture: Any) -> None:
+    def __init__(self, pool: "CameraPool", slot: WarmupSlot, capture: Any) -> None:
         self._pool = pool
         self._slot = slot
         self._capture = capture
@@ -105,7 +75,7 @@ class CameraLease:
         return self._pool._restore_lease(self._slot, self._capture)
 
 
-class CameraPool:
+class CameraPool(SlotLifecycle, PoolArgumentChecks):
     """Latest-only background readers plus lease ownership for every device."""
 
     def __init__(
@@ -126,13 +96,13 @@ class CameraPool:
         self._release_retry_interval = max(0.0, float(release_retry_interval))
         self._log = log
         self._condition = threading.Condition(threading.RLock())
-        self._slots: dict[str, _WarmupSlot | None] = {
+        self._slots: dict[str, WarmupSlot | None] = {
             PRIMARY: None,
             SECONDARY: None,
         }
         self._generations = {PRIMARY: 0, SECONDARY: 0}
         # 可能仍占有设备的 slot：退役 reader、会话 lease、释放失败的隔离设备。
-        self._retired: dict[int, _WarmupSlot] = {}
+        self._retired: dict[int, WarmupSlot] = {}
         self._closed = False
 
     # ---- 期望状态 ----
@@ -343,9 +313,9 @@ class CameraPool:
         *,
         reject_conflict: bool = False,
     ) -> None:
-        previous: list[_WarmupSlot] = []
-        created: list[_WarmupSlot] = []
-        rollback: list[_WarmupSlot] = []
+        previous: list[WarmupSlot] = []
+        created: list[WarmupSlot] = []
+        rollback: list[WarmupSlot] = []
         start_error: BaseException | None = None
         with self._condition:
             self._ensure_open()
@@ -433,7 +403,7 @@ class CameraPool:
 
     def _wait_expected(
         self,
-        expected: tuple[_WarmupSlot, ...],
+        expected: tuple[WarmupSlot, ...],
         timeout: float,
         stop_event: threading.Event,
     ) -> tuple[WarmFrame, ...]:
@@ -556,7 +526,7 @@ class CameraPool:
             self._emit("lease", slot)
         return tuple(leases)
 
-    def _return_lease(self, slot: _WarmupSlot, cap: Any) -> None:
+    def _return_lease(self, slot: WarmupSlot, cap: Any) -> None:
         with self._condition:
             if slot.released and not slot.leased:
                 return
@@ -576,7 +546,7 @@ class CameraPool:
                 f"摄像头 {slot.index} 释放失败，已隔离；重新开始时会再次尝试释放"
             ) from slot.error
 
-    def _restore_lease(self, old: _WarmupSlot, cap: Any) -> bool:
+    def _restore_lease(self, old: WarmupSlot, cap: Any) -> bool:
         """租约转回预热 reader：只在池未关闭、该角色没有新的预热声明、设备无其他占用时接收。"""
         with self._condition:
             if (
@@ -607,138 +577,8 @@ class CameraPool:
         self._emit("restore", slot)
         return True
 
-    def _reader_loop(self, slot: _WarmupSlot) -> None:
-        cap: Any | None = slot.cap  # 归还的租约带着已打开的设备（V-1），不再重新打开
-        preserve_for_claim = False
-        phase = "wait_release"
-        try:
-            self._await_device(slot)
-            phase = "open"
-            with self._condition:
-                slot.open_started_at = self._clock()
-            if cap is None:
-                cap = self._open(slot)
-            if cap is None:
-                raise CameraWarmupError(
-                    f"{slot.role} camera {slot.index} returned no capture"
-                )
-            is_opened = getattr(cap, "isOpened", None)
-            if callable(is_opened) and not bool(is_opened()):
-                raise CameraWarmupError(
-                    f"{slot.role} camera {slot.index} could not be opened"
-                )
-
-            with self._condition:
-                if not self._slot_is_current(slot) or slot.stop_event.is_set():
-                    return
-                slot.cap = cap
-                self._condition.notify_all()
-
-            phase = "first_frame"
-            while not slot.stop_event.is_set():
-                ok, frame = cap.read()
-                if slot.stop_event.is_set():
-                    break
-                if not ok or not is_valid_bgr(frame):
-                    raise CameraWarmupError(
-                        f"{slot.role} camera {slot.index} failed to read a frame"
-                    )
-                captured_at = self._clock()
-                with self._condition:
-                    if not self._slot_is_current(slot) or slot.stop_event.is_set():
-                        break
-                    slot.sequence += 1
-                    slot.latest = WarmFrame(
-                        frame=frame,
-                        captured_at=captured_at,
-                        sequence=slot.sequence,
-                        generation=slot.generation,
-                    )
-                    opened_at = slot.open_started_at
-                    self._condition.notify_all()
-                if phase == "first_frame":
-                    phase = "read"
-                    self._emit(
-                        "ready",
-                        slot,
-                        actual=self._frame_size(frame),
-                        open_ms=(
-                            round((captured_at - opened_at) * 1000.0, 1)
-                            if opened_at is not None
-                            else None
-                        ),
-                    )
-        except BaseException as exc:
-            with self._condition:
-                current = self._slot_is_current(slot)
-                if current:
-                    slot.error = self._normalize_error(slot, exc)
-                    slot.stop_event.set()
-                    self._condition.notify_all()
-            if current:
-                self._emit("error", slot, phase=phase, error=str(exc))
-        finally:
-            with self._condition:
-                preserve_for_claim = (
-                    cap is not None
-                    and self._slot_is_current(slot)
-                    and slot.claimed
-                    and slot.cap is cap
-                )
-                if not preserve_for_claim and slot.cap is cap:
-                    slot.cap = None
-                self._condition.notify_all()
-            released = True
-            if cap is not None and not preserve_for_claim:
-                released = self._release_once(slot, cap)
-            if not preserve_for_claim:
-                with self._condition:
-                    if released:
-                        self._retired.pop(id(slot), None)
-                    else:
-                        self._retired[id(slot)] = slot
-                    self._condition.notify_all()
-
-    def _await_device(self, slot: _WarmupSlot) -> None:
-        """在 reader 线程等待同编号旧 owner 真正释放；到期时重试释放隔离设备。"""
-
-        while True:
-            retry: _WarmupSlot | None = None
-            with self._condition:
-                if slot.stop_event.is_set() or not self._slot_is_current(slot):
-                    raise CameraWarmupStopped("camera warmup was stopped")
-                busy = self._busy_slot_locked(slot.index, exclude=slot)
-                if busy is None:
-                    return
-                if self._release_retry_due_locked(busy):
-                    busy.release_attempted_at = self._clock()
-                    retry = busy
-                else:
-                    self._condition.wait(self._stop_poll_interval)
-            if retry is not None:
-                cap = retry.cap
-                if cap is not None and self._release_once(retry, cap):
-                    with self._condition:
-                        if retry.cap is cap:
-                            retry.cap = None
-                        self._retired.pop(id(retry), None)
-                        self._condition.notify_all()
-
-    def _open(self, slot: _WarmupSlot) -> Any:
-        kwargs: dict[str, Any] = {}
-        if "stop_event" in self._factory_keywords:
-            kwargs["stop_event"] = slot.stop_event
-        if "width" in self._factory_keywords:
-            kwargs["width"] = slot.spec.width
-        if "height" in self._factory_keywords:
-            kwargs["height"] = slot.spec.height
-        if "expected_name" in self._factory_keywords and slot.spec.expected_name:
-            kwargs["expected_name"] = slot.spec.expected_name
-        if "policy" in self._factory_keywords and slot.spec.policy != "prefer":
-            kwargs["policy"] = slot.spec.policy
-        return self._capture_factory(slot.index, **kwargs)
-    def _cancel_expected(self, expected: tuple[_WarmupSlot, ...]) -> None:
-        retired: list[_WarmupSlot] = []
+    def _cancel_expected(self, expected: tuple[WarmupSlot, ...]) -> None:
+        retired: list[WarmupSlot] = []
         with self._condition:
             for slot in expected:
                 if self._slots[slot.role] is slot:
@@ -753,10 +593,10 @@ class CameraPool:
 
     def _abort_claim(
         self,
-        expected: tuple[_WarmupSlot, ...],
+        expected: tuple[WarmupSlot, ...],
         claim_token: object,
     ) -> None:
-        retired: list[_WarmupSlot] = []
+        retired: list[WarmupSlot] = []
         with self._condition:
             for slot in expected:
                 if slot.claim_token is claim_token:
@@ -772,166 +612,9 @@ class CameraPool:
         for slot in retired:
             self._detach_slot(slot)
 
-    def _retire_locked(self, slot: _WarmupSlot) -> None:
-        slot.stop_event.set()
-        self._retired[id(slot)] = slot
-
-    def _release_once(self, slot: _WarmupSlot, cap: Any) -> bool:
-        with slot.release_lock:
-            if slot.released:
-                return True
-            try:
-                cap.release()
-            except Exception as exc:
-                with self._condition:
-                    slot.error = CameraWarmupError(
-                        f"{slot.role} camera {slot.index} release failed: {exc}"
-                    )
-                    slot.release_attempted_at = self._clock()
-                    if slot.cap is None:
-                        slot.cap = cap
-                    self._retired[id(slot)] = slot
-                    self._condition.notify_all()
-                self._emit("release_failed", slot, error=str(exc))
-                return False
-            slot.released = True
-        with self._condition:
-            if slot.cap is cap:
-                slot.cap = None
-            self._condition.notify_all()
-        self._emit("released", slot)
-        return True
-
-    def _request_capture_interrupt(self, slot: _WarmupSlot) -> None:
-        with self._condition:
-            cap = slot.cap
-        interrupt = getattr(cap, "interrupt", None) if cap is not None else None
-        if callable(interrupt):
-            try:
-                interrupt()
-            except Exception:
-                pass
-
-    def _detach_slot(self, slot: _WarmupSlot) -> None:
-        """只发停止与中断信号，释放交给 reader/reaper，调用线程（可能是 Tk）不碰驱动。"""
-
-        slot.stop_event.set()
-        thread = slot.thread
-        if thread is not None and thread.is_alive():
-            self._request_capture_interrupt(slot)
-        self._reap_slot_async(slot)
-
-    def _interrupt_slot(self, slot: _WarmupSlot, *, join: bool) -> None:
-        slot.stop_event.set()
-        thread = slot.thread
-        current = threading.current_thread()
-        if join and thread is not None and thread is not current and thread.is_alive():
-            thread.join(self._join_timeout)
-        if thread is not None and thread.is_alive():
-            self._request_capture_interrupt(slot)
-            if join and thread is not current:
-                thread.join(self._join_timeout)
-
-        # Never release while the owner thread may still be inside open/read,
-        # and never release a capture that a session currently leases.
-        if (thread is None or not thread.is_alive()) and not slot.leased:
-            with self._condition:
-                cap = slot.cap
-            released = True if cap is None else self._release_once(slot, cap)
-            if released:
-                with self._condition:
-                    self._retired.pop(id(slot), None)
-                    self._condition.notify_all()
-
-    def _reap_slot_async(self, slot: _WarmupSlot) -> None:
-        """Finish a cancelled slot without blocking a UI caller."""
-
-        with self._condition:
-            if slot.reaper_started:
-                return
-            slot.reaper_started = True
-
-        def _reap() -> None:
-            thread = slot.thread
-            if (
-                thread is not None
-                and thread is not threading.current_thread()
-                and thread.is_alive()
-            ):
-                thread.join(self._join_timeout)
-            if thread is not None and thread.is_alive():
-                self._request_capture_interrupt(slot)
-                thread.join(self._join_timeout)
-            self._interrupt_slot(slot, join=False)
-
-        reaper = threading.Thread(
-            target=_reap,
-            name=f"camera-warmup-reaper-{slot.role}-{slot.generation}",
-            daemon=True,
-        )
-        try:
-            reaper.start()
-        except BaseException:
-            # Keep cancellation bounded. The reader remains the only owner
-            # allowed to release a native capture after open/read returns.
-            self._interrupt_slot(slot, join=True)
-
-    def _interrupt_slots(self, slots: list[_WarmupSlot], *, timeout: float) -> None:
-        deadline = self._clock() + max(0.0, timeout)
-        for slot in slots:
-            slot.stop_event.set()
-            thread = slot.thread
-            if (
-                thread is not None
-                and thread is not threading.current_thread()
-                and thread.is_alive()
-            ):
-                thread.join(max(0.0, deadline - self._clock()))
-        for slot in slots:
-            thread = slot.thread
-            if thread is not None and thread.is_alive():
-                self._request_capture_interrupt(slot)
-            self._interrupt_slot(slot, join=False)
-
-    @staticmethod
-    def _holds_device(slot: _WarmupSlot) -> bool:
-        thread = slot.thread
-        return bool(
-            slot.leased
-            or (thread is not None and thread.is_alive())
-            or (slot.cap is not None and not slot.released)
-        )
-
-    def _busy_slot_locked(
-        self, index: int, *, exclude: _WarmupSlot | None = None
-    ) -> _WarmupSlot | None:
-        for slot in self._retired.values():
-            if slot is not exclude and slot.index == index and self._holds_device(slot):
-                return slot
-        for slot in self._slots.values():
-            if (
-                slot is not None
-                and slot is not exclude
-                and slot.index == index
-                and self._holds_device(slot)
-            ):
-                return slot
-        return None
-
-    def _release_retry_due_locked(self, slot: _WarmupSlot) -> bool:
-        thread = slot.thread
-        if slot.leased or slot.cap is None or slot.released:
-            return False
-        if thread is not None and thread.is_alive():
-            return False
-        attempted = slot.release_attempted_at
-        return attempted is None or (
-            self._clock() - attempted >= self._release_retry_interval
-        )
-
-    def _new_slot_locked(self, role: str, spec: CaptureSpec) -> _WarmupSlot:
+    def _new_slot_locked(self, role: str, spec: CaptureSpec) -> WarmupSlot:
         self._generations[role] += 1
-        slot = _WarmupSlot(role=role, spec=spec, generation=self._generations[role])
+        slot = WarmupSlot(role=role, spec=spec, generation=self._generations[role])
         slot.thread = threading.Thread(
             target=self._reader_loop,
             args=(slot,),
@@ -942,7 +625,7 @@ class CameraPool:
 
     def _matching(
         self, wants: Mapping[str, CaptureSpec]
-    ) -> tuple[_WarmupSlot, ...] | None:
+    ) -> tuple[WarmupSlot, ...] | None:
         slots = []
         for role, spec in wants.items():
             slot = self._slots[role]
@@ -952,7 +635,7 @@ class CameraPool:
         return tuple(slots)
 
     @staticmethod
-    def _reusable(slot: _WarmupSlot, spec: CaptureSpec) -> bool:
+    def _reusable(slot: WarmupSlot, spec: CaptureSpec) -> bool:
         return (
             slot.spec == spec
             and slot.error is None
@@ -960,11 +643,11 @@ class CameraPool:
             and not slot.claimed
         )
 
-    def _slot_is_current(self, slot: _WarmupSlot) -> bool:
+    def _slot_is_current(self, slot: WarmupSlot) -> bool:
         return not self._closed and self._slots[slot.role] is slot
 
     @staticmethod
-    def _ready_for_claim(slot: _WarmupSlot) -> bool:
+    def _ready_for_claim(slot: WarmupSlot) -> bool:
         return (
             slot.error is None
             and slot.cap is not None
@@ -976,7 +659,7 @@ class CameraPool:
         )
 
     @staticmethod
-    def _completed_claim(slot: _WarmupSlot, claim_token: object) -> bool:
+    def _completed_claim(slot: WarmupSlot, claim_token: object) -> bool:
         return (
             slot.error is None
             and slot.cap is not None
@@ -986,7 +669,7 @@ class CameraPool:
             and slot.claim_token is claim_token
         )
 
-    def _emit(self, event: str, slot: _WarmupSlot, **fields: Any) -> None:
+    def _emit(self, event: str, slot: WarmupSlot, **fields: Any) -> None:
         if self._log is None:
             return
         payload = {
@@ -1012,95 +695,6 @@ class CameraPool:
     def _ensure_open(self) -> None:
         if self._closed:
             raise CameraWarmupError("camera warmup pool is closed")
-
-    @staticmethod
-    def _validate_role(role: str) -> str:
-        if role not in ROLES:
-            raise ValueError(f"role must be one of {ROLES!r}")
-        return role
-
-    @staticmethod
-    def _validate_index(index: int) -> int:
-        if isinstance(index, bool) or not isinstance(index, Integral):
-            raise ValueError("camera index must be a non-negative integer")
-        normalized = int(index)
-        if normalized < 0:
-            raise ValueError("camera index must be a non-negative integer")
-        return normalized
-
-    @classmethod
-    def _validate_spec(cls, spec: CaptureSpec | int) -> CaptureSpec:
-        if isinstance(spec, CaptureSpec):
-            return spec
-        return CaptureSpec(cls._validate_index(spec))
-
-
-    def _validate_pair(
-        self, primary: CaptureSpec | int, secondary: CaptureSpec | int
-    ) -> tuple[CaptureSpec, CaptureSpec]:
-        first = self._validate_spec(primary)
-        second = self._validate_spec(secondary)
-        if first.index == second.index:
-            raise ValueError("primary and secondary cameras must be different")
-        return first, second
-
-    @staticmethod
-    def _validate_timeout(timeout: float) -> float:
-        try:
-            normalized = float(timeout)
-        except (TypeError, ValueError) as exc:
-            raise ValueError("timeout must be a non-negative number") from exc
-        if normalized < 0:
-            raise ValueError("timeout must be a non-negative number")
-        return normalized
-
-    @staticmethod
-    def _validate_after(after: tuple[int, int] | None) -> tuple[int, int] | None:
-        if after is None:
-            return None
-        if not isinstance(after, tuple) or len(after) != 2:
-            raise ValueError("after must be a two-item sequence cursor")
-        if any(isinstance(value, bool) or not isinstance(value, int) for value in after):
-            raise ValueError("after must contain integer sequences")
-        return after
-
-    @staticmethod
-    def _validate_generations(
-        generations: tuple[int, ...] | None, size: int
-    ) -> tuple[int, ...] | None:
-        if generations is None:
-            return None
-        if not isinstance(generations, tuple) or len(generations) != size:
-            raise ValueError(f"expected_generations must be a {size}-item tuple")
-        if any(
-            isinstance(value, bool) or not isinstance(value, int) or value < 1
-            for value in generations
-        ):
-            raise ValueError("expected_generations must contain positive integers")
-        return generations
-
-    @staticmethod
-    def _supported_keywords(factory: CaptureFactory) -> frozenset[str]:
-        try:
-            parameters = list(inspect.signature(factory).parameters.values())
-        except (TypeError, ValueError):
-            return frozenset()
-        if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters):
-            return frozenset(_FACTORY_KEYWORDS)
-        return frozenset(
-            p.name
-            for p in parameters
-            if p.name in _FACTORY_KEYWORDS
-            and p.kind
-            in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
-        )
-
-    @staticmethod
-    def _normalize_error(slot: _WarmupSlot, exc: BaseException) -> BaseException:
-        if isinstance(exc, CameraWarmupError):
-            return exc
-        return CameraWarmupError(f"{slot.role} camera {slot.index} failed: {exc}")
-
 
 __all__ = [
     "CameraLease",

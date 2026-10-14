@@ -29,7 +29,7 @@ from apps.tk.controllers import practice as practice_mod
 from apps.tk.controllers import recording as recording_mod
 from tests.tk_app_doubles import FakeLive, activate_practice, build_app, practice_app
 from tests.tk_app_doubles import root  # noqa: F401
-from apps.feedback_result_panel import FeedbackResultPanel
+from apps.tk.views.practice_result import FeedbackResultPanel
 from core.recording import RecordingService, SegmentFinalizer
 from core.live import PresenceSample, PreviewStore, SessionEvent
 from core.media import PRIMARY, SECONDARY

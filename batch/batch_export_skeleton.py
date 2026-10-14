@@ -3,16 +3,23 @@ from __future__ import annotations
 
 import argparse
 import csv
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+import sys
 from typing import Iterable
 
 import cv2
 import numpy as np
 
+# 允许以 ``python apps/xxx.py``、``python batch/xxx.py`` 方式运行（AGENTS.md 记载的命令）。
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
 from core.media import probe_video
-from core.paths import outputs_dir
+from core.foundation import load_npz, npz_meta, outputs_dir
 from core.pose import FORMAL, GapPolicy, draw_skeleton, extract_pose_sequence, formal_engine
 from batch.backend_options import (
     FEATURE_LAYOUT_BODY_CORE,
@@ -134,7 +141,7 @@ def _video_basic_meta(video_path: Path) -> dict:
 
 
 def _extract_body_core_features(video_path: Path, *, backend: str, pose_variant: str) -> tuple[np.ndarray, dict]:
-    from core.body_core_compare import extract_body_core_features
+    from core.pose.backends import extract_body_core_features
 
     features, fps, backend_meta = extract_body_core_features(
         video_path,
@@ -199,13 +206,22 @@ def _manifest_row(
 
 def _read_npz_meta(path: Path) -> dict:
     try:
-        data = np.load(path, allow_pickle=True)
-        return dict(data["meta"].item() or {})
+        return npz_meta(load_npz(path))
     except Exception:  # noqa: BLE001 - stale/corrupt skipped files still get a manifest row.
         return {}
 
 
-def main() -> None:
+@dataclass(frozen=True)
+class _ExportItem:
+    idx: int
+    video_path: Path
+    rel_parent: Path
+    out_subdir: Path
+    npz_path: Path
+    skel_video_path: Path | None
+
+
+def _parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser(description="Batch export Pose33 skeleton data + skeleton videos.")
     ap.add_argument("--source_dir", default="标准动作视频--分解版", help="Input root folder")
     ap.add_argument("--out_dir", default=None, help="Output root folder (default: outputs/<name>_<ts>)")
@@ -220,9 +236,57 @@ def main() -> None:
     ap.add_argument("--overwrite", action="store_true", help="Overwrite existing outputs")
     ap.add_argument("--workers", type=int, default=1, help="Number of videos to process concurrently (default: 1)")
     add_backend_layout_args(ap)
-    args = ap.parse_args()
-    backend, feature_layout = normalize_backend_layout(args.backend, args.feature_layout)
+    return ap.parse_args()
 
+
+def _export_items(videos: list[Path], source_dir: Path, out_dir: Path, args, *, pose33: bool, backend: str) -> list[_ExportItem]:
+    """为每个视频定好输出子目录与不重名的 npz、骨架视频路径（序号从 1 开始）。"""
+    used_names_by_dir: dict[Path, set[str]] = {}
+    items: list[_ExportItem] = []
+    for idx, video_path in enumerate(videos, start=1):
+        rel_parent = video_path.parent.relative_to(source_dir)
+        out_subdir = out_dir / rel_parent
+        safe_name = _unique_name(_sanitize_name(video_path.stem), used_names_by_dir.setdefault(out_subdir, set()))
+        if pose33:
+            npz_path = out_subdir / f"{safe_name}_pose33_{args.pose}.npz"
+            skel_video_path = None if args.no_video else (out_subdir / f"{safe_name}_skeleton_{args.pose}.mp4")
+        else:
+            npz_path = out_subdir / f"{safe_name}_{backend}_{FEATURE_LAYOUT_BODY_CORE}.npz"
+            # body_core_v1 features are normalized coordinates, not overlay-ready pixel landmarks.
+            skel_video_path = None
+        items.append(_ExportItem(idx, video_path, rel_parent, out_subdir, npz_path, skel_video_path))
+    return items
+
+
+def _export_one(item: _ExportItem, args, *, pose33: bool, backend: str, total: int) -> dict:
+    """导出一个视频的 npz（及骨架视频），返回清单行；已存在且未要求覆盖时只读回元数据。"""
+    def row(meta: dict) -> dict:
+        return _manifest_row(rel_parent=item.rel_parent, video_path=item.video_path, npz_path=item.npz_path,
+                             skel_video_path=item.skel_video_path, pose_variant=str(args.pose), meta=meta)
+
+    if not args.overwrite and item.npz_path.exists() and (item.skel_video_path is None or item.skel_video_path.exists()):
+        print(f"[{item.idx}/{total}] Skip (exists): {item.video_path}")
+        return row(_read_npz_meta(item.npz_path))
+
+    item.out_subdir.mkdir(parents=True, exist_ok=True)
+    print(f"[{item.idx}/{total}] Processing: {item.video_path}")
+    if pose33:
+        arrays, meta = _extract_pose_and_video(item.video_path, out_video=item.skel_video_path,
+                                               pose_variant=str(args.pose), draw_face=bool(args.draw_face))
+        key = "landmarks"
+    else:
+        arrays, meta = _extract_body_core_features(item.video_path, backend=backend, pose_variant=str(args.pose))
+        key = "features"
+    meta["output_npz"] = str(item.npz_path)
+    meta["action"] = str(item.rel_parent)
+    np.savez_compressed(item.npz_path, **{key: arrays}, meta=np.array(meta, dtype=object))
+    return row(meta)
+
+
+def main() -> None:
+    args = _parse_args()
+    backend, feature_layout = normalize_backend_layout(args.backend, args.feature_layout)
+    pose33 = is_default_pose33_path(backend, feature_layout)
     source_dir = Path(args.source_dir)
     if not source_dir.exists():
         raise FileNotFoundError(f"source_dir not found: {source_dir}")
@@ -235,91 +299,17 @@ def main() -> None:
     videos = _iter_videos(source_dir, skip_keywords=skip_keywords)
     if not videos:
         raise FileNotFoundError(f"No videos found in: {source_dir}")
+    items = _export_items(videos, source_dir, out_dir, args, pose33=pose33, backend=backend)
 
-    used_names_by_dir: dict[Path, set[str]] = {}
-    work_items: list[tuple[int, Path, Path, Path, Path, Path | None]] = []
-    for idx, video_path in enumerate(videos, start=1):
-        rel_parent = video_path.parent.relative_to(source_dir)
-        out_subdir = out_dir / rel_parent
-        used = used_names_by_dir.setdefault(out_subdir, set())
-
-        base_name = _sanitize_name(video_path.stem)
-        safe_name = _unique_name(base_name, used)
-
-        if is_default_pose33_path(backend, feature_layout):
-            npz_path = out_subdir / f"{safe_name}_pose33_{args.pose}.npz"
-            skel_video_path = None if args.no_video else (out_subdir / f"{safe_name}_skeleton_{args.pose}.mp4")
-        else:
-            npz_path = out_subdir / f"{safe_name}_{backend}_{FEATURE_LAYOUT_BODY_CORE}.npz"
-            # body_core_v1 features are normalized coordinates, not overlay-ready pixel landmarks.
-            skel_video_path = None
-
-        work_items.append((idx, video_path, rel_parent, out_subdir, npz_path, skel_video_path))
-
-    def _process_video(item: tuple[int, Path, Path, Path, Path, Path | None]) -> tuple[int, dict]:
-        idx, video_path, rel_parent, out_subdir, npz_path, skel_video_path = item
-        if not args.overwrite:
-            if npz_path.exists() and (skel_video_path is None or skel_video_path.exists()):
-                print(f"[{idx}/{len(videos)}] Skip (exists): {video_path}")
-                return (
-                    idx,
-                    _manifest_row(
-                        rel_parent=rel_parent,
-                        video_path=video_path,
-                        npz_path=npz_path,
-                        skel_video_path=skel_video_path,
-                        pose_variant=str(args.pose),
-                        meta=_read_npz_meta(npz_path),
-                    ),
-                )
-
-        out_subdir.mkdir(parents=True, exist_ok=True)
-        print(f"[{idx}/{len(videos)}] Processing: {video_path}")
-        if is_default_pose33_path(backend, feature_layout):
-            landmarks, meta = _extract_pose_and_video(
-                video_path,
-                out_video=skel_video_path,
-                pose_variant=str(args.pose),
-                draw_face=bool(args.draw_face),
-            )
-        else:
-            features, meta = _extract_body_core_features(
-                video_path,
-                backend=backend,
-                pose_variant=str(args.pose),
-            )
-        meta["output_npz"] = str(npz_path)
-        meta["action"] = str(rel_parent)
-        if is_default_pose33_path(backend, feature_layout):
-            np.savez_compressed(npz_path, landmarks=landmarks, meta=np.array(meta, dtype=object))
-        else:
-            np.savez_compressed(npz_path, features=features, meta=np.array(meta, dtype=object))
-
-        return (
-            idx,
-            _manifest_row(
-                rel_parent=rel_parent,
-                video_path=video_path,
-                npz_path=npz_path,
-                skel_video_path=skel_video_path,
-                pose_variant=str(args.pose),
-                meta=meta,
-            ),
-        )
+    def process(item: _ExportItem) -> dict:
+        return _export_one(item, args, pose33=pose33, backend=backend, total=len(videos))
 
     video_workers = max(1, int(args.workers))
-    results: list[tuple[int, dict]] = []
     if video_workers <= 1:
-        for item in work_items:
-            results.append(_process_video(item))
+        manifest_rows = [process(item) for item in items]
     else:
         with ThreadPoolExecutor(max_workers=video_workers) as ex:
-            futures = [ex.submit(_process_video, item) for item in work_items]
-            for fut in as_completed(futures):
-                results.append(fut.result())
-
-    results.sort(key=lambda item: item[0])
-    manifest_rows = [row for _idx, row in results]
+            manifest_rows = list(ex.map(process, items))
 
     manifest_path = out_dir / "manifest.csv"
     _write_manifest(manifest_rows, manifest_path)

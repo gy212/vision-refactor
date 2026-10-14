@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from core.exam_roster import (
+from core.workflows import (
     ExamCandidate,
     ExamResultRow,
     ExamScorebook,

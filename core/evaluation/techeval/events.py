@@ -12,6 +12,106 @@ from core.foundation import angle_deg, landmark_xy
 from core.pose.landmarks import L_ELBOW, L_SHOULDER, L_WRIST, R_ELBOW, R_SHOULDER, R_WRIST
 
 
+def _side_arm_series(landmarks: np.ndarray, mask: np.ndarray, arm: str) -> tuple[np.ndarray, np.ndarray]:
+    """一侧手臂逐帧的肘角与腕相对肩的朝向前伸量；朝向或肩肘腕点无效的帧为 NaN。"""
+    if arm.upper() == "L":
+        sh, el, wr = L_SHOULDER, L_ELBOW, L_WRIST
+    else:
+        sh, el, wr = R_SHOULDER, R_ELBOW, R_WRIST
+
+    ang = np.full((landmarks.shape[0],), np.nan, dtype=np.float32)
+    dx = np.full_like(ang, np.nan)
+
+    for i, lm in enumerate(landmarks):
+        mask_row = mask[i]
+        d = facing_direction(lm, mask_row)
+        if d is None:
+            continue
+        if not all_valid(mask_row, (sh, el, wr)):
+            continue
+        a = angle_deg(landmark_xy(lm, sh), landmark_xy(lm, el), landmark_xy(lm, wr))
+        ang[i] = float(a)
+        dx[i] = (float(landmark_xy(lm, wr)[0]) - float(landmark_xy(lm, sh)[0])) * float(d)
+
+    return ang, dx
+
+
+def _arm_retract_events(
+    ang: np.ndarray,
+    dx: np.ndarray,
+    arm: str,
+    *,
+    fps: float,
+    ext_angle_thr: float,
+    retract_angle_thr: float,
+    ext_forward_dx: float,
+    retract_sec_thr: float,
+    max_window_frames: int,
+) -> list[dict[str, Any]]:
+    """一侧手臂的伸展—回收状态机：连续 2 帧伸直前伸记为出拳，连续 2 帧弯回记为回收；超时或到片尾未回收按慢回收记。"""
+    events: list[dict[str, Any]] = []
+    state = "idle"
+    ext_start: int | None = None
+    ext_hold = 0
+    ret_hold = 0
+
+    last_i = int(ang.size - 1)
+    for i in range(int(ang.size)):
+        a = float(ang[i])
+        if not np.isfinite(a):
+            continue
+
+        forward_ok = np.isfinite(dx[i]) and (float(dx[i]) >= float(ext_forward_dx))
+        ext_ok = (a >= float(ext_angle_thr)) and bool(forward_ok)
+        ret_ok = (a <= float(retract_angle_thr))
+
+        if state == "idle":
+            if ext_ok:
+                ext_hold += 1
+                if ext_hold >= 2:
+                    ext_start = int(i - 1)
+                    state = "extended"
+                    ret_hold = 0
+            else:
+                ext_hold = 0
+            continue
+
+        if state == "extended":
+            if ext_start is not None and (i - ext_start) > max_window_frames:
+                events.append({"arm": arm, "start": int(ext_start), "end": None, "duration_sec": None, "slow": True})
+                state = "cooldown"
+                ext_start = None
+                ext_hold = 0
+                ret_hold = 0
+                continue
+
+            if ret_ok:
+                ret_hold += 1
+                if ret_hold >= 2 and ext_start is not None:
+                    end = int(i - 1)
+                    dur = float((end - ext_start) / max(1e-6, float(fps)))
+                    slow = bool(dur > float(retract_sec_thr))
+                    events.append({"arm": arm, "start": int(ext_start), "end": int(end), "duration_sec": dur, "slow": slow})
+                    state = "cooldown"
+                    ext_start = None
+                    ext_hold = 0
+                    ret_hold = 0
+            else:
+                ret_hold = 0
+            continue
+
+        if a < float(ext_angle_thr) - 20.0:
+            state = "idle"
+
+    if state == "extended" and ext_start is not None:
+        end = int(last_i)
+        dur = float((end - int(ext_start)) / max(1e-6, float(fps)))
+        slow = bool(dur > float(retract_sec_thr))
+        events.append({"arm": arm, "start": int(ext_start), "end": int(end), "duration_sec": dur, "slow": slow})
+
+    return events
+
+
 def detect_retract_events_side(
     landmarks: np.ndarray,
     *,
@@ -27,94 +127,18 @@ def detect_retract_events_side(
     mask = resolve_mask(landmarks, valid_mask, vis_thr)
     max_window_frames = int(max(1, round(float(max_window_sec) * float(fps))))
 
-    def arm_series(arm: str) -> tuple[np.ndarray, np.ndarray]:
-        if arm.upper() == "L":
-            sh, el, wr = L_SHOULDER, L_ELBOW, L_WRIST
-        else:
-            sh, el, wr = R_SHOULDER, R_ELBOW, R_WRIST
-
-        ang = np.full((landmarks.shape[0],), np.nan, dtype=np.float32)
-        dx = np.full_like(ang, np.nan)
-
-        for i, lm in enumerate(landmarks):
-            mask_row = mask[i]
-            d = facing_direction(lm, mask_row)
-            if d is None:
-                continue
-            if not all_valid(mask_row, (sh, el, wr)):
-                continue
-            a = angle_deg(landmark_xy(lm, sh), landmark_xy(lm, el), landmark_xy(lm, wr))
-            ang[i] = float(a)
-            dx[i] = (float(landmark_xy(lm, wr)[0]) - float(landmark_xy(lm, sh)[0])) * float(d)
-
-        return ang, dx
-
-    def detect_events(arm: str) -> list[dict[str, Any]]:
-        ang, dx = arm_series(arm)
-
-        events: list[dict[str, Any]] = []
-        state = "idle"
-        ext_start: int | None = None
-        ext_hold = 0
-        ret_hold = 0
-
-        last_i = int(ang.size - 1)
-        for i in range(int(ang.size)):
-            a = float(ang[i])
-            if not np.isfinite(a):
-                continue
-
-            forward_ok = np.isfinite(dx[i]) and (float(dx[i]) >= float(ext_forward_dx))
-            ext_ok = (a >= float(ext_angle_thr)) and bool(forward_ok)
-            ret_ok = (a <= float(retract_angle_thr))
-
-            if state == "idle":
-                if ext_ok:
-                    ext_hold += 1
-                    if ext_hold >= 2:
-                        ext_start = int(i - 1)
-                        state = "extended"
-                        ret_hold = 0
-                else:
-                    ext_hold = 0
-                continue
-
-            if state == "extended":
-                if ext_start is not None and (i - ext_start) > max_window_frames:
-                    events.append({"arm": arm, "start": int(ext_start), "end": None, "duration_sec": None, "slow": True})
-                    state = "cooldown"
-                    ext_start = None
-                    ext_hold = 0
-                    ret_hold = 0
-                    continue
-
-                if ret_ok:
-                    ret_hold += 1
-                    if ret_hold >= 2 and ext_start is not None:
-                        end = int(i - 1)
-                        dur = float((end - ext_start) / max(1e-6, float(fps)))
-                        slow = bool(dur > float(retract_sec_thr))
-                        events.append({"arm": arm, "start": int(ext_start), "end": int(end), "duration_sec": dur, "slow": slow})
-                        state = "cooldown"
-                        ext_start = None
-                        ext_hold = 0
-                        ret_hold = 0
-                else:
-                    ret_hold = 0
-                continue
-
-            if a < float(ext_angle_thr) - 20.0:
-                state = "idle"
-
-        if state == "extended" and ext_start is not None:
-            end = int(last_i)
-            dur = float((end - int(ext_start)) / max(1e-6, float(fps)))
-            slow = bool(dur > float(retract_sec_thr))
-            events.append({"arm": arm, "start": int(ext_start), "end": int(end), "duration_sec": dur, "slow": slow})
-
-        return events
-
-    return sorted(detect_events("L") + detect_events("R"), key=lambda d: int(d.get("start") or 0))
+    thresholds = dict(
+        fps=fps,
+        ext_angle_thr=ext_angle_thr,
+        retract_angle_thr=retract_angle_thr,
+        ext_forward_dx=ext_forward_dx,
+        retract_sec_thr=retract_sec_thr,
+        max_window_frames=max_window_frames,
+    )
+    events = [
+        e for arm in ("L", "R") for e in _arm_retract_events(*_side_arm_series(landmarks, mask, arm), arm, **thresholds)
+    ]
+    return sorted(events, key=lambda d: int(d.get("start") or 0))
 
 
 def merge_intervals(intervals: list[tuple[int, int]]) -> list[tuple[int, int]]:

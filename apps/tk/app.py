@@ -11,7 +11,7 @@ from typing import Any
 
 from core.foundation import load_record_dir, load_template_pools
 from core.live import APP_CLOSE, LiveControls
-from core.paths import models_dir
+from core.foundation import models_dir
 from core.workflows import ModeManager, ScorebookRegistry, WorkflowHost
 
 from apps.tk.controllers.cameras import CameraController, make_camera_service

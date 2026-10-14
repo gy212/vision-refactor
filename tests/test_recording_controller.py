@@ -23,10 +23,7 @@ from typing import List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from core.recording_controller import (  # noqa: E402
-    RecordingController,
-    RecordingState,
-)
+from core.recording import RecordingController, RecordingState  # noqa: E402
 
 
 # ---------------------------------------------------------------------------

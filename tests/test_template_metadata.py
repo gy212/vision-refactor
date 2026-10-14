@@ -31,14 +31,13 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from core.action_compare import (  # noqa: E402
+from core.evaluation import (  # noqa: E402
     LEGACY_DEFAULT_FEATURE_LAYOUT,
-    compare_video_to_dual_templates,
-    compare_video_to_template,
-    create_template_from_video,
+    compare_dual_templates as compare_video_to_dual_templates,
     normalize_template_meta,
-    template_meta_defaults,
 )
+from core.services import compare_video as compare_video_to_template, create_template_from_video  # noqa: E402
+from core.evaluation.templates import template_meta_defaults  # noqa: E402
 from tests import golden_harness as H  # noqa: E402
 
 FIX_DIR = Path(__file__).resolve().parent / "fixtures" / "pose33_v3"

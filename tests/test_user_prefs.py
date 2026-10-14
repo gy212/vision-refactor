@@ -4,7 +4,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from core import paths
 from core.foundation import prefs as user_prefs
 
 
@@ -27,9 +26,9 @@ def test_camera_selection_roundtrip_preserves_other_preferences(
     )
     _use_prefs_path(monkeypatch, prefs_path)
 
-    paths.save_camera_selection(2, 1)
+    user_prefs.save_camera_selection(2, 1)
 
-    assert paths.load_camera_selection() == (2, 1)
+    assert user_prefs.load_camera_selection() == (2, 1)
     payload = json.loads(prefs_path.read_text(encoding="utf-8"))
     assert payload["record_dir"] == "D:/recordings"
     assert payload["exam_roster_path"] == "D:/roster.xlsx"
@@ -61,7 +60,7 @@ def test_camera_selection_rejects_invalid_indices(
             ),
             encoding="utf-8",
         )
-        assert paths.load_camera_selection() == (None, None)
+        assert user_prefs.load_camera_selection() == (None, None)
 
 
 def test_camera_selection_write_failure_is_best_effort(
@@ -69,6 +68,6 @@ def test_camera_selection_write_failure_is_best_effort(
 ) -> None:
     _use_prefs_path(monkeypatch, tmp_path)
 
-    paths.save_camera_selection(1, None)
+    user_prefs.save_camera_selection(1, None)
 
-    assert paths.load_camera_selection() == (None, None)
+    assert user_prefs.load_camera_selection() == (None, None)

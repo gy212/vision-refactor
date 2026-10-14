@@ -27,16 +27,11 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from core.body_core_compare import (  # noqa: E402
-    BODY_CORE_V1_CALIBRATED_BASELINE,
-    CALIBRATION_STATUS_UNVALIDATED,
-)
-from core.feature_layout import BODY_CORE_V1, POSE33_V3  # noqa: E402
-from core.yolo_adapter import (  # noqa: E402
-    DEFAULT_YOLO_VALID_CONF_THR,
-    YOLO_CALIBRATION_STATUS,
-)
-from analysis import bench_annotate_fps  # noqa: E402
+from core.evaluation import BODY_CORE_V1_CALIBRATED_BASELINE, CALIBRATION_STATUS_UNVALIDATED  # noqa: E402
+from core.pose import BODY_CORE_V1, POSE33_V3  # noqa: E402
+from core.pose.backends.yolo import DEFAULT_YOLO_VALID_CONF_THR  # noqa: E402
+from core.pose.backends import YOLO_CALIBRATION_STATUS  # noqa: E402
+from analysis import bench_annotate_cases  # noqa: E402
 
 CALIB_BASELINE = 1.2826
 CALIB_YOLO_CONF_THR = 0.6
@@ -66,7 +61,7 @@ def test_yolo_valid_conf_thr_calibrated():
 
 
 def test_offline_benchmark_default_model_is_yolo26l(tmp_path):
-    assert bench_annotate_fps._default_yolo_model_path(tmp_path) == tmp_path / "yolo26l-pose.pt"
+    assert bench_annotate_cases.default_yolo_model_path(tmp_path) == tmp_path / "yolo26l-pose.pt"
 
 
 # --------------------------------------------------------------------------- #

@@ -533,8 +533,8 @@ def scenario_4() -> None:
         check("export exists", out.is_file())
 
 
-def scenario_5(n_students: int = 50) -> None:
-    log(f"\n=== SCENARIO 5: {n_students} 人快速模拟 ===")
+def _fast_exam(n_students: int) -> tuple[ExamSession, ExamScorebook, SimApp, PresenceGate]:
+    """场景 5 用的快节奏考试：缩短各段等待，名册为 n 个编号学员。"""
     session = ExamSession(
         ExamSessionConfig(
             post_call_guard_s=0.3,
@@ -553,6 +553,29 @@ def scenario_5(n_students: int = 50) -> None:
     gate = PresenceGate(
         PresenceGateConfig(enter_stable_s=0.3, empty_hold_s=0.5, min_record_s=1.0)
     )
+    return session, scorebook, app, gate
+
+
+def _tick_until(session, app, scorebook, gate, t: float, max_ticks: int, done, *, quiet: bool) -> float:
+    """每 0.05 s 发一次 tick，直到 ``done(session)`` 成立或用满 ``max_ticks`` 次；返回模拟时刻。"""
+    for _ in range(max_ticks):
+        drive_commands(session, session.handle("tick", now=t), app, scorebook, gate, t, quiet=quiet)
+        if done(session):
+            break
+        t += 0.05
+    return t
+
+
+def _next_call_or_done(session) -> bool:
+    return (
+        session.phase in ("wait_enter", "completed")
+        or (session.phase == "calling" and session.call_guard_deadline is not None)
+    )
+
+
+def scenario_5(n_students: int = 50) -> None:
+    log(f"\n=== SCENARIO 5: {n_students} 人快速模拟 ===")
+    session, scorebook, app, gate = _fast_exam(n_students)
     t = 0.0
     t0 = time.perf_counter()
     quiet = n_students > 10
@@ -593,34 +616,12 @@ def scenario_5(n_students: int = 50) -> None:
             dt=0.05,
             quiet=quiet,
         )
-        for _ in range(30):
-            drive_commands(
-                session,
-                session.handle("tick", now=t),
-                app,
-                scorebook,
-                gate,
-                t,
-                quiet=quiet,
-            )
-            if session.phase == "wait_enter":
-                break
-            if session.phase == "calling" and session.call_guard_deadline is not None:
-                break
-            if session.phase == "completed":
-                break
-            t += 0.05
+        t = _tick_until(session, app, scorebook, gate, t, 30, _next_call_or_done, quiet=quiet)
         if (i + 1) % 10 == 0 or (i + 1) == n_students:
             log(
                 f"  progress {i+1}/{n_students} sim_t={t:.1f}s begins={len(app.begins)} phase={session.phase}"
             )
-    for _ in range(80):
-        drive_commands(
-            session, session.handle("tick", now=t), app, scorebook, gate, t, quiet=quiet
-        )
-        if session.phase == "completed":
-            break
-        t += 0.05
+    t = _tick_until(session, app, scorebook, gate, t, 80, lambda s: s.phase == "completed", quiet=quiet)
     wall = time.perf_counter() - t0
     check(f"{n_students}-person completed", session.phase == "completed", session.phase)
     check(f"{n_students} begins", len(app.begins) == n_students, str(len(app.begins)))

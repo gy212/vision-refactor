@@ -2,7 +2,7 @@
 """YOLO COCO17 → BlazePose33-like 的映射契约：常量、边界容器、逐人映射、多人闸门、结果解析与单目标 tracker。
 
 纯 numpy、不导入 ultralytics。缺失点（嘴角、手指、脚跟脚尖、眼细分）一律 ``valid_mask=False`` /
-``synthetic=True``，不得伪造成有效点。适配器与序列提取见 ``core.pose.backends.yolo``。
+``synthetic=True``，不得伪造成有效点。适配器与序列提取见 ``core.pose.backends.yolo.adapter``。
 """
 
 from __future__ import annotations
@@ -112,7 +112,7 @@ NUM_COCO17: int = 17
 # body_core_v1（12,2）布局在 BlazePose33 中的源索引（肩/肘/腕 11..16 + 髋/膝/踝 23..28）。
 # 这 12 个点**全部落在 COCO17 可映射点**（见 COCO17_TO_BLAZE33），因此 YOLO 路径下
 # body_core_v1 是真实点（非合成缺失点）。供 body_core 闭环按 valid_mask 统计有效帧。
-# 与 core.feature_layout.BODY_CORE_V1.source_indices 保持一致（此处冗余定义仅为避免
+# 与 core.pose.layouts.BODY_CORE_V1.source_indices 保持一致（此处冗余定义仅为避免
 # yolo_adapter 反向依赖 feature_layout / 触发循环 import；定义不一致由测试守卫）。
 BODY_CORE_V1_VALID_INDICES: tuple[int, ...] = (11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28)
 

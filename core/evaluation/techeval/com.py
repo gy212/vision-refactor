@@ -63,6 +63,44 @@ def _compute_segment_center(lm: np.ndarray, mask_row: np.ndarray, indices: list[
     return np.mean(points, axis=0)
 
 
+# 各身体段按累加顺序排列：(段名, 求中心方式, 关键点)。
+# partial：可见点的均值（缺点也算）；trunk：肩、髋中点按 0.6:0.4 插值；
+# pair：两点全有效时取中点；mean：全部有效时取均值。
+_SEGMENTS: tuple[tuple[str, str, tuple[int, ...]], ...] = (
+    ("head", "partial", (NOSE, L_EAR, R_EAR)),
+    ("trunk", "trunk", (L_SHOULDER, R_SHOULDER, L_HIP, R_HIP)),
+    ("upper_arm_l", "pair", (L_SHOULDER, L_ELBOW)),
+    ("upper_arm_r", "pair", (R_SHOULDER, R_ELBOW)),
+    ("forearm_l", "pair", (L_ELBOW, L_WRIST)),
+    ("forearm_r", "pair", (R_ELBOW, R_WRIST)),
+    ("hand_l", "mean", (L_WRIST, L_INDEX, L_PINKY)),
+    ("hand_r", "mean", (R_WRIST, R_INDEX, R_PINKY)),
+    ("thigh_l", "pair", (L_HIP, L_KNEE)),
+    ("thigh_r", "pair", (R_HIP, R_KNEE)),
+    ("shank_l", "pair", (L_KNEE, L_ANKLE)),
+    ("shank_r", "pair", (R_KNEE, R_ANKLE)),
+    ("foot_l", "mean", (L_ANKLE, L_HEEL, L_FOOT_INDEX)),
+    ("foot_r", "mean", (R_ANKLE, R_HEEL, R_FOOT_INDEX)),
+)
+
+
+def _segment_com(lm: np.ndarray, mask_row: np.ndarray, kind: str, indices: tuple[int, ...]) -> np.ndarray | None:
+    """一个身体段的质心坐标；所需关键点无效时为 None。"""
+    if kind == "partial":
+        # 头部：使用鼻子和双耳
+        return _compute_segment_center(lm, mask_row, list(indices))
+    if not all_valid(mask_row, list(indices)):
+        return None
+    if kind == "trunk":
+        # 躯干：质心约在剑突-肚脐之间（偏下约40%，即肩:髋 = 0.6:0.4）
+        shoulder_center = (landmark_xy(lm, L_SHOULDER) + landmark_xy(lm, R_SHOULDER)) / 2
+        hip_center = (landmark_xy(lm, L_HIP) + landmark_xy(lm, R_HIP)) / 2
+        return shoulder_center * 0.6 + hip_center * 0.4
+    if kind == "pair":
+        return (landmark_xy(lm, indices[0]) + landmark_xy(lm, indices[1])) / 2
+    return _compute_segment_center(lm, mask_row, list(indices))
+
+
 def _compute_body_com_single(lm: np.ndarray, mask_row: np.ndarray) -> tuple[np.ndarray | None, dict]:
     """
     计算单帧人体质心（CoM）
@@ -71,174 +109,58 @@ def _compute_body_com_single(lm: np.ndarray, mask_row: np.ndarray) -> tuple[np.n
     weighted_sum = np.zeros(2)
     total_mass = 0.0
     segment_status = {}
-
-    # 头部：使用鼻子和双耳
-    head_center = _compute_segment_center(lm, mask_row, [NOSE, L_EAR, R_EAR])
-    if head_center is not None:
-        mass = BODY_SEGMENT_MASS_RATIOS["head"]
-        weighted_sum += head_center * mass
-        total_mass += mass
-        segment_status["head"] = {"mass": mass, "center": head_center.tolist()}
-    else:
-        segment_status["head"] = None
-
-    # 躯干：质心约在剑突-肚脐之间（偏下约40%，即肩:髋 = 0.6:0.4）
-    if all_valid(mask_row, [L_SHOULDER, R_SHOULDER]) and all_valid(mask_row, [L_HIP, R_HIP]):
-        shoulder_center = (landmark_xy(lm, L_SHOULDER) + landmark_xy(lm, R_SHOULDER)) / 2
-        hip_center = (landmark_xy(lm, L_HIP) + landmark_xy(lm, R_HIP)) / 2
-        trunk_com = shoulder_center * 0.6 + hip_center * 0.4
-        mass = BODY_SEGMENT_MASS_RATIOS["trunk"]
-        weighted_sum += trunk_com * mass
-        total_mass += mass
-        segment_status["trunk"] = {"mass": mass, "center": trunk_com.tolist()}
-    else:
-        segment_status["trunk"] = None
-
-    # 左上臂
-    if all_valid(mask_row, [L_SHOULDER, L_ELBOW]):
-        shoulder = landmark_xy(lm, L_SHOULDER)
-        elbow = landmark_xy(lm, L_ELBOW)
-        com = (shoulder + elbow) / 2
-        mass = BODY_SEGMENT_MASS_RATIOS["upper_arm_l"]
+    for name, kind, indices in _SEGMENTS:
+        com = _segment_com(lm, mask_row, kind, indices)
+        if com is None:
+            segment_status[name] = None
+            continue
+        mass = BODY_SEGMENT_MASS_RATIOS[name]
         weighted_sum += com * mass
         total_mass += mass
-        segment_status["upper_arm_l"] = {"mass": mass, "center": com.tolist()}
-    else:
-        segment_status["upper_arm_l"] = None
-
-    # 右上臂
-    if all_valid(mask_row, [R_SHOULDER, R_ELBOW]):
-        shoulder = landmark_xy(lm, R_SHOULDER)
-        elbow = landmark_xy(lm, R_ELBOW)
-        com = (shoulder + elbow) / 2
-        mass = BODY_SEGMENT_MASS_RATIOS["upper_arm_r"]
-        weighted_sum += com * mass
-        total_mass += mass
-        segment_status["upper_arm_r"] = {"mass": mass, "center": com.tolist()}
-    else:
-        segment_status["upper_arm_r"] = None
-
-    # 左前臂
-    if all_valid(mask_row, [L_ELBOW, L_WRIST]):
-        elbow = landmark_xy(lm, L_ELBOW)
-        wrist = landmark_xy(lm, L_WRIST)
-        com = (elbow + wrist) / 2
-        mass = BODY_SEGMENT_MASS_RATIOS["forearm_l"]
-        weighted_sum += com * mass
-        total_mass += mass
-        segment_status["forearm_l"] = {"mass": mass, "center": com.tolist()}
-    else:
-        segment_status["forearm_l"] = None
-
-    # 右前臂
-    if all_valid(mask_row, [R_ELBOW, R_WRIST]):
-        elbow = landmark_xy(lm, R_ELBOW)
-        wrist = landmark_xy(lm, R_WRIST)
-        com = (elbow + wrist) / 2
-        mass = BODY_SEGMENT_MASS_RATIOS["forearm_r"]
-        weighted_sum += com * mass
-        total_mass += mass
-        segment_status["forearm_r"] = {"mass": mass, "center": com.tolist()}
-    else:
-        segment_status["forearm_r"] = None
-
-    # 左手
-    if all_valid(mask_row, [L_WRIST, L_INDEX, L_PINKY]):
-        com = _compute_segment_center(lm, mask_row, [L_WRIST, L_INDEX, L_PINKY])
-        if com is not None:
-            mass = BODY_SEGMENT_MASS_RATIOS["hand_l"]
-            weighted_sum += com * mass
-            total_mass += mass
-            segment_status["hand_l"] = {"mass": mass, "center": com.tolist()}
-    else:
-        segment_status["hand_l"] = None
-
-    # 右手
-    if all_valid(mask_row, [R_WRIST, R_INDEX, R_PINKY]):
-        com = _compute_segment_center(lm, mask_row, [R_WRIST, R_INDEX, R_PINKY])
-        if com is not None:
-            mass = BODY_SEGMENT_MASS_RATIOS["hand_r"]
-            weighted_sum += com * mass
-            total_mass += mass
-            segment_status["hand_r"] = {"mass": mass, "center": com.tolist()}
-    else:
-        segment_status["hand_r"] = None
-
-    # 左大腿
-    if all_valid(mask_row, [L_HIP, L_KNEE]):
-        hip = landmark_xy(lm, L_HIP)
-        knee = landmark_xy(lm, L_KNEE)
-        com = (hip + knee) / 2
-        mass = BODY_SEGMENT_MASS_RATIOS["thigh_l"]
-        weighted_sum += com * mass
-        total_mass += mass
-        segment_status["thigh_l"] = {"mass": mass, "center": com.tolist()}
-    else:
-        segment_status["thigh_l"] = None
-
-    # 右大腿
-    if all_valid(mask_row, [R_HIP, R_KNEE]):
-        hip = landmark_xy(lm, R_HIP)
-        knee = landmark_xy(lm, R_KNEE)
-        com = (hip + knee) / 2
-        mass = BODY_SEGMENT_MASS_RATIOS["thigh_r"]
-        weighted_sum += com * mass
-        total_mass += mass
-        segment_status["thigh_r"] = {"mass": mass, "center": com.tolist()}
-    else:
-        segment_status["thigh_r"] = None
-
-    # 左小腿
-    if all_valid(mask_row, [L_KNEE, L_ANKLE]):
-        knee = landmark_xy(lm, L_KNEE)
-        ankle = landmark_xy(lm, L_ANKLE)
-        com = (knee + ankle) / 2
-        mass = BODY_SEGMENT_MASS_RATIOS["shank_l"]
-        weighted_sum += com * mass
-        total_mass += mass
-        segment_status["shank_l"] = {"mass": mass, "center": com.tolist()}
-    else:
-        segment_status["shank_l"] = None
-
-    # 右小腿
-    if all_valid(mask_row, [R_KNEE, R_ANKLE]):
-        knee = landmark_xy(lm, R_KNEE)
-        ankle = landmark_xy(lm, R_ANKLE)
-        com = (knee + ankle) / 2
-        mass = BODY_SEGMENT_MASS_RATIOS["shank_r"]
-        weighted_sum += com * mass
-        total_mass += mass
-        segment_status["shank_r"] = {"mass": mass, "center": com.tolist()}
-    else:
-        segment_status["shank_r"] = None
-
-    # 左脚
-    if all_valid(mask_row, [L_ANKLE, L_HEEL, L_FOOT_INDEX]):
-        com = _compute_segment_center(lm, mask_row, [L_ANKLE, L_HEEL, L_FOOT_INDEX])
-        if com is not None:
-            mass = BODY_SEGMENT_MASS_RATIOS["foot_l"]
-            weighted_sum += com * mass
-            total_mass += mass
-            segment_status["foot_l"] = {"mass": mass, "center": com.tolist()}
-    else:
-        segment_status["foot_l"] = None
-
-    # 右脚
-    if all_valid(mask_row, [R_ANKLE, R_HEEL, R_FOOT_INDEX]):
-        com = _compute_segment_center(lm, mask_row, [R_ANKLE, R_HEEL, R_FOOT_INDEX])
-        if com is not None:
-            mass = BODY_SEGMENT_MASS_RATIOS["foot_r"]
-            weighted_sum += com * mass
-            total_mass += mass
-            segment_status["foot_r"] = {"mass": mass, "center": com.tolist()}
-    else:
-        segment_status["foot_r"] = None
+        segment_status[name] = {"mass": mass, "center": com.tolist()}
 
     if total_mass < 0.5:  # 至少50%的身体质量可见
         return None, {"error": "insufficient_visible_mass", "total_mass": total_mass, "segments": segment_status}
 
     com = weighted_sum / total_mass
     return com, {"total_mass": total_mass, "segments": segment_status}
+
+
+def _com_support_ratio(lm: np.ndarray, mask_row: np.ndarray) -> float | None:
+    """单帧 CoM 在两脚支撑面（heel/toe）内沿朝向的投影比例；CoM、朝向或支撑面无法确定时为 None。"""
+    com, _info = _compute_body_com_single(lm, mask_row)
+    if com is None:
+        return None
+    d = facing_direction(lm, mask_row)
+    if d is None:
+        return None
+    com_x = float(com[0]) * float(d)
+
+    # 计算支撑面边界（两脚heel/toe）
+    left_edges = foot_edges_x(lm, mask_row, side="L", dir_x=d)
+    right_edges = foot_edges_x(lm, mask_row, side="R", dir_x=d)
+    if left_edges is None or right_edges is None:
+        return None
+    support_back = float(min(left_edges[0], right_edges[0]))
+    support_front = float(max(left_edges[1], right_edges[1]))
+    denom = float(support_front - support_back)
+    if denom < 0.02:
+        return None
+    # CoM投影比例
+    return (float(com_x) - support_back) / (denom + 1e-9)
+
+
+def _ratio_stats(com_ratios: list[float]) -> dict:
+    if not com_ratios:
+        return {}
+    com_arr = np.array(com_ratios)
+    return {
+        "mean": float(np.mean(com_arr)),
+        "std": float(np.std(com_arr)),
+        "median": float(np.median(com_arr)),
+        "min": float(np.min(com_arr)),
+        "max": float(np.max(com_arr)),
+    }
 
 
 def eval_cog_com(
@@ -276,41 +198,11 @@ def eval_cog_com(
     com_ratios = []
 
     for i, lm in enumerate(landmarks):
-        mask_row = mask[i]
-        # 计算该帧CoM
-        com, _info = _compute_body_com_single(lm, mask_row)
-
-        if com is None:
+        r = _com_support_ratio(lm, mask[i])
+        if r is None:
             unknown += 1
             continue
-
-        d = facing_direction(lm, mask_row)
-        if d is None:
-            unknown += 1
-            continue
-
-        com_x = float(com[0]) * float(d)
-
-        # 计算支撑面边界（两脚heel/toe）
-        left_edges = foot_edges_x(lm, mask_row, side="L", dir_x=d)
-        right_edges = foot_edges_x(lm, mask_row, side="R", dir_x=d)
-
-        if left_edges is None or right_edges is None:
-            unknown += 1
-            continue
-
-        support_back = float(min(left_edges[0], right_edges[0]))
-        support_front = float(max(left_edges[1], right_edges[1]))
-        denom = float(support_front - support_back)
-
-        if denom < 0.02:
-            unknown += 1
-            continue
-
-        # CoM投影比例
-        r = (float(com_x) - support_back) / (denom + 1e-9)
         com_ratios.append(r)
-
         if float(r) <= float(com_r_back):
             backward += 1
         elif float(r) >= float(com_r_front):
@@ -320,17 +212,7 @@ def eval_cog_com(
 
     valid = forward + backward + center
 
-    # 计算com_ratio统计信息
-    com_stats = {}
-    if com_ratios:
-        com_arr = np.array(com_ratios)
-        com_stats = {
-            "mean": float(np.mean(com_arr)),
-            "std": float(np.std(com_arr)),
-            "median": float(np.median(com_arr)),
-            "min": float(np.min(com_arr)),
-            "max": float(np.max(com_arr)),
-        }
+    com_stats = _ratio_stats(com_ratios)
 
     detail = {
         "method": "CoM_segment_based",

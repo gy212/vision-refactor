@@ -9,14 +9,20 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, is_dataclass
 from datetime import datetime
 from pathlib import Path
+import sys
 from typing import Any
 
 import numpy as np
 
+# 允许以 ``python apps/xxx.py``、``python batch/xxx.py`` 方式运行（AGENTS.md 记载的命令）。
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
 from core.evaluation import COMPARE, DUAL_STREAM, DUAL_TEMPLATE, load_template
 from core.services import compare_dual, create_template_from_video
-from core.rule_scoring import extract_pose_raw
-from core.paths import outputs_dir
+from core.pose import extract_pose_raw
+from core.foundation import outputs_dir
 from batch.backend_options import (
     BACKEND_YOLO,
     FEATURE_LAYOUT_BODY_CORE,
@@ -175,7 +181,12 @@ def _compare_pose33(item, paired_mode: bool, front_tpl: Path, side_tpl: Path, ar
     return res, video_label, error_video_label, payload_extra
 
 
-def main() -> None:
+_ERROR_RULE_FIELDS = ["video", "view", "rule_id", "rule_name", "violation_ratio", "penalty", "valid_frames",
+                      "total_frames", "state", "skip_reason", "missing_landmarks"]
+_ERROR_JOINT_FIELDS = ["video", "view", "joint", "mean_dist", "p90_dist", "max_dist", "valid_frames"]
+
+
+def _parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser(description="Dual-template compare (front+side) + raw skeleton export.")
     ap.add_argument("--standard_dir", type=str, default=None, help="Folder containing standard front/side videos")
     ap.add_argument("--front", type=str, default=None, help="Explicit path to standard FRONT video")
@@ -190,220 +201,187 @@ def main() -> None:
     ap.add_argument("--workers", type=int, default=1, help="Number of videos to process concurrently (default: 1)")
     ap.add_argument("--paired", action="store_true", help="Pair student front/side files by filename and compare two streams")
     add_backend_layout_args(ap)
-    args = ap.parse_args()
-    backend, feature_layout = normalize_backend_layout(args.backend, args.feature_layout)
-    enable_error_analysis = bool(getattr(args, "error_analysis", False))
+    return ap.parse_args()
 
+
+def _standard_videos(args) -> tuple[Path, Path]:
+    """标准正、侧视频：显式 ``--front``/``--side`` 优先，否则在 ``--standard_dir`` 里按关键词找。"""
     std_dir = Path(args.standard_dir) if args.standard_dir else None
-    student_dir = Path(args.student_dir)
-    if not student_dir.exists():
-        raise FileNotFoundError(f"student_dir not found: {student_dir}")
+    videos = []
+    for kind in ("front", "side"):
+        explicit = getattr(args, kind)
+        if explicit:
+            videos.append(Path(explicit))
+        elif std_dir is None:
+            raise ValueError(f"Need --standard_dir or --{kind}")
+        else:
+            videos.append(_find_standard_video(std_dir, kind=kind))
+    return videos[0], videos[1]
 
-    if args.front:
-        front_video = Path(args.front)
-    else:
-        if std_dir is None:
-            raise ValueError("Need --standard_dir or --front")
-        front_video = _find_standard_video(std_dir, kind="front")
 
-    if args.side:
-        side_video = Path(args.side)
-    else:
-        if std_dir is None:
-            raise ValueError("Need --standard_dir or --side")
-        side_video = _find_standard_video(std_dir, kind="side")
-
+def _prepare_out_dir(args) -> Path:
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     out_dir = Path(args.out_dir) if args.out_dir else (outputs_dir() / f"dual_compare_{ts}")
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "templates").mkdir(parents=True, exist_ok=True)
     (out_dir / "skeleton").mkdir(parents=True, exist_ok=True)
+    return out_dir
 
-    if bool(getattr(args, "paired", False)) and not is_default_pose33_path(backend, feature_layout):
-        raise ValueError("--paired 仅支持默认 MediaPipe pose33_v3 路径；body_core_v1 双文件批处理不在本期范围内。")
 
-    if not is_default_pose33_path(backend, feature_layout):
-        _run_body_core_batch(
-            args=args,
-            backend=backend,
-            front_video=front_video,
-            side_video=side_video,
-            student_dir=student_dir,
-            out_dir=out_dir,
-        )
-        return
+def _rule_error_rows(res, label: str) -> list[dict[str, Any]]:
+    rows = []
+    for view, violations in (("front", res.front_rule_violations), ("side", res.side_rule_violations)):
+        for rv in violations or ():
+            rows.append({
+                "video": label,
+                "view": str(view),
+                "rule_id": str(rv.rule_id),
+                "rule_name": str(rv.name),
+                "violation_ratio": float(rv.violation_ratio),
+                "penalty": int(rv.penalty),
+                "valid_frames": int(rv.valid_frames),
+                "total_frames": int(rv.total_frames),
+                # YOLO 迁移 S4 / Issue #11：结构化三态写入报告，
+                # 未评估原因清晰，不把不可评估当合格/不合格。
+                "state": str(getattr(rv, "state", "") or ""),
+                "skip_reason": str(getattr(rv, "skip_reason", "") or ""),
+                "missing_landmarks": ",".join(getattr(rv, "missing_landmarks", ()) or ()),
+            })
+    return rows
 
-    # 1) Create templates from the two standard videos.
-    front_tpl = out_dir / "templates" / f"standard_front_{args.pose}.npz"
-    side_tpl = out_dir / "templates" / f"standard_side_{args.pose}.npz"
-    front_tpl = create_template_from_video(front_video, pose_variant=args.pose, out_path=front_tpl)
-    side_tpl = create_template_from_video(side_video, pose_variant=args.pose, out_path=side_tpl)
 
-    # 2) Batch compare all student videos.
+def _joint_error_rows(res, label: str) -> list[dict[str, Any]]:
+    rows = []
+    for view, joints in (("front", res.front_joint_errors), ("side", res.side_joint_errors)):
+        for je in joints or ():
+            rows.append({
+                "video": label,
+                "view": str(view),
+                "joint": str(je.joint),
+                "mean_dist": "" if je.mean_dist is None else float(je.mean_dist),
+                "p90_dist": "" if je.p90_dist is None else float(je.p90_dist),
+                "max_dist": "" if je.max_dist is None else float(je.max_dist),
+                "valid_frames": int(je.valid_frames),
+            })
+    return rows
+
+
+def _pose33_row(res, label: str) -> dict[str, Any]:
+    """一个学员的汇总 CSV 行（分数口径：内部 0..1，综合列 ``combined_percent``）。"""
+    return {
+        "video": label,
+        "front_score": float(res.front_score),
+        "side_score": float(res.side_score),
+        "combined_percent": int(res.combined_percent),
+        "front_rule_score": "" if res.front_rule_score is None else int(res.front_rule_score),
+        "side_rule_score": "" if res.side_rule_score is None else int(res.side_rule_score),
+        "front_rule_deduction": "" if res.front_rule_deduction is None else int(res.front_rule_deduction),
+        "side_rule_deduction": "" if res.side_rule_deduction is None else int(res.side_rule_deduction),
+        "front_segment": "" if res.front_segment is None else f"{res.front_segment[0]}..{res.front_segment[1]}",
+        "side_segment": "" if res.side_segment is None else f"{res.side_segment[0]}..{res.side_segment[1]}",
+        "front_matches": int(len(res.front_matches)),
+        "side_matches": int(len(res.side_matches)),
+        "pose_variant": str(res.pose_variant),
+        "fps": float(res.fps),
+    }
+
+
+def _pose33_student(item, *, paired_mode: bool, templates: tuple[Path, Path], args, enable_error_analysis: bool):
+    """一个学员（单文件或正侧配对）：比对后返回结果、CSV 行、规则与关节误差行、JSONL 附加字段。"""
+    res, video_label, error_label, payload_extra = _compare_pose33(
+        item, paired_mode, templates[0], templates[1], args, enable_error_analysis
+    )
+    rule_rows = _rule_error_rows(res, error_label) if enable_error_analysis and bool(args.rules) else []
+    joint_rows = _joint_error_rows(res, error_label) if enable_error_analysis else []
+    return res, _pose33_row(res, video_label), rule_rows, joint_rows, payload_extra
+
+
+def _work_items(student_dir: Path, paired_mode: bool) -> list:
     student_videos = sorted([p for p in student_dir.iterdir() if p.is_file() and p.suffix.lower() in _VIDEO_SUFFIXES])
     if not student_videos:
         raise FileNotFoundError(f"No student videos found in: {student_dir}")
+    if not paired_mode:
+        return student_videos
+    paired_students = _pair_students(student_videos)
+    if not paired_students:
+        raise FileNotFoundError(f"No paired front/side student videos found in: {student_dir}")
+    return paired_students
 
-    paired_mode = bool(getattr(args, "paired", False))
-    if paired_mode:
-        paired_students = _pair_students(student_videos)
-        if not paired_students:
-            raise FileNotFoundError(f"No paired front/side student videos found in: {student_dir}")
-        work_items = paired_students
-    else:
-        work_items = student_videos
 
-    export_raw_enabled = bool(args.export_raw) and not paired_mode
-    if paired_mode and bool(args.export_raw):
-        print("--export_raw is not supported in --paired mode; skipping raw skeleton export.")
+def _write_dict_csv(path: Path, rows: list[dict[str, Any]], fieldnames: list[str]) -> None:
+    """UTF-8 BOM（Excel 直接打开）的 CSV。"""
+    with path.open("w", encoding="utf-8-sig", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=fieldnames)
+        w.writeheader()
+        w.writerows(rows)
 
-    rows: list[dict[str, Any]] = []
-    error_rules_rows: list[dict[str, Any]] = []
-    error_joints_rows: list[dict[str, Any]] = []
-    jsonl_path = out_dir / "compare_results.jsonl"
-    video_workers = max(1, int(args.workers))
 
-    def _process_pose33_video(idx: int, item) -> tuple[int, Any, dict[str, Any], list[dict[str, Any]], list[dict[str, Any]], dict[str, Any] | None]:
-        res, video_label, error_video_label, payload_extra = _compare_pose33(
-            item, paired_mode, front_tpl, side_tpl, args, enable_error_analysis
-        )
+def _save_raw(path: Path, arr, meta: dict) -> None:
+    np.savez_compressed(path, landmarks=arr, meta=np.array(meta, dtype=object))
 
-        per_video_rule_rows: list[dict[str, Any]] = []
-        per_video_joint_rows: list[dict[str, Any]] = []
-        if enable_error_analysis and bool(args.rules):
-            for view, violations in (
-                ("front", res.front_rule_violations),
-                ("side", res.side_rule_violations),
-            ):
-                if not violations:
-                    continue
-                for rv in violations:
-                    per_video_rule_rows.append(
-                        {
-                            "video": error_video_label,
-                            "view": str(view),
-                            "rule_id": str(rv.rule_id),
-                            "rule_name": str(rv.name),
-                            "violation_ratio": float(rv.violation_ratio),
-                            "penalty": int(rv.penalty),
-                            "valid_frames": int(rv.valid_frames),
-                            "total_frames": int(rv.total_frames),
-                            # YOLO 迁移 S4 / Issue #11：结构化三态写入报告，
-                            # 未评估原因清晰，不把不可评估当合格/不合格。
-                            "state": str(getattr(rv, "state", "") or ""),
-                            "skip_reason": str(getattr(rv, "skip_reason", "") or ""),
-                            "missing_landmarks": ",".join(getattr(rv, "missing_landmarks", ()) or ()),
-                        }
-                    )
-        if enable_error_analysis:
-            for view, joints in (
-                ("front", res.front_joint_errors),
-                ("side", res.side_joint_errors),
-            ):
-                if not joints:
-                    continue
-                for je in joints:
-                    per_video_joint_rows.append(
-                        {
-                            "video": error_video_label,
-                            "view": str(view),
-                            "joint": str(je.joint),
-                            "mean_dist": "" if je.mean_dist is None else float(je.mean_dist),
-                            "p90_dist": "" if je.p90_dist is None else float(je.p90_dist),
-                            "max_dist": "" if je.max_dist is None else float(je.max_dist),
-                            "valid_frames": int(je.valid_frames),
-                        }
-                    )
-        row = {
-            "video": video_label,
-            "front_score": float(res.front_score),
-            "side_score": float(res.side_score),
-            "combined_percent": int(res.combined_percent),
-            "front_rule_score": "" if res.front_rule_score is None else int(res.front_rule_score),
-            "side_rule_score": "" if res.side_rule_score is None else int(res.side_rule_score),
-            "front_rule_deduction": "" if res.front_rule_deduction is None else int(res.front_rule_deduction),
-            "side_rule_deduction": "" if res.side_rule_deduction is None else int(res.side_rule_deduction),
-            "front_segment": "" if res.front_segment is None else f"{res.front_segment[0]}..{res.front_segment[1]}",
-            "side_segment": "" if res.side_segment is None else f"{res.side_segment[0]}..{res.side_segment[1]}",
-            "front_matches": int(len(res.front_matches)),
-            "side_matches": int(len(res.side_matches)),
-            "pose_variant": str(res.pose_variant),
-            "fps": float(res.fps),
-        }
-        return idx, res, row, per_video_rule_rows, per_video_joint_rows, payload_extra
 
-    compare_results: list[tuple[int, Any, dict[str, Any], list[dict[str, Any]], list[dict[str, Any]], dict[str, Any] | None]] = []
-    if video_workers <= 1:
-        for i, item in enumerate(work_items):
-            compare_results.append(_process_pose33_video(i, item))
-    else:
-        with ThreadPoolExecutor(max_workers=video_workers) as ex:
-            futures = [ex.submit(_process_pose33_video, i, item) for i, item in enumerate(work_items)]
-            for fut in as_completed(futures):
-                compare_results.append(fut.result())
-    compare_results.sort(key=lambda item: item[0])
+def _export_raw_skeletons(out_dir: Path, pose: str, front_video: Path, side_video: Path, jsonl_path: Path) -> None:
+    """导出标准正侧视频与每个学员匹配区间的原始骨架 npz。"""
+    skeleton = out_dir / "skeleton"
+    for kind, video in (("front", front_video), ("side", side_video)):
+        arr, meta = extract_pose_raw(video, pose_variant=pose)
+        _save_raw(skeleton / f"standard_{kind}_raw_{pose}.npz", arr, meta)
+    # Re-read the jsonl for segments to avoid keeping all results in memory as dataclasses.
+    for line in jsonl_path.read_text(encoding="utf-8").splitlines():
+        d = json.loads(line)
+        v = Path(d["video_path"])
+        for kind in ("front", "side"):
+            seg = d.get(f"{kind}_segment")
+            if not seg:
+                continue
+            arr, meta = extract_pose_raw(v, pose_variant=pose, start_frame=int(seg[0]), end_frame=int(seg[1]))
+            meta["segment_kind"] = kind
+            _save_raw(skeleton / f"{v.stem}_{kind}_raw_{pose}.npz", arr, meta)
 
-    with jsonl_path.open("w", encoding="utf-8") as jf:
-        for _idx, res, row, per_video_rule_rows, per_video_joint_rows, payload_extra in compare_results:
+
+def _write_pose33_jsonl(path: Path, results: list) -> None:
+    with path.open("w", encoding="utf-8") as jf:
+        for res, _row, _rules, _joints, payload_extra in results:
             payload = _jsonable(res)
             if payload_extra:
                 payload.update(payload_extra)
             jf.write(json.dumps(payload, ensure_ascii=False) + "\n")
-            rows.append(row)
-            error_rules_rows.extend(per_video_rule_rows)
-            error_joints_rows.extend(per_video_joint_rows)
 
-    # Export standard raw (front/side) if requested.
+
+def _run_pose33_batch(args, front_video: Path, side_video: Path, student_dir: Path, out_dir: Path) -> None:
+    """默认 MediaPipe pose33_v3 路径：生成正侧模板，逐个学员比对，写 JSONL、CSV、误差表与可选原始骨架。"""
+    enable_error_analysis = bool(getattr(args, "error_analysis", False))
+    templates = (
+        create_template_from_video(front_video, pose_variant=args.pose,
+                                   out_path=out_dir / "templates" / f"standard_front_{args.pose}.npz"),
+        create_template_from_video(side_video, pose_variant=args.pose,
+                                   out_path=out_dir / "templates" / f"standard_side_{args.pose}.npz"),
+    )
+    paired_mode = bool(getattr(args, "paired", False))
+    work_items = _work_items(student_dir, paired_mode)
+    export_raw_enabled = bool(args.export_raw) and not paired_mode
+    if paired_mode and bool(args.export_raw):
+        print("--export_raw is not supported in --paired mode; skipping raw skeleton export.")
+
+    def process(item):
+        return _pose33_student(item, paired_mode=paired_mode, templates=templates, args=args,
+                               enable_error_analysis=enable_error_analysis)
+
+    results = _in_order(work_items, process, max(1, int(args.workers)))
+    jsonl_path = out_dir / "compare_results.jsonl"
+    _write_pose33_jsonl(jsonl_path, results)
     if export_raw_enabled:
-        std_front_raw, meta_f = extract_pose_raw(front_video, pose_variant=args.pose)
-        std_side_raw, meta_s = extract_pose_raw(side_video, pose_variant=args.pose)
-        np.savez_compressed(out_dir / "skeleton" / f"standard_front_raw_{args.pose}.npz", landmarks=std_front_raw, meta=np.array(meta_f, dtype=object))
-        np.savez_compressed(out_dir / "skeleton" / f"standard_side_raw_{args.pose}.npz", landmarks=std_side_raw, meta=np.array(meta_s, dtype=object))
+        _export_raw_skeletons(out_dir, args.pose, front_video, side_video, jsonl_path)
 
-        # Export student segments raw.
-        # Re-read the jsonl for segments to avoid keeping all results in memory as dataclasses.
-        for line in jsonl_path.read_text(encoding="utf-8").splitlines():
-            d = json.loads(line)
-            v = Path(d["video_path"])
-            stem = v.stem
-
-            fseg = d.get("front_segment")
-            sseg = d.get("side_segment")
-            if fseg:
-                s, e = int(fseg[0]), int(fseg[1])
-                arr, meta = extract_pose_raw(v, pose_variant=args.pose, start_frame=s, end_frame=e)
-                meta["segment_kind"] = "front"
-                np.savez_compressed(out_dir / "skeleton" / f"{stem}_front_raw_{args.pose}.npz", landmarks=arr, meta=np.array(meta, dtype=object))
-            if sseg:
-                s, e = int(sseg[0]), int(sseg[1])
-                arr, meta = extract_pose_raw(v, pose_variant=args.pose, start_frame=s, end_frame=e)
-                meta["segment_kind"] = "side"
-                np.savez_compressed(out_dir / "skeleton" / f"{stem}_side_raw_{args.pose}.npz", landmarks=arr, meta=np.array(meta, dtype=object))
-
-    # 3) CSV summary (UTF-8 BOM for Excel).
+    rows = [r[1] for r in results]
     csv_path = out_dir / "compare_results.csv"
-    with csv_path.open("w", encoding="utf-8-sig", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
-        w.writeheader()
-        w.writerows(rows)
-
+    _write_dict_csv(csv_path, rows, list(rows[0].keys()))
     if enable_error_analysis and bool(args.rules):
-        error_rules_path = out_dir / "error_rules.csv"
-        with error_rules_path.open("w", encoding="utf-8-sig", newline="") as f:
-            fieldnames = ["video", "view", "rule_id", "rule_name", "violation_ratio", "penalty", "valid_frames", "total_frames", "state", "skip_reason", "missing_landmarks"]
-            w = csv.DictWriter(f, fieldnames=fieldnames)
-            w.writeheader()
-            w.writerows(error_rules_rows)
-
+        _write_dict_csv(out_dir / "error_rules.csv", [x for r in results for x in r[2]], _ERROR_RULE_FIELDS)
     if enable_error_analysis:
-        error_joints_path = out_dir / "error_joints.csv"
-        with error_joints_path.open("w", encoding="utf-8-sig", newline="") as f:
-            fieldnames = ["video", "view", "joint", "mean_dist", "p90_dist", "max_dist", "valid_frames"]
-            w = csv.DictWriter(f, fieldnames=fieldnames)
-            w.writeheader()
-            w.writerows(error_joints_rows)
+        _write_dict_csv(out_dir / "error_joints.csv", [x for r in results for x in r[3]], _ERROR_JOINT_FIELDS)
 
-    print(f"Saved templates: {front_tpl} , {side_tpl}")
+    print(f"Saved templates: {templates[0]} , {templates[1]}")
     print(f"Saved results:   {csv_path}")
     print(f"Saved jsonl:     {jsonl_path}")
     if export_raw_enabled:
@@ -412,6 +390,24 @@ def main() -> None:
         print(f"Saved error rules: {out_dir / 'error_rules.csv'}")
     if enable_error_analysis:
         print(f"Saved error joints: {out_dir / 'error_joints.csv'}")
+
+
+def main() -> None:
+    args = _parse_args()
+    backend, feature_layout = normalize_backend_layout(args.backend, args.feature_layout)
+    student_dir = Path(args.student_dir)
+    if not student_dir.exists():
+        raise FileNotFoundError(f"student_dir not found: {student_dir}")
+    front_video, side_video = _standard_videos(args)
+    out_dir = _prepare_out_dir(args)
+
+    if bool(getattr(args, "paired", False)) and not is_default_pose33_path(backend, feature_layout):
+        raise ValueError("--paired 仅支持默认 MediaPipe pose33_v3 路径；body_core_v1 双文件批处理不在本期范围内。")
+    if not is_default_pose33_path(backend, feature_layout):
+        _run_body_core_batch(args=args, backend=backend, front_video=front_video, side_video=side_video,
+                             student_dir=student_dir, out_dir=out_dir)
+        return
+    _run_pose33_batch(args, front_video, side_video, student_dir, out_dir)
 
 
 def _load_npz_meta(path: Path) -> dict[str, Any]:
@@ -465,42 +461,101 @@ def _body_core_row(v: Path, front_res: Any, side_res: Any, *, meta: dict[str, An
     return row
 
 
+def _body_core_yolo_model(backend: str) -> tuple[str | None, Path | None]:
+    """YOLO 后端用的权重名与路径；MediaPipe 返回 ``(None, None)``。"""
+    if backend != BACKEND_YOLO:
+        return None, None
+    from core.foundation import models_dir
+    from core.pose.backends.yolo import DEFAULT_YOLO26L_MODEL_NAME
+
+    return DEFAULT_YOLO26L_MODEL_NAME, models_dir() / DEFAULT_YOLO26L_MODEL_NAME
+
+
+def _body_core_templates(args, backend: str, front_video: Path, side_video: Path, out_dir: Path, yolo_model):
+    """从标准正、侧视频各生成一个 body_core_v1 模板，返回两条模板路径。"""
+    from core.services import create_body_core_template
+
+    return tuple(
+        create_body_core_template(
+            video,
+            backend=backend,
+            pose_variant=args.pose,
+            out_path=out_dir / "templates" / f"standard_{view}_{backend}_{FEATURE_LAYOUT_BODY_CORE}.npz",
+            yolo_model=yolo_model,
+        )
+        for view, video in (("front", front_video), ("side", side_video))
+    )
+
+
+def _body_core_student(v: Path, *, args, backend: str, templates, yolo_model, batch_meta: dict) -> tuple[dict, dict]:
+    """一个学员视频：提取一次 body_core 特征，分别匹配正、侧模板，返回 CSV 行与 JSONL 记录。"""
+    from core.evaluation import match_body_core_template
+    from core.pose.backends import extract_body_core_features
+
+    precomputed = extract_body_core_features(v, backend=backend, pose_variant=args.pose, yolo_model=yolo_model)
+    front_res, side_res = (
+        match_body_core_template(
+            tpl,
+            v,
+            backend=backend,
+            pose_variant=args.pose,
+            reject_multi_person=False,
+            yolo_model=yolo_model,
+            precomputed_features=precomputed,
+        )
+        for tpl in templates
+    )
+    row = _body_core_row(v, front_res, side_res, meta=batch_meta)
+    payload = {
+        "video_path": str(v),
+        "backend": backend,
+        "feature_layout": FEATURE_LAYOUT_BODY_CORE,
+        "meta": {**batch_meta, "review_required": bool(row["review_required"])},
+        "front_debug_match": _body_core_result_dict(front_res, meta=batch_meta),
+        "side_debug_match": _body_core_result_dict(side_res, meta=batch_meta),
+    }
+    return row, payload
+
+
+def _in_order(videos: list[Path], process, workers: int) -> list:
+    """逐个或用线程池处理视频，结果按输入顺序返回。"""
+    if workers <= 1:
+        return [process(v) for v in videos]
+    results: dict[int, Any] = {}
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        futures = {ex.submit(process, v): i for i, v in enumerate(videos)}
+        for fut in as_completed(futures):
+            results[futures[fut]] = fut.result()
+    return [results[i] for i in range(len(videos))]
+
+
+def _write_body_core_outputs(out_dir: Path, results: list[tuple[dict, dict]]) -> tuple[Path, Path]:
+    """写 ``compare_results.jsonl`` 与 ``compare_results.csv``，返回两条路径。"""
+    jsonl_path = out_dir / "compare_results.jsonl"
+    with jsonl_path.open("w", encoding="utf-8") as jf:
+        for _row, payload in results:
+            jf.write(json.dumps(_jsonable(payload), ensure_ascii=False) + "\n")
+    rows = [row for row, _payload in results]
+    csv_path = out_dir / "compare_results.csv"
+    with csv_path.open("w", encoding="utf-8-sig", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+        w.writeheader()
+        w.writerows(rows)
+    return csv_path, jsonl_path
+
+
 def _run_body_core_batch(*, args, backend: str, front_video: Path, side_video: Path, student_dir: Path, out_dir: Path) -> None:
     """body_core_v1 debug/calibration batch path.
 
     Scores are written only as ``*_debug_score`` with ``score_authorized=False``.
     They never populate the pose33 outward-facing score columns.
     """
-    from core.body_core_compare import create_body_core_template, extract_body_core_features, match_body_core_template
-
     if backend == BACKEND_YOLO and args.rules:
         print("YOLO body_core_v1 不支持规则评分；本批次仅输出调试/标定分数。")
 
-    yolo_model_name = None
-    if backend == BACKEND_YOLO:
-        from core.body_core_compare import DEFAULT_YOLO26L_MODEL_NAME
-        from core.paths import models_dir
-
-        yolo_model_name = DEFAULT_YOLO26L_MODEL_NAME
-        yolo_model = models_dir() / DEFAULT_YOLO26L_MODEL_NAME
-    else:
-        yolo_model = None
-
-    front_tpl = create_body_core_template(
-        front_video,
-        backend=backend,
-        pose_variant=args.pose,
-        out_path=out_dir / "templates" / f"standard_front_{backend}_{FEATURE_LAYOUT_BODY_CORE}.npz",
-        yolo_model=yolo_model,
-    )
-    side_tpl = create_body_core_template(
-        side_video,
-        backend=backend,
-        pose_variant=args.pose,
-        out_path=out_dir / "templates" / f"standard_side_{backend}_{FEATURE_LAYOUT_BODY_CORE}.npz",
-        yolo_model=yolo_model,
-    )
-    template_meta = _load_npz_meta(front_tpl)
+    yolo_model_name, yolo_model = _body_core_yolo_model(backend)
+    templates = _body_core_templates(args, backend, front_video, side_video, out_dir, yolo_model)
+    template_meta = _load_npz_meta(templates[0])
     if yolo_model_name:
         template_meta.setdefault("model_name", yolo_model_name)
     batch_meta = meta_for_backend(backend, template_meta, pose_variant=args.pose)
@@ -509,78 +564,15 @@ def _run_body_core_batch(*, args, backend: str, front_video: Path, side_video: P
     if not student_videos:
         raise FileNotFoundError(f"No student videos found in: {student_dir}")
 
-    rows: list[dict[str, Any]] = []
-    jsonl_path = out_dir / "compare_results.jsonl"
-    video_workers = max(1, int(getattr(args, "workers", 1)))
+    def process(v: Path) -> tuple[dict, dict]:
+        return _body_core_student(
+            v, args=args, backend=backend, templates=templates, yolo_model=yolo_model, batch_meta=batch_meta)
 
-    def _process_body_core_video(idx: int, v: Path) -> tuple[int, dict[str, Any], dict[str, Any]]:
-        precomputed = extract_body_core_features(
-            v,
-            backend=backend,
-            pose_variant=args.pose,
-            yolo_model=yolo_model,
-        )
-        front_res = match_body_core_template(
-            front_tpl,
-            v,
-            backend=backend,
-            pose_variant=args.pose,
-            reject_multi_person=False,
-            yolo_model=yolo_model,
-            precomputed_features=precomputed,
-        )
-        side_res = match_body_core_template(
-            side_tpl,
-            v,
-            backend=backend,
-            pose_variant=args.pose,
-            reject_multi_person=False,
-            yolo_model=yolo_model,
-            precomputed_features=precomputed,
-        )
-        row = _body_core_row(v, front_res, side_res, meta=batch_meta)
-        payload = {
-            "video_path": str(v),
-            "backend": backend,
-            "feature_layout": FEATURE_LAYOUT_BODY_CORE,
-            "meta": {**batch_meta, "review_required": bool(row["review_required"])},
-            "front_debug_match": _body_core_result_dict(front_res, meta=batch_meta),
-            "side_debug_match": _body_core_result_dict(side_res, meta=batch_meta),
-        }
-        return idx, row, payload
-
-    body_core_results: list[tuple[int, dict[str, Any], dict[str, Any]]] = []
-    if video_workers <= 1:
-        for i, v in enumerate(student_videos):
-            body_core_results.append(_process_body_core_video(i, v))
-    else:
-        with ThreadPoolExecutor(max_workers=video_workers) as ex:
-            futures = [ex.submit(_process_body_core_video, i, v) for i, v in enumerate(student_videos)]
-            for fut in as_completed(futures):
-                body_core_results.append(fut.result())
-    body_core_results.sort(key=lambda item: item[0])
-
-    with jsonl_path.open("w", encoding="utf-8") as jf:
-        for _idx, row, payload in body_core_results:
-            rows.append(row)
-            jf.write(
-                json.dumps(
-                    _jsonable(payload),
-                    ensure_ascii=False,
-                )
-                + "\n"
-            )
-
-    csv_path = out_dir / "compare_results.csv"
-    with csv_path.open("w", encoding="utf-8-sig", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
-        w.writeheader()
-        w.writerows(rows)
-
-    print(f"Saved templates: {front_tpl} , {side_tpl}")
+    results = _in_order(student_videos, process, max(1, int(getattr(args, "workers", 1))))
+    csv_path, jsonl_path = _write_body_core_outputs(out_dir, results)
+    print(f"Saved templates: {templates[0]} , {templates[1]}")
     print(f"Saved debug/calibration results: {csv_path}")
     print(f"Saved jsonl: {jsonl_path}")
-
 
 if __name__ == "__main__":
     main()

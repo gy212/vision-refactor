@@ -226,7 +226,7 @@ def _blaze33_xy_getter(pose_landmarks):
 
     - MediaPipe：``pose_landmarks`` 是一串带 ``.x/.y`` 属性的 landmark 对象。
     - YOLO：``pose_landmarks`` 是 ``(33,4)`` 的 ``(x, y, z, conf)`` numpy 行
-      （由 ``core.yolo_adapter.map_coco17_to_blaze33`` 产出）。
+      （由 ``core.pose.backends.yolo.map_coco17_to_blaze33`` 产出）。
 
     返回 ``None`` 表示输入无法识别。
     """

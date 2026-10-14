@@ -24,9 +24,9 @@ from core.pose.landmarks import RowLandmark  # noqa: E402
 FIX = _REPO_ROOT / "tests" / "fixtures" / "pose33_v3" / "student_raw.npz"
 
 
-def test_importing_pose_facades_does_not_load_mediapipe_or_touch_log_env():
-    code = ("import os, sys; os.environ.pop('GLOG_minloglevel', None); import core.pose_features, core.rule_scoring, "
-            "core.action_compare, core.pose; print('mediapipe' in sys.modules, os.environ.get('GLOG_minloglevel'))")
+def test_importing_pose_packages_does_not_load_mediapipe_or_touch_log_env():
+    code = ("import os, sys; os.environ.pop('GLOG_minloglevel', None); import core.pose, core.evaluation, "
+            "core.services; print('mediapipe' in sys.modules, os.environ.get('GLOG_minloglevel'))")
     env = {k: v for k, v in os.environ.items() if k not in ("GLOG_minloglevel", "TF_CPP_MIN_LOG_LEVEL")}
     out = subprocess.run([sys.executable, "-B", "-c", code], cwd=_REPO_ROOT, env=env, capture_output=True,
                          text=True, check=True)

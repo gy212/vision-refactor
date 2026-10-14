@@ -13,7 +13,7 @@ from tkinter import messagebox
 from typing import Any
 
 from core.foundation import save_record_dir, save_template_pools
-from core.paths import outputs_dir
+from core.foundation import outputs_dir
 from core.pose import MEDIAPIPE_MODELS, is_installed
 from core.recording import (
     BeginError,

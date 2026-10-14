@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """``body_core_v1`` 特征提取：MediaPipe 与 YOLO 两后端共用同一 normalizer 产出 ``(T, 12, 2)`` 特征。
 
-匹配与模板生成留在 ``core.body_core_compare``（P3 迁入评估层）。YOLO 只允许 ``body_core_v1``，分数
+匹配在 ``core.evaluation.matching.body_core``，模板生成在 ``core.services.body_core_templates``。YOLO 只允许 ``body_core_v1``，分数
 未标定（``calibration_status=unvalidated``），不进入正式评分。
 """
 from __future__ import annotations

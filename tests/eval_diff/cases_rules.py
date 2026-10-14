@@ -11,8 +11,9 @@ from tests.eval_diff import synth
 
 
 def _rules(rec, c) -> None:
-    from core.pose_features import COCO17_SUPPORTED_CAPABILITIES, derive_valid_mask
-    from core.rule_scoring import score_rules
+    from core.pose.validity import COCO17_SUPPORTED_CAPABILITIES
+    from core.pose import derive_valid_mask
+    from core.evaluation.rules.formal_v1 import score_rules
 
     raws = {n: c.raw(n) for n in ("student", "front", "side")}
     noisy = raws["student"].copy()
@@ -31,7 +32,7 @@ def _rules(rec, c) -> None:
 
 
 def _kick(rec, c) -> None:
-    from core.kick_quality import score_kick_quality
+    from core.evaluation import score_kick_quality
 
     student = c.raw("student")
     mask = student[..., 3] >= 0.5
@@ -44,7 +45,7 @@ def _kick(rec, c) -> None:
 
 
 def _templates(rec, t) -> None:
-    from apps import recording_postprocess as rp
+    from core import recording as rp  # P9：原 apps.recording_postprocess 门面已删除
 
     for key in sorted(k for k in t if k.startswith(("bad:", "pool:")) or k in ("front", "no_meta")):
         rec(f"tpl/try/{key}", lambda: rp.try_load_heavy_template(t[key]))
@@ -66,7 +67,7 @@ def _templates(rec, t) -> None:
 
 
 def _exam_pool(rec, c) -> None:
-    from apps import recording_postprocess as rp
+    from core import recording as rp  # P9：原 apps.recording_postprocess 门面已删除
 
     t, work = c.t, c.work
     pool = sorted(k for k in t if k.startswith("pool:"))
@@ -119,20 +120,21 @@ def _exam_pool(rec, c) -> None:
 
 
 def _online(rec, c) -> None:
-    from core import action_compare as ac
-    from core import online_matcher as om
+    from core.pose.features import extract_features as _extract_pose_features
+    from core.pose import normalize_pose_xy_v3
+    from core.evaluation import MatcherConfig, OnlineActionMatcher, load_template_library, match_window
 
     v, t = c.v, c.t
     for key in ("good", "bad_layout", "bad_norm", "bad_shape", "bad_meta", "missing"):
-        rec(f"online/load/{key}", lambda: om.load_template_library(t[f"online:{key}"]))
-    lib = om.load_template_library(t["online:good"])
-    feats, _fps, _ = ac._extract_pose_features(v["student"], pose_variant="full", normalizer=ac.normalize_pose_xy_v3)
+        rec(f"online/load/{key}", lambda: load_template_library(t[f"online:{key}"]))
+    lib = load_template_library(t["online:good"])
+    feats, _fps, _ = _extract_pose_features(v["student"], pose_variant="full", normalizer=normalize_pose_xy_v3)
     for s, e in ((0, 40), (25, 70), (100, 150), (0, 2)):
         for thr in (0.4, 0.95):
-            rec(f"online/window/{s}-{e}/{thr}", lambda: om.match_window(feats[s:e], lib, om.MatcherConfig(reject_score_thr=thr)))
-    rec("online/window/empty_lib", lambda: om.match_window(feats[:30], [], om.MatcherConfig()))
+            rec(f"online/window/{s}-{e}/{thr}", lambda: match_window(feats[s:e], lib, MatcherConfig(reject_score_thr=thr)))
+    rec("online/window/empty_lib", lambda: match_window(feats[:30], [], MatcherConfig()))
     results = []
-    matcher = om.OnlineActionMatcher(lib, results.append, cfg=om.MatcherConfig(arm_thr=0.02, disarm_thr=0.01))
+    matcher = OnlineActionMatcher(lib, results.append, cfg=MatcherConfig(arm_thr=0.02, disarm_thr=0.01))
     for i, f in enumerate(feats):
         matcher.push(f, timestamp_ms=i * 33.4, frame_index=i)
     # 每个闭合窗口投递一个任务、产出一个结果；等结果数追上投递数再关（push 侧不暴露计数，只能轮询）。

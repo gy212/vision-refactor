@@ -9,12 +9,15 @@ import cv2
 import numpy as np
 import pytest
 
-from core import action_feedback as af
-from core import feedback_geometry as fg
+from core.evaluation import ACTIONS, analyze_practice as analyze_feedback, build_checks
+from core.reporting import format_fusion, format_report
+from core.evaluation import FeedbackConfig, create_practice_engine as _pipeline, evaluate_series, extract_series, load_feedback_config, phase_windows
+from core.evaluation.rules.practice_v4 import default_front_weights as _default_front_weights, check_view_weights as _view_weights
+from core.foundation import contiguous_runs
 from core.evaluation import practice as practice_mod
 from core.evaluation.rules import practice_v4
 from core.reporting import practice_report_renderers
-from core.feedback_history import FeedbackHistory, validate_identity
+from core.services import HistoryStore as FeedbackHistory, validate_identity
 
 
 def _pumped(root):
@@ -41,7 +44,7 @@ def pose_series(n=32):
 
 
 def result(action="front_straight", stance="left"):
-    return fg.evaluate_series(action, stance, {"front": pose_series(), "side": pose_series()})
+    return evaluate_series(action, stance, {"front": pose_series(), "side": pose_series()})
 
 
 def fake_analyzer(action, stance, front, side, **kwargs):
@@ -57,14 +60,14 @@ def video(path: Path):
     return path
 
 
-@pytest.mark.parametrize("action", list(af.ACTIONS))
+@pytest.mark.parametrize("action", list(ACTIONS))
 def test_catalog_covers_phases_sides_sources_and_no_scores(action):
-    checks = af.build_checks(action, "left")
+    checks = build_checks(action, "left")
     assert len({c["id"] for c in checks}) == len(checks)
     assert checks[0]["phase"] == "start" and checks[-1]["phase"] == "end"
     assert all(c["source"] and c["standard"] and c["bodyPart"] for c in checks)
     assert all("score" not in c and "penalty" not in c for c in checks)
-    right = af.build_checks(action, "right")
+    right = build_checks(action, "right")
     assert next(c for c in checks if c["code"] == "stance_elbow")["bodyPart"].endswith("（左）")
     assert next(c for c in right if c["code"] == "stance_elbow")["bodyPart"].endswith("（右）")
     if action.endswith("combo"):
@@ -75,8 +78,8 @@ def test_catalog_covers_phases_sides_sources_and_no_scores(action):
 def test_rules_use_selected_front_arm_and_keep_uncalibrated_checks_pending():
     series = pose_series()
     series["landmarks"][:, 15, :2] = (.4, .6)  # 左肘180度；右肘90度。
-    left = fg.evaluate_series("stance", "left", {"front": series, "side": series})
-    right = fg.evaluate_series("stance", "right", {"front": series, "side": series})
+    left = evaluate_series("stance", "left", {"front": series, "side": series})
+    right = evaluate_series("stance", "right", {"front": series, "side": series})
     get = lambda data, code: next(c for c in data["checks"] if c["code"] == code)
     assert get(left, "stance_elbow")["status"] == "candidate"
     assert get(right, "stance_elbow")["status"] == "not_observed"
@@ -89,7 +92,7 @@ def test_rules_use_selected_front_arm_and_keep_uncalibrated_checks_pending():
 def test_missing_landmarks_or_view_or_motion_are_not_a_pass():
     series = pose_series()
     series["valid_mask"][:] = False
-    data = fg.evaluate_series("front_straight", "left", {"front": series})
+    data = evaluate_series("front_straight", "left", {"front": series})
     assert data["needsRerecord"]
     assert all(c["status"] in {"unable", "pending_rule"} for c in data["checks"])
     data = result()
@@ -103,13 +106,13 @@ def _check(data, code="stance_elbow", phase="start"):
 def test_fusion_prefers_side_for_elbow_and_preserves_both_views():
     good, bad = pose_series(), pose_series()
     bad["landmarks"][:, 15, :2] = (.4, .6)
-    data = fg.evaluate_series("stance", "left", {"front": bad, "side": good})
+    data = evaluate_series("stance", "left", {"front": bad, "side": good})
     check = _check(data)
     assert check["status"] == "not_observed"  # 正面投影异常不推翻更适用的侧面。
     assert check["fusion"]["support"] == pytest.approx(.2)
     assert {m["view"] for m in check["measurements"]} == {"front", "side"}
     assert {e["view"] for e in data["evidence"]} == {"front", "side"}
-    reverse = fg.evaluate_series("stance", "left", {"front": good, "side": bad})
+    reverse = evaluate_series("stance", "left", {"front": good, "side": bad})
     assert _check(reverse)["status"] == "candidate"
     assert _check(reverse)["fusion"]["support"] == pytest.approx(.8)
 
@@ -118,7 +121,7 @@ def test_missing_or_occluded_view_is_not_promoted_to_full_weight():
     good, hidden = pose_series(), pose_series()
     hidden["valid_mask"][:, 13] = False
     for views in ({"front": good}, {"front": good, "side": hidden}):
-        check = _check(fg.evaluate_series("stance", "left", views))
+        check = _check(evaluate_series("stance", "left", views))
         assert check["status"] == "unable"
         assert check["fusion"]["support"] is None
         assert not check["fusion"]["effectiveWeights"]
@@ -130,54 +133,54 @@ def test_quality_reduces_weight_and_equal_conflict_stays_undecided(monkeypatch):
     side["landmarks"][:, 15, :2] = (.4, .6)
     side["valid_mask"][[1, 3, 5, 7], 13] = False
     monkeypatch.setattr(practice_mod, "phase_windows", lambda *args: {("stance", "start"): np.arange(10)})
-    weights = fg._default_front_weights()
+    weights = _default_front_weights()
     weights["stance"]["stance_elbow"] = .3
-    cfg = fg.FeedbackConfig(front_weights=weights)
-    check = _check(fg.evaluate_series("stance", "left", {"front": front, "side": side}, cfg))
+    cfg = FeedbackConfig(front_weights=weights)
+    check = _check(evaluate_series("stance", "left", {"front": front, "side": side}, cfg))
     assert check["status"] == "unable"
     assert check["fusion"]["effectiveWeights"]["side"] == pytest.approx(.7 * .6 / (.3 + .7 * .6))
     assert "接近" in check["reason"]
     weights["stance"]["stance_elbow"] = .5
     side["valid_mask"][:] = True
-    check = _check(fg.evaluate_series("stance", "left", {"front": front, "side": side}, cfg))
+    check = _check(evaluate_series("stance", "left", {"front": front, "side": side}, cfg))
     assert check["status"] == "unable" and check["fusion"]["support"] == .5
 
 
 def test_different_action_stages_are_not_fused():
     front, side = pose_series(), pose_series()
     side["times"] = [t + 2 for t in side["times"]]
-    check = _check(fg.evaluate_series("stance", "left", {"front": front, "side": side}))
+    check = _check(evaluate_series("stance", "left", {"front": front, "side": side}))
     assert check["status"] == "unable" and "时间不对应" in check["reason"]
 
 
 def test_action_profiles_and_primary_view_limit_are_explicit():
-    cfg = fg.FeedbackConfig()
-    values = [fg._view_weights({"segment": action, "code": "guard_low"}, cfg)["front"]
+    cfg = FeedbackConfig()
+    values = [_view_weights({"segment": action, "code": "guard_low"}, cfg)["front"]
               for action in ("front_straight", "front_hook", "front_low_kick")]
     assert values == [.7, .75, .65]
     check = _check(result("stance"), "stance_torso")
     assert check["fusion"]["method"] == "primary_view"
     assert check["fusion"]["baseWeights"] == {"front": 1, "side": 0}
-    assert "不能称为双视角一致" in af.format_fusion(check)
+    assert "不能称为双视角一致" in format_fusion(check)
 
 
 def test_weight_configuration_validation_and_report(tmp_path, monkeypatch):
     monkeypatch.setattr(practice_v4, "repo_root", lambda: tmp_path)
-    weights = fg._default_front_weights()
+    weights = _default_front_weights()
     weights["stance"]["stance_elbow"] = .25
     path = tmp_path / "feedback_config.json"
     path.write_text(json.dumps({"front_weights": weights}), encoding="utf-8")
-    assert fg.load_feedback_config().front_weights["stance"]["stance_elbow"] == .25
+    assert load_feedback_config().front_weights["stance"]["stance_elbow"] == .25
     for value in (0, 1, float("nan"), True):
         weights["stance"]["stance_elbow"] = value
         with pytest.raises(ValueError):
-            fg.FeedbackConfig(front_weights=weights)
+            FeedbackConfig(front_weights=weights)
     path.write_text("[]", encoding="utf-8")
     with pytest.raises(ValueError, match="配置无效"):
-        fg.load_feedback_config()
+        load_feedback_config()
     data = result("stance")
     record = {"result": data, "studentId": "001", "studentName": "", "createdAt": "now", "expiresAt": "later"}
-    report = af.format_report(record)
+    report = format_report(record)
     assert "实际权重" in report and "已检查未发现的问题项" in report
     assert "非成绩、非准确率" in report
 
@@ -196,15 +199,15 @@ def test_movement_windows_require_return_and_keep_front_rear_order():
     # 每只手一次明确离开并回收：起峰后回到初始护位。
     for start, wrist in ((7,15),(23,16)):
         series["landmarks"][start:start+7, wrist, 0] += np.array([.10,.16,.22,.28,.22,.16,.10])
-    windows = fg.phase_windows(series, "straight_combo", "left", fg.FeedbackConfig())
+    windows = phase_windows(series, "straight_combo", "left", FeedbackConfig())
     assert windows[("front_straight","finish")][1] == 10
     assert windows[("rear_straight","finish")][1] == 26
-    assert fg.phase_windows(series, "straight_combo", "right", fg.FeedbackConfig()).keys() == {("stance","start"),("stance","end")}
+    assert phase_windows(series, "straight_combo", "right", FeedbackConfig()).keys() == {("stance","start"),("stance","end")}
     series["valid_mask"][10,15] = False  # 短暂漏点保留原无效标记，可以识别前后已观测到的运动。
-    assert ("front_straight","motion") in fg.phase_windows(series,"straight_combo","left",fg.FeedbackConfig())
+    assert ("front_straight","motion") in phase_windows(series,"straight_combo","left",FeedbackConfig())
     assert not series["valid_mask"][10,15]
     series["valid_mask"][9:13,15] = False  # 长遮挡不能拼接成完整动作。
-    assert ("front_straight","motion") not in fg.phase_windows(series,"straight_combo","left",fg.FeedbackConfig())
+    assert ("front_straight","motion") not in phase_windows(series,"straight_combo","left",FeedbackConfig())
 
 
 def test_actual_video_sampling_uses_pipeline_and_does_not_repeat_lost_pose(tmp_path):
@@ -222,12 +225,12 @@ def test_actual_video_sampling_uses_pipeline_and_does_not_repeat_lost_pose(tmp_p
         def close(self):
             closed.append(True)
 
-    data = fg.extract_series(path, fg.FeedbackConfig(), lambda: False, Pipeline)
+    data = extract_series(path, FeedbackConfig(), lambda: False, Pipeline)
     assert data["frames"][0] == 0 and data["frames"][-1] == 15
     assert data["valid_mask"][0].all() and not data["valid_mask"][1].any()
     assert calls == sorted(set(calls)) and closed == [True]
     with pytest.raises(InterruptedError):
-        af.analyze_feedback("stance", "left", path, None, stopped=lambda: True, pipeline_factory=Pipeline)
+        analyze_feedback("stance", "left", path, None, stopped=lambda: True, pipeline_factory=Pipeline)
 
 
 @pytest.mark.parametrize("variant", ["lite", "full", "heavy"])
@@ -237,16 +240,16 @@ def test_feedback_pipeline_uses_selected_cpu_model_without_hands(monkeypatch, tm
     captured = []
     from core.pose import engine  # P2：构造统一经 create_engine
     monkeypatch.setattr(engine, "PoseEngine", lambda **kw: captured.append(kw))
-    fg._pipeline(fg.FeedbackConfig(pose_variant=variant))
+    _pipeline(FeedbackConfig(pose_variant=variant))
     config = captured[0]["cfg"]
     assert config.pose_variant == variant and config.delegate == "cpu" and not config.enable_hands
-    assert fg.FeedbackConfig().pose_variant == "full"
+    assert FeedbackConfig().pose_variant == "full"
 
 
 def test_feedback_pipeline_missing_model_keeps_message(monkeypatch, tmp_path):
     monkeypatch.setattr(practice_mod, "models_dir", lambda: tmp_path)
     with pytest.raises(FileNotFoundError, match="缺少 MediaPipe heavy，请在设置的模型管理中安装。"):
-        fg._pipeline(fg.FeedbackConfig(pose_variant="heavy"))
+        _pipeline(FeedbackConfig(pose_variant="heavy"))
 
 
 def test_completed_hip_turn_and_arm_swing_are_not_missing_actions():
@@ -254,7 +257,7 @@ def test_completed_hip_turn_and_arm_swing_are_not_missing_actions():
     series["landmarks"][7:14, 27, 0] += np.array([.10,.16,.22,.28,.22,.16,.10])
     series["landmarks"][10, 15, 1] += .2  # 高峰处已甩手
     series["landmarks"][10, 24, 2] += .1  # 高峰处已翻胯
-    data = fg.evaluate_series("front_low_kick", "left", {"front": series, "side": series})
+    data = evaluate_series("front_low_kick", "left", {"front": series, "side": series})
     checked = [c for c in data["checks"] if c["code"] in {"hip_turn", "arm_swing"}]
     assert checked and all(c["status"] == "not_observed" for c in checked)
 
@@ -273,7 +276,7 @@ def test_personal_history_review_export_reanalysis_and_retention(tmp_path):
     out = store.export(saved["id"], tmp_path / "报告.txt")
     assert "教师已确认" in out.read_text(encoding="utf-8-sig")
     store.review(saved["id"], issue["id"], "revoked", "李老师", "误报")
-    assert "教师已确认" not in af.format_report(store.get(saved["id"]))
+    assert "教师已确认" not in format_report(store.get(saved["id"]))
     now[0] += timedelta(days=1)
     updated = store.reanalyze(saved["id"], analyzer=fake_analyzer)
     assert updated["expiresAt"] == saved["expiresAt"]
@@ -418,14 +421,14 @@ def test_fast_combo_shared_timing_keeps_independent_measurements_and_masks():
     side = combo_series()
     front = pose_series(80)  # 正面投影不明显；同步侧面提供动作时间段。
     front["times"] = side["times"][:]
-    data = fg.evaluate_series("straight_combo", "left", {"front": front, "side": side})
+    data = evaluate_series("straight_combo", "left", {"front": front, "side": side})
     assert data["diagnostics"]["front"]["phaseSource"] == "side_synchronized_timing"
     check = next(c for c in data["checks"] if c["code"] == "shoulder_level" and c["segment"] == "front_straight")
     assert check["status"] in {"candidate", "not_observed"}
     assert len(check["measurements"]) == 2
     assert all(m["values"] for m in check["measurements"])
     front["valid_mask"][11:19, 15] = False
-    data = fg.evaluate_series("straight_combo", "left", {"front": front, "side": side})
+    data = evaluate_series("straight_combo", "left", {"front": front, "side": side})
     check = next(c for c in data["checks"] if c["code"] == "shoulder_level" and c["segment"] == "front_straight")
     assert check["status"] == "unable"  # 时间段可共享，缺失腕点不能从侧面借。
     assert "正面" in check["reason"] and "有效帧不足" in check["reason"]
@@ -434,11 +437,11 @@ def test_fast_combo_shared_timing_keeps_independent_measurements_and_masks():
 def test_occluded_far_side_does_not_block_visible_arm_but_hidden_arm_stays_unable():
     front, side = pose_series(), pose_series()
     side["valid_mask"][:, [12, 14, 16, 24]] = False
-    data = fg.evaluate_series("stance", "left", {"front": front, "side": side})
+    data = evaluate_series("stance", "left", {"front": front, "side": side})
     assert _check(data)["status"] == "not_observed"
     assert _check(data, "stance_rear_guard")["status"] == "unable"
     record = {"result": data, "studentId": "test", "studentName": "", "createdAt": "now", "expiresAt": "later"}
-    text = af.format_report(record)
+    text = format_report(record)
     assert "右腕0%" in text and "关键点有效比例" in text and "前手肘角：中位" in text
 
 
@@ -448,22 +451,22 @@ def test_phase_search_ignores_lost_entry_and_exit_and_keeps_repeated_combos():
     series["valid_mask"][-6:] = False
     for start, wrist in ((55, 15), (73, 16)):
         series["landmarks"][start:start + 5, wrist, 0] += [.10, .20, .28, .20, .10]
-    windows = fg.phase_windows(series, "straight_combo", "left", fg.FeedbackConfig())
+    windows = phase_windows(series, "straight_combo", "left", FeedbackConfig())
     assert windows[("stance", "start")][0] >= 5
     assert windows[("stance", "end")][-1] < 94
-    assert len(fg.contiguous_runs(windows[("front_straight", "finish")])) == 2
-    assert len(fg.contiguous_runs(windows[("rear_straight", "finish")])) == 2
+    assert len(contiguous_runs(windows[("front_straight", "finish")])) == 2
+    assert len(contiguous_runs(windows[("rear_straight", "finish")])) == 2
 
 
 def test_pair_alignment_uses_multiple_peaks_and_rejects_count_disagreement():
     front, side = combo_series(), combo_series()
     side["times"] = [t + .2 for t in side["times"]]
-    data = fg.evaluate_series("straight_combo", "left", {"front": front, "side": side})
+    data = evaluate_series("straight_combo", "left", {"front": front, "side": side})
     assert data["alignment"]["sideOffsetSeconds"] == pytest.approx(-.2)
     assert data["alignment"]["anchors"] == 2 and data["alignment"]["reliable"]
     for start, wrist in ((50, 15), (67, 16)):
         front["landmarks"][start:start + 5, wrist, 0] += [.10, .20, .28, .20, .10]
-    data = fg.evaluate_series("straight_combo", "left", {"front": front, "side": side})
+    data = evaluate_series("straight_combo", "left", {"front": front, "side": side})
     assert not data["alignment"]["reliable"]
     assert all(c["status"] in {"unable", "pending_rule"} for c in data["checks"])
 
@@ -471,7 +474,7 @@ def test_pair_alignment_uses_multiple_peaks_and_rejects_count_disagreement():
 def test_incomplete_combo_is_not_overwritten_by_other_view():
     front, side = combo_series(), combo_series()
     front["landmarks"][30:35, 16, 0] = .75
-    data = fg.evaluate_series("straight_combo", "left", {"front": front, "side": side})
+    data = evaluate_series("straight_combo", "left", {"front": front, "side": side})
     assert data["diagnostics"]["front"]["phaseSource"] == "own_view"
     assert "次数或顺序" in data["diagnostics"]["front"]["reason"]
     assert all(c["status"] in {"unable", "pending_rule"} for c in data["checks"] if c["phase"] == "motion")
@@ -495,7 +498,7 @@ def test_1080p_30fps_analysis_keeps_every_frame(tmp_path):
         def close(self):
             pass
 
-    series = fg.extract_series(path, fg.FeedbackConfig(), lambda: False, Pipeline)
+    series = extract_series(path, FeedbackConfig(), lambda: False, Pipeline)
     assert series["frames"] == list(range(12))
     assert all(shape == (1080, 1920, 3) for shape, _ in seen)
     assert series["capture"]["sourceFps"] == 30 and series["capture"]["stride"] == 1
@@ -548,7 +551,7 @@ def test_real_tk_evidence_frames_and_model_choice(tmp_path, monkeypatch):
                                       set_status=lambda _: None, can_analyze=lambda: True)
     controls.analysis.store = FeedbackHistory(tmp_path / "history", renderers=practice_report_renderers())
     controls.student_id.set("evidence-test")
-    controls.action.set(af.ACTIONS["stance"])
+    controls.action.set(ACTIONS["stance"])
     try:
         source = video(tmp_path / "source.avi")
         side = video(tmp_path / "side.avi")

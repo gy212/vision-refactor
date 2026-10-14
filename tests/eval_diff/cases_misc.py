@@ -21,30 +21,32 @@ def _energy(n: int, bursts: tuple[tuple[int, int], ...], seed: int) -> np.ndarra
 
 
 def _templates_and_ranges(rec, v, work: Path) -> None:
-    from core import action_compare as ac
-    from core import exam_clip
+    from core.services import analyze_template_auto_crop, create_template_from_video
+    from core.evaluation import normalize_template_meta
+    from core.evaluation import estimate_action_range
+    from core.workflows.exam.clip import estimate_action_range_from_feature_seq
 
     out = work / "made"
     out.mkdir(parents=True, exist_ok=True)
     for i, kw in enumerate(({}, {"start": 5, "end": 60}, {"start": -5}, {"end": 999}, {"workers": 3})):
-        rec(f"create/{i}", lambda: _template_dump(ac.create_template_from_video(
+        rec(f"create/{i}", lambda: _template_dump(create_template_from_video(
             v["student"], pose_variant="lite", out_path=out / f"c{i}.npz", **kw)))
-    rec("create/long_review", lambda: ac.create_template_from_video(v["long"], out_path=out / "long.npz"))
-    rec("create/long_manual", lambda: _template_dump(ac.create_template_from_video(
+    rec("create/long_review", lambda: create_template_from_video(v["long"], out_path=out / "long.npz"))
+    rec("create/long_manual", lambda: _template_dump(create_template_from_video(
         v["long"], start=0, end=400, out_path=out / "long_m.npz")))
     for i, (n, bursts, fps) in enumerate(((60, ((10, 30),), 30.0), (1500, ((100, 160), (900, 980)), 30.0),
                                           (1500, ((100, 1400),), 30.0), (1, (), 0.0), (2000, ((5, 40), (1900, 1990)), 25.0))):
         energy = _energy(n, bursts, i)
-        rec(f"autocrop/{i}", lambda: _autocrop(ac.analyze_template_auto_crop(energy, fps=fps)))
+        rec(f"autocrop/{i}", lambda: _autocrop(analyze_template_auto_crop(energy, fps=fps)))
         for smart in (False, True):
-            rec(f"range/{i}/{smart}", lambda: exam_clip.estimate_action_range(
+            rec(f"range/{i}/{smart}", lambda: estimate_action_range(
                 n + 1, fps=fps, energy=energy, smart_crop=smart))
-    rec("range/none", lambda: exam_clip.estimate_action_range(40, fps=30.0))
-    rec("range/empty", lambda: exam_clip.estimate_action_range(0))
+    rec("range/none", lambda: estimate_action_range(40, fps=30.0))
+    rec("range/empty", lambda: estimate_action_range(0))
     feats = np.load(synth.FIX_DIR / "front_template.npz", allow_pickle=True)["features"]
-    rec("range/features", lambda: exam_clip.estimate_action_range_from_feature_seq(feats))
+    rec("range/features", lambda: estimate_action_range_from_feature_seq(feats))
     for k, m in (("meta_none", None), ("meta_name", {"feature_layout_name": "x"}), ("meta_full", {"feature_layout": "y"})):
-        rec(f"meta/{k}", lambda: ac.normalize_template_meta(None if m is None else dict(m)))
+        rec(f"meta/{k}", lambda: normalize_template_meta(None if m is None else dict(m)))
 
 
 def _template_dump(path: Path):
@@ -57,31 +59,32 @@ def _autocrop(a):
 
 
 def _tech_eval(rec, v) -> None:
-    from analysis import tech_eval as te
+    from core.evaluation import evaluate_video_assets, evaluate_video_detail, evaluate_video_full, extract_pose_and_view_scores, split_front_side_segments
 
     for vname in ("student", "front", "side", "gappy", "mirror"):
         for stance in ("left", "right"):
             for hint in ("auto", "front", "side"):
-                rec(f"te/full/{vname}/{stance}/{hint}", lambda: te.evaluate_video_full(
+                rec(f"te/full/{vname}/{stance}/{hint}", lambda: evaluate_video_full(
                     v[vname], pose_variant="full", stance=stance, view_hint=hint))
-        rec(f"te/detail/{vname}", lambda: te.evaluate_video_detail(v[vname], pose_variant="full"))
-        rec(f"te/assets/{vname}", lambda: te.evaluate_video_assets(v[vname], pose_variant="full")[1:])
-        _lm, vs, _meta = te.extract_pose_and_view_scores(v[vname], pose_variant="full")
-        rec(f"te/split/{vname}", lambda: te.split_front_side_segments(vs, 30.0))
-        rec(f"te/split/{vname}/loose", lambda: te.split_front_side_segments(
+        rec(f"te/detail/{vname}", lambda: evaluate_video_detail(v[vname], pose_variant="full"))
+        rec(f"te/assets/{vname}", lambda: evaluate_video_assets(v[vname], pose_variant="full")[1:])
+        _lm, vs, _meta = extract_pose_and_view_scores(v[vname], pose_variant="full")
+        rec(f"te/split/{vname}", lambda: split_front_side_segments(vs, 30.0))
+        rec(f"te/split/{vname}/loose", lambda: split_front_side_segments(
             vs, 12.0, min_len_sec=0.2, min_mean_diff=0.0, side_thr=1.0, front_thr=0.0, max_transitions=50))
 
 
 def _body_core(rec, v, t, work: Path) -> None:
-    from core import body_core_compare as bc
+    from core.services import create_body_core_template
+    from core.evaluation import match_body_core_template
 
     (work / "bc").mkdir(parents=True, exist_ok=True)
-    tpl = bc.create_body_core_template(v["front"], backend="mediapipe", out_path=work / "bc" / "front.npz")
+    tpl = create_body_core_template(v["front"], backend="mediapipe", out_path=work / "bc" / "front.npz")
     t["body_core"] = tpl
     rec("bc/create", lambda: _template_dump(tpl))
-    rec("bc/match", lambda: bc.match_body_core_template(tpl, v["student"]))
-    rec("bc/match_gappy", lambda: bc.match_body_core_template(tpl, v["gappy"], backend="mediapipe"))
-    rec("bc/pose33_tpl", lambda: bc.match_body_core_template(t["front"], v["student"]))
+    rec("bc/match", lambda: match_body_core_template(tpl, v["student"]))
+    rec("bc/match_gappy", lambda: match_body_core_template(tpl, v["gappy"], backend="mediapipe"))
+    rec("bc/pose33_tpl", lambda: match_body_core_template(t["front"], v["student"]))
 
 
 @contextlib.contextmanager

@@ -5,12 +5,9 @@ from pathlib import Path
 
 import numpy as np
 
-from core.exam_clip import (
-    align_frame_counts,
-    estimate_action_range,
-    estimate_action_range_from_feature_seq,
-    prepare_exam_pair,
-)
+from core.workflows import align_frame_counts, prepare_exam_pair
+from core.evaluation import estimate_action_range
+from core.workflows.exam.clip import estimate_action_range_from_feature_seq
 
 
 def test_align_frame_counts_min() -> None:

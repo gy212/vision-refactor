@@ -36,7 +36,7 @@ pose33_v3 已标定 baseline=2.0。body_core_v1 的 avg_cost 尺度与 pose33 �
 强约束（来自迁移计划 / AGENTS.md）
 ================================
 - 本脚本**不改主代码默认行为**：只调用既有 ``extract_pose_raw`` /
-  ``extract_yolo_landmark_series`` / 共享 normalizer / ``subsequence_dtw`` 等生产函数。
+  ``extract_yolo_landmark_series`` / 共享 normalizer / ``match_query`` 等生产函数。
 - **先预注册阈值、后对照数据**：阈值/判定口径写死在 ``docs/yolo_body_core_calibration.md``
   头部（跑数据前），本脚本只产出数字供报告逐条引用。
 - **未标定不得对外评分**：本脚本所有分数仅供 S3 标定/审计。
@@ -81,14 +81,11 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from core.feature_layout import BODY_CORE_V1, POSE33_V3  # noqa: E402
-from core.foundation import find_active_range, motion_energy  # noqa: E402
-from core.pose_features import (  # noqa: E402
-    normalize_pose_body_core_v1,
-    normalize_pose_xy_v3,
-    subsequence_dtw,
-)
-from core.yolo_adapter import evaluate_multi_person_gate  # noqa: E402
+from core.pose import BODY_CORE_V1, POSE33_V3  # noqa: E402
+from core.foundation import find_active_range, load_npz, motion_energy, npz_meta  # noqa: E402
+from core.pose import normalize_pose_body_core_v1, normalize_pose_xy_v3  # noqa: E402
+from core.evaluation import match_query  # noqa: E402
+from core.pose.backends.yolo import evaluate_multi_person_gate  # noqa: E402
 
 # pose33_v3 已标定 baseline（固定参照）。
 POSE33_BASELINE: float = 2.0
@@ -149,8 +146,8 @@ def extract_or_load_cache(
     vp = Path(sample["path"])
     cf = _cache_file(out_dir, sid)
     if cf.exists() and not force:
-        d = np.load(cf, allow_pickle=True)
-        meta = dict(d["meta"].item())
+        d = load_npz(cf)
+        meta = npz_meta(d)
         print(f"[cache] {sid} <- {cf.name}")
         return RawCache(
             sample_id=sid,
@@ -169,8 +166,8 @@ def extract_or_load_cache(
             yolo_num_persons_per_frame=list(meta.get("yolo_num_persons_per_frame", [])),
         )
 
-    from core.rule_scoring import extract_pose_raw
-    from core.yolo_adapter import extract_yolo_landmark_series
+    from core.pose import extract_pose_raw
+    from core.pose.backends.yolo import extract_yolo_landmark_series
 
     print(f"[extract] {sid} <- {vp}")
     t0 = time.perf_counter()
@@ -305,8 +302,7 @@ def _match(query_feats: np.ndarray, seq_feats: np.ndarray) -> float | None:
     if query_feats.shape[0] == 0 or seq_feats.shape[0] == 0:
         return None
     q = _active_query(query_feats)
-    cost, _s, _e = subsequence_dtw(q, seq_feats)
-    return float(cost) / max(1, int(q.shape[0]))
+    return match_query(q, seq_feats).avg_cost
 
 
 def _score(avg_cost: float | None, baseline: float) -> float | None:
@@ -506,17 +502,13 @@ def _env_table() -> dict:
     return info
 
 
-def run(args: argparse.Namespace) -> int:
+def _load_caches(args: argparse.Namespace, out_dir: Path) -> dict[str, RawCache]:
+    """按样本清单（可选 ``--only`` 过滤）提取或读回每个样本的原始缓存；缺失的样本跳过。"""
     samples_cfg = json.loads(Path(args.samples).read_text(encoding="utf-8"))
     samples = samples_cfg.get("samples", [])
     if args.only:
         only = {s.strip() for s in args.only.split(",")}
         samples = [s for s in samples if s.get("id") in only]
-
-    out_dir = Path(args.out)
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    # 1) 提取/加载缓存。
     caches: dict[str, RawCache] = {}
     for s in samples:
         if not Path(s["path"]).exists():
@@ -530,105 +522,123 @@ def run(args: argparse.Namespace) -> int:
             end_frame=(args.max_frames - 1) if args.max_frames else None,
             force=args.force_extract,
         )
+    return caches
 
-    # 多人闸门判定（实测）：review_required=True 的样本**不得进入评分/标定**
-    # （多人 = 正确性风险，闸门契约要求拒绝出分）。因此标定统计集 = 声明非多人
-    # 且闸门未触发的样本；被闸门标记的样本（含 multi_person="unknown" 的学员视频）
-    # 仅用于多人闸门展示，不进入相关性/baseline/阈值统计。
-    gate_review: dict[str, bool] = {}
-    for sid, c in caches.items():
-        g = evaluate_multi_person_gate(c.yolo_num_persons_per_frame)
-        gate_review[sid] = bool(g["review_required"])
 
-    single_ids = [
-        sid
+def _single_person_ids(caches: dict[str, RawCache]) -> list[str]:
+    """标定统计集：声明非多人且多人闸门未触发的样本。
+
+    多人闸门判定（实测）：review_required=True 的样本**不得进入评分/标定**
+    （多人 = 正确性风险，闸门契约要求拒绝出分）。被闸门标记的样本（含
+    multi_person="unknown" 的学员视频）仅用于多人闸门展示，不进入相关性/baseline/阈值统计。
+    """
+    gate_review = {
+        sid: bool(evaluate_multi_person_gate(c.yolo_num_persons_per_frame)["review_required"])
         for sid, c in caches.items()
-        if (not c.multi_person) and (not gate_review[sid])
-    ]
-    # 被多人闸门排除出标定集的样本（声明多人 或 实测多人）。
-    excluded_ids = [sid for sid in caches if sid not in single_ids]
-    student_ids = excluded_ids
+    }
+    return [sid for sid, c in caches.items() if (not c.multi_person) and (not gate_review[sid])]
+
+
+def _conf_sweep_row(thr: float, caches: dict[str, RawCache], single_ids: list[str], baseline_bodycore: float) -> dict:
+    """一个 YOLO valid_conf_thr 下的跨视频对一致性与有效帧率（只重算 YOLO body_core 特征）。"""
+    feats_thr = {sid: build_features(caches[sid], yolo_conf_thr=thr) for sid in single_ids}
+    rows_thr = pairwise_matrix(feats_thr, baseline_bodycore=baseline_bodycore)
+    cross_thr = [r for r in rows_thr if not r["self"]]
+    yb = [r["yolo_bodycore_score"] for r in cross_thr]
+    mb = [r["mp_bodycore_score"] for r in cross_thr]
+    pose33 = [r["pose33_score"] for r in cross_thr]
+    valid_ratios = [f.yolo_bodycore_valid_ratio for f in feats_thr.values()]
+    return {
+        "yolo_conf_thr": float(thr),
+        "corr_yolo_vs_mp_bodycore": _pearson(yb, mb),
+        "mae_yolo_vs_mp_bodycore": _mae(yb, mb),
+        "passfail_consistency_yolo_vs_pose33": _passfail_consistency(pose33, yb, PASS_SCORE_THR),
+        "passfail_consistency_yolo_vs_mp_bodycore": _passfail_consistency(mb, yb, PASS_SCORE_THR),
+        "n_cross_pairs": len(cross_thr),
+        "yolo_bodycore_valid_ratio_mean": float(np.mean(valid_ratios)) if valid_ratios else None,
+        "yolo_bodycore_valid_ratio_min": float(np.min(valid_ratios)) if valid_ratios else None,
+        "yolo_bodycore_skip_ratio_max": float(1.0 - np.min(valid_ratios)) if valid_ratios else None,
+        **{f"yolo_{key}": value for key, value in YOLO_ARTIFACT_METADATA.items()},
+    }
+
+
+def _gate_row(sid: str, c: RawCache, single_ids: list[str]) -> dict:
+    """多人闸门展示行（全部样本）。"""
+    gate = evaluate_multi_person_gate(c.yolo_num_persons_per_frame)
+    return {
+        "sample_id": sid,
+        "declared_multi_person": (c.multi_person if c.multi_person else "unknown_or_false"),
+        "max_persons": gate["max_persons"],
+        "multi_person_frames": gate["multi_person_frames"],
+        "review_required": gate["review_required"],
+        "gate_status": gate["gate_status"],
+        "in_calibration_set": sid in single_ids,
+        **{f"yolo_{key}": value for key, value in YOLO_ARTIFACT_METADATA.items()},
+    }
+
+
+def _per_sample_row(sid: str, c: RawCache, f) -> dict:
+    """逐样本基础统计：有效帧率、失败帧率、提取 FPS 与推理耗时。"""
+    return {
+        "sample_id": sid,
+        "view": c.view,
+        "frames_mp": c.mp_frames,
+        "frames_yolo": c.yolo_frames,
+        "extract_fps_mp": round(c.mp_frames / c.mp_infer_sec, 2) if c.mp_infer_sec > 0 else None,
+        "extract_fps_yolo": round(c.yolo_frames / c.yolo_infer_sec, 2) if c.yolo_infer_sec > 0 else None,
+        "mp_infer_sec": round(c.mp_infer_sec, 3),
+        "yolo_infer_sec": round(c.yolo_infer_sec, 3),
+        "mp_fail_ratio": round(f.mp_fail_ratio, 4),
+        "yolo_fail_ratio": round(f.yolo_fail_ratio, 4),
+        "mp_bodycore_valid_ratio": round(f.mp_bodycore_valid_ratio, 4),
+        "yolo_bodycore_valid_ratio": round(f.yolo_bodycore_valid_ratio, 4),
+        **{f"yolo_{key}": value for key, value in YOLO_ARTIFACT_METADATA.items()},
+    }
+
+
+def _write_outputs(out_dir: Path, summary: dict) -> None:
+    (out_dir / "calibration_summary.json").write_text(
+        json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    _write_csv(out_dir / "calibration_pairwise.csv", summary["pairwise_rows"])
+    _write_csv(out_dir / "calibration_conf_sweep.csv", summary["yolo_conf_thr_sweep"])
+    _write_csv(out_dir / "calibration_per_sample.csv", summary["per_sample"])
+    _write_csv(out_dir / "calibration_multi_person_gate.csv", summary["multi_person_gate"])
+
+
+def _print_summary(out_dir: Path, summary: dict) -> None:
+    calib, metrics = summary["baseline_calibration"], summary["metrics"]
+    print(f"\n[done] 输出目录：{out_dir}")
+    print(f"  baseline 标定: {calib}")
+    print(f"  metrics（跨视频，不含 self-match）: corr(mp_bc,pose33)={metrics['corr_mp_bodycore_vs_pose33']}, "
+          f"corr(yolo_bc,mp_bc)={metrics['corr_yolo_bodycore_vs_mp_bodycore']}, "
+          f"MAE(yolo_bc,mp_bc)={metrics['mae_yolo_bodycore_vs_mp_bodycore']}")
+    print(f"  pass/fail 一致率(yolo_bc vs pose33)={metrics['passfail_consistency_yolo_bodycore_vs_pose33']}")
+    print("  conf sweep:")
+    for r in summary["yolo_conf_thr_sweep"]:
+        print(f"    thr={r['yolo_conf_thr']:.2f}  corr={r['corr_yolo_vs_mp_bodycore']}  "
+              f"MAE={r['mae_yolo_vs_mp_bodycore']}  valid_min={r['yolo_bodycore_valid_ratio_min']}")
+    print("  多人闸门:")
+    for g in summary["multi_person_gate"]:
+        print(f"    {g['sample_id']}: max_persons={g['max_persons']} "
+              f"multi_frames={g['multi_person_frames']} review_required={g['review_required']}")
+
+
+def run(args: argparse.Namespace) -> int:
+    out_dir = Path(args.out)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    # 1) 提取/加载缓存；划出标定统计集，其余（声明多人或实测多人）只作闸门展示。
+    caches = _load_caches(args, out_dir)
+    single_ids = _single_person_ids(caches)
+    student_ids = [sid for sid in caches if sid not in single_ids]
 
     # 2) baseline 标定（在占位 baseline 下先建矩阵拿 avg_cost，再标定）。
     feats_calib = {sid: build_features(caches[sid], yolo_conf_thr=args.calib_conf_thr) for sid in single_ids}
-    rows_for_calib = pairwise_matrix(feats_calib, baseline_bodycore=POSE33_BASELINE)
-    calib = calibrate_bodycore_baseline(rows_for_calib)
+    calib = calibrate_bodycore_baseline(pairwise_matrix(feats_calib, baseline_bodycore=POSE33_BASELINE))
     baseline_bodycore = float(calib["baseline"])
 
-    # 3) 用标定后的 baseline 重建单人矩阵。
+    # 3) 用标定后的 baseline 重建单人矩阵；4) 主指标严格使用跨视频对，self-match 仅作 sanity 指标单独保留。
     rows = pairwise_matrix(feats_calib, baseline_bodycore=baseline_bodycore)
-
-    # 4) 相关性 / MAE / pass-fail 一致率。
-    # 主指标严格使用跨视频对；self-match 仅作为 sanity 指标单独保留。
-    metrics = summarize_pairwise_metrics(rows, include_self=False)
-    metrics_with_self = summarize_pairwise_metrics(rows, include_self=True)
-
-    # 5) YOLO valid_conf_thr 扫描（用标定 baseline；只重算 YOLO body_core 特征）。
-    sweep: list[dict] = []
-    for thr in YOLO_CONF_THR_GRID:
-        feats_thr = {sid: build_features(caches[sid], yolo_conf_thr=thr) for sid in single_ids}
-        rows_thr = pairwise_matrix(feats_thr, baseline_bodycore=baseline_bodycore)
-        cross_thr = [r for r in rows_thr if not r["self"]]
-        yb = [r["yolo_bodycore_score"] for r in cross_thr]
-        mb = [r["mp_bodycore_score"] for r in cross_thr]
-        pose33 = [r["pose33_score"] for r in cross_thr]
-        valid_ratios = [f.yolo_bodycore_valid_ratio for f in feats_thr.values()]
-        sweep.append(
-            {
-                "yolo_conf_thr": float(thr),
-                "corr_yolo_vs_mp_bodycore": _pearson(yb, mb),
-                "mae_yolo_vs_mp_bodycore": _mae(yb, mb),
-                "passfail_consistency_yolo_vs_pose33": _passfail_consistency(pose33, yb, PASS_SCORE_THR),
-                "passfail_consistency_yolo_vs_mp_bodycore": _passfail_consistency(mb, yb, PASS_SCORE_THR),
-                "n_cross_pairs": len(cross_thr),
-                "yolo_bodycore_valid_ratio_mean": float(np.mean(valid_ratios)) if valid_ratios else None,
-                "yolo_bodycore_valid_ratio_min": float(np.min(valid_ratios)) if valid_ratios else None,
-                "yolo_bodycore_skip_ratio_max": float(1.0 - np.min(valid_ratios)) if valid_ratios else None,
-                **{f"yolo_{key}": value for key, value in YOLO_ARTIFACT_METADATA.items()},
-            }
-        )
-
-    # 6) 多人闸门展示（全部样本）。
-    gate_rows = []
-    for sid in caches:
-        c = caches[sid]
-        gate = evaluate_multi_person_gate(c.yolo_num_persons_per_frame)
-        gate_rows.append(
-            {
-                "sample_id": sid,
-                "declared_multi_person": (c.multi_person if c.multi_person else "unknown_or_false"),
-                "max_persons": gate["max_persons"],
-                "multi_person_frames": gate["multi_person_frames"],
-                "review_required": gate["review_required"],
-                "gate_status": gate["gate_status"],
-                "in_calibration_set": sid in single_ids,
-                **{f"yolo_{key}": value for key, value in YOLO_ARTIFACT_METADATA.items()},
-            }
-        )
-
-    # 7) 逐样本基础统计（有效帧率/失败帧率/FPS/初始化）。
-    per_sample = []
-    for sid in caches:
-        c = caches[sid]
-        f = feats_calib.get(sid) or build_features(c, yolo_conf_thr=args.calib_conf_thr)
-        per_sample.append(
-            {
-                "sample_id": sid,
-                "view": c.view,
-                "frames_mp": c.mp_frames,
-                "frames_yolo": c.yolo_frames,
-                "extract_fps_mp": round(c.mp_frames / c.mp_infer_sec, 2) if c.mp_infer_sec > 0 else None,
-                "extract_fps_yolo": round(c.yolo_frames / c.yolo_infer_sec, 2) if c.yolo_infer_sec > 0 else None,
-                "mp_infer_sec": round(c.mp_infer_sec, 3),
-                "yolo_infer_sec": round(c.yolo_infer_sec, 3),
-                "mp_fail_ratio": round(f.mp_fail_ratio, 4),
-                "yolo_fail_ratio": round(f.yolo_fail_ratio, 4),
-                "mp_bodycore_valid_ratio": round(f.mp_bodycore_valid_ratio, 4),
-                "yolo_bodycore_valid_ratio": round(f.yolo_bodycore_valid_ratio, 4),
-                **{f"yolo_{key}": value for key, value in YOLO_ARTIFACT_METADATA.items()},
-            }
-        )
-
     summary = {
         "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         "env": _env_table(),
@@ -640,37 +650,20 @@ def run(args: argparse.Namespace) -> int:
         "single_person_sample_ids": single_ids,
         "student_sample_ids": student_ids,
         "baseline_calibration": calib,
-        "metrics": metrics,
-        "metrics_with_self_match_sanity": metrics_with_self,
-        "yolo_conf_thr_sweep": sweep,
-        "multi_person_gate": gate_rows,
-        "per_sample": per_sample,
+        "metrics": summarize_pairwise_metrics(rows, include_self=False),
+        "metrics_with_self_match_sanity": summarize_pairwise_metrics(rows, include_self=True),
+        # 5) YOLO valid_conf_thr 扫描（用标定 baseline）。
+        "yolo_conf_thr_sweep": [_conf_sweep_row(thr, caches, single_ids, baseline_bodycore) for thr in YOLO_CONF_THR_GRID],
+        # 6) 多人闸门展示；7) 逐样本基础统计。
+        "multi_person_gate": [_gate_row(sid, c, single_ids) for sid, c in caches.items()],
+        "per_sample": [
+            _per_sample_row(sid, c, feats_calib.get(sid) or build_features(c, yolo_conf_thr=args.calib_conf_thr))
+            for sid, c in caches.items()
+        ],
         "pairwise_rows": rows,
     }
-
-    (out_dir / "calibration_summary.json").write_text(
-        json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-    _write_csv(out_dir / "calibration_pairwise.csv", rows)
-    _write_csv(out_dir / "calibration_conf_sweep.csv", sweep)
-    _write_csv(out_dir / "calibration_per_sample.csv", per_sample)
-    _write_csv(out_dir / "calibration_multi_person_gate.csv", gate_rows)
-
-    # 控制台摘要。
-    print(f"\n[done] 输出目录：{out_dir}")
-    print(f"  baseline 标定: {calib}")
-    print(f"  metrics（跨视频，不含 self-match）: corr(mp_bc,pose33)={metrics['corr_mp_bodycore_vs_pose33']}, "
-          f"corr(yolo_bc,mp_bc)={metrics['corr_yolo_bodycore_vs_mp_bodycore']}, "
-          f"MAE(yolo_bc,mp_bc)={metrics['mae_yolo_bodycore_vs_mp_bodycore']}")
-    print(f"  pass/fail 一致率(yolo_bc vs pose33)={metrics['passfail_consistency_yolo_bodycore_vs_pose33']}")
-    print("  conf sweep:")
-    for r in sweep:
-        print(f"    thr={r['yolo_conf_thr']:.2f}  corr={r['corr_yolo_vs_mp_bodycore']}  "
-              f"MAE={r['mae_yolo_vs_mp_bodycore']}  valid_min={r['yolo_bodycore_valid_ratio_min']}")
-    print("  多人闸门:")
-    for g in gate_rows:
-        print(f"    {g['sample_id']}: max_persons={g['max_persons']} "
-              f"multi_frames={g['multi_person_frames']} review_required={g['review_required']}")
+    _write_outputs(out_dir, summary)
+    _print_summary(out_dir, summary)
     return 0
 
 

@@ -6,7 +6,7 @@ from __future__ import annotations
 import argparse
 from typing import Any
 
-from core.backend_router import (
+from core.pose.backends import (
     BACKEND_MEDIAPIPE,
     BACKEND_YOLO,
     FEATURE_LAYOUT_BODY_CORE,
@@ -15,7 +15,7 @@ from core.backend_router import (
     validate_backend_layout,
     yolo_metadata,
 )
-from core.body_core_compare import DEFAULT_YOLO26L_MODEL_NAME
+from core.pose.backends.yolo import DEFAULT_YOLO26L_MODEL_NAME
 
 BATCH_META_FIELDS: tuple[str, ...] = (
     "backend",

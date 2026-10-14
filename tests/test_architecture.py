@@ -146,19 +146,16 @@ def imports_of(name: str) -> tuple[Import, ...]:
 
 
 def layer_of(name: str) -> tuple[int, str]:
-    """返回 (层号, 包标识)。旧的平铺模块按附录 B 的去向归层，见 allowlist 的 LEGACY_TARGETS。"""
+    """返回 (层号, 包标识)。``core`` 包本身只有 docstring，归 L0。"""
     top = name.split(".")[0]
     if top in ENTRY_TOPS:
         return 6, top
+    if name == "core":
+        return 0, "core"
     for pkg, layer in LAYER_OF_PACKAGE.items():
         if name == pkg or name.startswith(pkg + "."):
             return layer, pkg
-    if name in AL.LEGACY_TARGETS:
-        pkg = AL.LEGACY_TARGETS[name]
-        return LAYER_OF_PACKAGE[pkg], pkg
-    raise AssertionError(
-        f"{name} 不属于 §2.2 的任何包：新代码放进 core/<层>/ 下，或在 LEGACY_TARGETS 登记旧模块的去向"
-    )
+    raise AssertionError(f"{name} 不属于 §2.2 的任何包：新代码放进 core/<层>/ 下")
 
 
 def _is_l4(layer: int) -> bool:
@@ -166,7 +163,8 @@ def _is_l4(layer: int) -> bool:
 
 
 def layering_violations() -> Counter:
-    """只依赖更低层；L4 同层包互不导入；入口层只用包 ``__init__`` 导出的公共 API。"""
+    """只依赖更低层；L4 同层包互不导入；入口层只用包 ``__init__`` 导出的公共 API（子包的 ``__init__`` 也算，
+    如只供 batch/analysis 用、不进桌面包的 ``core.pose.backends.yolo``），不直接导入普通子模块。"""
     found: Counter = Counter()
     for name, mod in modules().items():
         src_layer, src_pkg = layer_of(name)
@@ -177,7 +175,7 @@ def layering_violations() -> Counter:
             bad = dst_layer > src_layer or (
                 _is_l4(src_layer) and _is_l4(dst_layer) and src_pkg != dst_pkg
             )
-            if src_layer == 6 and dst_layer < 6 and imp.target.count(".") >= 2:
+            if src_layer == 6 and dst_layer < 6 and imp.target.count(".") >= 2 and not modules()[imp.target].is_pkg:
                 if any(imp.target == pkg or imp.target.startswith(pkg + ".") for pkg in LAYER_OF_PACKAGE):
                     bad = True  # 入口层越过包 __init__ 直接导入子模块
             if bad:
@@ -308,7 +306,8 @@ def _string(value: str):
 PRIMITIVES = {
     "video_capture": (_call_ends("cv2.VideoCapture"), ("core/media/",)),
     "engine_construct": (_call_ends("MediaPipePipeline", "PoseEngine"), ("core/pose/engine.py",)),
-    "np_load": (_call_ends("np.load", "numpy.load"), ("core/evaluation/templates.py",)),
+    # 模板只经 evaluation/templates.py（带契约校验）；原始骨架、标定缓存等非模板 npz 经 foundation/npz.py
+    "np_load": (_call_ends("np.load", "numpy.load"), ("core/evaluation/templates.py", "core/foundation/npz.py")),
     "subsequence_dtw": (_call_ends("subsequence_dtw"), ("core/evaluation/matching/",)),
     "file_replace": (_is_file_replace, ("core/foundation/atomic_io.py",)),
     "user_prefs_literal": (_string("user_prefs.json"), ("core/foundation/",)),
@@ -318,6 +317,7 @@ PRIMITIVES = {
             "core/foundation/tasks.py",
             "core/pose/parallel.py",
             "core/media/camera/pool.py",
+            "core/media/camera/slot_lifecycle.py",
             "core/media/camera/capture_process.py",
         ),
     ),
@@ -334,7 +334,7 @@ def _allowed(rel: str, places: tuple[str, ...]) -> bool:
 def primitive_violations() -> Counter:
     found: Counter = Counter()
     for mod in modules().values():
-        is_rule = mod.rel.startswith(RULE_PREFIX) or mod.name in AL.LEGACY_RULE_MODULES
+        is_rule = mod.rel.startswith(RULE_PREFIX)
         for node in ast.walk(mod.tree):
             for key, (match, places) in PRIMITIVES.items():
                 if not _allowed(mod.rel, places) and match(node):

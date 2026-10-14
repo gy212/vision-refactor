@@ -17,7 +17,7 @@
 ----------------
 仓库装有 CUDA 版 torch（约 4GB）+ ultralytics 等 YOLO 依赖，但桌面 UI 实时识别只用
 MediaPipe，完全不碰 YOLO。因此：
-  - 不用 collect_submodules 粗放收集 analysis/batch（会顺着 core.yolo_adapter 的
+  - 不用 collect_submodules 粗放收集 analysis/batch（会顺着 core.pose.backends.yolo 的
     ``from ultralytics import YOLO`` 把 torch/CUDA 整条链打进来，使 exe 膨胀到 3GB+）。
   - 通过 excludes 显式切断 torch / torchvision / ultralytics / nvidia* / onnxruntime
     等重依赖，把 onefile 体积压到数百 MB。
@@ -76,28 +76,34 @@ for pkg in ("mediapipe",):
 
 # 只显式声明 UI 真正用到的内部模块，避免 collect_submodules 把 YOLO 链拉进来。
 hiddenimports += [
-    "core.action_compare",
-    "core.vision_pipeline",
-    "core.pose_features",
-    "core.feature_layout",
-    "core.rule_scoring",
-    "core.paths",
-    "core.model_manager",
-    "core.parallel_pose_engine",
-    "core.recording_controller",
-    "core.video_writer",
-    "core.body_core_compare",
+    "core.foundation",
+    "core.foundation.paths",
+    "core.evaluation",
+    "core.evaluation.rules.formal_v1",
+    "core.evaluation.techeval",
+    "core.services",
+    "core.services.body_core_templates",
+    "core.recording",
+    "core.recording.controller",
     "core.media",
     "core.media.camera",
     "core.media.camera.capture_process",
     "core.media.camera.devices",
     "core.media.camera.pool",
+    "core.media.camera.pool_checks",
+    "core.media.camera.slot",
+    "core.media.camera.slot_lifecycle",
     "core.media.camera.service",
     "core.media.frames",
     "core.media.video_source",
     "core.media.writer",
     "core.pose",
     "core.pose.engine",
+    "core.pose.layouts",
+    "core.pose.models",
+    "core.pose.normalize",
+    "core.pose.parallel",
+    "core.pose.validity",
     "core.pose.extract",
     "core.pose.raw_series",
     "core.pose.render",
@@ -112,9 +118,7 @@ hiddenimports += [
     "core.live.stages",
     "core.reporting.html",
     "core.reporting.html.renderer",
-    "analysis.tech_eval",
-    "apps.camera_enum",
-    "apps.input_source",
+    "apps.tk.input_source",
     "pygrabber",
     "pygrabber.dshow_graph",
     "PIL._tkinter_finder",
@@ -131,9 +135,7 @@ heavy_excludes = [
     "onnxruntime",
     "onnxslim",
     "tensorrt",
-    "core.yolo_adapter",
     "core.pose.backends.yolo",
-    "core.pose.backends.yolo_mapping",
     "analysis.spike_yolo_baseline",
     "hypothesis",
     "pytest",

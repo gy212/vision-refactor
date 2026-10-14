@@ -1,6 +1,14 @@
 """Tk 桌面入口壳：保留 ``apps/app_ui.py`` 的启动命令，实现在 ``apps.tk.app``（组合根、控制器与视图）。"""
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+# 允许以 ``python apps/xxx.py``、``python batch/xxx.py`` 方式运行（AGENTS.md 记载的命令）。
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
 from apps.tk.app import DesktopApp, main
 
 __all__ = ["DesktopApp", "main"]

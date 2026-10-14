@@ -57,7 +57,7 @@ def main() -> None:
 
 def _make_body_core_template(args) -> None:
     """body_core_v1 模板生成（YOLO / MediaPipe 共享布局，仅供预览 / 内部标定参考）。"""
-    from core.body_core_compare import create_body_core_template
+    from core.services import create_body_core_template
 
     if args.backend == "yolo" and args.feature_layout != "body_core_v1":
         raise SystemExit("YOLO 后端仅支持 --feature-layout body_core_v1")

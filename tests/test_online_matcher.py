@@ -10,9 +10,9 @@ import time
 
 import numpy as np
 
-from core import paths
-from core.feature_layout import POSE33_V3
-from core.online_matcher import (
+from core.foundation import paths
+from core.pose import POSE33_V3
+from core.evaluation import (
     ActionTemplate,
     MatcherConfig,
     OnlineActionMatcher,

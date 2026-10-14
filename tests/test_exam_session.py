@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-from core.exam_roster import ExamCandidate
-from core.exam_session import ExamSession, ExamSessionConfig
+from core.workflows import ExamCandidate
+from core.workflows import ExamSession, ExamSessionConfig
 
 
 def _cands(n: int = 2) -> list[ExamCandidate]:

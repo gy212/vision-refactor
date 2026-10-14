@@ -15,7 +15,7 @@ from core.media import PRIMARY, SECONDARY, CameraService, CaptureSpec, ProcessCa
 from core.media import CameraDevice as CameraEntry
 from core.workflows import ModeManager
 
-from apps.input_source import InputSourceState
+from apps.tk.input_source import InputSourceState
 from apps.tk.controllers.flags import LiveFlags
 from apps.tk.views.capture_panel import NO_SECOND_CAMERA
 

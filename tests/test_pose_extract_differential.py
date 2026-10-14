@@ -18,11 +18,11 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from analysis import tech_eval  # noqa: E402
-from core import action_compare as ac  # noqa: E402
-from core import feedback_geometry as fg  # noqa: E402
+from core.evaluation import extract_pose_and_view_scores  # noqa: E402
+from core.pose.features import extract_features as _extract_pose_features  # noqa: E402
+from core.evaluation import FeedbackConfig, extract_series  # noqa: E402
 from core.pose import normalize_pose_xy, normalize_pose_xy_v1, normalize_pose_xy_v3  # noqa: E402
-from core.rule_scoring import extract_pose_raw, extract_pose_raw_series  # noqa: E402
+from core.pose import extract_pose_raw, extract_pose_raw_series  # noqa: E402
 from tests import golden_harness as H  # noqa: E402
 from tests import legacy_extract_oracle as old  # noqa: E402
 
@@ -75,7 +75,7 @@ def videos(monkeypatch):
 @pytest.mark.parametrize("name", ["student_raw", "front_src_raw", "side_src_raw"])
 def test_features_and_view_scores_match_legacy(name, normalizer, workers):
     video = Path(VIDEOS[name])
-    new = ac._extract_pose_features(video, pose_variant="full", workers=workers, normalizer=normalizer, compute_view=True)
+    new = _extract_pose_features(video, pose_variant="full", workers=workers, normalizer=normalizer, compute_view=True)
     ref = old._extract_pose_features(video, pose_variant="full", workers=workers, normalizer=normalizer, compute_view=True)
     assert _same(new[0], ref[0]) and new[1] == ref[1] and _same(new[2], ref[2])
 
@@ -99,7 +99,7 @@ def test_rule_raw_series_matches_legacy(name, end):
 def test_tech_eval_raw_and_view_scores_match_legacy(bounds):
     video = Path(VIDEOS["side_src_raw"])
     start, end = bounds
-    new = tech_eval.extract_pose_and_view_scores(video, pose_variant="full", start_frame=start, end_frame=end)
+    new = extract_pose_and_view_scores(video, pose_variant="full", start_frame=start, end_frame=end)
     ref = old.extract_pose_and_view_scores(video, pose_variant="full", start_frame=start, end_frame=end)
     assert _same(new[0], ref[0]) and _same(new[1], ref[1]) and new[2] == ref[2]
 
@@ -114,9 +114,9 @@ def _avi(path: Path, n: int, size: tuple[int, int], fps: float) -> Path:
 
 
 @pytest.mark.parametrize("cfg", [
-    fg.FeedbackConfig(),
-    fg.FeedbackConfig(max_edge=160),
-    fg.FeedbackConfig(sample_fps=7),
+    FeedbackConfig(),
+    FeedbackConfig(max_edge=160),
+    FeedbackConfig(sample_fps=7),
 ])
 def test_practice_series_matches_legacy(tmp_path, cfg):
     video = _avi(tmp_path / "practice.avi", 23, (320, 180), 30.0)
@@ -136,7 +136,7 @@ def test_practice_series_matches_legacy(tmp_path, cfg):
             pass
 
     with _real_capture():
-        new = fg.extract_series(video, cfg, lambda: False, Pipeline)
+        new = extract_series(video, cfg, lambda: False, Pipeline)
         ref = old.extract_series(video, cfg, lambda: False, Pipeline)
     for key in ("landmarks", "valid_mask", "frames", "times"):
         assert _same(new[key], ref[key]), key

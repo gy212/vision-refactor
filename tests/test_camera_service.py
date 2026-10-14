@@ -518,16 +518,3 @@ def test_no_thread_left_running_after_service_close(service):
     _eventually(lambda: not any(
         t.name.startswith("camera-warmup-") and t.is_alive() for t in threading.enumerate()
     ))
-
-
-def test_legacy_import_paths_only_forward():
-    from apps import camera_capture, camera_enum, camera_warmup
-    from apps.input_source import InputSourceState
-    from core.media import CameraDevice, ProcessCamera
-
-    assert camera_warmup.CameraWarmupPool is CameraPool
-    assert camera_warmup.CaptureSpec is CaptureSpec
-    assert camera_capture.ProcessCamera is ProcessCamera
-    assert camera_enum.CameraEntry is CameraDevice
-    assert camera_enum.InputSourceState is InputSourceState
-    assert not hasattr(camera_enum, "open_camera")

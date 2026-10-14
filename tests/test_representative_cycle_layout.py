@@ -36,7 +36,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from core.action_compare import _select_representative_cycle  # noqa: E402
+from core.evaluation import select_representative_cycle as _select_representative_cycle  # noqa: E402
 
 
 def _make_periodic_features(T: int, J: int, period: int, *, seed: int = 0) -> np.ndarray:

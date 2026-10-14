@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""学生练习分析：逐帧序列提取、相位窗口、逐项测量与正侧证据融合，产出练习结果字典（设计文档 §7.8）。
+"""学生练习分析：逐帧序列提取、相位窗口、经规则引擎的单视角判定与正侧证据融合，产出练习结果字典（设计文档 §7.8）。
 
 复刻 v4（原 ``feedback_geometry.extract_series``/``evaluate_series``/``analyze_geometry``）：丢失帧全无效，
 绝不复用上一帧；结论只是待教师确认的问题说明，``scoreAuthorized=False``。
@@ -14,14 +14,17 @@ from typing import Callable
 import numpy as np
 
 from core.evaluation.phases import align_views, phase_windows, share_phase_timing
+from core.evaluation.rules.adapters import to_practice_check
+from core.evaluation.rules.engine import evaluate_rules
 from core.evaluation.rules.practice_v4 import (
     RULE_VERSION,
     FeedbackConfig,
     build_checks,
     check_view_weights,
     load_feedback_config,
-    measure_check,
+    practice_profile,
 )
+from core.evaluation.rules.spec import RuleContext, RuleOutcome, RuleProfile
 from core.foundation.geometry import torso_length
 from core.foundation.paths import models_dir
 from core.foundation.signal import contiguous_runs
@@ -78,8 +81,11 @@ def extract_series(path: Path, cfg: FeedbackConfig, stopped: Callable[[], bool],
 
 
 def _observe_view(c: dict, view: str, series: dict, view_windows: dict, view_diagnostics: dict, alignment: dict,
-                  weights: dict, stance: str, cfg: FeedbackConfig, evidence: dict):
-    """一路视角对一个检查项的观测：``(该阶段时间段或 None, (是否有问题, 证据权重) 或 None)``。"""
+                  weights: dict, cfg: FeedbackConfig, evidence: dict, outcome: RuleOutcome | None):
+    """一路视角对一个检查项的观测：``(该阶段时间段或 None, (是否有问题, 证据权重) 或 None)``。
+
+    ``outcome`` 是 ``evaluate_rules`` 对该项在本视角的结论；该项不适用本视角时为 None。
+    """
     indices = view_windows.get((c["segment"], c["phase"]))
     if indices is None or len(indices) < cfg.min_valid:
         c["viewProblems"][view] = "未找到该阶段；" + view_diagnostics.get("reason", "阶段不足")
@@ -93,38 +99,9 @@ def _observe_view(c: dict, view: str, series: dict, view_windows: dict, view_dia
                   for run in contiguous_runs(indices)]
     else:
         c["viewProblems"][view] = f"该阶段可见肩髋链不足（{body_valid.sum()}/{len(indices)}帧）"
-    if weights[view] == 0:
+    if outcome is None:  # 该项只适用另一视角的公式（基础权重为 0），本视角只核对阶段
         return ranges, None
-    baseline = view_windows.get(("stance", "start"), np.arange(min(cfg.min_valid, len(series["times"]))))
-    details = {}
-    bad, valid = measure_check(c, series["landmarks"][indices], series["valid_mask"][indices],
-                               series["landmarks"][baseline], series["valid_mask"][baseline], stance, cfg, details)
-    count = int(valid.sum())
-    quality = count / len(indices)
-    violation = float((bad & valid).sum() / count) if count else None
-    measurement = {"view": view, "validFrames": count, "totalFrames": len(indices),
-                   "validRatio": quality, "violationRatio": violation, "baseWeight": weights[view], "values": []}
-    for name, (values, unit) in details.items():
-        observed = values[valid & np.isfinite(values)]
-        if observed.size:
-            measurement["values"].append({"name": name, "unit": unit, "median": float(np.median(observed)),
-                                          "min": float(observed.min()), "max": float(observed.max())})
-    c["measurements"].append(measurement)
-    if count < cfg.min_valid or count / len(indices) < cfg.valid_ratio:
-        c["viewProblems"][view] = f"该项测量有效帧不足（{count}/{len(indices)}帧），见关键点有效比例"
-        return ranges, None
-    # “未做某动作”只能在整个阶段均未出现该动作时成立。
-    issue = bool(bad[valid].all()) if c["code"] in {"hip_turn", "arm_swing"} else violation >= cfg.trigger_ratio
-    measurement["issueObserved"] = bool(issue)
-    # 保留首/中/末代表帧及原始骨架，支持教师直接核对，避免保存所有视频图像。
-    candidates = indices[valid & bad] if issue else indices[valid]
-    for index in candidates[np.unique([0, len(candidates) // 2, len(candidates) - 1])]:
-        ref = f"{view}:{series['frames'][index]}"
-        evidence[ref] = {"id": ref, "view": view, "frame": series["frames"][index], "timeSeconds": series["times"][index],
-                         "landmarks": np.round(series["landmarks"][index], 5).tolist(),
-                         "validMask": series["valid_mask"][index].tolist()}
-        c["evidence"].append(ref)
-    return ranges, (issue, weights[view] * quality)
+    return ranges, to_practice_check(c, view, outcome, weights[view], series, evidence)
 
 
 def _fuse(c: dict, views: dict, ranges: dict, outcomes: dict, weights: dict, alignment: dict, cfg: FeedbackConfig) -> None:
@@ -164,7 +141,7 @@ def _fuse(c: dict, views: dict, ranges: dict, outcomes: dict, weights: dict, ali
                    "该公式仅适用" + ("正面" if weights["front"] else "侧面") + "，另一视角只核对阶段；不作为双视角一致结论")
 
 
-def _evaluate_check(c: dict, views: dict, windows: dict, diagnostics: dict, alignment: dict, stance: str,
+def _evaluate_check(c: dict, views: dict, windows: dict, diagnostics: dict, alignment: dict, outcomes_by_view: dict,
                     cfg: FeedbackConfig, evidence: dict) -> None:
     c.update(status="unable", reason="关键点、视角或动作阶段不足，请重新录制", evidence=[], review="pending")
     if c["blockedReason"]:
@@ -182,12 +159,24 @@ def _evaluate_check(c: dict, views: dict, windows: dict, diagnostics: dict, alig
         if view not in views:
             continue
         view_ranges, outcome = _observe_view(c, view, views[view], windows[view], diagnostics[view], alignment,
-                                             weights, stance, cfg, evidence)
+                                             weights, cfg, evidence, outcomes_by_view[view].get(c["id"]))
         if view_ranges is not None:
             ranges[view] = view_ranges
         if outcome is not None:
             outcomes[view] = outcome
     _fuse(c, views, ranges, outcomes, weights, alignment, cfg)
+
+
+def _view_outcomes(view: str, series: dict, view_windows: dict, profile: RuleProfile, action: str, stance: str,
+                   cfg: FeedbackConfig) -> dict[str, RuleOutcome]:
+    """一路视角上全部检查项经 ``evaluate_rules`` 的结论（以检查项 id 为键）；基线取起始实战式窗口，缺失时取开头几帧。"""
+    baseline = view_windows.get(("stance", "start"), np.arange(min(cfg.min_valid, len(series["times"]))))
+    ctx = RuleContext(view=view, action_scope=action, stance=stance,
+                      phase_windows={f"{segment}:{phase}": idx for (segment, phase), idx in view_windows.items()},
+                      baseline=baseline, params=cfg)
+    outcomes = evaluate_rules(series["landmarks"], series["valid_mask"], profile, view=view, action_scope="both",
+                              context=ctx)
+    return {o.spec.code: o for o in outcomes}
 
 
 def _view_diagnostics(views: dict, diagnostics: dict, phase_sources: dict) -> dict:
@@ -214,9 +203,12 @@ def evaluate_series(action: str, stance: str, views: dict, cfg: FeedbackConfig |
     windows = {view: phase_windows(s, action, stance, cfg, diagnostics[view]) for view, s in views.items()}
     alignment = align_views(views, windows, cfg)
     phase_sources = share_phase_timing(views, windows, alignment, diagnostics, cfg)
+    profile = practice_profile(action, stance, cfg)
+    outcomes_by_view = {view: _view_outcomes(view, s, windows[view], profile, action, stance, cfg)
+                        for view, s in views.items()}
     evidence = {}
     for c in checks:
-        _evaluate_check(c, views, windows, diagnostics, alignment, stance, cfg, evidence)
+        _evaluate_check(c, views, windows, diagnostics, alignment, outcomes_by_view, cfg, evidence)
     unable = any(c["status"] == "unable" for c in checks)
     issues = any(c["status"] == "candidate" for c in checks)
     return {"schemaVersion": 1, "ruleVersion": RULE_VERSION, "action": action, "stance": stance,

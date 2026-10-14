@@ -13,7 +13,7 @@ from apps import desktop_launcher
 def test_import_failure_before_log_redirect_reaches_error_dialog(monkeypatch):
     shown: list[tuple[str, str]] = []
     monkeypatch.setattr(sys, "argv", ["vision_ui.exe"])
-    monkeypatch.setitem(sys.modules, "core.paths", None)  # 让 `from core.paths import ...` 抛 ImportError
+    monkeypatch.setitem(sys.modules, "core.foundation", None)  # 让 `from core.foundation import ...` 抛 ImportError
     monkeypatch.setattr(tkinter.messagebox, "showerror", lambda title, msg: shown.append((title, msg)))
 
     with pytest.raises(ImportError):

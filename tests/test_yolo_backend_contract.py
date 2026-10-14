@@ -35,7 +35,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from core.yolo_adapter import (  # noqa: E402
+from core.pose.backends.yolo import (  # noqa: E402
     GATE_STATUS_MULTI_PERSON,
     GATE_STATUS_OK,
     SingleTargetTracker,
@@ -61,9 +61,9 @@ from tests.yolo_fakes import (  # noqa: E402
 # 懒加载：导入 adapter 不应触发 ultralytics import
 # --------------------------------------------------------------------------- #
 def test_adapter_import_is_lazy():
-    # 本测试进程中导入 core.yolo_adapter 后，ultralytics 不应进入 sys.modules
+    # 本测试进程中导入 core.pose.backends.yolo 后，ultralytics 不应进入 sys.modules
     # （除非别的依赖显式引入；本仓库 fake 路径不引入）。
-    assert "core.yolo_adapter" in sys.modules
+    assert "core.pose.backends.yolo" in sys.modules
     assert "ultralytics" not in sys.modules
 
 

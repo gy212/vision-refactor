@@ -8,7 +8,6 @@ from pathlib import Path
 
 import pytest
 
-from core import paths as paths_facade
 from core.foundation import paths, prefs
 from core.foundation.prefs import (
     CAMERA_SELECTION,
@@ -129,13 +128,6 @@ def test_prefs_path_is_resolved_on_every_call(tmp_path, monkeypatch):
     save_camera_selection(2, None)
     assert json.loads(first.read_text(encoding="utf-8"))["camera_selection"]["primary_index"] == 1
     assert json.loads(second.read_text(encoding="utf-8"))["camera_selection"]["primary_index"] == 2
-
-
-def test_facade_only_forwards():
-    assert paths_facade.load_camera_selection is prefs.load_camera_selection
-    assert paths_facade.save_record_dir is prefs.save_record_dir
-    assert paths_facade.repo_root is paths.repo_root
-    assert not hasattr(paths_facade, "_prefs_path")
 
 
 def test_isolation_covers_all_keys_and_leaves_repo_prefs_untouched():

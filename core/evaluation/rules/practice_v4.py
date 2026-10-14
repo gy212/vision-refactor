@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
-"""学生练习规则 ``practice_v4``：检查项目录、检查清单、阈值配置与逐项测量（原 ``action_feedback`` 与 ``feedback_geometry``）。
+"""学生练习规则 ``practice_v4``：检查项目录、检查清单、阈值配置、逐项测量与规则登记（原 ``action_feedback`` 与 ``feedback_geometry``）。
+
+``practice_profile`` 把所选动作与左右式的检查清单登记为 ``RuleSpec``（``PhaseVerdict`` 聚合），经 ``evaluate_rules`` 判定（D-16）。
 
 MediaPipe CPU 关键点 + 几何/时序规则的问题说明，不调用视觉大模型；坐标为宽高比修正坐标（x、z 以图像高度为单位）。
 现场可用 ``repo_root()`` 下的 ``feedback_config.json`` 覆盖 ``FeedbackConfig``，文件名与字段不变。
@@ -17,6 +19,7 @@ from core.evaluation.body_sides import sides_for_stance
 from core.evaluation.measures import arms, legs
 from core.evaluation.measures import torso as torso_measures
 from core.evaluation.rules.formal_v1 import feet_parallel, knee_slight_bend
+from core.evaluation.rules.spec import PhaseCheck, PhaseVerdict, RuleContext, RuleProfile, RuleSpec
 from core.evaluation.view_weights import check_front_weights, practice_view_weights
 from core.foundation.paths import repo_root
 
@@ -220,12 +223,10 @@ def _relative_to_baseline(code, lm, torso, baseline, baseline_mask, required, sh
     return change < -cfg.guard_back
 
 
-def measure_check(check: dict, lm: np.ndarray, mask: np.ndarray, baseline: np.ndarray, baseline_mask: np.ndarray,
-                  stance: str, cfg: FeedbackConfig, details: dict | None = None) -> tuple[np.ndarray, np.ndarray]:
+def _measure(code: str, role: str, lm: np.ndarray, mask: np.ndarray, baseline: np.ndarray, baseline_mask: np.ndarray,
+             stance: str, cfg: FeedbackConfig, details: dict) -> tuple[np.ndarray, np.ndarray]:
     """一个检查项在一段帧上的逐帧 ``(问题帧, 有效帧)``；``details`` 写入供教师核对的测量值序列。"""
-    details = details if details is not None else {}
-    code = check["code"]
-    sh, el, wr, hip, knee, ankle, heel, toe = sides_for_stance(check["role"], stance)
+    sh, el, wr, hip, knee, ankle, heel, toe = sides_for_stance(role, stance)
     torso = torso_measures.chain_torso(lm, mask)
     required = []
     if code == "stance_knee":
@@ -287,3 +288,34 @@ def measure_check(check: dict, lm: np.ndarray, mask: np.ndarray, baseline: np.nd
     else:
         return np.zeros(len(lm), bool), np.zeros(len(lm), bool)
     return bad, mask[:, required].all(axis=1) & (torso > 1e-4)
+
+
+# "未做某动作"类检查项：只在整个阶段都没出现该动作时才算有问题。
+ABSENCE_RULES = frozenset({"hip_turn", "arm_swing"})
+
+
+def _phase_check(code: str, role: str) -> PhaseCheck:
+    def check(lm: np.ndarray, mask: np.ndarray, baseline: np.ndarray, baseline_mask: np.ndarray, ctx: RuleContext):
+        details: dict = {}
+        bad, valid = _measure(code, role, lm, mask, baseline, baseline_mask, ctx.stance, ctx.params, details)
+        return bad, valid, details
+
+    return check
+
+
+def practice_profile(action: str, stance: str, cfg: FeedbackConfig) -> RuleProfile:
+    """所选动作与左右式的检查清单登记为规则目录：规则编码即检查项 id，范围即 ``segment:phase`` 相位窗口。
+
+    只适用单视角公式的项（``PRIMARY_VIEW``）只登记该视角；原文缺失或需教师核对的项登记为 ``blocked``。
+    """
+    return RuleProfile(name="practice_v4", rules=tuple(
+        RuleSpec(
+            code=c["id"], title=c["name"], check=_phase_check(c["code"], c["role"]), required=(),
+            view=PRIMARY_VIEW.get(c["code"], "any"), scope=f"{c['segment']}:{c['phase']}",
+            aggregation=PhaseVerdict(cfg.min_valid, cfg.valid_ratio, cfg.trigger_ratio,
+                                     absence=c["code"] in ABSENCE_RULES),
+            authorization="blocked" if c["blockedReason"] else "candidate",
+            blocked_reason=c["blockedReason"], source=c["source"],
+        )
+        for c in build_checks(action, stance)
+    ))

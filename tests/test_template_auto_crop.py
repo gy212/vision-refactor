@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from core import action_compare
+from core.services import TemplateAutoCropReviewRequired, analyze_template_auto_crop, create_template_from_video
 from core.services import templates as services_templates
 
 
@@ -25,7 +25,7 @@ def _multi_activity_energy(*, seconds: int = 120, fps: int = 30) -> np.ndarray:
 
 
 def test_long_multi_activity_video_requires_manual_review() -> None:
-    analysis = action_compare.analyze_template_auto_crop(
+    analysis = analyze_template_auto_crop(
         _multi_activity_energy(),
         fps=30.0,
     )
@@ -41,7 +41,7 @@ def test_short_single_action_keeps_existing_auto_crop_behavior() -> None:
     energy = np.full(12 * fps - 1, 0.002, dtype=np.float32)
     energy[4 * fps : 6 * fps] = 0.2
 
-    analysis = action_compare.analyze_template_auto_crop(energy, fps=float(fps))
+    analysis = analyze_template_auto_crop(energy, fps=float(fps))
 
     assert analysis.requires_review is False
     assert analysis.start_frame < 4 * fps
@@ -54,7 +54,7 @@ def test_under_30_seconds_is_not_blocked_even_with_multiple_groups() -> None:
     energy[2 * fps : 3 * fps] = 0.2
     energy[10 * fps : 11 * fps] = 0.2
 
-    analysis = action_compare.analyze_template_auto_crop(energy, fps=float(fps))
+    analysis = analyze_template_auto_crop(energy, fps=float(fps))
 
     assert len(analysis.activity_groups) == 2
     assert analysis.selected_duration_s < 5.0
@@ -74,8 +74,8 @@ def test_create_template_rejects_suspicious_long_auto_crop(
         lambda *_args, **_kwargs: (features, 30.0, None),
     )
 
-    with pytest.raises(action_compare.TemplateAutoCropReviewRequired) as exc_info:
-        action_compare.create_template_from_video("long.mp4", out_path=out_path)
+    with pytest.raises(TemplateAutoCropReviewRequired) as exc_info:
+        create_template_from_video("long.mp4", out_path=out_path)
 
     assert "startFrame/endFrame" in str(exc_info.value)
     assert not out_path.exists()
@@ -94,7 +94,7 @@ def test_explicit_range_overrides_review_and_records_diagnostics(
         lambda *_args, **_kwargs: (features, 30.0, None),
     )
 
-    result = action_compare.create_template_from_video(
+    result = create_template_from_video(
         "long.mp4",
         start=90,
         end=300,

@@ -19,7 +19,7 @@ if str(_REPO_ROOT) not in sys.path:
 
 from apps.tk.self_check import check_feedback_icons, load_build_info  # noqa: E402
 from core.evaluation import RULE_VERSION  # noqa: E402
-from core.feedback_geometry import FeedbackConfig  # noqa: E402
+from core.evaluation import FeedbackConfig  # noqa: E402
 
 SPEC = _REPO_ROOT / "app_ui_onefile.spec"
 

@@ -4,7 +4,7 @@
 为什么需要它
 ------------
 Issue #6 把散落各处的 ``Path(__file__).resolve().parent / "models|templates|outputs"``
-统一收口到 ``core.paths``，三个顶层产物根一律锚定仓库根（``core/`` 的父目录）。
+统一收口到 ``core.foundation.paths``（原 ``core/paths.py``），三个顶层产物根一律锚定仓库根（``core/`` 的父目录）。
 本测试验证：
   1. ``models_dir/templates_dir/outputs_dir`` 全部位于同一 ``repo_root()`` 下，
      且等于 ``<repo_root>/models|templates|outputs``；
@@ -27,7 +27,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 import core  # noqa: E402
-from core import paths  # noqa: E402
+from core.foundation import paths  # noqa: E402
 
 
 # --------------------------------------------------------------------------- #
@@ -60,11 +60,11 @@ def test_dirs_exist_after_resolve():
 # --------------------------------------------------------------------------- #
 # 2) 生产文件不再残留分散的 parent / "models|templates|outputs" 字面量
 # --------------------------------------------------------------------------- #
-# 仅检查本次改造涉及的生产文件，避免误伤 core/paths.py 自身的说明性 docstring。
+# 仅检查本次改造涉及的生产文件（P9 起是它们迁入后的位置），避免误伤 foundation/paths.py 自身的说明性 docstring。
 _EDITED_FILES = (
-    "core/action_compare.py",
-    "core/rule_scoring.py",
-    "analysis/tech_eval.py",
+    "core/services/templates.py",
+    "core/pose/raw_series.py",
+    "core/evaluation/techeval/evaluate.py",
     "apps/main.py",
     "apps/cli/main.py",
     "apps/app_ui.py",
@@ -95,23 +95,20 @@ def test_no_scattered_parent_literals_in_edited_files():
 
 
 # --------------------------------------------------------------------------- #
-# 3) 代表性入口模块可正常 import 且引用统一的 core.paths
+# 3) 代表性入口模块可正常 import 且引用统一的 core.foundation.paths
 # --------------------------------------------------------------------------- #
 def test_representative_modules_use_core_paths():
-    import core.action_compare as ac
-    import core.rule_scoring as rs
-    import analysis.tech_eval as te
+    import core.services.templates as st
     import apps.cli.make_template as mt  # P3：CLI 实现移入 apps/cli，原路径是入口壳
     import apps.cli.match_template as mat
     import batch.batch_export_skeleton as bes
 
-    # 这些模块都绑定了 core.paths 暴露的解析函数（models_dir/templates_dir/outputs_dir）。
-    # P2：action_compare/rule_scoring/tech_eval 不再自己构造引擎，models_dir 由 core.pose.engine 统一解析。
+    # 这些模块都绑定了 core.foundation.paths 的解析函数（models_dir/templates_dir/outputs_dir）。
+    # P2 起评估与模板生成不再自己构造引擎，models_dir 由 core.pose.engine 统一解析。
     from core.pose import engine
 
     assert engine.default_models_dir is paths.models_dir
-    assert ac.templates_dir is paths.templates_dir
-    assert rs is not None and te is not None
+    assert st.templates_dir is paths.templates_dir
     assert mt.templates_dir is paths.templates_dir
     assert mat.templates_dir is paths.templates_dir
 

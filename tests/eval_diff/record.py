@@ -66,7 +66,7 @@ def record_fixture(work: Path) -> dict:
 
 def record_real(video_dir: Path, work: Path) -> dict:
     from core.pose import pose_cache
-    from core.rule_scoring import extract_pose_raw_series
+    from core.pose import extract_pose_raw_series
 
     found = {}
     for key in ("single", "front", "side", "practice"):

@@ -12,8 +12,9 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from core.action_feedback import analyze_feedback, format_report
-from core.feedback_geometry import load_feedback_config
+from core.evaluation import analyze_practice as analyze_feedback
+from core.reporting import format_report
+from core.evaluation import load_feedback_config
 from core.foundation import Epoch, TaskGroup
 from core.reporting import practice_report_renderers
 from core.services import HistoryStore

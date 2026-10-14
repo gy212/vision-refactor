@@ -4,7 +4,7 @@
 
 import json
 from pathlib import Path
-from analysis.tech_eval import evaluate_video_full, export_debug_video
+from core.evaluation import evaluate_video_full, export_debug_video
 
 # 标准动作视频路径
 VIDEO_PATH = Path("标准动作视频--分解版/肖 武术散打标准动作视频汇总/直拳 右侧.mp4")
