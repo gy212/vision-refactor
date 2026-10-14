@@ -16,7 +16,7 @@
   - 拆分的差分：batch 三个入口在合成视频上 CSV/JSONL/manifest 与旧版一致；techeval 16 例（fixtures 与扰动、掩码、镜像、倒序变体）输出逐项相等；`run_fixture_profile` 除计时外一致；`sim_exam_flow` 输出除临时路径外一致；`pool.py` 68 个方法 AST 与拆分前相同。
   - 摄像头套件与 `test_tk_preview_student_switch_with_process_cameras`（真实 Tk + spawn）通过；`scripts/sim_exam_flow.py` 37 passed、SIMULATION_OK。
   - 文档记载的命令在真实练习录像上跑通（`apps/main.py`、`make_template`、`match_template`、`batch_dual_compare`（含 `--paired`）、`batch_tech_eval --full`、`batch_export_skeleton`）；`apps/app_ui.py` 启动并正常退出。
-  - EXE：EXE_RESULT_PLACEHOLDER
+  - EXE：用干净的 commit 5d9db21 构建 dist/vision_ui_20261014_5d9db21/，--offline-self-check ok=true、frozen=true，13 项检查全部通过（含两项真实 spawn 摄像头检查与 HTML 图文报告导出），build_info clean=true、规则 sanda-feedback-mediapipe-2026-09-20-v4。
   - `git -c core.whitespace=cr-at-eol diff --check` 无空白错误。
 
 ## 2026-10-14（America/Los_Angeles）: [fix] P8 评审修复：练习结果页恢复「返回录制预览」按钮
