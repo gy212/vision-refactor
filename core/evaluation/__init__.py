@@ -46,7 +46,14 @@ from core.evaluation.matching.repetition import (
 )
 from core.evaluation.phases import align_views, phase_windows, share_phase_timing
 from core.evaluation.practice import analyze_practice, create_practice_engine, evaluate_series, extract_series
-from core.evaluation.rule_checks import ACTION_BY_NAME, judge_view, rule_series, series_from_raw
+from core.evaluation.rule_checks import (
+    ACTION_BY_NAME,
+    judge_view,
+    judge_views,
+    rule_series,
+    series_from_raw,
+    synchronized_windows,
+)
 from core.evaluation.rules.adapters import RuleCheck
 from core.evaluation.rules.sanda_v5 import (
     ACTIONS,
@@ -170,6 +177,8 @@ __all__ = [
     "rule_profile",
     "rule_series",
     "judge_view",
+    "judge_views",
+    "synchronized_windows",
     "series_from_raw",
     "DEFAULT_STANCE",
     "center_x",

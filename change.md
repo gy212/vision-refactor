@@ -1,3 +1,18 @@
+## 2026-10-15（America/Los_Angeles）: [fix] PR #29 评审：自检规则版本、考试与 batch paired 共用同步相位
+
+- 问题描述：PR #29 评审的两个 P2。① `apps/tk/self_check.py::check_practice_history` 仍断言 `ruleVersion` 以 `-v4` 结尾，规则升到 v5 后冻结 EXE 的 `--offline-self-check` 在第 9 项失败，后续检查不再执行。② 练习先经 `align_views`、`share_phase_timing` 让正面动作不明显的一路共用同步侧面的动作时间段，考试与 batch `--paired` 却逐视角各自调用 `judge_view`：同一份正面证据（`straight_combo`，正面位移小、侧面清楚）在练习里按 5/5 帧测量出问题，考试与 batch 却报 `unable / phase_not_found`，违反 #21 与设计文档 §1.3、§7.2 的"核心逻辑一致"。
+- 修改内容：
+  - 自检改为与导出的 `RULE_VERSION` 比较。
+  - `evaluation/rule_checks.py` 新增 `synchronized_windows`（各路相位窗口、对齐与相位时间共享，原在 `practice.evaluate_series` 里）与 `judge_views`（同步各路经它准备相位后逐视角出 `RuleCheck`，诊断带 `phaseSource`）；`judge_view` 不变，仍用于没有同步另一路的场合。练习改用 `synchronized_windows`，行为不变。
+  - batch：`compare_dual_streams`（`--paired`）的正侧两路整段经 `judge_views` 判定；单视频切分的 `compare_dual_templates` 前后两段不同步，仍各自判定。
+  - 考试：`score_pool` 改为返回规则目标（匹配窗口放宽 1 秒的规则输入序列与帧范围），`score_exam_pools` 经新函数 `rule_reports` 把正侧两池同一动作的匹配按出现顺序成对、经 `judge_views` 判定，结论顺序与字段不变；考试分数不变。
+  - 文档：设计文档 §2.2 代码树、§7.2 规则统一一节。
+  - 测试（D-13）：新增 `test_action_feedback.py::test_small_front_motion_gets_side_timing_in_practice_exam_and_paired_batch`（同一场景在练习、考试、batch paired 三处的正面 `punch_extension` 有效帧与违规比例一致，不再 `phase_not_found`）；`test_quality_reduces_weight_and_equal_conflict_stays_undecided` 的 `phase_windows` 补丁目标随实现移到 `rule_checks`。被替换的测试：无。
+- 验证方法：
+  - `python -m pytest tests -q`：1213 passed；门禁、架构、P3 差分基准零漂移（基准未重录）；`scripts/sim_exam_flow.py` 37 passed；`git diff --check` 无空白错误。
+  - 修复前后对照：同一场景下 `judge_view` 单路为 `unable / phase_not_found`，`judge_views` 为 `violation`、5/5 帧、`phaseSource=side_synchronized_timing`。
+  - 从干净提交构建 EXE 并跑 `--offline-self-check`（结果见 PR 评论）。
+
 ## 2026-10-14（America/Los_Angeles）: [fix] D-3、D-5：考试、练习、离线处理共用一套规则目录，宽高比修正坐标（issue #21、#22）
 
 - 问题描述：`formal_v1`（batch `--rules` 用，归一化坐标，"任一手满足"，整段取比例）与 `practice_v4`（学生练习，宽高比修正坐标，按左右式、相位窗口）对同一检查项结论不同：拳峰高度、站距一边扣分一边判"证据不足"。用户决定（issue #21、#22）：同一动作只有一套规则目录，各模式核心逻辑一致，只有流程与呈现不同；按左右式取手、考试固定左式；先直立再摆实战式，按相位窗口取帧；各模式用宽高比修正坐标。会话中补充决定：考试的规则结论只报告、不计入分数；batch 用命令行参数指定动作。

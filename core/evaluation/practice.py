@@ -11,8 +11,7 @@ import time
 from pathlib import Path
 from typing import Callable
 
-from core.evaluation.phases import align_views, phase_windows, share_phase_timing
-from core.evaluation.rule_checks import rule_series, view_outcomes
+from core.evaluation.rule_checks import rule_series, synchronized_windows, view_outcomes
 from core.evaluation.rules.adapters import to_practice_check
 from core.evaluation.rules.sanda_v5 import (
     RULE_VERSION,
@@ -181,10 +180,7 @@ def evaluate_series(action: str, stance: str, views: dict, cfg: FeedbackConfig |
     """``views``（``{"front"/"side": extract_series 的结果}``）上的练习结果字典（``schemaVersion=1``）。"""
     cfg = cfg or FeedbackConfig()
     checks = build_checks(action, stance)
-    diagnostics = {view: {} for view in views}
-    windows = {view: phase_windows(s, action, stance, cfg, diagnostics[view]) for view, s in views.items()}
-    alignment = align_views(views, windows, cfg)
-    phase_sources = share_phase_timing(views, windows, alignment, diagnostics, cfg)
+    windows, diagnostics, alignment, phase_sources = synchronized_windows(views, action, stance, cfg)
     profile = rule_profile(action, stance, cfg)
     outcomes_by_view = {view: view_outcomes(view, s, windows[view], profile, action, stance, cfg)
                         for view, s in views.items()}

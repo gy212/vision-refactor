@@ -17,7 +17,7 @@ import numpy as np
 
 from core.evaluation.matching.engine import assert_feature_layout_match, effective_workers, raise_if_cancelled
 from core.evaluation.matching.repetition import JointErrorStat, RawSlice, RepetitionMatch, score_view
-from core.evaluation.rule_checks import judge_view, series_from_raw
+from core.evaluation.rule_checks import judge_view, judge_views, series_from_raw
 from core.evaluation.rules.adapters import RuleCheck
 from core.evaluation.rules.sanda_v5 import DEFAULT_STANCE, build_checks, load_feedback_config
 from core.evaluation.scoring.cost import POSE33_BASELINE
@@ -95,6 +95,17 @@ def _rules(raw_slice: RawSlice, seg: tuple[int, int] | None, *, view: str, actio
     return checks
 
 
+def _synchronized_rules(raw_front: RawSlice, raw_side: RawSlice, *, action: str, stance: str,
+                        stop_evt: Event) -> tuple[tuple[RuleCheck, ...], tuple[RuleCheck, ...]]:
+    """同步录制的正、侧两路整段按统一规则目录的逐项结论；相位经 ``judge_views`` 与练习同样跨机位准备。"""
+    views = {}
+    for view, raw_slice in (("front", raw_front), ("side", raw_side)):
+        views[view] = series_from_raw(*raw_slice(None, None))
+        raise_if_cancelled(stop_evt)
+    judged = judge_views(views, action, stance, load_feedback_config())
+    return judged["front"][0], judged["side"][0]
+
+
 def _rule_target(enable_rules: bool, rule_action: str, rule_stance: str) -> tuple[str, str]:
     """开启规则时先校验动作与左右式，避免比对跑完才报错。"""
     if enable_rules:
@@ -170,7 +181,7 @@ def compare_dual_templates(
     if view_scores is not None and view_scores.size == seq.shape[0] and seq.shape[0] >= 10:
         front_seg, side_seg, _mode = split_front_side(view_scores, fps, mode="median_always")
     rules = (None, None)
-    if enable_rules:
+    if enable_rules:  # 同一路视频切出的先后两段不同步，各段独立判定相位
         rules = (_rules(raw_slice, front_seg, view="front", action=rule_action, stance=rule_stance),
                  _rules(raw_slice, side_seg, view="side", action=rule_action, stance=rule_stance))
 
@@ -225,11 +236,7 @@ def compare_dual_streams(
     raise_if_cancelled(stop_evt)
     rules = (None, None)
     if enable_rules:
-        rule_f = _rules(raw_f, None, view="front", action=rule_action, stance=rule_stance)
-        raise_if_cancelled(stop_evt)
-        rule_s = _rules(raw_s, None, view="side", action=rule_action, stance=rule_stance)
-        raise_if_cancelled(stop_evt)
-        rules = (rule_f, rule_s)
+        rules = _synchronized_rules(raw_f, raw_s, action=rule_action, stance=rule_stance, stop_evt=stop_evt)
 
     raise_if_cancelled(stop_evt)
     front = score_view(seq_f, raw_f, pair.front.features, pair.front.meta, None, fps=fps_f, baseline=baseline,

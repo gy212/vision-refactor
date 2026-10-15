@@ -15,6 +15,7 @@ from core.evaluation import FeedbackConfig, create_practice_engine as _pipeline,
 from core.evaluation.rules.sanda_v5 import default_front_weights as _default_front_weights, check_view_weights as _view_weights
 from core.foundation import contiguous_runs
 from core.evaluation import practice as practice_mod
+from core.evaluation import rule_checks as rule_checks_mod
 from core.evaluation.rules import sanda_v5
 from core.reporting import practice_report_renderers
 from core.services import HistoryStore as FeedbackHistory, validate_identity
@@ -148,7 +149,7 @@ def test_quality_reduces_weight_and_equal_conflict_stays_undecided(monkeypatch):
     front, side = pose_series(), pose_series()
     side["landmarks"][:, 15, :2] = (.4, .6)
     side["valid_mask"][[1, 3, 5, 7], 13] = False
-    monkeypatch.setattr(practice_mod, "phase_windows", lambda *args: {("stance", "start"): np.arange(10)})
+    monkeypatch.setattr(rule_checks_mod, "phase_windows", lambda *args: {("stance", "start"): np.arange(10)})
     weights = _default_front_weights()
     weights["stance"]["stance_elbow"] = .3
     cfg = FeedbackConfig(front_weights=weights)
@@ -448,6 +449,55 @@ def test_fast_combo_shared_timing_keeps_independent_measurements_and_masks():
     check = next(c for c in data["checks"] if c["code"] == "shoulder_level" and c["segment"] == "front_straight")
     assert check["status"] == "unable"  # 时间段可共享，缺失腕点不能从侧面借。
     assert "正面" in check["reason"] and "有效帧不足" in check["reason"]
+
+
+def test_small_front_motion_gets_side_timing_in_practice_exam_and_paired_batch(tmp_path):
+    """正面位移小、同步侧面看得清的直拳：练习、考试与 batch paired 用同一套同步相位，正面结论一致（#21）。"""
+    from types import SimpleNamespace
+
+    from core.evaluation.matching import dual
+    from core.evaluation.scoring import exam_pool
+    from core.pose import Pose33RawSeries
+
+    side = combo_series()
+    front = pose_series(80)
+    front["times"] = side["times"][:]
+    check_id = "front_straight:finish:front:punch_extension"
+    cfg = FeedbackConfig()
+
+    def raw(series, view):  # 正方形画面：宽高比修正坐标即归一化坐标
+        return Pose33RawSeries(landmarks=series["landmarks"].copy(),
+                               meta={"video": f"{view}.mp4", "fps": 30.0, "frame_count": 80, "width": 96,
+                                     "height": 96, "start_frame": 0, "valid_conf_thr": 0.5})
+
+    raws = {"front": raw(front, "front"), "side": raw(side, "side")}
+    practice = next(c for c in evaluate_series("straight_combo", "left", {"front": front, "side": side}, cfg)["checks"]
+                    if c["id"] == check_id)
+    practice_front = next(m for m in practice["measurements"] if m["view"] == "front")
+    assert practice_front["validFrames"] == practice_front["totalFrames"] > 0
+
+    def exam_front_check():
+        names = {"front": ACTIONS["straight_combo"], "side": ACTIONS["straight_combo"]}
+        tpls = {v: [tmp_path / v / f"{n}.npz"] for v, n in names.items()}
+
+        def compare(templates, video, **_kwargs):
+            return [SimpleNamespace(score=0.8, start_frame=0, end_frame=79) for _ in templates]
+
+        res = exam_pool.score_exam_pools(tpls["front"], tpls["side"], Path("front.mp4"), Path("side.mp4"),
+                                         compare=compare, raw_series=lambda video, **_k: raws[Path(video).stem],
+                                         stop_evt=threading.Event())
+        report = next(r for r in res.rule_checks if r["view"] == "front")
+        return next(c for c in report["checks"] if c.check_id == check_id)
+
+    def lazy(view):
+        return lambda start, end: (raws[view].landmarks, dict(raws[view].meta))
+
+    batch_front, _batch_side = dual._synchronized_rules(lazy("front"), lazy("side"), action="straight_combo",
+                                                        stance="left", stop_evt=threading.Event())
+    for check in (exam_front_check(), next(c for c in batch_front if c.check_id == check_id)):
+        assert check.skip_reason != "phase_not_found"
+        assert (check.valid_frames, check.total_frames) == (practice_front["validFrames"], practice_front["totalFrames"])
+        assert check.violation_ratio == pytest.approx(practice_front["violationRatio"])
 
 
 def test_occluded_far_side_does_not_block_visible_arm_but_hidden_arm_stays_unable():
