@@ -102,3 +102,39 @@ def test_score_exam_pools_reuses_one_extraction_per_view_and_merges(tmp_path) ->
     assert names == ["直拳", "两手攀足"]
     assert res.combined_score == pytest.approx((0.5 + 0.25 * 0.6 + 0.75 * 0.5) / 2)
     assert res.front_segment == (0, 3) and res.side_segment == (0, 3)
+
+
+def _raw_series(action: str, view: str):
+    """合成练习序列（左式）作为考试的正式原始序列：归一化坐标，未检出帧 visibility 置 0（D-2）。"""
+    from core.pose import Pose33RawSeries
+    from tests.eval_diff import synth_practice as sp
+
+    lm, detected = sp.landmarks(action, "left", view, 7)
+    lm = lm.astype(np.float32)
+    lm[~detected, :, 3] = 0.0
+    return Pose33RawSeries(landmarks=lm, meta={"video": f"{view}.mp4", "fps": sp.FPS, "frame_count": sp.N,
+                                               "width": sp.W, "height": sp.H, "start_frame": 0,
+                                               "valid_conf_thr": 0.5})
+
+
+def test_catalog_actions_get_rule_checks_without_changing_the_score(tmp_path) -> None:
+    """D-3：考试池里属于规则目录的动作按统一目录、左式、相位窗口逐视角检查，只写结论，不改分数。"""
+    front_tpls = [_write(tmp_path / "前手直拳.npz"), _write(tmp_path / "直拳.npz")]
+    side_tpls = [_write(tmp_path / "side" / "前手直拳.npz")]
+
+    def compare(templates, video, **_kwargs):
+        return [SimpleNamespace(score=0.8, start_frame=30, end_frame=45) for _ in templates]
+
+    res = exam_pool.score_exam_pools(front_tpls, side_tpls, Path("front.mp4"), Path("side.mp4"), compare=compare,
+                                     raw_series=lambda video, **_k: _raw_series("front_straight", Path(video).stem),
+                                     stop_evt=Event())
+    assert res.combined_score == pytest.approx(0.8) and res.rule_error == ""
+    assert [(r["name"], r["view"], r["action"], r["stance"]) for r in res.rule_checks] == [
+        ("前手直拳", "front", "front_straight", "left"), ("前手直拳", "side", "front_straight", "left")]
+    front = res.rule_checks[0]
+    assert front["start"] == 0 and front["end"] == 75  # 匹配窗口前后各放宽 1 秒
+    codes = {c.code for c in front["checks"]}
+    assert {"stance_elbow", "stance_height", "stance_width", "punch_extension", "guard_low"} <= codes
+    assert "stance_width" not in {c.code for c in res.rule_checks[1]["checks"]}  # 站距只在正面测量
+    assert all(c.state in {"pass", "violation", "unable", "pending_rule"} for c in front["checks"])
+    assert any(c.state in {"pass", "violation"} for c in front["checks"] if c.phase == "start")

@@ -158,80 +158,150 @@
         "valid_frames": 30
       }
     ],
-    "front_rule_deduction": 8,
-    "front_rule_score": 92,
-    "front_rule_violations": [
+    "front_rule_checks": [
       {
-        "detail": "前手肘角需在90-135度",
-        "name": "前手肘角",
-        "penalty": 2,
-        "rule_id": "stance_elbow",
-        "total_frames": 45,
-        "valid_frames": 45,
-        "violation_ratio": 0.8888888888888888
-      },
-      {
-        "detail": "拳峰高度需与鼻尖接近",
-        "name": "拳峰高度",
-        "penalty": 2,
-        "rule_id": "stance_fist_height",
-        "total_frames": 45,
-        "valid_frames": 45,
+        "check_id": "stance:start:front:stance_height",
+        "detail": "",
+        "skip_reason": null,
+        "state": "violation",
+        "total_frames": 7,
+        "valid_frames": 7,
         "violation_ratio": 1.0
       },
       {
-        "detail": "后手应贴近下颌并靠近躯干",
-        "name": "后手贴近",
-        "penalty": 2,
-        "rule_id": "stance_back_arm",
-        "total_frames": 45,
-        "valid_frames": 45,
+        "check_id": "stance:start:front:stance_elbow",
+        "detail": "",
+        "skip_reason": null,
+        "state": "violation",
+        "total_frames": 7,
+        "valid_frames": 7,
         "violation_ratio": 1.0
       },
       {
-        "detail": "膝关节应微曲（过直扣分）（合格）",
-        "name": "双膝微曲",
-        "penalty": 0,
-        "rule_id": "stance_knee",
-        "total_frames": 45,
-        "valid_frames": 45,
-        "violation_ratio": 0.06666666666666667
+        "check_id": "stance:start::stance_toes",
+        "detail": "",
+        "skip_reason": null,
+        "state": "pass",
+        "total_frames": 7,
+        "valid_frames": 7,
+        "violation_ratio": 0.0
       },
       {
-        "detail": "站距应接近肩宽",
-        "name": "站距合理",
-        "penalty": 2,
-        "rule_id": "stance_width",
-        "total_frames": 45,
-        "valid_frames": 45,
-        "violation_ratio": 0.3111111111111111
+        "check_id": "stance:start::stance_width",
+        "detail": "",
+        "skip_reason": null,
+        "state": "pass",
+        "total_frames": 7,
+        "valid_frames": 7,
+        "violation_ratio": 0.0
       },
       {
-        "detail": "双脚方向应基本平行（合格）",
-        "name": "脚尖方向",
-        "penalty": 0,
-        "rule_id": "stance_feet",
-        "total_frames": 45,
-        "valid_frames": 45,
-        "violation_ratio": 0.022222222222222223
+        "check_id": "stance:start::stance_knee",
+        "detail": "",
+        "skip_reason": null,
+        "state": "pass",
+        "total_frames": 7,
+        "valid_frames": 7,
+        "violation_ratio": 0.0
       },
       {
-        "detail": "出拳时肘应接近伸直（有效帧不足，未评估）",
-        "name": "出拳伸直",
-        "penalty": 0,
-        "rule_id": "punch_elbow",
-        "total_frames": 45,
+        "check_id": "stance:start:rear:stance_rear_guard",
+        "detail": "",
+        "skip_reason": null,
+        "state": "violation",
+        "total_frames": 7,
+        "valid_frames": 7,
+        "violation_ratio": 1.0
+      },
+      {
+        "check_id": "stance:start::stance_head",
+        "detail": "Pose33不足以可靠判定含胸收腹，需教师查看",
+        "skip_reason": null,
+        "state": "pending_rule",
+        "total_frames": 0,
         "valid_frames": 0,
         "violation_ratio": 0.0
       },
       {
-        "detail": "出拳时另一手应靠近下颌护防（有效帧不足，未评估）",
-        "name": "护手位置",
-        "penalty": 0,
-        "rule_id": "punch_guard",
-        "total_frames": 45,
+        "check_id": "stance:start::stance_torso",
+        "detail": "",
+        "skip_reason": null,
+        "state": "violation",
+        "total_frames": 7,
+        "valid_frames": 7,
+        "violation_ratio": 1.0
+      },
+      {
+        "check_id": "stance:end:front:stance_height",
+        "detail": "",
+        "skip_reason": null,
+        "state": "violation",
+        "total_frames": 7,
+        "valid_frames": 7,
+        "violation_ratio": 1.0
+      },
+      {
+        "check_id": "stance:end:front:stance_elbow",
+        "detail": "",
+        "skip_reason": null,
+        "state": "violation",
+        "total_frames": 7,
+        "valid_frames": 7,
+        "violation_ratio": 1.0
+      },
+      {
+        "check_id": "stance:end::stance_toes",
+        "detail": "",
+        "skip_reason": null,
+        "state": "pass",
+        "total_frames": 7,
+        "valid_frames": 7,
+        "violation_ratio": 0.0
+      },
+      {
+        "check_id": "stance:end::stance_width",
+        "detail": "",
+        "skip_reason": null,
+        "state": "pass",
+        "total_frames": 7,
+        "valid_frames": 7,
+        "violation_ratio": 0.0
+      },
+      {
+        "check_id": "stance:end::stance_knee",
+        "detail": "",
+        "skip_reason": null,
+        "state": "pass",
+        "total_frames": 7,
+        "valid_frames": 7,
+        "violation_ratio": 0.0
+      },
+      {
+        "check_id": "stance:end:rear:stance_rear_guard",
+        "detail": "",
+        "skip_reason": null,
+        "state": "violation",
+        "total_frames": 7,
+        "valid_frames": 7,
+        "violation_ratio": 1.0
+      },
+      {
+        "check_id": "stance:end::stance_head",
+        "detail": "Pose33不足以可靠判定含胸收腹，需教师查看",
+        "skip_reason": null,
+        "state": "pending_rule",
+        "total_frames": 0,
         "valid_frames": 0,
         "violation_ratio": 0.0
+      },
+      {
+        "check_id": "stance:end::stance_torso",
+        "detail": "",
+        "skip_reason": null,
+        "state": "violation",
+        "total_frames": 7,
+        "valid_frames": 7,
+        "violation_ratio": 1.0
       }
     ],
     "front_score": 0.7234849285166056,
@@ -395,33 +465,94 @@
         "valid_frames": 30
       }
     ],
-    "side_rule_deduction": 0,
-    "side_rule_score": 100,
-    "side_rule_violations": [
+    "side_rule_checks": [
       {
-        "detail": "膝关节应微曲（过直扣分）（合格）",
-        "name": "双膝微曲",
-        "penalty": 0,
-        "rule_id": "stance_knee",
-        "total_frames": 29,
-        "valid_frames": 29,
+        "check_id": "stance:start:front:stance_height",
+        "detail": "",
+        "skip_reason": null,
+        "state": "violation",
+        "total_frames": 7,
+        "valid_frames": 7,
+        "violation_ratio": 1.0
+      },
+      {
+        "check_id": "stance:start:front:stance_elbow",
+        "detail": "",
+        "skip_reason": null,
+        "state": "pass",
+        "total_frames": 7,
+        "valid_frames": 7,
         "violation_ratio": 0.0
       },
       {
-        "detail": "出拳时肘应接近伸直（有效帧不足，未评估）",
-        "name": "出拳伸直",
-        "penalty": 0,
-        "rule_id": "punch_elbow",
-        "total_frames": 29,
+        "check_id": "stance:start::stance_knee",
+        "detail": "",
+        "skip_reason": null,
+        "state": "pass",
+        "total_frames": 7,
+        "valid_frames": 7,
+        "violation_ratio": 0.0
+      },
+      {
+        "check_id": "stance:start:rear:stance_rear_guard",
+        "detail": "该项测量有效帧不足（0/7帧）",
+        "skip_reason": "insufficient_valid_frames",
+        "state": "unable",
+        "total_frames": 7,
         "valid_frames": 0,
         "violation_ratio": 0.0
       },
       {
-        "detail": "出拳时另一手应靠近下颌护防（有效帧不足，未评估）",
-        "name": "护手位置",
-        "penalty": 0,
-        "rule_id": "punch_guard",
-        "total_frames": 29,
+        "check_id": "stance:start::stance_head",
+        "detail": "Pose33不足以可靠判定含胸收腹，需教师查看",
+        "skip_reason": null,
+        "state": "pending_rule",
+        "total_frames": 0,
+        "valid_frames": 0,
+        "violation_ratio": 0.0
+      },
+      {
+        "check_id": "stance:end:front:stance_height",
+        "detail": "",
+        "skip_reason": null,
+        "state": "violation",
+        "total_frames": 7,
+        "valid_frames": 7,
+        "violation_ratio": 1.0
+      },
+      {
+        "check_id": "stance:end:front:stance_elbow",
+        "detail": "",
+        "skip_reason": null,
+        "state": "pass",
+        "total_frames": 7,
+        "valid_frames": 7,
+        "violation_ratio": 0.0
+      },
+      {
+        "check_id": "stance:end::stance_knee",
+        "detail": "",
+        "skip_reason": null,
+        "state": "pass",
+        "total_frames": 7,
+        "valid_frames": 7,
+        "violation_ratio": 0.0
+      },
+      {
+        "check_id": "stance:end:rear:stance_rear_guard",
+        "detail": "该项测量有效帧不足（0/7帧）",
+        "skip_reason": "insufficient_valid_frames",
+        "state": "unable",
+        "total_frames": 7,
+        "valid_frames": 0,
+        "violation_ratio": 0.0
+      },
+      {
+        "check_id": "stance:end::stance_head",
+        "detail": "Pose33不足以可靠判定含胸收腹，需教师查看",
+        "skip_reason": null,
+        "state": "pending_rule",
+        "total_frames": 0,
         "valid_frames": 0,
         "violation_ratio": 0.0
       }

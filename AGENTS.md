@@ -68,7 +68,7 @@
 .\.venv\Scripts\python.exe apps/main.py --source input.mp4 --pose heavy --out out.mp4 --no-show --workers 4
 .\.venv\Scripts\python.exe apps/make_template.py --video action.mp4 --pose heavy --preview
 .\.venv\Scripts\python.exe apps/match_template.py --template template.npz --video test.mp4 --preview
-.\.venv\Scripts\python.exe batch/batch_dual_compare.py --standard_dir "标准样本" --student_dir "学员样本" --pose full --out_dir "输出目录" --rules --action both
+.\.venv\Scripts\python.exe batch/batch_dual_compare.py --standard_dir "标准样本" --student_dir "学员样本" --pose full --out_dir "输出目录" --rules --rule-action stance
 .\.venv\Scripts\python.exe scripts/sim_exam_flow.py         # 无摄像头模拟考试流程
 ```
 
@@ -125,7 +125,7 @@ CI（`.github/workflows/gates.yml`，检查名 `gates`）在每个 PR 和 `main`
   - `foundation/`（L0）：路径（`paths.py`）、用户偏好（`prefs.py`）、原子写、几何与信号基元、任务取消、JSON 化、非模板 npz 读取（`npz.py`）、诊断日志。
   - `media/`（L1）：视频读取（`video_source.py`）、视频写出与转码（`writer.py`）、帧校验、片段布局；`media/camera/` 是摄像头：设备目录（`devices.py`）、采集子进程（`capture_process.py`）、池（`pool.py` 占用表与租约，`slot.py`、`slot_lifecycle.py` reader 与释放重试，`pool_checks.py` 参数校验）与 `CameraService`（`service.py`）。
   - `pose/`（L2）：MediaPipe 引擎与模型、`PoseSequence` 提取、`derive_valid_mask`（`validity.py`）、特征与布局（`pose33_v3`、`body_core_v1`）、归一化、并行引擎、平滑与绘制；`pose/backends/` 是 router、body_core 特征与 YOLO 适配（`yolo/`，不进 EXE）。
-  - `evaluation/`（L3）：模板（`templates.py`）、匹配（`matching/`：DTW、单/双模板、双流、在线匹配、body_core）、切分与相位、测量（`measures/`）、规则（`rules/`：`spec.py`、唯一引擎 `engine.py` 的 `evaluate_rules`、`formal_v1.py`、`practice_v4.py`、`adapters.py`）、评分口径（`scoring/`）、学生练习分析（`practice.py`）、技术指标（`techeval/`）。
+  - `evaluation/`（L3）：模板（`templates.py`）、匹配（`matching/`：DTW、单/双模板、双流、在线匹配、body_core）、切分与相位、测量（`measures/`）、规则（`rules/`：`spec.py`、唯一引擎 `engine.py` 的 `evaluate_rules`、唯一目录 `sanda_v5.py`、`adapters.py`；考试、练习、离线共用的单视角判定 `rule_checks.py`）、评分口径（`scoring/`）、学生练习分析（`practice.py`）、技术指标（`techeval/`）。
   - L4：`services/`（离线分析、模板生成、练习历史）、`recording/`（录制控制、录后 finalizer 与步骤）、`live/`（实时会话 `SessionRunner` 与预览）、`reporting/`（练习文本与 HTML 报告）。
   - `workflows/`（L5）：考试（`exam/`：会话、名册、片段、成绩表）、学生练习会话、命令执行器与工作流宿主、在场闸门、播报。
 - `apps/`（入口）：

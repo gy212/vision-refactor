@@ -133,7 +133,7 @@ def test_single_template_score(golden, registered_videos):
 
 
 # --------------------------------------------------------------------------- #
-# 2) 双模板：combined_percent + 各视角分 + 规则扣分 + 关节误差
+# 2) 双模板：combined_percent + 各视角分 + 规则结论 + 关节误差
 # --------------------------------------------------------------------------- #
 @pytest.fixture(scope="module")
 def dual_result(registered_videos):
@@ -167,35 +167,20 @@ def test_dual_segments(golden, dual_result):
     assert sseg == g["side_segment"]
 
 
-def test_dual_rule_scores(golden, dual_result):
-    g = golden["dual_template"]
-    # 规则总分/扣分：整数精确相等
-    assert dual_result.front_rule_score == g["front_rule_score"]
-    assert dual_result.side_rule_score == g["side_rule_score"]
-    assert dual_result.front_rule_deduction == g["front_rule_deduction"]
-    assert dual_result.side_rule_deduction == g["side_rule_deduction"]
-
-
 @pytest.mark.parametrize("view", ["front", "side"])
-def test_dual_rule_violations(golden, dual_result, view):
-    g = golden["dual_template"][f"{view}_rule_violations"]
-    got = dual_result.front_rule_violations if view == "front" else dual_result.side_rule_violations
+def test_dual_rule_checks(golden, dual_result, view):
+    """统一规则目录（D-3）的逐视角结论：只报告、不计分；检查项、结论与原因精确相等。"""
+    g = golden["dual_template"][f"{view}_rule_checks"]
+    got = dual_result.front_rule_checks if view == "front" else dual_result.side_rule_checks
     assert got is not None and g is not None
-    assert len(got) == len(g)
-    # 违规明细按 rule_id 对齐，逐条核对
-    got_by_id = {v.rule_id: v for v in got}
-    for exp in g:
-        rid = exp["rule_id"]
-        assert rid in got_by_id, f"缺少规则 {rid}"
-        v = got_by_id[rid]
-        # 结构化字段精确相等（state 由字符串拼出，#11 才结构化；此处冻结当前行为）
-        assert v.name == exp["name"]
-        assert int(v.penalty) == int(exp["penalty"])
-        assert int(v.valid_frames) == int(exp["valid_frames"])
-        assert int(v.total_frames) == int(exp["total_frames"])
-        assert v.detail == exp["detail"]
-        # 违规占比：极小容差
-        assert float(v.violation_ratio) == pytest.approx(exp["violation_ratio"], abs=ABS_TOL)
+    assert [c.check_id for c in got] == [exp["check_id"] for exp in g]
+    for c, exp in zip(got, g):
+        assert c.state == exp["state"]
+        assert c.skip_reason == exp["skip_reason"]
+        assert int(c.valid_frames) == int(exp["valid_frames"])
+        assert int(c.total_frames) == int(exp["total_frames"])
+        assert c.detail == exp["detail"]
+        assert float(c.violation_ratio) == pytest.approx(exp["violation_ratio"], abs=ABS_TOL)
 
 
 @pytest.mark.parametrize("view", ["front", "side"])

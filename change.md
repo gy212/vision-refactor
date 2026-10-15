@@ -1,3 +1,35 @@
+## 2026-10-15（America/Los_Angeles）: [fix] PR #29 评审：自检规则版本、考试与 batch paired 共用同步相位
+
+- 问题描述：PR #29 评审的两个 P2。① `apps/tk/self_check.py::check_practice_history` 仍断言 `ruleVersion` 以 `-v4` 结尾，规则升到 v5 后冻结 EXE 的 `--offline-self-check` 在第 9 项失败，后续检查不再执行。② 练习先经 `align_views`、`share_phase_timing` 让正面动作不明显的一路共用同步侧面的动作时间段，考试与 batch `--paired` 却逐视角各自调用 `judge_view`：同一份正面证据（`straight_combo`，正面位移小、侧面清楚）在练习里按 5/5 帧测量出问题，考试与 batch 却报 `unable / phase_not_found`，违反 #21 与设计文档 §1.3、§7.2 的"核心逻辑一致"。
+- 修改内容：
+  - 自检改为与导出的 `RULE_VERSION` 比较。
+  - `evaluation/rule_checks.py` 新增 `synchronized_windows`（各路相位窗口、对齐与相位时间共享，原在 `practice.evaluate_series` 里）与 `judge_views`（同步各路经它准备相位后逐视角出 `RuleCheck`，诊断带 `phaseSource`）；`judge_view` 不变，仍用于没有同步另一路的场合。练习改用 `synchronized_windows`，行为不变。
+  - batch：`compare_dual_streams`（`--paired`）的正侧两路整段经 `judge_views` 判定；单视频切分的 `compare_dual_templates` 前后两段不同步，仍各自判定。
+  - 考试：`score_pool` 改为返回规则目标（匹配窗口放宽 1 秒的规则输入序列与帧范围），`score_exam_pools` 经新函数 `rule_reports` 把正侧两池同一动作的匹配按出现顺序成对、经 `judge_views` 判定，结论顺序与字段不变；考试分数不变。
+  - 文档：设计文档 §2.2 代码树、§7.2 规则统一一节。
+  - 测试（D-13）：新增 `test_action_feedback.py::test_small_front_motion_gets_side_timing_in_practice_exam_and_paired_batch`（同一场景在练习、考试、batch paired 三处的正面 `punch_extension` 有效帧与违规比例一致，不再 `phase_not_found`）；`test_quality_reduces_weight_and_equal_conflict_stays_undecided` 的 `phase_windows` 补丁目标随实现移到 `rule_checks`。被替换的测试：无。
+- 验证方法：
+  - `python -m pytest tests -q`：1213 passed；门禁、架构、P3 差分基准零漂移（基准未重录）；`scripts/sim_exam_flow.py` 37 passed；`git diff --check` 无空白错误。
+  - 修复前后对照：同一场景下 `judge_view` 单路为 `unable / phase_not_found`，`judge_views` 为 `violation`、5/5 帧、`phaseSource=side_synchronized_timing`。
+  - 从干净提交构建 EXE 并跑 `--offline-self-check`（结果见 PR 评论）。
+
+## 2026-10-14（America/Los_Angeles）: [fix] D-3、D-5：考试、练习、离线处理共用一套规则目录，宽高比修正坐标（issue #21、#22）
+
+- 问题描述：`formal_v1`（batch `--rules` 用，归一化坐标，"任一手满足"，整段取比例）与 `practice_v4`（学生练习，宽高比修正坐标，按左右式、相位窗口）对同一检查项结论不同：拳峰高度、站距一边扣分一边判"证据不足"。用户决定（issue #21、#22）：同一动作只有一套规则目录，各模式核心逻辑一致，只有流程与呈现不同；按左右式取手、考试固定左式；先直立再摆实战式，按相位窗口取帧；各模式用宽高比修正坐标。会话中补充决定：考试的规则结论只报告、不计入分数；batch 用命令行参数指定动作。
+- 修改内容：
+  - 规则目录：`rules/practice_v4.py` → `rules/sanda_v5.py`（`RULE_VERSION` 升为 `sanda-rules-mediapipe-2026-10-14-v5`），删除 `rules/formal_v1.py`。拳峰高度、站距改为按原正式规则的相对量判定（阈值暂定），站距只在正面测量；新增检查项 `punch_extension`（直拳出拳伸直，原正式规则）；每个检查项按左右式声明所需关键点，引擎对相位规则也做后端缺点判定。`FeedbackConfig` 新增 `fist_height`、`stance_width_min/max`、`punch_elbow`、`guard_wrist_height`（`feedback_config.json` 原字段不变，示例文件同步）。删除 `RatioDeduction`、两态结论、`RuleScore`/`RuleViolation` 与只给正式规则用的单帧测量函数。
+  - 新增 `evaluation/rule_checks.py`：规则输入序列（宽高比修正、有效掩码）与单视角判定 `judge_view`，练习、考试、batch 共用；练习在此之上照旧做正侧融合。
+  - 相位：起始实战式窗口要求至少一只手抬到护位，直立双手下垂的帧不算实战式。
+  - 考试：模板名属于目录动作的匹配，在匹配窗口前后各放宽 1 秒、按左式逐视角检查，结论写进片段结果 JSON 的 `result.rule_checks`（配置无效时写 `rule_error`）；考试分数与成绩表列不变。
+  - batch：`--rules` 按 `--rule-action`（默认 `stance`）、`--rule-stance`（默认 `left`）检查；汇总 CSV 的规则分、扣分列改为问题项数、证据不足项数，`error_rules.csv` 每个检查项一行；`--action` 保留但不再起作用。`DualCompareResult` 的规则字段改为 `front/side_rule_checks`。
+  - 文档：设计文档 §1.3、§2.2、§3、§7.2、§10、§11.2，阶段 README，AGENTS.md 代码地图与 batch 命令，交付包使用说明。
+  - 测试（D-13）：`test_rule_availability.py` 改为针对统一目录（结构化 `unable` 原因、COCO17 缺点、按左右式声明关键点）；`test_rule_engine_entry.py` 删去 formal_v1 用例，新增"只有一个 RuleProfile""batch/考试与练习同一入口"；`test_valid_mask_migration.py` 的规则节改为断言规则输入掩码只来自 `derive_valid_mask` 且坐标经宽高比修正；`test_pose33_v3_golden.py` 的规则扣分断言改为逐视角规则结论；新增 `test_exam_pool_scoring.py::test_catalog_actions_get_rule_checks_without_changing_the_score`、`test_action_feedback.py` 的拳峰高度/站距阈值与"先直立后实战式"用例。
+  - 基准：重新生成 `pose33_v3/golden.json`（只有规则字段变化）、P3 差分基准与 2 个 HTML 报告基准（旧记录回填清单时拳峰高度、站距不再写"缺少真实长度标定"）。
+- 验证方法：
+  - `python -m pytest tests -q` 全量通过；门禁与架构测试通过；`scripts/sim_exam_flow.py` 37 passed。
+  - 差分基准逐项核对：去掉规则字段后，单/多模板、双模板、双流、考试池的分数与匹配区间零漂移；练习结果只有拳峰高度、站距由 `pending_rule` 变为 `candidate`/`unable`（各 24 处）、新增 `punch_extension`（9 处），其余检查项状态与相位窗口不变。
+  - 真实视频上的阈值微调待甲方 C 类样本（`docs/样本视频采集清单.md`）。
+
 ## 2026-10-14（America/Los_Angeles）: [fix] D-2：正式规则的原始序列把补帧判为无效（issue #20）
 
 - 问题描述：正式规则与考试踢腿质量用的原始序列（`core/pose/raw_series.py`）按 `HOLD_LAST_LEGACY` 补未检出帧，复制上一帧的 33×4（含 visibility），补帧被 `derive_valid_mask` 判为有效，违反"缺失点不得伪造成有效点"。用户决定（issue #20）：补帧不得当作有效检测。
