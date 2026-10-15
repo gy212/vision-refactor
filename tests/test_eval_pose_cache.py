@@ -66,14 +66,14 @@ def infer_calls():
 
 def _dual_fields(r) -> tuple:
     return (r.front_score, r.side_score, r.combined_score, r.combined_percent, r.front_segment, r.side_segment,
-            r.front_rule_score, r.side_rule_score, r.front_rule_violations, r.side_rule_violations,
+            r.front_rule_checks, r.side_rule_checks,
             r.front_joint_errors, r.side_joint_errors)
 
 
 def test_dual_templates_infers_once_with_rules_and_error_analysis(infer_calls):
     result = compare_dual_templates(FRONT_TPL, SIDE_TPL, STUDENT, enable_rules=True, enable_error_analysis=True)
     assert infer_calls[0] == 180  # 180 帧 fixture：特征与规则/误差原始序列共用一次推理
-    assert result.front_rule_score is not None and result.front_joint_errors is not None
+    assert result.front_rule_checks is not None and result.front_joint_errors is not None
 
 
 def test_dual_templates_scores_match_per_consumer_extraction(infer_calls):
@@ -89,7 +89,7 @@ def test_dual_streams_infers_each_video_once(infer_calls):
     result = compare_dual_streams(FRONT_TPL, SIDE_TPL, FRONT_SRC, SIDE_SRC, enable_rules=True,
                                   enable_error_analysis=True)
     assert infer_calls[0] == 90 + 90
-    assert result.front_rule_score is not None and result.side_joint_errors is not None
+    assert result.front_rule_checks is not None and result.side_joint_errors is not None
 
 
 def test_segmented_features_do_not_feed_sequential_rules(infer_calls, tmp_path):

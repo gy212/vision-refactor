@@ -19,6 +19,11 @@
   "return_distance": 0.15,
   "max_gap_seconds": 0.1,
   "finish_window_seconds": 0.05,
+  "fist_height": 0.08,
+  "stance_width_min": 0.8,
+  "stance_width_max": 1.2,
+  "punch_elbow": 160.0,
+  "guard_wrist_height": 0.5,
   "front_weights": {
     "stance": {
       "default": 0.5,

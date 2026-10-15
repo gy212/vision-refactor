@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
-from core.evaluation.rules.practice_v4 import ACTIONS, PHASES, STANCES, build_checks
+from core.evaluation.rules.sanda_v5 import ACTIONS, PHASES, STANCES, build_checks
 from core.reporting.text import format_fusion
 
 STATUS_LABELS = {

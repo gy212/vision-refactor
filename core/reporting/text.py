@@ -2,7 +2,7 @@
 """学生练习结果的纯文本报告：问题说明全文与单项正侧融合说明（原 ``action_feedback.format_report``/``format_fusion``）。"""
 from __future__ import annotations
 
-from core.evaluation.rules.practice_v4 import ACTIONS, PHASES, STANCES, STATE_LABELS
+from core.evaluation.rules.sanda_v5 import ACTIONS, PHASES, STANCES, STATE_LABELS
 
 
 def format_fusion(check: dict) -> str:

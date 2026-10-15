@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """正式评估的 Pose33 原始序列：``extract_pose_raw``/``extract_pose_raw_series``/``slice_pose_raw_series``。
 
-是 ``extract_pose_sequence(FORMAL)`` 加 ``raw(HOLD_LAST_LEGACY)`` 视图的薄适配，输出结构与迁移前
-``rule_scoring`` 的同名函数完全相同（D-2 有结论前维持 ``HOLD_LAST_LEGACY``）。
+是 ``extract_pose_sequence(FORMAL)`` 加 ``raw(HOLD_LAST_INVALID)`` 视图的薄适配，输出结构与迁移前
+``rule_scoring`` 的同名函数相同；未检出帧复制上一帧坐标、visibility 置 0，由 ``derive_valid_mask`` 判为无效（D-2）。
 """
 from __future__ import annotations
 
@@ -67,7 +67,7 @@ def _prefix_series(video: Path, *, pose_variant: str, end_frame: int) -> Pose33R
     seq = formal_sequence(video, pose_variant, end_frame)
     if len(seq) == 0:
         raise RuntimeError(f"未能从视频提取姿态：{video}")
-    landmarks = seq.raw(GapPolicy.HOLD_LAST_LEGACY).copy()
+    landmarks = seq.raw(GapPolicy.HOLD_LAST_INVALID).copy()
     meta = raw_meta(seq, video=video, pose_variant=pose_variant, start_frame=0, landmarks=landmarks)
     return Pose33RawSeries(landmarks=landmarks, meta=meta)
 

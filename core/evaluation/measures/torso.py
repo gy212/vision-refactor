@@ -8,11 +8,6 @@ from core.foundation.geometry import torso_length
 from core.pose.landmarks import L_SHOULDER, R_SHOULDER
 
 
-def midpoint_torso(lm: np.ndarray) -> float:
-    """单帧躯干长度：双肩中点到双髋中点 + 1e-9（正式规则用）。"""
-    return torso_length(lm)
-
-
 def chain_torso(lm: np.ndarray, mask: np.ndarray) -> np.ndarray:
     """逐帧躯干长度：两侧都可见的同侧肩髋链求平均，都不可见为 0（练习用）。"""
     return torso_length(lm, mask, "visible_side_chain")

@@ -1,4 +1,4 @@
-"""差分用例：正式规则、踢腿质量、考试池评分（录后处理全流程）、模板校验、在线识别。"""
+"""差分用例：统一规则目录的逐视角检查（D-3）、踢腿质量、考试池评分（录后处理全流程）、模板校验、在线识别。"""
 from __future__ import annotations
 
 import threading
@@ -12,23 +12,26 @@ from tests.eval_diff import synth
 
 def _rules(rec, c) -> None:
     from core.pose.validity import COCO17_SUPPORTED_CAPABILITIES
-    from core.pose import derive_valid_mask
-    from core.evaluation.rules.formal_v1 import score_rules
+    from core.evaluation import ACTIONS, FeedbackConfig, judge_view, series_from_raw
 
     raws = {n: c.raw(n) for n in ("student", "front", "side")}
     noisy = raws["student"].copy()
     noisy[::3, 25:29, 3] = 0.1
     raws["noisy"] = noisy
     raws["tiny"] = raws["student"][:4]
+    cfg = FeedbackConfig()
     for name, lm in raws.items():
-        for view in ("front", "side", "SIDE", ""):
-            for scope in ("both", "stance", "punch", None):
-                rec(f"rules/{name}/{view}/{scope}", lambda: score_rules(lm, view=view, action_scope=scope))
-        rec(f"rules/{name}/mask", lambda: score_rules(
-            lm, view="front", action_scope="both", valid_mask=derive_valid_mask(lm, 0.8), min_valid=12))
-        rec(f"rules/{name}/coco", lambda: score_rules(
-            lm, view="front", action_scope="both", supported_capabilities=COCO17_SUPPORTED_CAPABILITIES))
-        rec(f"rules/{name}/min0", lambda: score_rules(lm, view="side", action_scope="both", min_valid=0))
+        series = series_from_raw(lm, {"width": 1280, "height": 720, "fps": 30.0, "start_frame": 0})
+        for view in ("front", "side"):
+            for action in ACTIONS:
+                rec(f"rules/{name}/{view}/{action}", lambda: judge_view(series, view, action, "left", cfg))
+        rec(f"rules/{name}/right", lambda: judge_view(series, "front", "straight_combo", "right", cfg))
+        rec(f"rules/{name}/portrait", lambda: judge_view(series_from_raw(
+            lm, {"width": 1080, "height": 1920, "fps": 30.0, "start_frame": 5}), "front", "stance", "left", cfg))
+        rec(f"rules/{name}/coco", lambda: judge_view(
+            series, "front", "front_straight", "left", cfg, supported_capabilities=COCO17_SUPPORTED_CAPABILITIES))
+        rec(f"rules/{name}/strict", lambda: judge_view(
+            series, "side", "stance", "left", FeedbackConfig(min_valid=12, valid_ratio=1.0)))
 
 
 def _kick(rec, c) -> None:
