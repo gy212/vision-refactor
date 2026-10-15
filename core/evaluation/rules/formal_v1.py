@@ -2,7 +2,7 @@
 """正式扣分规则 ``formal_v1``：8 条散打规则的逐帧判定（原 ``rule_scoring._build_rules``），坐标为归一化图像坐标。
 
 每条规则只组合 ``measures`` 的测量值与阈值；"任一手满足"不区分左右式（D-3 未决，与练习规则的差异见设计文档 §7.2）。
-D-2 未决：原始序列按 ``HOLD_LAST_LEGACY`` 补帧，补出的帧仍判有效。
+原始序列按 ``HOLD_LAST_INVALID`` 补帧，补出的帧判为无效，不参与判定（D-2）。
 """
 from __future__ import annotations
 

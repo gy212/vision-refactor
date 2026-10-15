@@ -1,3 +1,17 @@
+## 2026-10-14（America/Los_Angeles）: [fix] D-2：正式规则的原始序列把补帧判为无效（issue #20）
+
+- 问题描述：正式规则与考试踢腿质量用的原始序列（`core/pose/raw_series.py`）按 `HOLD_LAST_LEGACY` 补未检出帧，复制上一帧的 33×4（含 visibility），补帧被 `derive_valid_mask` 判为有效，违反"缺失点不得伪造成有效点"。用户决定（issue #20）：补帧不得当作有效检测。
+- 修改内容：
+  - `core/pose/sequence.py`：删除 `GapPolicy.HOLD_LAST_LEGACY`，原始序列的补帧策略只剩 `ZERO` 与 `HOLD_LAST_INVALID`（复制坐标、visibility 置 0）。
+  - `core/pose/raw_series.py`（正式规则、踢腿质量、双模板/双流比对、body_core 提取共用）与 `batch/batch_export_skeleton.py` 改用 `HOLD_LAST_INVALID`；`formal_v1.py` 的模块说明同步。
+  - 测试：`test_pose_extract.py::test_raw_gap_policies` 改为断言补帧坐标沿用上一帧、有效掩码为 False；`test_pose_extract_differential.py::test_rule_raw_series_matches_legacy` 的期望改为旧实现输出把补帧 visibility 置 0（D-2 是与旧实现唯一的差异）。被替换的测试：无（两个用例原地改期望）。
+  - 重录 `tests/fixtures/p3_eval_baseline.json.gz`：27 处差异全部是含补帧用例（`dual_tpl/gappy/*`、`dual_stream/gappy/*`）的规则 `valid_frames` 减少（42→37、79→73 等）和 `violation_ratio` 随之变化，扣分与总分不变；其余 504 个用例零漂移。pose33_v3 golden 不变（夹具没有未检出帧）。
+  - 设计文档 §1.2、§1.3、§6 的 `GapPolicy` 表与提取对照表、§11.2 D-2，阶段 README 决策表同步为已实施。
+- 验证方法：
+  - `python -m pytest tests -q`：全量通过；门禁与架构测试通过。
+  - `python -B -m tests.eval_diff.record compare` 对比新旧基准，确认只有上述 27 处差异。
+  - 合成补帧探针（在 3 个夹具上随机抽 5%/15%/30% 的帧做未检出）：正式规则总分与三类踢腿质量分均不变；真实视频上的复核待甲方 D 类边界样本（`docs/样本视频采集清单.md`）。
+
 ## 2026-10-14（America/Los_Angeles）: [docs] 记录 D-17 的决定：三种模式统一按 1080p 采集
 
 - 问题描述：PR #25 新增的待决项 D-17：考试与普通模式按 1280×720 `prefer` 采集，与现行拍摄规格（正面竖屏 1080p、侧面横屏 1080p）和学生练习的 1080p `require` 不一致。用户决定录制规格统一：普通、考试、学生练习三种模式都用 1080p，设备不支持时失败并提示。

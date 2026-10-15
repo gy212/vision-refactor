@@ -35,10 +35,20 @@ def _same(a, b) -> bool:
     return a.dtype == b.dtype and a.shape == b.shape and np.array_equal(a, b, equal_nan=a.dtype.kind == "f")
 
 
+GAP_FRAMES = [0, 1, 7, 8, 9, 30]
+
+
 def _with_gaps(raw: np.ndarray) -> np.ndarray:
     """加入未检出帧（回放为 None）与 NaN 帧，覆盖补帧分支。"""
     out = raw.copy()
-    out[[0, 1, 7, 8, 9, 30]] = np.nan
+    out[GAP_FRAMES] = np.nan
+    return out
+
+
+def _hold_last_invalid(legacy: np.ndarray) -> np.ndarray:
+    """旧实现的原始序列改成 D-2 的补帧口径：补帧坐标照旧复制上一帧，visibility 置 0。"""
+    out = legacy.copy()
+    out[[t for t in GAP_FRAMES if t < len(out)], :, 3] = 0.0
     return out
 
 
@@ -83,15 +93,17 @@ def test_features_and_view_scores_match_legacy(name, normalizer, workers):
 @pytest.mark.parametrize("name", ["student_raw", "front_src_raw"])
 @pytest.mark.parametrize("end", [None, 0, 12, 10**6])
 def test_rule_raw_series_matches_legacy(name, end):
+    """与旧实现只差 D-2：补帧的 visibility 为 0，有效掩码把补帧判为无效。"""
     video = VIDEOS[name]
     if end is None:
         new = extract_pose_raw_series(video, pose_variant="full")
-        ref = old._extract_pose_raw_prefix(Path(video), pose_variant="full", end_frame=None)
+        ref = _hold_last_invalid(old._extract_pose_raw_prefix(Path(video), pose_variant="full", end_frame=None))
         assert _same(new.landmarks, ref)
         assert _same(new.meta["valid_mask"], ref[..., 3] >= 0.5)
+        assert not new.meta["valid_mask"][[7, 8, 9, 30]].any()
     else:
         new, meta = extract_pose_raw(video, pose_variant="full", start_frame=0, end_frame=end)
-        ref = old._extract_pose_raw_prefix(Path(video), pose_variant="full", end_frame=end)
+        ref = _hold_last_invalid(old._extract_pose_raw_prefix(Path(video), pose_variant="full", end_frame=end))
         assert _same(new, ref)
 
 

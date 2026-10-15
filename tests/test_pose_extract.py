@@ -35,6 +35,7 @@ from core.pose import (  # noqa: E402
 )
 from core.pose import extract as extract_mod  # noqa: E402
 from core.pose.landmarks import RowLandmark  # noqa: E402
+from core.pose.validity import derive_valid_mask  # noqa: E402
 from core.pose.view_score import pose_view_score  # noqa: E402
 from tests import golden_harness as H  # noqa: E402
 
@@ -207,12 +208,14 @@ def test_raw_gap_policies(counted_replay):
     seq.detected[6] = False
     seq.landmarks[6] = 0
     zero = seq.raw(GapPolicy.ZERO)
-    legacy = seq.raw(GapPolicy.HOLD_LAST_LEGACY)
     invalid = seq.raw(GapPolicy.HOLD_LAST_INVALID)
     assert zero.dtype == np.float32 and not zero[6].any()
-    np.testing.assert_array_equal(legacy[6], legacy[5])
-    np.testing.assert_array_equal(invalid[6, :, :3], legacy[5, :, :3])
+    np.testing.assert_array_equal(invalid[6, :, :3], invalid[5, :, :3])
     assert not invalid[6, :, 3].any()
+    # D-2：补帧不得判为有效。
+    assert not derive_valid_mask(invalid)[6].any()
+    with pytest.raises(ValueError):
+        seq.raw(GapPolicy.HOLD_LAST_FEATURE)
 
 
 # --------------------------------------------------------------------------- #

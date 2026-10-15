@@ -103,7 +103,7 @@ def _extract_pose_and_video(
     pose_variant: str,
     draw_face: bool,
 ) -> tuple[np.ndarray, dict]:
-    """``FORMAL`` 顺序提取，原始序列按 ``HOLD_LAST_LEGACY`` 补未检出帧；可选同时导出骨架视频。"""
+    """``FORMAL`` 顺序提取，原始序列按 ``HOLD_LAST_INVALID`` 补未检出帧（补帧判为无效）；可选同时导出骨架视频。"""
     writer = None if out_video is None else _SkeletonVideoWriter(video_path, out_video, draw_face=draw_face)
     try:
         seq = extract_pose_sequence(video_path, formal_engine(pose_variant), FORMAL, on_frame=writer)
@@ -125,7 +125,7 @@ def _extract_pose_and_video(
         "landmark_layout": "pose33_normalized_xyzw(visibility)",
         "skeleton_video": None if out_video is None else str(out_video),
     }
-    return seq.raw(GapPolicy.HOLD_LAST_LEGACY).copy(), meta
+    return seq.raw(GapPolicy.HOLD_LAST_INVALID).copy(), meta
 
 
 def _video_basic_meta(video_path: Path) -> dict:
