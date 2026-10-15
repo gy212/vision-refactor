@@ -56,6 +56,20 @@
   - `python -m pytest tests -q` 全量通过；门禁与架构测试通过。
   - 尺度对齐公式对参照是线性的：同一批样本上用 3.0 重跑的结果等于 1.2826 × 1.5 ≈ 1.9239。仍按决定等新样本重标，不在旧样本（720×1280 竖屏，本机没有）上推算替换。
 
+## 2026-10-14（America/Los_Angeles）: [fix] D-17：普通、考试、学生练习统一按 1080p `require` 采集
+
+- 问题描述：D-17 已决：录制规格统一为 1920×1080，设备给不出 1080p 时会话直接失败并提示设备不支持。此前普通与考试模式按 1280×720 `prefer` 采集（`PREVIEW_FORMAT`），只有学生练习是 1080p `require`（D-6）。
+- 修改内容：
+  - `core/workflows/modes.py`：`PREVIEW_FORMAT`、`STUDENT_FORMAT` 合并为 `CAPTURE_FORMAT = CaptureFormat(1920, 1080, "require")`，三种模式共用。
+  - `core/media/camera/spec.py` 的 `DEFAULT_CAPTURE_SIZE`、`core/live/inputs.py` 的 `FALLBACK_SIZE` 改为 1080p；`ProcessCamera` 的默认尺寸改读 `DEFAULT_CAPTURE_SIZE`。`CaptureSpec.policy` 的默认值仍为 `prefer`，只有 CLI 摄像头用它（按 1080p 请求，给不出时接受实际尺寸）。
+  - `apps/tk/controllers/session.py`：`UiState` 的默认尺寸与策略取自 `NORMAL`，删除 `PREVIEW_CAPTURE_SIZE`；`cameras.py` 的说明同步。
+  - `apps/tk/self_check.py`：模式切换检查改按 1080p 断言（检查项名不变）。
+  - 测试：`test_tk_cameras.py` 的规格断言改为 1080p `require`，学生练习专用用例改为三种模式参数化的 `test_every_mode_declares_1080p_require_specs`（替换 `test_student_mode_declares_1080p_specs_without_reading_flag_later`）；`test_workflows.py` 普通与考试模式断言 1080p `require`；`test_tk_session.py`、`test_camera_service.py`（格式变化用例显式用 720p 起始规格，CLI 用例按 1080p 断言）同步。
+  - 文档：设计文档 §5（D-6 两处）、§8.5 模式表、§8.7 时序、§11.2 D-17、§13.4 实机清单；`重构阶段任务/README.md` 待办第 1 项与决策表；`camera_session_architecture.md` 加 D-17 注记。
+- 验证方法：
+  - 摄像头与运行时套件、`test_tk_session.py`、`test_workflows.py`、`test_live_session.py`、`test_camera_capture.py`（含真实 Tk + spawn 的模式切换）通过；考试套件与 `scripts/sim_exam_flow.py`（37 passed）通过；门禁、架构测试与全量测试通过。
+  - 实机未验证：普通、考试双摄 1080p 的 CPU 负载、首帧时间与 §13.4 清单随 README 待办第 1 项在目标硬件上复核；EXE 自检需在冻结包里跑。
+
 ## 2026-10-14（America/Los_Angeles）: [docs] 记录 D-17 的决定：三种模式统一按 1080p 采集
 
 - 问题描述：PR #25 新增的待决项 D-17：考试与普通模式按 1280×720 `prefer` 采集，与现行拍摄规格（正面竖屏 1080p、侧面横屏 1080p）和学生练习的 1080p `require` 不一致。用户决定录制规格统一：普通、考试、学生练习三种模式都用 1080p，设备不支持时失败并提示。

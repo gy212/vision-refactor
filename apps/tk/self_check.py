@@ -256,6 +256,9 @@ def check_camera_mode_switch(app, root):
     from apps.tk.views.capture_panel import NO_SECOND_CAMERA
     from core.media import PRIMARY, SECONDARY, CaptureSpec, ProcessCamera
     from core.media import CameraDevice as CameraEntry
+    from core.workflows import NORMAL
+
+    FULL_HD = NORMAL.requirements.fmt.size  # D-17：三种模式同一采集格式
 
     def pump_until(predicate):
         deadline = time.monotonic() + 20
@@ -295,23 +298,23 @@ def check_camera_mode_switch(app, root):
             app.cameras.apply_entries([CameraEntry("摄像头 0", 0), CameraEntry("摄像头 1", 1)], True)
             app.window.practice.controls.student_id.set("offline-switch")
             service = app.cameras.service
-            preview = {PRIMARY: CaptureSpec(0, 1280, 720), SECONDARY: CaptureSpec(1, 1280, 720)}
+            preview = {PRIMARY: CaptureSpec(0, *FULL_HD, policy="require"), SECONDARY: CaptureSpec(1, *FULL_HD, policy="require")}
 
             def preview_warm():
-                # 会话结束后设备交回池（V-1）或重新预热，720p 预览帧可用。
+                # 会话结束后设备交回池（V-1）或重新预热，1080p 预览帧可用。
                 return service.open_stream(preview).snapshot() is not None
             for _ in range(2):
                 app.session.start()
                 pump_until(ready)
-                assert app.recording.service.session_sizes == {"front": (1280, 720), "side": (1280, 720)}
+                assert app.recording.service.session_sizes == {"front": FULL_HD, "side": FULL_HD}
                 app.session.stop()
                 pump_until(stopped)
                 pump_until(preview_warm)
-                # 已有 720p 预热时进入学生练习：池按 1080p 重新协商，旧格式不混入会话。
+                # 已有预热时进入学生练习：三种模式同为 1080p（D-17），池复用或重新协商后格式不变。
                 app.practice.enter()
                 app.practice.start()
                 pump_until(lambda: ready() and app.practice.practice.phase == "waiting_enter")
-                assert app.recording.service.session_sizes == {"front": (1920, 1080), "side": (1920, 1080)}
+                assert app.recording.service.session_sizes == {"front": FULL_HD, "side": FULL_HD}
                 assert app.recording.state == "idle"  # Blank frames cannot start a recording.
                 app.practice.exit()
                 pump_until(stopped)
@@ -324,12 +327,12 @@ def check_camera_mode_switch(app, root):
             pump_until(ready)
             app.session.stop()
             pump_until(stopped)
-            # 双摄 → 单摄：第二路不再保留设备，单摄会话按 720p 就绪。
+            # 双摄 → 单摄：第二路不再保留设备，单摄会话按 1080p 就绪。
             app.window.capture.camera_choice_2.set(NO_SECOND_CAMERA)
             app.cameras.secondary_selected()
             pump_until(lambda: not service.device_busy(1))
             app.session.start()
-            pump_until(lambda: app.recording.service.session_sizes == {"front": (1280, 720)})
+            pump_until(lambda: app.recording.service.session_sizes == {"front": FULL_HD})
             app.session.stop()
             pump_until(stopped)
         finally:

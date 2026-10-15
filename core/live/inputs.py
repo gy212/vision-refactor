@@ -20,7 +20,7 @@ from core.media import (
     VideoSource,
 )
 
-FALLBACK_SIZE = (1280, 720)
+FALLBACK_SIZE = (1920, 1080)  # 视频元数据缺尺寸时的回退，与采集格式一致（D-17）
 
 
 class FrameInput(Protocol):

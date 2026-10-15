@@ -14,6 +14,7 @@ import numpy as np
 
 from core.foundation import diag
 from core.media.camera.devices import backend_candidates, device_name
+from core.media.camera.spec import DEFAULT_CAPTURE_SIZE
 from core.media.frames import is_valid_bgr
 
 
@@ -120,7 +121,7 @@ def _capture_worker(connection, buffer, index, width, height, factory,
 class ProcessCamera:
     """只传递帧元数据；像素走固定共享内存，每次 read 返回独立连续数组。"""
 
-    def __init__(self, index: int, *, width: int = 1280, height: int = 720,
+    def __init__(self, index: int, *, width: int = DEFAULT_CAPTURE_SIZE[0], height: int = DEFAULT_CAPTURE_SIZE[1],
                  stop_event=None, startup_timeout: float = 12.0,
                  read_timeout: float = 2.0, expected_name: str | None = None,
                  policy: str = "prefer", _factory=None):

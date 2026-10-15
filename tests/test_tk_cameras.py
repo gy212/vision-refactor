@@ -5,12 +5,19 @@ from __future__ import annotations
 import threading
 from types import SimpleNamespace
 
+import pytest
+
 from apps.tk.controllers import cameras as cameras_mod
 from apps.tk.views.capture_panel import NO_SECOND_CAMERA
 from core.media import CameraDevice as CameraEntry
 from core.media import CameraWarmupError, CatalogSnapshot, CaptureSpec
-from core.workflows import PRACTICE
+from core.workflows import EXAM, PRACTICE
 from tests.tk_app_doubles import FakeLive, SyncPool, build_app, root  # noqa: F401
+
+
+def _spec(index: int, **kwargs) -> CaptureSpec:
+    """各模式统一的 1080p ``require`` 规格（D-17）。"""
+    return CaptureSpec(index, 1920, 1080, policy="require", **kwargs)
 
 
 def _warm_app(root, *, second_label: str = "摄像头 1", entries=None):
@@ -26,27 +33,29 @@ def _warm_app(root, *, second_label: str = "摄像头 1", entries=None):
 def test_single_camera_selection_declares_primary_spec_only(root):
     app, pool = _warm_app(root, second_label=NO_SECOND_CAMERA)
     app.cameras.sync_warmup()
-    assert pool.sync_calls == [(CaptureSpec(0, 1280, 720), None)]
+    assert pool.sync_calls == [(_spec(0), None)]
 
 
 def test_two_camera_selection_declares_both_specs(root):
     app, pool = _warm_app(root)
     app.cameras.sync_warmup()
-    assert pool.sync_calls == [(CaptureSpec(0, 1280, 720), CaptureSpec(1, 1280, 720))]
+    assert pool.sync_calls == [(_spec(0), _spec(1))]
 
 
 def test_same_camera_selection_never_warms_second_role(root):
     app, pool = _warm_app(root, second_label="摄像头 0")
     app.cameras.sync_warmup()
-    assert pool.sync_calls == [(CaptureSpec(0, 1280, 720), None)]
+    assert pool.sync_calls == [(_spec(0), None)]
 
 
-def test_student_mode_declares_1080p_specs_without_reading_flag_later(root):
+@pytest.mark.parametrize("mode", [None, EXAM, PRACTICE])
+def test_every_mode_declares_1080p_require_specs(root, mode):
     app, pool = _warm_app(root)
-    app.modes.enter(PRACTICE)
+    if mode is not None:
+        app.modes.enter(mode)
     app.cameras.sync_warmup()
     app.modes.leave()
-    # D-6：学生练习严格要求 1080p。
+    # D-6、D-17：普通、考试、学生练习都严格要求 1080p，规格在声明时冻结。
     assert pool.sync_calls == [
         (CaptureSpec(0, 1920, 1080, policy="require"), CaptureSpec(1, 1920, 1080, policy="require"))
     ]
@@ -60,7 +69,7 @@ def test_enumerated_device_names_are_frozen_into_specs_for_open_check(root):
     app.cameras.sync_warmup()
     # V-3：打开时在采集进程内复核设备名。
     assert pool.sync_calls == [
-        (CaptureSpec(0, 1280, 720, expected_name="Front"), CaptureSpec(1, 1280, 720, expected_name="Side"))
+        (_spec(0, expected_name="Front"), _spec(1, expected_name="Side"))
     ]
 
 

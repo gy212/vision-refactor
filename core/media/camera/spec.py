@@ -11,7 +11,7 @@ import numpy as np
 PRIMARY: Final = "primary"
 SECONDARY: Final = "secondary"
 ROLES: Final = (PRIMARY, SECONDARY)
-DEFAULT_CAPTURE_SIZE: Final = (1280, 720)
+DEFAULT_CAPTURE_SIZE: Final = (1920, 1080)  # D-17：与各模式的采集格式一致
 CapturePolicy = Literal["prefer", "require"]
 CAPTURE_POLICIES: Final = ("prefer", "require")
 
