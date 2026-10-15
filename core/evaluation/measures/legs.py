@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""腿部测量：膝角、站距（踝距/肩宽）、髋轴转角；数值口径逐位复现迁移前的规则。"""
+"""腿部测量：膝角、髋轴转角；数值口径逐位复现迁移前的规则。"""
 from __future__ import annotations
 
 import math
@@ -7,7 +7,7 @@ import math
 import numpy as np
 
 from core.foundation.geometry import angle_deg, landmark_xy
-from core.pose.landmarks import L_ANKLE, L_HIP, L_KNEE, L_SHOULDER, R_ANKLE, R_HIP, R_KNEE, R_SHOULDER
+from core.pose.landmarks import L_ANKLE, L_HIP, L_KNEE, R_ANKLE, R_HIP, R_KNEE
 
 
 def knee_angles(lm: np.ndarray) -> tuple[float, float]:
@@ -15,13 +15,6 @@ def knee_angles(lm: np.ndarray) -> tuple[float, float]:
     ang_l = angle_deg(landmark_xy(lm, L_HIP), landmark_xy(lm, L_KNEE), landmark_xy(lm, L_ANKLE))
     ang_r = angle_deg(landmark_xy(lm, R_HIP), landmark_xy(lm, R_KNEE), landmark_xy(lm, R_ANKLE))
     return ang_l, ang_r
-
-
-def stance_widths(lm: np.ndarray) -> tuple[float, float]:
-    """两踝间距与两肩间距。"""
-    foot_w = float(np.linalg.norm(landmark_xy(lm, L_ANKLE) - landmark_xy(lm, R_ANKLE)))
-    shoulder_w = float(np.linalg.norm(landmark_xy(lm, L_SHOULDER) - landmark_xy(lm, R_SHOULDER)))
-    return foot_w, shoulder_w
 
 
 def hip_axis_rotation(lm: np.ndarray, baseline: np.ndarray) -> np.ndarray:

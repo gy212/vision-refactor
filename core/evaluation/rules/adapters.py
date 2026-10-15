@@ -1,14 +1,13 @@
 # -*- coding: utf-8 -*-
-"""规则结论的对外结构：``RuleOutcome`` → 现有的 ``RuleScore``/``RuleViolation``，以及练习 ``checks`` 字典里的单视角观测（下游不用改）。"""
+"""规则结论的对外结构：考试与 batch 逐视角报告的 ``RuleCheck``，以及练习 ``checks`` 字典里的单视角观测（下游不用改）。"""
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 import numpy as np
 
 from core.evaluation.rules.spec import (
-    RULE_STATE_EVALUATED,
     RULE_STATE_UNABLE,
     RULE_STATE_VIOLATION,
     RuleOutcome,
@@ -19,43 +18,49 @@ from core.pose.validity import landmark_capabilities, landmark_names
 
 
 @dataclass(frozen=True)
-class RuleViolation:
-    rule_id: str
+class RuleCheck:
+    """一个检查项在一路视角上的结论（考试、batch 只报告，不折算分数）。
+
+    ``state`` 为 ``violation``/``pass``/``unable``/``pending_rule``；``unable`` 的原因见 ``skip_reason`` 与 ``detail``。
+    ``evidence_frames`` 是原视频帧号。
+    """
+
+    check_id: str
+    code: str
     name: str
-    penalty: int
+    segment: str
+    phase: str
+    view: str
+    state: RuleState
+    skip_reason: SkipReason | None
     violation_ratio: float
     valid_frames: int
     total_frames: int
     detail: str
-    # 结构化三态（Issue #11）：detail（中文）只供界面，下游判断只读 state / skip_reason。
-    state: RuleState = RULE_STATE_EVALUATED
-    skip_reason: SkipReason | None = None
-    # 规则依赖的关键点名与能力分组（声明）；missing_landmarks 为后端缺失的点名。
     required_landmarks: tuple[str, ...] = ()
     required_capabilities: tuple[str, ...] = ()
     missing_landmarks: tuple[str, ...] = ()
+    evidence_frames: tuple[int, ...] = ()
+    measurements: tuple[dict, ...] = ()
 
 
-@dataclass(frozen=True)
-class RuleScore:
-    score: int
-    total_deduction: int
-    violations: tuple[RuleViolation, ...]
-
-
-def to_rule_violation(o: RuleOutcome) -> RuleViolation:
-    return RuleViolation(
-        rule_id=o.spec.code, name=o.spec.title, penalty=int(o.deduction), violation_ratio=o.violation_ratio,
-        valid_frames=int(o.valid_frames), total_frames=int(o.total_frames), detail=o.detail, state=o.state,
-        skip_reason=o.skip_reason, required_landmarks=landmark_names(o.spec.required),
-        required_capabilities=landmark_capabilities(o.spec.required), missing_landmarks=o.missing_landmarks,
+def to_rule_check(check: dict, view: str, outcome: RuleOutcome, frames, phase_reason: str = "") -> RuleCheck:
+    """检查项（``build_checks`` 的一项）与它在本视角的结论 → ``RuleCheck``；``frames`` 把序列下标换成原视频帧号。"""
+    detail = outcome.detail
+    if outcome.state == RULE_STATE_UNABLE:
+        detail = {"missing_landmarks": "后端缺少所需关键点",
+                  "insufficient_valid_frames": f"该项测量有效帧不足（{outcome.valid_frames}/{outcome.total_frames}帧）",
+                  "phase_not_found": "未找到该阶段；" + (phase_reason or "阶段不足")}[outcome.skip_reason]
+    return RuleCheck(
+        check_id=check["id"], code=check["code"], name=check["name"], segment=check["segment"], phase=check["phase"],
+        view=view, state=outcome.state, skip_reason=outcome.skip_reason, violation_ratio=float(outcome.violation_ratio),
+        valid_frames=int(outcome.valid_frames), total_frames=int(outcome.total_frames), detail=detail,
+        required_landmarks=landmark_names(outcome.spec.required),
+        required_capabilities=landmark_capabilities(outcome.spec.required),
+        missing_landmarks=outcome.missing_landmarks,
+        evidence_frames=tuple(int(frames[i]) for i in outcome.evidence_frames),
+        measurements=outcome.measurements,
     )
-
-
-def to_rule_score(outcomes: Iterable[RuleOutcome]) -> RuleScore:
-    violations = tuple(to_rule_violation(o) for o in outcomes)
-    deductions = sum(int(v.penalty) for v in violations)
-    return RuleScore(score=max(0, 100 - int(deductions)), total_deduction=int(deductions), violations=violations)
 
 
 def to_practice_check(check: dict, view: str, outcome: RuleOutcome, base_weight: float, series: Mapping,

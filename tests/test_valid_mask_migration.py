@@ -13,9 +13,10 @@ Issue #5 把“此点是否可用”的判据从散落的 ``lm[idx, 3] >= thr`` 
   ③ 改造前 golden：``tests/fixtures/pose33_v3/golden.json`` 冻结的迁移前行为
      （由 ``test_pose33_v3_golden.py`` 同源维护，本测试复用它作为“改造前”基线）。
 
-三者必须在规则扣分、tech_eval 状态、关节误差上全部一致。本测试聚焦 ① == ②（迁移前后
+三者必须在 tech_eval 状态、关节误差上全部一致。本测试聚焦 ① == ②（迁移前后
 API 两种调用方式逐位等价），③ 的等价由 ``test_pose33_v3_golden.py`` 保证（golden 不漂移
-即说明迁移后行为 == 迁移前行为）。
+即说明迁移后行为 == 迁移前行为）。规则（D-3 起的统一目录 ``sanda_v5``）的有效掩码只由
+``derive_valid_mask`` 判定，再收紧到坐标有限且在画面内，见第 1 节。
 
 确定性
 ------
@@ -40,7 +41,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from core.pose import DEFAULT_VALID_CONF_THR, derive_valid_mask  # noqa: E402
-from core.evaluation.rules.formal_v1 import score_rules  # noqa: E402
+from core.evaluation import series_from_raw  # noqa: E402
 from core.evaluation import (  # noqa: E402
     eval_cog_com,
     eval_cog_front,
@@ -99,26 +100,19 @@ def test_derive_valid_mask_rejects_bad_shape():
 
 
 # --------------------------------------------------------------------------- #
-# 1) 规则扣分：① 旧式不传 mask == ② 显式传入 mask
+# 1) 规则输入：有效掩码只由 derive_valid_mask 判定，再收紧到坐标有限且在画面内（D-2、D-3）
 # --------------------------------------------------------------------------- #
-@pytest.mark.parametrize("view", ["front", "side"])
-@pytest.mark.parametrize("action_scope", ["both", "stance", "punch"])
-def test_score_rules_legacy_vs_explicit(student, view, action_scope):
-    mask = derive_valid_mask(student, DEFAULT_VALID_CONF_THR)
-    legacy = score_rules(student, view=view, action_scope=action_scope)
-    explicit = score_rules(student, view=view, action_scope=action_scope, valid_mask=mask)
-
-    assert legacy.score == explicit.score
-    assert legacy.total_deduction == explicit.total_deduction
-    assert len(legacy.violations) == len(explicit.violations)
-    for a, b in zip(legacy.violations, explicit.violations):
-        assert a.rule_id == b.rule_id
-        assert a.name == b.name
-        assert int(a.penalty) == int(b.penalty)
-        assert int(a.valid_frames) == int(b.valid_frames)
-        assert int(a.total_frames) == int(b.total_frames)
-        assert a.detail == b.detail
-        assert float(a.violation_ratio) == float(b.violation_ratio)
+@pytest.mark.parametrize("width,height", [(1280, 720), (1080, 1920)])
+def test_rule_series_mask_is_derive_valid_mask_restricted_to_frame(student, width, height):
+    series = series_from_raw(student, {"width": width, "height": height, "fps": 30.0, "start_frame": 0})
+    derived = derive_valid_mask(student, DEFAULT_VALID_CONF_THR)
+    lm = series["landmarks"]
+    in_frame = (lm[:, :, 0] >= 0) & (lm[:, :, 0] <= width / height) & (lm[:, :, 1] >= 0) & (lm[:, :, 1] <= 1)
+    np.testing.assert_array_equal(series["valid_mask"], derived & np.isfinite(lm[:, :, :3]).all(axis=2) & in_frame)
+    assert not (series["valid_mask"] & ~derived).any()  # 不把无效点当有效
+    # 宽高比修正（D-5）：x、z 乘宽高比，y 不变。
+    np.testing.assert_allclose(lm[:, :, 0], student[:, :, 0] * width / height, rtol=1e-6)
+    np.testing.assert_array_equal(lm[:, :, 1], student[:, :, 1])
 
 
 # --------------------------------------------------------------------------- #

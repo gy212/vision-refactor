@@ -82,8 +82,8 @@ def test_dual_compare_reuses_one_raw_series_for_rules_and_joint_errors(monkeypat
         )
 
     assert calls == [str(Path(STUDENT))]
-    assert res.front_rule_score is not None
-    assert res.side_rule_score is not None
+    assert res.front_rule_checks is not None
+    assert res.side_rule_checks is not None
     assert res.front_joint_errors is not None
     assert res.side_joint_errors is not None
 

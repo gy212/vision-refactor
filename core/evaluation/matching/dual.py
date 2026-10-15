@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 """正侧双模板比对：单视频按视角自动切分（``compare_dual_templates``）与正侧两路视频（``compare_dual_streams``）（设计文档 §7.5）。
 
-两者都由模板读取、视角切分、``repetition.score_view`` 与正式规则组合而成；计分方案分别是 ``DUAL_TEMPLATE``
-与 ``DUAL_STREAM``（``scoring.schemes``）。两者都在 ``pose_cache`` 作用域内执行：特征与规则原始序列
-在顺序跟踪下共用同一次推理；分段提取的特征不满足规则的顺序跟踪要求，规则仍独立提取（§6.3）。
+两者都由模板读取、视角切分、``repetition.score_view`` 与统一规则目录的逐视角检查组合而成；计分方案分别是
+``DUAL_TEMPLATE`` 与 ``DUAL_STREAM``（``scoring.schemes``）。规则只报告逐项结论，不计入分数（D-3）。两者都在
+``pose_cache`` 作用域内执行：特征与规则原始序列在顺序跟踪下共用同一次推理；分段提取的特征不满足规则的顺序跟踪要求，
+规则仍独立提取（§6.3）。
 """
 from __future__ import annotations
 
@@ -15,8 +16,10 @@ from threading import Event
 import numpy as np
 
 from core.evaluation.matching.engine import assert_feature_layout_match, effective_workers, raise_if_cancelled
-from core.evaluation.matching.repetition import JointErrorStat, RawSlice, RepetitionMatch, score_view, valid_mask_from_raw
-from core.evaluation.rules.formal_v1 import RuleScore, RuleViolation, score_rules
+from core.evaluation.matching.repetition import JointErrorStat, RawSlice, RepetitionMatch, score_view
+from core.evaluation.rule_checks import judge_view, judge_views, series_from_raw
+from core.evaluation.rules.adapters import RuleCheck
+from core.evaluation.rules.sanda_v5 import DEFAULT_STANCE, build_checks, load_feedback_config
 from core.evaluation.scoring.cost import POSE33_BASELINE
 from core.evaluation.segmentation import split_front_side
 from core.evaluation.templates import COMPARE, Template, load_template, normalizer_for
@@ -40,12 +43,9 @@ class DualCompareResult:
     side_matches: tuple[RepetitionMatch, ...]
     front_segment: tuple[int, int] | None = None  # 原视频中的 (start, end)
     side_segment: tuple[int, int] | None = None
-    front_rule_score: int | None = None
-    side_rule_score: int | None = None
-    front_rule_deduction: int | None = None
-    side_rule_deduction: int | None = None
-    front_rule_violations: tuple[RuleViolation, ...] | None = None
-    side_rule_violations: tuple[RuleViolation, ...] | None = None
+    # 统一规则目录的逐视角结论（只报告，不计分）；未开启规则时为 None。
+    front_rule_checks: tuple[RuleCheck, ...] | None = None
+    side_rule_checks: tuple[RuleCheck, ...] | None = None
     front_joint_errors: tuple[JointErrorStat, ...] | None = None
     side_joint_errors: tuple[JointErrorStat, ...] | None = None
 
@@ -86,10 +86,31 @@ def _lazy_raw(video: Path, pose_variant: str) -> RawSlice:
     return raw_slice
 
 
-def _rules(raw_slice: RawSlice, seg: tuple[int, int] | None, *, view: str, action_scope: str) -> RuleScore:
+def _rules(raw_slice: RawSlice, seg: tuple[int, int] | None, *, view: str, action: str,
+           stance: str) -> tuple[RuleCheck, ...]:
+    """一段（``seg=None`` 为整段）在 ``view`` 视角上按统一规则目录的逐项结论。"""
     s, e = (None, None) if seg is None else (int(seg[0]), int(seg[1]))
     raw, raw_meta = raw_slice(s, e)
-    return score_rules(raw, view=view, action_scope=action_scope, valid_mask=valid_mask_from_raw(raw, raw_meta))
+    checks, _diagnostics = judge_view(series_from_raw(raw, raw_meta), view, action, stance, load_feedback_config())
+    return checks
+
+
+def _synchronized_rules(raw_front: RawSlice, raw_side: RawSlice, *, action: str, stance: str,
+                        stop_evt: Event) -> tuple[tuple[RuleCheck, ...], tuple[RuleCheck, ...]]:
+    """同步录制的正、侧两路整段按统一规则目录的逐项结论；相位经 ``judge_views`` 与练习同样跨机位准备。"""
+    views = {}
+    for view, raw_slice in (("front", raw_front), ("side", raw_side)):
+        views[view] = series_from_raw(*raw_slice(None, None))
+        raise_if_cancelled(stop_evt)
+    judged = judge_views(views, action, stance, load_feedback_config())
+    return judged["front"][0], judged["side"][0]
+
+
+def _rule_target(enable_rules: bool, rule_action: str, rule_stance: str) -> tuple[str, str]:
+    """开启规则时先校验动作与左右式，避免比对跑完才报错。"""
+    if enable_rules:
+        build_checks(rule_action, rule_stance)
+    return rule_action, rule_stance
 
 
 def _combine(w_front: float, w_side: float, front_score: float, side_score: float) -> tuple[float, int]:
@@ -99,7 +120,7 @@ def _combine(w_front: float, w_side: float, front_score: float, side_score: floa
 
 
 def _result(pair: _Pair, video: Path, fps: float, w: tuple[float, float], front: tuple, side: tuple,
-            segments: tuple, rules: tuple[RuleScore | None, RuleScore | None]) -> DualCompareResult:
+            segments: tuple, rules: tuple) -> DualCompareResult:
     (f_score, f_matches, f_joints), (s_score, s_matches, s_joints) = front, side
     combined, pct = _combine(w[0], w[1], f_score, s_score)
     rf, rs = rules
@@ -109,12 +130,7 @@ def _result(pair: _Pair, video: Path, fps: float, w: tuple[float, float], front:
         combined_score=float(combined), combined_percent=int(pct),
         front_matches=tuple(f_matches), side_matches=tuple(s_matches),
         front_segment=segments[0], side_segment=segments[1],
-        front_rule_score=None if rf is None else int(rf.score),
-        side_rule_score=None if rs is None else int(rs.score),
-        front_rule_deduction=None if rf is None else int(rf.total_deduction),
-        side_rule_deduction=None if rs is None else int(rs.total_deduction),
-        front_rule_violations=None if rf is None else tuple(rf.violations),
-        side_rule_violations=None if rs is None else tuple(rs.violations),
+        front_rule_checks=rf, side_rule_checks=rs,
         front_joint_errors=None if f_joints is None else tuple(f_joints),
         side_joint_errors=None if s_joints is None else tuple(s_joints),
     )
@@ -137,7 +153,8 @@ def compare_dual_templates(
     w_side: float = 0.6,
     baseline: float = POSE33_BASELINE,
     enable_rules: bool = False,
-    action_scope: str = "both",
+    rule_action: str = "stance",
+    rule_stance: str = DEFAULT_STANCE,
     enable_error_analysis: bool = False,
     progress_cb: ProgressCb | None = None,
     stop_evt: Event | None = None,
@@ -145,11 +162,12 @@ def compare_dual_templates(
     """一段同时含正面与侧面的学员视频对正/侧两个模板（``DUAL_TEMPLATE``）。
 
     按正面程度把视频切成正/侧两段（``median_always``），每段对各自模板取代表周期多次匹配、截尾均值，
-    按 ``w_front``/``w_side`` 合成 0..1 与 0..100；可选在原始 Pose33 上做正式规则扣分与关节误差。
+    按 ``w_front``/``w_side`` 合成 0..1 与 0..100；可选在原始 Pose33 上按统一规则目录检查 ``rule_action``
+    （左右式 ``rule_stance``，逐视角报告，不计分）与关节误差。
     """
     stop_evt = stop_evt or Event()
     video_path = Path(video_path)
-    action_scope = str(action_scope or "both").lower()
+    rule_action, rule_stance = _rule_target(enable_rules, rule_action, rule_stance)
     pair = _load_pair(Path(front_template_path), Path(side_template_path), pose_variant, workers)
     seq, fps, view_scores = extract_features(
         video_path, pose_variant=pair.pose_variant, workers=pair.workers, normalizer=pair.normalizer,
@@ -163,9 +181,9 @@ def compare_dual_templates(
     if view_scores is not None and view_scores.size == seq.shape[0] and seq.shape[0] >= 10:
         front_seg, side_seg, _mode = split_front_side(view_scores, fps, mode="median_always")
     rules = (None, None)
-    if enable_rules:  # 规则按"违规帧占比 ≥ 阈值则扣分"，降低单帧抖动影响
-        rules = (_rules(raw_slice, front_seg, view="front", action_scope=action_scope),
-                 _rules(raw_slice, side_seg, view="side", action_scope=action_scope))
+    if enable_rules:  # 同一路视频切出的先后两段不同步，各段独立判定相位
+        rules = (_rules(raw_slice, front_seg, view="front", action=rule_action, stance=rule_stance),
+                 _rules(raw_slice, side_seg, view="side", action=rule_action, stance=rule_stance))
 
     def view(template: Template, seg):  # 现状：单视频双模板的打分不响应取消
         return score_view(seq, raw_slice, template.features, template.meta, seg, fps=fps, baseline=baseline,
@@ -189,7 +207,8 @@ def compare_dual_streams(
     w_side: float = 0.6,
     baseline: float = POSE33_BASELINE,
     enable_rules: bool = False,
-    action_scope: str = "both",
+    rule_action: str = "stance",
+    rule_stance: str = DEFAULT_STANCE,
     enable_error_analysis: bool = False,
     progress_cb: ProgressCb | None = None,
     stop_evt: Event | None = None,
@@ -198,7 +217,7 @@ def compare_dual_streams(
     stop_evt = stop_evt or Event()
     raise_if_cancelled(stop_evt)
     front_video, side_video = Path(front_video_path), Path(side_video_path)
-    action_scope = str(action_scope or "both").lower()
+    rule_action, rule_stance = _rule_target(enable_rules, rule_action, rule_stance)
     pair = _load_pair(Path(front_template_path), Path(side_template_path), pose_variant, workers)
 
     def features(template: Template, video: Path, label: str):
@@ -217,11 +236,7 @@ def compare_dual_streams(
     raise_if_cancelled(stop_evt)
     rules = (None, None)
     if enable_rules:
-        rule_f = _rules(raw_f, None, view="front", action_scope=action_scope)
-        raise_if_cancelled(stop_evt)
-        rule_s = _rules(raw_s, None, view="side", action_scope=action_scope)
-        raise_if_cancelled(stop_evt)
-        rules = (rule_f, rule_s)
+        rules = _synchronized_rules(raw_f, raw_s, action=rule_action, stance=rule_stance, stop_evt=stop_evt)
 
     raise_if_cancelled(stop_evt)
     front = score_view(seq_f, raw_f, pair.front.features, pair.front.meta, None, fps=fps_f, baseline=baseline,

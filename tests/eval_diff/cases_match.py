@@ -56,9 +56,10 @@ def run(c) -> None:
             for err in (False, True):
                 rec(f"dual_tpl/{vname}/{rules}/{err}", lambda: compare_video_to_dual_templates(
                     t["front"], t["side"], v[vname], enable_rules=rules, enable_error_analysis=err))
-    for scope in ("stance", "punch", "STANCE", ""):
-        rec(f"dual_tpl/scope/{scope}", lambda: compare_video_to_dual_templates(
-            t["cycle"], t["side"], v["student"], enable_rules=True, action_scope=scope))
+    for action, stance in (("stance", "left"), ("front_straight", "left"), ("hook_combo", "right"),
+                           ("rear_low_kick", "left"), ("STANCE", "left"), ("stance", "")):
+        rec(f"dual_tpl/rule/{action}/{stance}", lambda: compare_video_to_dual_templates(
+            t["cycle"], t["side"], v["student"], enable_rules=True, rule_action=action, rule_stance=stance))
     rec("dual_tpl/weights", lambda: compare_video_to_dual_templates(
         t["cycle"], t["front"], v["student"], w_front=0.9, w_side=0.5, baseline=2.0, enable_error_analysis=True))
     rec("dual_tpl/short", lambda: compare_video_to_dual_templates(t["front"], t["side"], v["short"], enable_rules=True))
@@ -72,7 +73,7 @@ def run(c) -> None:
             rec(f"dual_stream/{fv}/{sv}/{rules}", lambda: compare_dual_streams(
                 t["front"], t["side"], v[fv], v[sv], enable_rules=rules, enable_error_analysis=True))
     rec("dual_stream/cycle", lambda: compare_dual_streams(
-        t["cycle"], t["cycle"], v["student"], v["gappy"], enable_rules=True, action_scope="punch",
+        t["cycle"], t["cycle"], v["student"], v["gappy"], enable_rules=True, rule_action="straight_combo",
         w_front=0.25, w_side=0.75, baseline=4.0))
     rec("dual_stream/mixed_version", lambda: compare_dual_streams(
         t["legacy_v1"], t["front"], v["student"], v["student"]))

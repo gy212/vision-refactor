@@ -180,7 +180,7 @@ def check_video_record(report: dict) -> Path:
 def check_practice_history(report: dict, video: Path) -> tuple[object, dict]:
     """双视角录像走 MediaPipe 练习分析写入历史，结果字段齐全，文字报告能导出；返回历史库与记录。"""
     from core import foundation
-    from core.evaluation import ACTIONS, STANCES
+    from core.evaluation import ACTIONS, RULE_VERSION, STANCES
     from core.reporting import practice_report_renderers
     from core.services import HistoryStore
 
@@ -193,7 +193,7 @@ def check_practice_history(report: dict, video: Path) -> tuple[object, dict]:
     assert result["backend"] == "mediapipe"
     assert result["fusionMethod"] == "action_rule_quality_weighted_v1"
     assert result["inputViews"] == ["front", "side"]
-    assert result["ruleVersion"].endswith("-v4")
+    assert result["ruleVersion"] == RULE_VERSION
     assert result["poseVariant"] == "full"
     assert all(c["status"] in {"unable", "pending_rule"} for c in result["checks"])
     assert all(c["analyzedFrames"] == 24 and c["stride"] == 1 for c in result["capture"].values())

@@ -3,6 +3,8 @@
 
 迁移自 ``apps/recording_postprocess.py``（设计文档 §7.6）：Tk 考试与普通双摄的录后自动比对用它。
 模板按 ``EXAM_POOL`` 契约（heavy + pose33_v3）读取与过滤；比对函数与原始序列提取由调用方注入（录后处理的测试会替换它们）。
+模板名属于统一规则目录的动作，另按 ``sanda_v5`` 逐视角检查（固定左式，相位窗口取帧），结论只写进结果，不计入分数（D-3）；
+正侧两池同一动作的匹配成对判定，相位与练习一样跨机位共用动作时间段。
 """
 from __future__ import annotations
 
@@ -14,6 +16,8 @@ from typing import Any
 
 import numpy as np
 
+from core.evaluation.rule_checks import ACTION_BY_NAME, judge_views, series_from_raw
+from core.evaluation.rules.sanda_v5 import DEFAULT_STANCE, FeedbackConfig, load_feedback_config
 from core.evaluation.scoring.kick_quality import score_kick_quality
 from core.evaluation.templates import EXAM_POOL, TemplateError, TemplateStore, load_template
 from core.evaluation.view_weights import normalized_pair
@@ -48,6 +52,10 @@ VIEW_WEIGHTS: dict[str, dict[str, float]] = {
 }
 VIEW_FRONT_SUFFIX = "_正面"
 VIEW_SIDE_SUFFIX = "_侧面"
+
+EXAM_STANCE = DEFAULT_STANCE  # 考试固定左式（D-3）
+# 规则检查取动作匹配窗口前后各放宽的时长：相位检测要看到动作前后的实战式。
+RULE_MARGIN_SECONDS = 1.0
 
 PoolCompare = Callable[..., list]
 RawSeriesFn = Callable[..., Any]
@@ -141,21 +149,64 @@ def action_score(name: str, dtw_score: float, geom_score: float | None) -> float
     return float(final)
 
 
+def rule_action_for(name: str) -> str | None:
+    """模板名（可带 ``_正面``/``_侧面`` 后缀）对应的规则目录动作；目录外的动作为 None。"""
+    return ACTION_BY_NAME.get(name.removesuffix(VIEW_FRONT_SUFFIX).removesuffix(VIEW_SIDE_SUFFIX))
+
+
+def rule_target(series, detail: dict, action: str, view: str) -> dict:
+    """一个匹配到的规则目录动作的规则目标：匹配窗口前后各放宽 ``RULE_MARGIN_SECONDS`` 的规则输入序列与帧范围。"""
+    margin = int(round(RULE_MARGIN_SECONDS * float(series.meta.get("fps") or 30.0)))
+    landmarks, meta = slice_pose_raw_series(series, start_frame=max(0, int(detail["start"]) - margin),
+                                            end_frame=int(detail["end"]) + margin)
+    return {"name": detail["name"], "view": view, "action": action, "series": series_from_raw(landmarks, meta),
+            "start": int(meta["start_frame"]), "end": int(meta["end_frame"])}
+
+
+def _report(target: dict, judged: tuple) -> dict:
+    checks, diagnostics = judged
+    return {"name": target["name"], "view": target["view"], "action": target["action"], "stance": EXAM_STANCE,
+            "start": target["start"], "end": target["end"],
+            "phase_reason": diagnostics.get("reason", ""), "checks": checks}
+
+
+def rule_reports(front_targets: list[dict], side_targets: list[dict], cfg: FeedbackConfig) -> list[dict]:
+    """两池的规则目录动作按左式判定；同一动作的正侧匹配按出现顺序成对，经 ``judge_views`` 共用同步相位。
+
+    结论按正面池、侧面池的匹配顺序排列；没有同动作另一路的匹配单独判定。
+    """
+    judged: dict[int, tuple] = {}
+    unpaired = list(side_targets)
+    for front in front_targets:
+        side = next((t for t in unpaired if t["action"] == front["action"]), None)
+        views = {"front": front["series"]} if side is None else {"front": front["series"], "side": side["series"]}
+        result = judge_views(views, front["action"], EXAM_STANCE, cfg)
+        judged[id(front)] = result["front"]
+        if side is not None:
+            unpaired.remove(side)
+            judged[id(side)] = result["side"]
+    for side in unpaired:
+        judged[id(side)] = judge_views({"side": side["series"]}, side["action"], EXAM_STANCE, cfg)["side"]
+    return [_report(t, judged[id(t)]) for t in front_targets + side_targets]
+
+
 @pose_cache()
 def score_pool(templates: list[Path], video: Path, view: str, *, compare: PoolCompare, raw_series: RawSeriesFn,
-               stop_evt: Event) -> tuple[list[dict], float | None]:
-    """一个视角的池：视频姿态只提取一次复用给池内每个模板；含踢腿动作时取原始序列算几何分。
+               stop_evt: Event, rule_cfg: FeedbackConfig | None = None) -> tuple[list[dict], float | None, list[dict]]:
+    """一个视角的池：视频姿态只提取一次复用给池内每个模板；含踢腿或规则目录动作时取原始序列算几何分与规则输入。
 
-    在 ``pose_cache`` 作用域内执行：模板比对与踢腿几何的顺序提取共用同一次推理。
+    在 ``pose_cache`` 作用域内执行：模板比对与原始序列的顺序提取共用同一次推理。返回 ``(逐动作明细, 池均分,
+    规则目标)``；规则目标是规则目录动作的规则输入序列，由 ``rule_reports`` 与另一池成对判定。``rule_cfg=None`` 时不做规则检查。
     """
     if not templates:
-        return [], None
+        return [], None, []
     if stop_evt.is_set():
         raise InterruptedError("后台比对已取消")
     results = compare(templates, video, pose_variant=POSE_VARIANT, workers=1, stop_evt=stop_evt)
     names = [Path(t).stem for t in templates]
+    rule_actions = [rule_action_for(n) if rule_cfg is not None else None for n in names]
     series = None
-    if any(n in KICK_KINDS for n in names):
+    if any(n in KICK_KINDS for n in names) or any(rule_actions):
         if stop_evt.is_set():
             raise InterruptedError("后台比对已取消")
         series = raw_series(video, pose_variant=POSE_VARIANT)
@@ -176,7 +227,8 @@ def score_pool(templates: list[Path], video: Path, view: str, *, compare: PoolCo
                         "dtw_score": dtw_score, "geom_score": geom_score, "geom_detail": geom_detail,
                         "start": start, "end": end})
     pool_mean = float(np.mean([d["score"] for d in details])) if details else None
-    return details, pool_mean
+    targets = [rule_target(series, d, action, view) for d, action in zip(details, rule_actions) if action]
+    return details, pool_mean, targets
 
 
 @dataclass(frozen=True)
@@ -192,15 +244,23 @@ class ExamPoolResult:
     front_segment: tuple[int, int] | None = None
     side_segment: tuple[int, int] | None = None
     action_scores: tuple[dict, ...] = ()
+    # 规则目录动作的逐视角规则结论（只报告，不计分，D-3）；规则配置无效时 ``rule_error`` 写明原因。
+    rule_checks: tuple[dict, ...] = ()
+    rule_error: str = ""
 
 
 def score_exam_pools(front_tpls: list[Path], side_tpls: list[Path], front_video: Path, side_video: Path, *,
                      compare: PoolCompare, raw_series: RawSeriesFn, stop_evt: Event) -> ExamPoolResult:
     """正对正池、侧对侧池逐模板评分后合并（考试双机位视角固定，不做自动正侧切分）。"""
-    front_details, front_score = score_pool(front_tpls, front_video, "front", compare=compare,
-                                            raw_series=raw_series, stop_evt=stop_evt)
-    side_details, side_score = score_pool(side_tpls, side_video, "side", compare=compare,
-                                          raw_series=raw_series, stop_evt=stop_evt)
+    try:
+        rule_cfg, rule_error = load_feedback_config(), ""
+    except ValueError as exc:  # 规则只报告：配置无效不影响考试分数
+        rule_cfg, rule_error = None, str(exc)
+    front_details, front_score, front_targets = score_pool(front_tpls, front_video, "front", compare=compare,
+                                                           raw_series=raw_series, stop_evt=stop_evt, rule_cfg=rule_cfg)
+    side_details, side_score, side_targets = score_pool(side_tpls, side_video, "side", compare=compare,
+                                                        raw_series=raw_series, stop_evt=stop_evt, rule_cfg=rule_cfg)
+    reports = rule_reports(front_targets, side_targets, rule_cfg) if rule_cfg is not None else []
     # 合并只影响 combined 与逐动作列，避免正+侧双模板动作被双重计数。
     action_scores = merge_view_weighted_actions(front_details + side_details)
     all_scores = [d["score"] for d in action_scores]
@@ -210,4 +270,5 @@ def score_exam_pools(front_tpls: list[Path], side_tpls: list[Path], front_video:
     front_seg = (front_details[0]["start"], front_details[0]["end"]) if front_details else None
     side_seg = (side_details[0]["start"], side_details[0]["end"]) if side_details else None
     return ExamPoolResult(front_score, side_score, combined, pct, front_segment=front_seg, side_segment=side_seg,
-                          action_scores=tuple(action_scores))
+                          action_scores=tuple(action_scores), rule_checks=tuple(reports),
+                          rule_error=rule_error)

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
-"""学生练习的相位窗口（start/motion/finish/end）、正侧双视角对齐与同步相位时间共享（原 ``feedback_phases``）。
+"""规则判定的相位窗口（start/motion/finish/end）、正侧双视角对齐与同步相位时间共享（原 ``feedback_phases``）。
 
-保留原始点及无效帧，不影响模板/正式评分链路。
+考试、学生练习与离线处理的规则都按这里的窗口取帧（D-3）；保留原始点及无效帧，不影响模板评分链路。
 """
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from core.foundation.signal import contiguous_runs
 
 
 def _stable_guard_windows(lm: np.ndarray, mask: np.ndarray, torso: np.ndarray, edge: int, cfg) -> list[np.ndarray]:
-    """长度为 ``edge`` 的滑窗中，护位链保持稳定的窗口（按起点升序）。"""
+    """长度为 ``edge`` 的滑窗中，护位链保持稳定且手已抬到护位的窗口（按起点升序）。"""
     n = len(lm)
     wrists = (lm[:, [15, 16], :2] - lm[:, [11, 12], :2]) / np.maximum(torso[:, None, None], 1e-4)
     stable = []
@@ -25,6 +25,7 @@ def _stable_guard_windows(lm: np.ndarray, mask: np.ndarray, torso: np.ndarray, e
             continue
         # 每窗至少一条完整可见的护位链。远侧遮挡不否定近侧，但可见的移动手仍否定稳定。
         visible = 0
+        raised = False
         for arm, (sh, wr, hip) in enumerate(((11, 15, 23), (12, 16, 24))):
             if not mask[ix][:, [sh, wr, hip]].all():
                 continue
@@ -35,7 +36,9 @@ def _stable_guard_windows(lm: np.ndarray, mask: np.ndarray, torso: np.ndarray, e
                     or not (lm[ix, wr, 1] < lm[ix, hip, 1] + .1 * torso[ix]).all()):
                 visible = 0
                 break
-        if visible:
+            raised |= bool((lm[ix, wr, 1] <= lm[ix, sh, 1] + cfg.guard_wrist_height * torso[ix]).all())
+        # 至少一只手抬到护位：直立双手下垂不算实战式（D-3，考生先直立再摆实战式）；单手掉低仍算，交给检查项判定。
+        if visible and raised:
             stable.append(ix)
     return stable
 

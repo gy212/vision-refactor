@@ -12,10 +12,11 @@ import pytest
 from core.evaluation import ACTIONS, analyze_practice as analyze_feedback, build_checks
 from core.reporting import format_fusion, format_report
 from core.evaluation import FeedbackConfig, create_practice_engine as _pipeline, evaluate_series, extract_series, load_feedback_config, phase_windows
-from core.evaluation.rules.practice_v4 import default_front_weights as _default_front_weights, check_view_weights as _view_weights
+from core.evaluation.rules.sanda_v5 import default_front_weights as _default_front_weights, check_view_weights as _view_weights
 from core.foundation import contiguous_runs
 from core.evaluation import practice as practice_mod
-from core.evaluation.rules import practice_v4
+from core.evaluation import rule_checks as rule_checks_mod
+from core.evaluation.rules import sanda_v5
 from core.reporting import practice_report_renderers
 from core.services import HistoryStore as FeedbackHistory, validate_identity
 
@@ -83,10 +84,26 @@ def test_rules_use_selected_front_arm_and_keep_uncalibrated_checks_pending():
     get = lambda data, code: next(c for c in data["checks"] if c["code"] == code)
     assert get(left, "stance_elbow")["status"] == "candidate"
     assert get(right, "stance_elbow")["status"] == "not_observed"
-    assert get(left, "stance_height")["status"] == "pending_rule"
-    assert get(left, "stance_width")["status"] == "pending_rule"
+    # D-3：拳峰高度、站距按原正式规则的相对量判定，不再待定。
+    assert get(left, "stance_height")["status"] == "candidate"  # 前手腕低于鼻尖 1 倍躯干长
+    assert get(left, "stance_width")["status"] == "candidate"  # 踝距/肩宽 = 1.5
+    assert get(left, "stance_width")["fusion"]["method"] == "primary_view"
     assert left["backend"] == "mediapipe" and left["delegate"] == "cpu"
     assert not left["scoreAuthorized"]
+
+
+def test_fist_height_and_stance_width_use_relative_thresholds_and_the_front_hand():
+    """D-3：拳峰与鼻尖纵向差 ≤ 0.08 倍躯干长、踝距/肩宽在 0.8–1.2；只看左右式的前手，不再"任一手满足"。"""
+    series = pose_series()
+    lm = series["landmarks"]
+    lm[:, 15, :2] = (.45, .17)  # 左腕与鼻尖纵向差 0.02（躯干 0.3），右腕仍低
+    lm[:, 27, 0], lm[:, 28, 0] = .4, .6  # 踝距 0.2 = 肩宽
+    get = lambda data, code: next(c for c in data["checks"] if c["code"] == code)
+    left = evaluate_series("stance", "left", {"front": series, "side": series})
+    assert get(left, "stance_height")["status"] == "not_observed"
+    assert get(left, "stance_width")["status"] == "not_observed"
+    right = evaluate_series("stance", "right", {"front": series, "side": series})
+    assert get(right, "stance_height")["status"] == "candidate"  # 右式前手是低着的右手
 
 
 def test_missing_landmarks_or_view_or_motion_are_not_a_pass():
@@ -132,7 +149,7 @@ def test_quality_reduces_weight_and_equal_conflict_stays_undecided(monkeypatch):
     front, side = pose_series(), pose_series()
     side["landmarks"][:, 15, :2] = (.4, .6)
     side["valid_mask"][[1, 3, 5, 7], 13] = False
-    monkeypatch.setattr(practice_mod, "phase_windows", lambda *args: {("stance", "start"): np.arange(10)})
+    monkeypatch.setattr(rule_checks_mod, "phase_windows", lambda *args: {("stance", "start"): np.arange(10)})
     weights = _default_front_weights()
     weights["stance"]["stance_elbow"] = .3
     cfg = FeedbackConfig(front_weights=weights)
@@ -165,7 +182,7 @@ def test_action_profiles_and_primary_view_limit_are_explicit():
 
 
 def test_weight_configuration_validation_and_report(tmp_path, monkeypatch):
-    monkeypatch.setattr(practice_v4, "repo_root", lambda: tmp_path)
+    monkeypatch.setattr(sanda_v5, "repo_root", lambda: tmp_path)
     weights = _default_front_weights()
     weights["stance"]["stance_elbow"] = .25
     path = tmp_path / "feedback_config.json"
@@ -434,6 +451,55 @@ def test_fast_combo_shared_timing_keeps_independent_measurements_and_masks():
     assert "正面" in check["reason"] and "有效帧不足" in check["reason"]
 
 
+def test_small_front_motion_gets_side_timing_in_practice_exam_and_paired_batch(tmp_path):
+    """正面位移小、同步侧面看得清的直拳：练习、考试与 batch paired 用同一套同步相位，正面结论一致（#21）。"""
+    from types import SimpleNamespace
+
+    from core.evaluation.matching import dual
+    from core.evaluation.scoring import exam_pool
+    from core.pose import Pose33RawSeries
+
+    side = combo_series()
+    front = pose_series(80)
+    front["times"] = side["times"][:]
+    check_id = "front_straight:finish:front:punch_extension"
+    cfg = FeedbackConfig()
+
+    def raw(series, view):  # 正方形画面：宽高比修正坐标即归一化坐标
+        return Pose33RawSeries(landmarks=series["landmarks"].copy(),
+                               meta={"video": f"{view}.mp4", "fps": 30.0, "frame_count": 80, "width": 96,
+                                     "height": 96, "start_frame": 0, "valid_conf_thr": 0.5})
+
+    raws = {"front": raw(front, "front"), "side": raw(side, "side")}
+    practice = next(c for c in evaluate_series("straight_combo", "left", {"front": front, "side": side}, cfg)["checks"]
+                    if c["id"] == check_id)
+    practice_front = next(m for m in practice["measurements"] if m["view"] == "front")
+    assert practice_front["validFrames"] == practice_front["totalFrames"] > 0
+
+    def exam_front_check():
+        names = {"front": ACTIONS["straight_combo"], "side": ACTIONS["straight_combo"]}
+        tpls = {v: [tmp_path / v / f"{n}.npz"] for v, n in names.items()}
+
+        def compare(templates, video, **_kwargs):
+            return [SimpleNamespace(score=0.8, start_frame=0, end_frame=79) for _ in templates]
+
+        res = exam_pool.score_exam_pools(tpls["front"], tpls["side"], Path("front.mp4"), Path("side.mp4"),
+                                         compare=compare, raw_series=lambda video, **_k: raws[Path(video).stem],
+                                         stop_evt=threading.Event())
+        report = next(r for r in res.rule_checks if r["view"] == "front")
+        return next(c for c in report["checks"] if c.check_id == check_id)
+
+    def lazy(view):
+        return lambda start, end: (raws[view].landmarks, dict(raws[view].meta))
+
+    batch_front, _batch_side = dual._synchronized_rules(lazy("front"), lazy("side"), action="straight_combo",
+                                                        stance="left", stop_evt=threading.Event())
+    for check in (exam_front_check(), next(c for c in batch_front if c.check_id == check_id)):
+        assert check.skip_reason != "phase_not_found"
+        assert (check.valid_frames, check.total_frames) == (practice_front["validFrames"], practice_front["totalFrames"])
+        assert check.violation_ratio == pytest.approx(practice_front["violationRatio"])
+
+
 def test_occluded_far_side_does_not_block_visible_arm_but_hidden_arm_stays_unable():
     front, side = pose_series(), pose_series()
     side["valid_mask"][:, [12, 14, 16, 24]] = False
@@ -586,3 +652,19 @@ def test_history_export_uses_injected_renderers_only(tmp_path):
     assert store.export(saved["id"], tmp_path / "r.txt").read_text(encoding="utf-8-sig") == "001|history"
     with pytest.raises(ValueError, match="未配置 .html 报告的生成方式"):
         store.export(saved["id"], tmp_path / "r.html")
+
+
+def test_upright_frames_before_the_stance_are_not_the_start_stance():
+    """D-3：考生先直立（双手下垂）再摆实战式；起始实战式窗口只能落在手抬到护位之后。"""
+    series = pose_series(n=40)
+    lm = series["landmarks"]
+    lm[:20, 15, :2] = (.4, .6)   # 前 20 帧双手下垂到髋部高度（直立）
+    lm[:20, 16, :2] = (.6, .6)
+    lm[:20, 13, :2] = (.4, .45)
+    lm[:20, 14, :2] = (.6, .45)
+    diagnostics = {}
+    windows = phase_windows(series, "stance", "left", FeedbackConfig(), diagnostics)
+    assert windows[("stance", "start")][0] >= 20
+    upright_only = pose_series(n=40)
+    upright_only["landmarks"][:] = lm[0]
+    assert phase_windows(upright_only, "stance", "left", FeedbackConfig(), {}) == {}
