@@ -149,6 +149,8 @@ POSE33_V3 = FeatureLayoutSpec(
 # 按 avg_cost 尺度比 baseline = pose33_baseline(2.0) * median(bodycore_avg_cost) /
 # median(pose33_avg_cost) = 2.0 * 0.6413 ≈ 1.2826，使 body_core_v1 分数与 pose33_v3
 # 分数同尺度、可共享 pass/fail 阈值。标定前的占位 2.0 已移除。
+# D-11（2026-10-14）：当时的 pose33 参照 2.0 已过时（pose33_v3 自 2026-07-11 为 3.0）；标定脚本已改为
+# 取注册表的 3.0，1.2826 待甲方按 docs/样本视频采集清单.md 新拍样本后重跑标定替换。
 # --------------------------------------------------------------------------- #
 _BODY_CORE_V1_JOINT_NAMES: tuple[str, ...] = (
     "L_SHOULDER",

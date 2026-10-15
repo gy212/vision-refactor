@@ -137,3 +137,18 @@ def test_calibration_outputs_include_yolo_authorization_metadata(tmp_path: Path)
     assert gate_exported[0]["yolo_score_authorized"] == "False"
     assert gate_exported[0]["yolo_calibration_status"] == "unvalidated"
     assert gate_exported[0]["yolo_display_scope"] == "internal"
+
+
+def test_calibration_uses_registered_pose33_baseline() -> None:
+    """D-11：body_core 标定的 pose33 参照取布局注册表（3.0），不再写死过时的 2.0。"""
+    from core.evaluation import baseline_for
+    from core.pose import POSE33_V3
+
+    assert calibrate_body_core.POSE33_BASELINE == baseline_for(POSE33_V3) == 3.0
+    rows = [
+        {"self": False, "pose33_avg_cost": 1.0, "mp_bodycore_avg_cost": 0.5},
+        {"self": False, "pose33_avg_cost": 2.0, "mp_bodycore_avg_cost": 1.0},
+        {"self": True, "pose33_avg_cost": 0.0, "mp_bodycore_avg_cost": 0.0},
+    ]
+    calib = calibrate_body_core.calibrate_bodycore_baseline(rows)
+    assert calib["scale_ratio"] == 0.5 and calib["baseline"] == 1.5
