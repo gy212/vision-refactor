@@ -1,3 +1,12 @@
+## 2026-10-17: [docs] 规则检出修复计划与 D-18～D-23 待决策项
+
+- 问题描述：甲方第一批样本（71 对）的分析表明 v5 规则在真实录像上检出能力很弱：推定正确的样本大面积误报（`stance_elbow`、`stance_height` 25/25），单视角已检出的问题被融合挡掉，"打出后保持"的单拳找不到动作阶段；另发现录像按名义 30 fps 写文件而实际只有 8～20 fps（回放快 1.5～3.7 倍），侧面机位在考生左后方、左式下主要拍到后背。这些都不是调阈值能解决的，需要一份分步骤、可逐项决策的修复计划。
+- 修改内容：
+  - 新增 `docs/规则检出修复计划.md`：问题、总体顺序与依赖，以及 7 个步骤（录像按真实时间写入、样本评估工具入库、侧面机位换边与重拍、融合允许单视角结论并按峰值配对、相位识别"打出后保持"、测量改用三维世界坐标、按教师确认样本标定阈值）各自的原因、方案、涉及模块、测试与验证；以及每个规则 PR 必附的对比材料。
+  - 设计文档 §11.2 登记待决策项 D-18～D-23（均为待决）。
+  - 只改文档，不改代码与规则。
+- 验证方法：逐条核对计划中引用的源码位置（`core/live/runner.py` 的 `_finish_frame`、`core/recording/controller.py` 的名义帧率、`core/evaluation/practice.py` 的 `_fuse`、`core/evaluation/phases.py` 的 `align_views` 与 `_segment_events`、`core/pose/engine.py` 丢弃世界坐标处、`sanda_v5.FeedbackConfig`）；数字取自本地分析报告 `outputs/sample_analysis/report.md` 与 71 段录像的 `segment_id`/`created_at` 对比；`git diff --check` 无空白错误。
+
 ## 2026-10-15（America/Los_Angeles）: [fix] PR #29 评审：自检规则版本、考试与 batch paired 共用同步相位
 
 - 问题描述：PR #29 评审的两个 P2。① `apps/tk/self_check.py::check_practice_history` 仍断言 `ruleVersion` 以 `-v4` 结尾，规则升到 v5 后冻结 EXE 的 `--offline-self-check` 在第 9 项失败，后续检查不再执行。② 练习先经 `align_views`、`share_phase_timing` 让正面动作不明显的一路共用同步侧面的动作时间段，考试与 batch `--paired` 却逐视角各自调用 `judge_view`：同一份正面证据（`straight_combo`，正面位移小、侧面清楚）在练习里按 5/5 帧测量出问题，考试与 batch 却报 `unable / phase_not_found`，违反 #21 与设计文档 §1.3、§7.2 的"核心逻辑一致"。
