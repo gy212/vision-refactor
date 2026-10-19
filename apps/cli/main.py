@@ -30,7 +30,7 @@ from core.live import (
     camera_session,
     video_session,
 )
-from core.media import PRIMARY, CameraService, CaptureSpec
+from core.media import PRIMARY, CameraService, CaptureSpec, FramePacer
 
 WINDOW_TITLE = "MediaPipe (Video/Camera)"
 PARALLEL_TITLE = "MediaPipe (Realtime Parallel)"
@@ -71,23 +71,27 @@ def open_input(source: str) -> FrameInput:
 
 
 class Mp4vSink:
-    """CLI 导出：会话登记尺寸后建 mp4v writer，逐帧写主路；``path`` 为空时什么都不做。"""
+    """CLI 导出：会话登记尺寸后建 mp4v writer，按真实时间写主路（D-18）；``path`` 为空时什么都不做。"""
 
     def __init__(self, path: str | None) -> None:
         self._path = path
         self._writer: cv2.VideoWriter | None = None
+        self._pacer: FramePacer | None = None
 
     def begin_session(self, sizes: Mapping[str, tuple[int, int]], fps: float) -> None:
         if self._path:
             fourcc = cv2.VideoWriter_fourcc(*"mp4v")
             self._writer = cv2.VideoWriter(self._path, fourcc, float(fps), tuple(sizes["front"]))
+            self._pacer = FramePacer(fps) if fps > 0 else None
 
     def update_sizes(self, sizes: Mapping[str, tuple[int, int]]) -> None:
         return None
 
-    def write(self, frames: Mapping[str, np.ndarray]) -> None:
+    def write(self, frames: Mapping[str, np.ndarray], captured_at: float | None = None) -> None:
         if self._writer is not None:
-            self._writer.write(frames["front"])
+            repeats = 1 if self._pacer is None else self._pacer.repeats(captured_at)
+            for _ in range(repeats):
+                self._writer.write(frames["front"])
 
     def close_session(self) -> None:
         if self._writer is not None:

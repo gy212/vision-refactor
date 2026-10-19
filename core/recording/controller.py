@@ -143,20 +143,21 @@ class RecordingController:
 
             return self._state
 
-    def write_frame(self, frame) -> None:
+    def write_frame(self, frame, repeats: int = 1) -> None:
         """Worker 线程每帧调用：仅当状态为 recording 时写盘（首帧懒创建 writer）。
 
         - 在锁内判定状态：仅 ``recording`` 写盘；``paused``/``idle`` 直接跳过且不
           丢弃已写帧（需求 5.5/I4）。
+        - ``repeats`` 是这一帧写入的次数（恒定帧率节拍，D-18）；0 时什么都不做。
         - 首次写盘时经 ``_writer_factory`` 懒创建 writer，记录工厂返回的
           ``actual_path`` 为 ``_result_path``（需求 5.3）。
-        - 写盘成功后 ``_frames_written += 1``。
+        - 每写成功一次 ``_frames_written += 1``。
         - 创建或写入抛异常时进入错误处理：释放任何半开资源、``_writer=None``、
           置 ``_last_error``、状态复位 ``idle``，异常不外泄到 worker 主循环（需求 5.11）。
         """
         with self._lock:
             # 仅录制中写盘；paused/idle 跳过，保留已写帧不丢弃（I4）。
-            if self._state != "recording":
+            if self._state != "recording" or repeats <= 0:
                 return
 
             try:
@@ -168,8 +169,9 @@ class RecordingController:
                     self._writer = writer
                     self._result_path = actual_path
 
-                self._writer.write(frame)
-                self._frames_written += 1
+                for _ in range(repeats):
+                    self._writer.write(frame)
+                    self._frames_written += 1
             except Exception as exc:  # noqa: BLE001 - 任何创建/写入失败都需复位并记录
                 # 释放任何半开资源（创建成功但 write 失败，或工厂部分初始化）。
                 if self._writer is not None:

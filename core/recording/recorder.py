@@ -4,6 +4,7 @@
 视角名取自 ``begin_session`` 的 ``sizes`` 键（单路 ``("front",)``，双路 ``("front", "side")``）。
 一路是单路片段（``SegmentLayout.single_path``），多路是片段目录下的 ``<view>.mp4``。
 recorder 只管录制边界，不提交后处理；结束后返回 ``FinishedSegment`` 交给 ``RecordingService``。
+各路共用一个 ``FramePacer``：按帧的采集时刻决定写几次，使录像按真实时间回放、各路帧数相同（D-18）。
 """
 from __future__ import annotations
 
@@ -16,6 +17,7 @@ from typing import Any
 import cv2
 import numpy as np
 
+from core.media.pacing import FramePacer
 from core.media.segment_layout import SegmentLayout, new_stamp, segment_id_for_stamp
 from core.recording.controller import (
     RecordingController,
@@ -149,6 +151,7 @@ class SegmentRecorder:
         self._lock = threading.Lock()
         self._controllers: dict[str, RecordingController] = {}
         self._segment: SegmentRef | None = None
+        self._pacer: FramePacer | None = None
 
     # ------------------------------------------------------------------ 会话
     def begin_session(self, sizes: Mapping[str, tuple[int, int]], fps: float) -> None:
@@ -159,6 +162,7 @@ class SegmentRecorder:
             self._close_controllers()
             self._segment = None
             self._controllers = {}
+            self._pacer = FramePacer(fps) if fps > 0 else None   # 名义帧率未知时逐帧写一次
             for view, size in sizes.items():
                 kwargs = {} if self._writer_factory is None else {"writer_factory": self._writer_factory}
                 controller = RecordingController(path_provider=self._path_provider(view), **kwargs)
@@ -195,6 +199,8 @@ class SegmentRecorder:
             self._segment = SegmentRef(new_stamp(), tuple(self._controllers), meta)
             states = [c.request_toggle() for c in controllers]
             if all(state == "recording" for state in states):
+                if self._pacer is not None:
+                    self._pacer.reset()
                 return self._segment
             for controller, state in zip(controllers, states):
                 if state in _ACTIVE:
@@ -208,7 +214,10 @@ class SegmentRecorder:
             states = {c.request_toggle() for c in self._controllers.values()}
             if len(states) > 1:
                 return None
-            return next(iter(states), "idle")
+            state = next(iter(states), "idle")
+            if state == "recording" and self._pacer is not None:
+                self._pacer.resync()
+            return state
 
     def broken(self) -> bool:
         """多路片段已分叉：有一路写失败或各路状态不一致。"""
@@ -218,9 +227,16 @@ class SegmentRecorder:
             snaps = [c.snapshot() for c in self._controllers.values()]
             return any(s.last_error for s in snaps) or len({s.state for s in snaps}) > 1
 
-    def write(self, frames: Mapping[str, np.ndarray]) -> None:
-        """写入同一轮的各路帧；尺寸与会话不符时先缩放。"""
+    def write(self, frames: Mapping[str, np.ndarray], captured_at: float | None = None) -> None:
+        """写入同一轮的各路帧；尺寸与会话不符时先缩放。
+
+        ``captured_at`` 是这一轮的采集时刻（``time.monotonic()`` 秒），各路按同一节拍重复或跳过；
+        None 表示逐帧写一次（视频文件输入）。
+        """
         with self._lock:
+            repeats = 1
+            if self._pacer is not None and any(c.state == "recording" for c in self._controllers.values()):
+                repeats = self._pacer.repeats(captured_at)
             for view, controller in self._controllers.items():
                 frame = frames.get(view)
                 if frame is None:
@@ -229,7 +245,7 @@ class SegmentRecorder:
                     frame = fit_frame_to_size(frame, controller.session_size)
                 except Exception:
                     pass
-                controller.write_frame(frame)
+                controller.write_frame(frame, repeats)
 
     def end_segment(self, *, discard: bool = False) -> FinishedSegment | None:
         """结束当前片段，会话保持；返回结束的片段（没有进行中的片段则 None）。"""

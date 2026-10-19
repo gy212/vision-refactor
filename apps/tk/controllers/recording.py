@@ -94,8 +94,8 @@ class RecordingController:
     def update_sizes(self, sizes) -> None:
         self.service.update_sizes(sizes)
 
-    def write(self, frames) -> None:
-        self.service.write(frames)
+    def write(self, frames, captured_at: float | None = None) -> None:
+        self.service.write(frames, captured_at)
 
     def close_session(self) -> None:
         """会话结束时关闭录制：仍在进行的片段照常提交；单摄写错误留给下一次 Tk tick 提示。"""

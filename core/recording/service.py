@@ -59,8 +59,8 @@ class RecordingService:
     def update_sizes(self, sizes: Mapping[str, tuple[int, int]]) -> None:
         self._recorder.update_sizes(sizes)
 
-    def write(self, frames: Mapping[str, np.ndarray]) -> None:
-        self._recorder.write(frames)
+    def write(self, frames: Mapping[str, np.ndarray], captured_at: float | None = None) -> None:
+        self._recorder.write(frames, captured_at)
 
     def close_session(self, *, plan: ProcessingPlan | None = None) -> FinishOutcome:
         """会话结束：关闭各路 writer，仍在进行的片段照常提交。"""

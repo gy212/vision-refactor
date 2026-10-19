@@ -51,11 +51,15 @@ _DUAL_ERRORS = {
 
 
 class FrameSink(Protocol):
-    """录制端口（由 ``recording.RecordingService`` 适配实现）；帧按视角名（front/side）组织。"""
+    """录制端口（由 ``recording.RecordingService`` 适配实现）；帧按视角名（front/side）组织。
+
+    ``write`` 的 ``captured_at`` 是这一轮帧的采集时刻（``time.monotonic()`` 秒），实时输入据此按真实时间写出
+    （D-18）；视频文件输入传 None，逐帧写一次。
+    """
 
     def begin_session(self, sizes: Mapping[str, tuple[int, int]], fps: float) -> None: ...
     def update_sizes(self, sizes: Mapping[str, tuple[int, int]]) -> None: ...
-    def write(self, frames: Mapping[str, np.ndarray]) -> None: ...
+    def write(self, frames: Mapping[str, np.ndarray], captured_at: float | None = None) -> None: ...
     def close_session(self) -> None: ...
 
 
@@ -378,6 +382,7 @@ class SessionRunner:
                         stamped.wait(timeout=max(0.0, deadline - time.monotonic()))
                     ts = stamps.pop(res.index, int(res.index * 1000.0 / self.ctx.fps))
                 packet = FramePacket(res.index, {PRIMARY: res.frame}, timestamp_ms=ts,
+                                     captured_at=capture_t0 + ts / 1000.0,
                                      pose={PRIMARY: res.pose_landmarks}, hands={PRIMARY: res.hands or []})
                 if not self._finish_frame(packet):
                     break
@@ -407,11 +412,12 @@ class SessionRunner:
         suffix = f" (x{self.config.workers})" if self.config.parallel and not self.config.is_file else ""
         self.ctx.fps_text = f"{self.config.hud_title}: {fps:.1f}{suffix}"
         record = packet.out if self.config.record_overlay else packet.frames
+        captured_at = None if self.config.is_file else packet.captured_at
         if self.config.record_hud:
             self._overlay.process(packet, self.ctx)
-            self._write(record)
+            self._write(record, captured_at)
         else:
-            self._write(record)
+            self._write(record, captured_at)
             self._overlay.process(packet, self.ctx)
         stage = "annotated" if self._pose is not None else "raw"
         self._publish(stage, packet.out, {role: actions_text(a) for role, a in packet.actions.items()})
@@ -431,9 +437,9 @@ class SessionRunner:
                 view_for_role(role): (int(frame.shape[1]), int(frame.shape[0])) for role, frame in frames.items()
             })
 
-    def _write(self, frames) -> None:
+    def _write(self, frames, captured_at: float | None) -> None:
         if self._sink is not None and self._sink_open:
-            self._sink.write({view_for_role(role): frame for role, frame in frames.items()})
+            self._sink.write({view_for_role(role): frame for role, frame in frames.items()}, captured_at)
 
     def _publish(self, stage: str, frames, actions) -> None:
         if self._preview is not None:

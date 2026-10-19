@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""媒体层（L1）的公共 API：离线视频解码、帧有效性、视频写出/转码、片段路径布局与摄像头子系统。"""
+"""媒体层（L1）的公共 API：离线视频解码、帧有效性、视频写出/转码与恒定帧率节拍、片段路径布局与摄像头子系统。"""
 from core.media.video_source import (
     DEFAULT_FPS,
     NO_END,
@@ -41,6 +41,7 @@ from core.media.camera import (
     probe_camera,
 )
 from core.media.frames import FrameSet, is_valid_bgr
+from core.media.pacing import FramePacer
 from core.media.segment_layout import VIDEO_SUFFIXES, SegmentLayout, view_for_role
 from core.media.writer import open_video_writer, transcode_to_h264
 
@@ -62,6 +63,7 @@ __all__ = [
     "enumerate_cameras",
     "first_frame_ok",
     "Frame",
+    "FramePacer",
     "FrameSet",
     "is_valid_bgr",
     "list_device_names",

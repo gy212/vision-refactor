@@ -124,6 +124,7 @@ class FakeSink:
     def __init__(self) -> None:
         self.calls: list = []
         self.writes: list[dict] = []
+        self.stamps: list[float | None] = []
         self.sizes: list[dict] = []
         self.fail_write = False
 
@@ -133,10 +134,11 @@ class FakeSink:
     def update_sizes(self, sizes):
         self.sizes.append(dict(sizes))
 
-    def write(self, frames):
+    def write(self, frames, captured_at=None):
         if self.fail_write:
             raise RuntimeError("write failed")
         self.writes.append(dict(frames))
+        self.stamps.append(captured_at)
 
     def close_session(self):
         self.calls.append(("close",))
@@ -377,7 +379,7 @@ def test_parallel_video_writer_receives_hud_only_for_cli(monkeypatch, hud, expec
     )
     h = Harness(FakeInput(is_file=True, frames=6, shape=(120, 320, 3)))
     copies: list[np.ndarray] = []
-    h.sink.write = lambda frames: copies.append(next(iter(frames.values())).copy())
+    h.sink.write = lambda frames, captured_at=None: copies.append(next(iter(frames.values())).copy())
     h.manager.start(video_session("clip.mp4", workers=2, hud=hud))
     assert h.outcome().frames == 6
     assert len(copies) == 6
@@ -393,6 +395,37 @@ def test_video_file_always_infers_and_ends_at_eof():
     progress = [e.payload for e in h.events if e.kind == "progress"]
     assert (5, 7) in progress and progress[-1] == (7, 7)
     assert h.sink.calls[0] == ("begin", {"front": (6, 4)}, 25.0)
+
+
+def test_camera_writes_carry_capture_time_and_video_writes_do_not():
+    """D-18：实时输入把每轮帧的采集时刻交给录制端按真实时间写出；视频文件输入逐帧写一次（时刻为 None）。"""
+    h = Harness(FakeInput())
+    before = time.monotonic()
+    h.manager.start(single(skeleton=False))
+    h.wait_for(lambda: len(h.sink.writes) >= 3)
+    h.manager.stop()
+    h.outcome()
+    stamps = h.sink.stamps
+    assert all(isinstance(s, float) and s >= before for s in stamps)
+    assert stamps == sorted(stamps)
+
+    v = Harness(FakeInput(is_file=True, frames=4))
+    v.manager.start(video_session("clip.mp4"))
+    v.outcome()
+    assert v.sink.stamps == [None] * 4
+
+
+def test_parallel_camera_writes_carry_capture_time(monkeypatch):
+    monkeypatch.setattr(
+        stages_mod, "default_pipeline_factory", lambda **_kwargs: (lambda: FakeEngine(None)),
+    )
+    h = Harness(FakeInput(frames=None))
+    before = time.monotonic()
+    h.manager.start(single(skeleton=True, workers=2))
+    h.wait_for(lambda: len(h.sink.writes) >= 3)
+    h.manager.stop()
+    h.outcome()
+    assert all(isinstance(s, float) and s >= before - 0.01 for s in h.sink.stamps)
 
 
 def test_config_table_matches_legacy_loops():
