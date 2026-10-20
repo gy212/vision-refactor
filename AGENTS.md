@@ -108,6 +108,7 @@ CI（`.github/workflows/gates.yml`，检查名 `gates`）在每个 PR 和 `main`
 
 - 重构的提交只进本仓库，默认分支 `main`，不直接推送 `main`。
 - 一个阶段一个分支、一个 PR：前置阶段的 PR 合并后，从最新的 `main` 新建 `refactor/p<N>-<主题>`，开工时 `git status` 干净；阶段内可以分多次提交。验收标准全部满足后推送分支，用 `gh pr create --base main` 开 PR。用户已同意：阶段分支上的提交、推送和开 PR 不必逐次询问；PR 由用户确认后合并。
+- 跨多层的大改动用 stacked PR（官方扩展 `gh stack`，安装：`gh extension install github/gh-stack`），不开一串互不相干的 PR：每层一个分支、一个 PR，基于下一层，最底层基于 `main`；分支名 `<决策编号>/<层名>`，如 `d18/capture`。每层单独过门禁、单独可审阅，不留半接线的旧路径；文档与决策放最底层。`gh stack add` 加层，`gh stack submit` 推送并开 PR，`gh stack rebase` 在下层变动后重排。整栈由用户确认后合入（`gh stack merge`）。
 - Conventional Commits：`feat:`、`fix:`、`refactor:`、`docs:`、`test:`、`chore:`。PR 和 issue 用中文，写明问题、改动、验证命令和结果，以及被替换的测试和对应的新测试（D-13）；UI 改动附截图，或说明可见行为。
 - 提交或推送前确认身份：`gh auth status`、`gh api user`、`git config user.name`、`git config user.email`。GitHub connector 不可用时，用本地的 `gh pr view`、`gh pr checks`、`gh issue view`。
 
