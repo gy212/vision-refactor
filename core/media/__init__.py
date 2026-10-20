@@ -33,6 +33,7 @@ from core.media.camera import (
     CaptureSpec,
     CatalogSnapshot,
     DeviceCatalog,
+    FrameQueue,
     LatestSlot,
     ProcessCamera,
     RoleSpecs,
@@ -44,6 +45,7 @@ from core.media.camera import (
 from core.media.frames import CapturedFrame, FrameSet, capture_clock_ns, is_valid_bgr
 from core.media.capture_record import capture_document, read_capture_record, write_capture_record
 from core.media.pacing import Timeline, TimelineStats
+from core.media.transforms import apply_rotation, rotated_size
 from core.media.segment_layout import CAPTURE_FILE, VIDEO_SUFFIXES, SegmentLayout, view_for_role
 from core.media.writer import open_video_writer, transcode_to_h264
 
@@ -60,6 +62,7 @@ __all__ = [
     "CameraWarmupTimeout",
     "CapturedFrame",
     "capture_clock_ns",
+    "apply_rotation",
     "capture_document",
     "CaptureReader",
     "CaptureSpec",
@@ -70,6 +73,7 @@ __all__ = [
     "enumerate_cameras",
     "first_frame_ok",
     "Frame",
+    "FrameQueue",
     "FrameSet",
     "is_valid_bgr",
     "LatestSlot",
@@ -84,6 +88,7 @@ __all__ = [
     "ProcessCamera",
     "read_capture_record",
     "read_frame_at",
+    "rotated_size",
     "ROLES",
     "RoleSpecs",
     "SECONDARY",

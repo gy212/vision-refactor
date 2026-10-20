@@ -11,7 +11,7 @@ from core.media.camera.devices import (
     probe_camera,
 )
 from core.media.camera.pool import CameraLease, CameraPool
-from core.media.camera.reader import CameraReadError, CaptureReader, LatestSlot
+from core.media.camera.reader import CameraReadError, CaptureReader, FrameQueue, LatestSlot
 from core.media.camera.service import (
     CameraService,
     CameraStream,
@@ -41,6 +41,7 @@ __all__ = [
     "CaptureSpec",
     "CatalogSnapshot",
     "DeviceCatalog",
+    "FrameQueue",
     "PRIMARY",
     "LatestSlot",
     "ProcessCamera",

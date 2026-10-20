@@ -19,10 +19,8 @@ from core.live.runner import APP_CLOSE, FrameSink, RunningInfo, SessionEvent, Se
 from core.live.stages import (
     FramePacket,
     PresenceSample,
-    apply_rotation,
     build_stages,
     match_text,
-    rotated_size,
 )
 
 __all__ = [
@@ -53,11 +51,9 @@ __all__ = [
     "StartupMetrics",
     "Versioned",
     "VideoFileInput",
-    "apply_rotation",
     "build_stages",
     "camera_session",
     "fit_preview_rgb",
     "match_text",
-    "rotated_size",
     "video_session",
 ]

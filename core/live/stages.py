@@ -11,12 +11,11 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable, Protocol
 
-import cv2
 import numpy as np
 
 from core.evaluation import MatchResult, OnlineActionMatcher, load_template_library
 from core.foundation.paths import models_dir, templates_dir
-from core.media import FrameSet
+from core.media import FrameSet, apply_rotation
 from core.pose import (
     EngineSpec,
     ParallelPoseEngine,
@@ -31,23 +30,9 @@ from core.pose import (
 )
 from core.live.config import LiveControls, PresenceProbe, SessionConfig
 
-_ROTATE_CODES = {
-    90: cv2.ROTATE_90_CLOCKWISE,
-    180: cv2.ROTATE_180,
-    270: cv2.ROTATE_90_COUNTERCLOCKWISE,
-}
 _MATCH_SUFFIXES = ("_正面", "_侧面", "_左侧", "_右侧")
 
 
-def apply_rotation(frame: np.ndarray, degrees: int) -> np.ndarray:
-    """按度数旋转帧；0（或非 90 倍数）时原样返回（不复制）。"""
-    code = _ROTATE_CODES.get(degrees)
-    return cv2.rotate(frame, code) if code is not None else frame
-
-
-def rotated_size(width: int, height: int, degrees: int) -> tuple[int, int]:
-    """旋转后的 ``(width, height)``，供录制登记尺寸与布局使用。"""
-    return (height, width) if degrees in (90, 270) else (width, height)
 
 
 def match_text(result: MatchResult) -> str:
@@ -340,8 +325,6 @@ __all__ = [
     "Stage",
     "StageContext",
     "TransformStage",
-    "apply_rotation",
     "build_stages",
     "match_text",
-    "rotated_size",
 ]

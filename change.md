@@ -1,3 +1,15 @@
+## 2026-10-20: [feat] D-18 第 4 层：桌面隐藏入口的录制性能测试，供甲方实测双路 1080p 写盘吞吐
+
+- 问题描述：D-27 要求第 5 层（每路 writer 与 FIFO）实施前，先在甲方机器上测双路 1080p 写盘与 Lite 同时运行的持续吞吐，据此定队列容量和降级方案；甲方只会用桌面程序，不会用命令行，测完还要能找到报告文件发回。
+- 修改内容：
+  - 新增 `core/services/recording_benchmark.py`：用生产的 `CameraStream`、`open_video_writer`、旋转与 MediaPipe 引擎依次跑四段（只采集 10 s；采集+写盘、再加 Lite 约 10 次/秒、再加每路骨架识别各 30 s）；每路写盘线程经 `FrameQueue` 收帧，writer 先打开再订阅；报告各路采集率与间隔、写盘每帧耗时分位、编码器与打开耗时、队列峰值与超过 8 帧的次数、Lite/骨架耗时、全系统 CPU、本机与构建信息，并给出每段达标判定和中文摘要；取消或出错时也返回已完成部分；临时录像每段结束删除。
+  - `core/media/camera/reader.py` 新增 `FrameQueue`（有界、不阻塞读帧线程，满了计数丢弃），`CaptureReader.subscribe/unsubscribe`；`CameraStream` 新增 `latest`、`subscribe`、`unsubscribe`。
+  - 新增 `core/foundation/host.py`（桌面目录按系统登记位置取，OneDrive 重定向也对；CPU、内存、系统 CPU 时间）；`apply_rotation`、`rotated_size` 从 `live/stages` 移到 `core/media/transforms.py`，调用方同步改用新路径。
+  - 桌面：主窗口隐藏快捷键 Ctrl+Shift+B 打开模态「录制性能测试」窗口（`apps/tk/controllers/benchmark.py`、`apps/tk/views/benchmark_dialog.py`）；要求未在预览、普通模式、已选摄像头、录制目录磁盘空闲 ≥3 GB；报告保存为桌面上的 `录制性能测试_<日期>_<时间>.json`，桌面不可写时退到数据目录的 `录制性能测试/`；窗口先写明保存位置，测完显示完整路径，可「打开所在文件夹」（资源管理器选中文件）和「复制路径」；主程序退出时取消测试。
+  - `load_build_info` 从 `apps/tk/self_check.py` 移到新模块 `apps/tk/build_info.py`（自检会导入组合根，benchmark 控制器经它导入会形成环），自检与 `tests/test_packaging_build_info.py` 改用新路径。
+  - 新增甲方操作说明 `docs/录制性能测试操作说明.md`；设计文档 §2.2、§8.8（插入第 4 层 `d18/bench`，原第 4–6 层顺延为 5–7）与 `AGENTS.md` 代码地图同步。
+- 验证方法：新增 `tests/test_recording_benchmark.py` 7 项（假摄像头与假引擎跑完四段、慢 writer 判不达标、取消、引擎失败、报告文件名与编码、`FrameQueue` 计数、订阅收到每一帧且有序）与 `tests/test_tk_benchmark.py` 9 项（开始条件、磁盘不足、报告存桌面并显示完整路径、桌面不可写时的回退、取消、窗口真实 Tk 冒烟、组合根快捷键与退出时关窗）；本机只有一个摄像头，且验证时被占用（OpenCV DSHOW/MSMF 直接打开也失败），未能用真实设备跑完四段，打不开摄像头的路径实测：报告照常保存、写明原因、临时目录已删除；全量 `pytest tests -q`、门禁与空白检查通过；冻结 EXE `--offline-self-check` 通过。
+
 ## 2026-10-20: [feat] D-18 第 3 层：录像时间轴只用之前的源帧，新增 capture.json 采集记录
 
 - 问题描述：PR #34 的补帧把新到的画面写进它之前的所有空槽（黑帧 100.0 s、白帧 101.0 s，输出成 1 黑 30 白），动作会比实际更早出现；补帧后的帧数也无法说明真实采集率。

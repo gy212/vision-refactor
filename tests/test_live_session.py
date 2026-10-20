@@ -21,7 +21,7 @@ from core.live import (
     video_session,
 )
 from core.live.preview import PreviewStore
-from core.live.stages import apply_rotation, rotated_size
+from core.media import apply_rotation, rotated_size
 from core.media import PRIMARY, SECONDARY, CameraReadError, CaptureSpec
 from core.recording import fit_frame_to_size
 

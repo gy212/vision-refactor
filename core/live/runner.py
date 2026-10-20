@@ -26,9 +26,16 @@ from core.live.stages import (
     PoseStage,
     StageContext,
     TransformStage,
-    rotated_size,
 )
-from core.media import PRIMARY, SECONDARY, LatestSlot, VideoOpenError, capture_clock_ns, view_for_role
+from core.media import (
+    PRIMARY,
+    SECONDARY,
+    LatestSlot,
+    VideoOpenError,
+    capture_clock_ns,
+    rotated_size,
+    view_for_role,
+)
 from core.pose import actions_text
 
 RAW_PUMP_INTERVAL_S = 0.05

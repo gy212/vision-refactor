@@ -1,14 +1,17 @@
 # -*- coding: utf-8 -*-
-"""会话期间每路摄像头唯一的持续读帧线程 ``CaptureReader``，以及它发布帧所用的最新帧槽 ``LatestSlot``（设计文档 §8.8）。
+"""会话期间每路摄像头唯一的持续读帧线程 ``CaptureReader``，以及它发布帧所用的最新帧槽 ``LatestSlot`` 与有界队列 ``FrameQueue``（设计文档 §8.8）。
 
 - 接管租约后，``CameraStream`` 为每路启动一个 ``CaptureReader``：持续读 → 校验 → 打采集时间戳与序号 →
   发布到该路的 ``LatestSlot``。两路各读各的，一路慢或卡住不拖住另一路。
 - 消费方（预览、推理）按自己的序号游标从槽里取更新；处理不过来时只拿到最新帧，被覆盖的帧不排队。
+- 要按序拿到每一帧的消费方（录像）订阅一个 ``FrameQueue``：reader 非阻塞投递，队列满时这一帧不进队列、
+  记一次溢出，由消费方判定失败；reader 从不等待消费方。
 - ``read_stamped`` 是读一帧并取采集时刻的唯一实现，预热 reader 与会话 reader 共用。
 """
 from __future__ import annotations
 
 import threading
+from collections import deque
 from typing import Any, Generic, TypeVar
 
 import numpy as np
@@ -94,6 +97,62 @@ class LatestSlot(Generic[T]):
             return None
 
 
+class FrameQueue:
+    """有界 FIFO。``put_nowait`` 不阻塞：队列满时丢掉这一帧并计入 ``overflows``；``watermark`` 统计到达时
+    已有至少这么多帧排队的次数（用于"按更小容量运行会不会溢出"的测量）。``peak`` 是排队帧数的峰值。"""
+
+    def __init__(self, capacity: int, *, watermark: int | None = None) -> None:
+        if capacity < 1:
+            raise ValueError("队列容量至少为 1")
+        self.capacity = int(capacity)
+        self.watermark = watermark
+        self._items: deque[CapturedFrame] = deque()
+        self._condition = threading.Condition()
+        self._closed = False
+        self.peak = 0
+        self.overflows = 0
+        self.over_watermark = 0
+        self.accepted = 0
+
+    def put_nowait(self, frame: CapturedFrame) -> bool:
+        with self._condition:
+            if self._closed:
+                return False
+            depth = len(self._items)
+            if self.watermark is not None and depth >= self.watermark:
+                self.over_watermark += 1
+            if depth >= self.capacity:
+                self.overflows += 1
+                return False
+            self._items.append(frame)
+            self.accepted += 1
+            self.peak = max(self.peak, depth + 1)
+            self._condition.notify_all()
+            return True
+
+    def get(self, timeout: float | None = None) -> CapturedFrame | None:
+        """按序取一帧；``timeout`` 内没有帧、或已关闭且取空时返回 None。"""
+        with self._condition:
+            self._condition.wait_for(lambda: self._items or self._closed, timeout)
+            return self._items.popleft() if self._items else None
+
+    def close(self) -> None:
+        """不再接收新帧；已排队的帧仍可取完。"""
+        with self._condition:
+            self._closed = True
+            self._condition.notify_all()
+
+    @property
+    def closed(self) -> bool:
+        with self._condition:
+            return self._closed
+
+    @property
+    def depth(self) -> int:
+        with self._condition:
+            return len(self._items)
+
+
 class CaptureReader:
     """一路设备一个读帧线程，产出该路的 ``CapturedFrame``。读失败、无效帧或驱动异常时停止并关闭槽，
     错误是 ``CameraReadError``（驱动异常作为其 ``__cause__``）。"""
@@ -112,6 +171,8 @@ class CaptureReader:
         self._capture = capture
         self._generation = generation
         self._numbered = numbered
+        self._taps: list[FrameQueue] = []
+        self._taps_lock = threading.Lock()
         self._handle = tasks.spawn(
             f"reader-{role}", self._run, owner="camera-reader", close_budget_s=READER_STOP_BUDGET_S,
         )
@@ -128,13 +189,38 @@ class CaptureReader:
                     error = CameraReadError(self.role, numbered=self._numbered)
                     break
                 seq += 1
-                self.latest.publish(CapturedFrame(self.role, seq, captured_at_ns, frame, self._generation))
+                captured = CapturedFrame(self.role, seq, captured_at_ns, frame, self._generation)
+                self.latest.publish(captured)
+                with self._taps_lock:
+                    taps = tuple(self._taps)
+                for tap in taps:
+                    tap.put_nowait(captured)
         except BaseException as exc:
             if not token.cancelled:
                 error = CameraReadError(self.role, numbered=self._numbered)
                 error.__cause__ = exc
         finally:
             self.latest.close(error)
+            with self._taps_lock:
+                taps, self._taps = tuple(self._taps), []
+            for tap in taps:
+                tap.close()
+
+    def subscribe(self, capacity: int, *, watermark: int | None = None) -> FrameQueue:
+        """订阅之后采到的每一帧（按采集顺序）；reader 停止时队列被关闭。"""
+        tap = FrameQueue(capacity, watermark=watermark)
+        with self._taps_lock:
+            if self.latest.closed:
+                tap.close()
+            else:
+                self._taps.append(tap)
+        return tap
+
+    def unsubscribe(self, tap: FrameQueue) -> None:
+        with self._taps_lock:
+            if tap in self._taps:
+                self._taps.remove(tap)
+        tap.close()
 
     def request_stop(self) -> None:
         """请求停止，不等待；多路同时停止时先逐路请求，再逐路 ``stop``。"""
@@ -146,4 +232,4 @@ class CaptureReader:
         return self._handle.join(READER_STOP_BUDGET_S if timeout is None else timeout)
 
 
-__all__ = ["CameraReadError", "CaptureReader", "LatestSlot", "READER_STOP_BUDGET_S", "read_stamped"]
+__all__ = ["CameraReadError", "CaptureReader", "FrameQueue", "LatestSlot", "READER_STOP_BUDGET_S", "read_stamped"]

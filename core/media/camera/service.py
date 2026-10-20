@@ -15,7 +15,7 @@ from core.foundation import diag
 from core.foundation.tasks import Cancelled, CancelToken, TaskGroup, TaskHandle
 from core.media.camera.devices import CatalogSnapshot, DeviceCatalog
 from core.media.camera.pool import CameraLease, CameraPool
-from core.media.camera.reader import CameraReadError, CaptureReader
+from core.media.camera.reader import CameraReadError, CaptureReader, FrameQueue
 from core.media.camera.spec import (
     PRIMARY,
     ROLES,
@@ -201,6 +201,28 @@ class CameraStream:
                 raise reader.latest.error or CameraReadError(role, numbered=self.dual)
             self._cursor[role], frames[role] = taken
         return frames
+
+    def latest(self, role: str) -> CapturedFrame | None:
+        """该路此刻的最新帧（不推进 ``read`` 的游标）；没有接管或还没有帧时为 None。"""
+        reader = self._readers.get(role)
+        if reader is None:
+            return None
+        taken = reader.latest.take(0, 0)
+        return None if taken is None else taken[1]
+
+    def subscribe(self, role: str, capacity: int, *, watermark: int | None = None) -> FrameQueue:
+        """订阅该路之后采到的每一帧（录像用，见 ``FrameQueue``）；须在 ``claim`` 之后调用。"""
+        reader = self._readers.get(role)
+        if reader is None:
+            raise RuntimeError(f"{role} 还没有接管，不能订阅帧")
+        return reader.subscribe(capacity, watermark=watermark)
+
+    def unsubscribe(self, role: str, tap: FrameQueue) -> None:
+        reader = self._readers.get(role)
+        if reader is not None:
+            reader.unsubscribe(tap)
+        else:
+            tap.close()
 
     def close(self, *, keep_warm: bool = False) -> None:
         """结束会话。已接管时先停各路 reader，再：``keep_warm`` 且池接收则把设备交回预热（V-1），否则 ``lease.release()``；
