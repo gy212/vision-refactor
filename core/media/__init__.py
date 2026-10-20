@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""媒体层（L1）的公共 API：离线视频解码、帧有效性、视频写出/转码、片段路径布局与摄像头子系统。"""
+"""媒体层（L1）的公共 API：离线视频解码、帧契约、视频写出/转码、录像时间轴与采集记录、片段路径布局与摄像头子系统。"""
 from core.media.video_source import (
     DEFAULT_FPS,
     NO_END,
@@ -42,10 +42,13 @@ from core.media.camera import (
     probe_camera,
 )
 from core.media.frames import CapturedFrame, FrameSet, capture_clock_ns, is_valid_bgr
-from core.media.segment_layout import VIDEO_SUFFIXES, SegmentLayout, view_for_role
+from core.media.capture_record import capture_document, read_capture_record, write_capture_record
+from core.media.pacing import Timeline, TimelineStats
+from core.media.segment_layout import CAPTURE_FILE, VIDEO_SUFFIXES, SegmentLayout, view_for_role
 from core.media.writer import open_video_writer, transcode_to_h264
 
 __all__ = [
+    "CAPTURE_FILE",
     "CameraDevice",
     "CameraLease",
     "CameraPool",
@@ -57,6 +60,7 @@ __all__ = [
     "CameraWarmupTimeout",
     "CapturedFrame",
     "capture_clock_ns",
+    "capture_document",
     "CaptureReader",
     "CaptureSpec",
     "CatalogSnapshot",
@@ -78,11 +82,14 @@ __all__ = [
     "probe_camera",
     "probe_video",
     "ProcessCamera",
+    "read_capture_record",
     "read_frame_at",
     "ROLES",
     "RoleSpecs",
     "SECONDARY",
     "SegmentLayout",
+    "Timeline",
+    "TimelineStats",
     "transcode_to_h264",
     "UndecodableFrame",
     "VIDEO_SUFFIXES",
@@ -92,4 +99,5 @@ __all__ = [
     "VideoOpenError",
     "VideoSource",
     "view_for_role",
+    "write_capture_record",
 ]
