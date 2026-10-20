@@ -13,6 +13,7 @@ from core.foundation.tasks import Cancelled
 from core.live import (
     APP_CLOSE,
     IDLE,
+    InputFrames,
     LiveControls,
     LiveSessionManager,
     PresenceSample,
@@ -113,7 +114,7 @@ class FakeInput:
             return None
         self._read += 1
         time.sleep(0.002)
-        return {role: frame(3, self._shape) for role in self.roles}
+        return InputFrames({role: frame(3, self._shape) for role in self.roles}, None if self.is_file else time.perf_counter_ns())
 
     def close(self, *, keep_warm):
         self.calls.append("close")

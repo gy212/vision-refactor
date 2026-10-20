@@ -75,7 +75,7 @@ class FramePacket:
     index: int
     frames: FrameSet
     timestamp_ms: int = 0
-    captured_at: float = 0.0
+    captured_at_ns: int = 0          # 主路采集时刻（``capture_clock_ns``）
     pose: dict[str, object] = field(default_factory=dict)
     hands: dict[str, list] = field(default_factory=dict)
     drawn_pose: dict[str, object] = field(default_factory=dict)

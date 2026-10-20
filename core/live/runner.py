@@ -28,12 +28,13 @@ from core.live.stages import (
     TransformStage,
     rotated_size,
 )
-from core.media import PRIMARY, SECONDARY, VideoOpenError, view_for_role
+from core.media import PRIMARY, SECONDARY, LatestSlot, VideoOpenError, capture_clock_ns, view_for_role
 from core.pose import actions_text
 
 RAW_PUMP_INTERVAL_S = 0.05
 FIRST_RENDER_WAIT_S = 0.25
 PARALLEL_GET_TIMEOUT_S = 0.2
+LATEST_POLL_S = 0.05               # latest-frame 模式等新帧时检查取消的间隔
 APP_CLOSE = "app_close"            # 关窗的停止原因：会话结束时不把设备交回预热
 
 _SINGLE_ERRORS = {
@@ -274,8 +275,8 @@ class SessionRunner:
             self._run_parallel()
             return
         frames_iter = self._latest_frames() if self.config.latest_frame else self._read_frames(self._cancel)
-        for index, frames, captured_at in frames_iter:
-            packet = self._transform.process(FramePacket(index, frames, captured_at=captured_at), self.ctx)
+        for index, frames, captured_at_ns in frames_iter:
+            packet = self._transform.process(FramePacket(index, frames, captured_at_ns=captured_at_ns), self.ctx)
             self._update_sizes(packet.frames)
             if self._pose is not None:
                 self._pose.process(packet, self.ctx)
@@ -283,7 +284,8 @@ class SessionRunner:
                 return
 
     def _read_frames(self, token: CancelToken):
-        """逐帧读取输入，产出 ``(序号, 各路帧, 采集时刻)``；读完、取消或到达 ``limit_frames`` 时结束。"""
+        """逐帧读取输入，产出 ``(序号, 各路帧, 主路采集时刻 ns)``；读完、取消或到达 ``limit_frames`` 时结束。
+        摄像头的采集时刻来自 reader；视频文件没有采集时刻，取读到的时刻。"""
         stats = self.stats
         stats["capture_started"] = time.monotonic()
         index = 0
@@ -292,45 +294,38 @@ class SessionRunner:
             while not token.cancelled and not self._cancel.cancelled:
                 if limit is not None and index >= limit:
                     return
-                frames = self._source.read(self._cancel)
-                if frames is None:
+                got = self._source.read(self._cancel)
+                if got is None:
                     return
                 stats["captured"] += 1
-                yield index, frames, time.monotonic()
+                captured_at_ns = got.captured_at_ns if got.captured_at_ns is not None else capture_clock_ns()
+                yield index, got.frames, captured_at_ns
                 index += 1
         finally:
             stats["capture_ended"] = time.monotonic()
 
     def _latest_frames(self):
-        """采集在后台任务里进行，只保留最新一帧；推理取到的总是最新帧，被覆盖的计入 ``dropped``。"""
-        slot: list = []
-        done = threading.Event()
-        lock = threading.Lock()
+        """读帧在后台任务里进行，经 ``LatestSlot`` 只保留最新一项；推理取到的总是最新帧，被覆盖的计入 ``dropped``。"""
+        slot: LatestSlot = LatestSlot()
 
         def capture(token: CancelToken) -> None:
             try:
                 for item in self._read_frames(token):
-                    with lock:
-                        if slot:
-                            self.stats["dropped"] += 1
-                            slot.clear()
-                        slot.append(item)
+                    slot.publish(item)
             finally:
-                done.set()
+                slot.close()
 
         reader = self._tasks.spawn("latest-reader", capture, owner="runner", close_budget_s=2.0)
+        seen = 0
         try:
             while not self._cancel.cancelled:
-                with lock:
-                    item = slot.pop() if slot else None
-                if item is None:
-                    if done.is_set():
-                        with lock:
-                            if not slot:
-                                break
-                        continue
-                    self._cancel.wait(0.001)
+                taken = slot.take(seen, LATEST_POLL_S)
+                if taken is None:
+                    if slot.closed:
+                        break
                     continue
+                self.stats["dropped"] += taken[0] - seen - 1
+                seen, item = taken
                 yield item
         finally:
             reader.token.cancel("loop_end")
@@ -342,17 +337,19 @@ class SessionRunner:
         engine = self._pose.parallel
         stamps: dict[int, int] = {}
         stamped = threading.Condition()
-        capture_t0 = time.monotonic()
+        capture_t0: list[int] = []
 
         def read(token: CancelToken) -> None:
             try:
-                for index, frames, captured_at in self._read_frames(token):
+                for index, frames, captured_at_ns in self._read_frames(token):
                     frames = self._transform.process(FramePacket(index, frames), self.ctx).frames
                     self._update_sizes(frames)
                     if self.config.is_file:
                         ts = int(index * 1000.0 / max(1e-6, self.ctx.fps))
                     else:
-                        ts = int((captured_at - capture_t0) * 1000.0)
+                        if not capture_t0:  # 以首帧为零点：首帧可能早于读帧线程启动
+                            capture_t0.append(captured_at_ns)
+                        ts = (captured_at_ns - capture_t0[0]) // 1_000_000
                     submitted = engine.submit(frames[PRIMARY])
                     if submitted is not None:
                         with stamped:

@@ -1,12 +1,10 @@
 # -*- coding: utf-8 -*-
-"""摄像头采集的请求与结果定义：角色名、请求时冻结的 ``CaptureSpec``、预热帧 ``WarmFrame`` 和池的错误类型。"""
+"""摄像头采集的请求与结果定义：角色名、请求时冻结的 ``CaptureSpec``和池的错误类型；采集帧的身份是 ``media.frames.CapturedFrame``。"""
 from __future__ import annotations
 
 from dataclasses import dataclass
 from numbers import Integral
 from typing import Final, Literal
-
-import numpy as np
 
 PRIMARY: Final = "primary"
 SECONDARY: Final = "secondary"
@@ -61,15 +59,6 @@ class CaptureSpec:
         return self.width, self.height
 
 
-@dataclass(frozen=True)
-class WarmFrame:
-    """Latest valid frame captured for one camera role."""
-
-    frame: np.ndarray
-    captured_at: float
-    sequence: int
-    generation: int
-
 
 __all__ = [
     "CAPTURE_POLICIES",
@@ -82,5 +71,4 @@ __all__ = [
     "PRIMARY",
     "ROLES",
     "SECONDARY",
-    "WarmFrame",
 ]

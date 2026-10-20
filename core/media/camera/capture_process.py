@@ -3,6 +3,7 @@
 
 子进程入口 ``_capture_worker`` 是模块顶层函数，参数都可 pickle，冻结 EXE 中由 ``freeze_support()`` 启动。
 打开时在子进程内复核设备名（V-3），``policy="require"`` 时驱动给不出请求尺寸即失败（D-6）。
+采集时刻在子进程里 ``read()`` 返回后立即取（``capture_clock_ns``，跨进程可比），随帧元数据回传，不含管道往返与像素拷贝。
 """
 from __future__ import annotations
 
@@ -15,7 +16,7 @@ import numpy as np
 from core.foundation import diag
 from core.media.camera.devices import backend_candidates, device_name
 from core.media.camera.spec import DEFAULT_CAPTURE_SIZE
-from core.media.frames import is_valid_bgr
+from core.media.frames import capture_clock_ns, is_valid_bgr
 
 
 def _read_frame(capture):
@@ -81,9 +82,11 @@ def _capture_worker(connection, buffer, index, width, height, factory,
         if factory is None:
             _check_device_name(index, expected_name)
             capture, first = _open_native(index, width, height, policy)
+            first_ns = capture_clock_ns()
         else:
             capture = factory(index, width=width, height=height)
             first = _read_frame(capture)
+            first_ns = capture_clock_ns()
             _check_size(first, width, height, policy)
         storage = np.frombuffer(buffer, dtype=np.uint8)
         if first.size > storage.size:
@@ -97,12 +100,16 @@ def _capture_worker(connection, buffer, index, width, height, factory,
                 return
             if command != "read":
                 raise ValueError(f"unsupported camera command: {command}")
-            frame = first if first is not None else _read_frame(capture)
+            if first is not None:
+                frame, captured_at_ns = first, first_ns
+            else:
+                frame = _read_frame(capture)
+                captured_at_ns = capture_clock_ns()
             first = None
             if frame.size > storage.size:
                 raise RuntimeError("设备返回的画面超过采集缓冲区")
             storage[:frame.size] = frame.reshape(-1)
-            connection.send(("frame", frame.shape))
+            connection.send(("frame", (frame.shape, captured_at_ns)))
     except (EOFError, BrokenPipeError):
         pass
     except Exception as exc:
@@ -181,13 +188,21 @@ class ProcessCamera:
         return self._properties.get(prop, 0.0)
 
     def read(self):
+        ok, frame, _ = self.read_with_time()
+        return ok, frame
+
+    def read_with_time(self):
+        """读一帧，同时返回子进程取帧完成的时刻（``capture_clock_ns``）。"""
         with self._io_lock:
             if self._closed:
-                return False, None
+                return False, None, 0
             try:
                 self._connection.send("read")
-                kind, shape = self._receive(self._timeout)
-                if kind != "frame" or len(shape) != 3 or shape[2] != 3:
+                kind, value = self._receive(self._timeout)
+                if kind != "frame":
+                    raise RuntimeError("摄像头返回了无效帧格式")
+                shape, captured_at_ns = value
+                if len(shape) != 3 or shape[2] != 3:
                     raise RuntimeError("摄像头返回了无效帧格式")
                 height, width, _ = shape
                 if min(height, width) <= 0 or height * width * 3 > len(self._buffer):
@@ -195,7 +210,7 @@ class ProcessCamera:
                 frame = np.frombuffer(self._buffer, dtype=np.uint8,
                                       count=height * width * 3).reshape(shape).copy()
                 self._properties.update({3: width, 4: height})
-                return True, frame
+                return True, frame, int(captured_at_ns)
             except BaseException:
                 self.release()
                 raise

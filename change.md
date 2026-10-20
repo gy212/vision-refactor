@@ -1,3 +1,16 @@
+## 2026-10-20: [feat] D-18 第 2 层：摄像头每路持续读帧，帧带采集时间戳
+
+- 问题描述：会话期间 `CameraStream.read` 按顺序直接读两路设备，读帧受整个处理循环拖慢，一路慢会拖住另一路；采集时刻在主进程读完后用 `time.monotonic()` 取，本机分辨率 15.6 ms，还含管道往返与像素拷贝。
+- 修改内容：
+  - `core/media/frames.py`：新增 `CapturedFrame(role, seq, captured_at_ns, bgr, generation)` 与 `capture_clock_ns()`（`perf_counter_ns`），取代 `WarmFrame`，预热帧与会话帧共用。
+  - 新增 `core/media/camera/reader.py`：`CaptureReader`（接管租约后每路一个持续读帧线程，经 `TaskGroup` 启动）、`LatestSlot`（最新帧槽）、`read_stamped`（预热 reader 与会话 reader 共用的带时刻读帧）；`CameraReadError` 移到这里。
+  - `ProcessCamera`：子进程在 `read()` 返回后立即取时刻并随帧元数据回传，新增 `read_with_time()`。
+  - `CameraStream`：`claim` 后启动各路 reader；`read` 等每路都有新帧后取各路最新帧（同一帧不返回两次），返回 `CapturedFrame`；`close` 先停 reader 再归还或释放，没能按时停下的那一路直接释放。
+  - `core/live`：`FrameInput.read` 返回 `InputFrames`（各路帧与主路采集时刻），`FramePacket.captured_at_ns` 取代 `captured_at`；`_latest_frames` 改用 `LatestSlot`；并行模式的时间戳以首帧采集时刻为零点。CLI latency 冒烟按采集时钟算延迟。
+  - 录像仍按处理循环逐帧写、名义 30 fps，时间轴在第 3、4 层修正。
+  - 设计文档 §2.2、§8.8 与 `AGENTS.md` 代码地图同步。
+- 验证方法：新增 `tests/test_camera_reader.py` 13 项（槽语义、设备时间戳、读失败、时钟分辨率、消费方慢到 5 fps 时 reader 照常读帧、慢的第二路不拖慢第一路、不重复返回同一帧、等新帧时响应取消、先停 reader 再释放、reader 超出停止预算时直接释放、真实 spawn 下子进程时间戳落在主进程调用区间内）；全量 `pytest tests -q` 1229 passed（基线 1216）；门禁、架构测试与空白检查通过；冻结 EXE 自检见 PR。
+
 ## 2026-10-20: [docs] D-18 改为录像与推理解耦，登记 D-26～D-30，大改动改用 stacked PR
 
 - 问题描述：PR #34 按采集时刻补帧，只修回放时间轴，不能恢复没采到的画面；评审还发现它把新帧复制到之前的时间槽。issue #36 提出把采集、录像和识别解耦。对照源码核对时发现：本机 Python 3.12 的 `time.monotonic()` 分辨率是 15.6 ms；池的预热 reader 与 runner 已有两个读帧线程；单摄录像和 CLI 摄像头导出现在烧录叠加；1080p MJPG 写一帧约 26 ms，两路在循环里串行写就把循环限在 19 fps 以下。

@@ -4,6 +4,7 @@
 - 两者都属 L1，不认识会话；``RoleSpecs`` 是"角色 → ``CaptureSpec``"的映射，单摄只有 primary。
 - ``CameraStream`` 把 ``CancelToken`` 适配成池要的 ``stop_event``，把 ``CameraWarmupStopped`` 转成 ``Cancelled``；
   阻塞调用（``wait_ready``、``claim``、``read``）只在后台线程执行。
+- 接管后每路由一个 ``CaptureReader`` 持续读帧（§8.8），``read`` 只从各路的最新帧槽取帧，不再按顺序直接读设备。
 - 池的生命周期事件写成 ``diag`` 诊断行（``device.state``、``camera.ready``、``camera.error``）。
 """
 from __future__ import annotations
@@ -14,6 +15,7 @@ from core.foundation import diag
 from core.foundation.tasks import Cancelled, CancelToken, TaskGroup, TaskHandle
 from core.media.camera.devices import CatalogSnapshot, DeviceCatalog
 from core.media.camera.pool import CameraLease, CameraPool
+from core.media.camera.reader import CameraReadError, CaptureReader
 from core.media.camera.spec import (
     PRIMARY,
     ROLES,
@@ -21,15 +23,15 @@ from core.media.camera.spec import (
     CameraWarmupError,
     CameraWarmupStopped,
     CaptureSpec,
-    WarmFrame,
 )
-from core.media.frames import FrameSet
+from core.media.frames import CapturedFrame
 
 RoleSpecs = Mapping[str, CaptureSpec]
 
 DEFAULT_READY_TIMEOUT_S = 15.0  # 覆盖 ProcessCamera 12 秒首帧预算与旧设备释放等待
 DEFAULT_CLAIM_TIMEOUT_S = 5.0  # 接管只需停掉预热 reader
 DEFAULT_RELEASE_WAIT_S = 3.0
+READ_POLL_S = 0.05  # 等新帧时检查取消的间隔
 
 _STATE_OF_EVENT = {
     "warm": "opening",
@@ -64,15 +66,6 @@ def log_pool_event(payload: dict) -> None:
         diag.event("device.state", to=_STATE_OF_EVENT.get(event, event), cause=event, **fields)
 
 
-class CameraReadError(RuntimeError):
-    """会话读帧失败（设备断开或采集进程已关闭）。"""
-
-    def __init__(self, role: str, *, numbered: bool) -> None:
-        prefix = f"第{ROLES.index(role) + 1}路" if numbered else ""
-        super().__init__(f"{prefix}摄像头读帧失败，请检查连接后重新开始")
-        self.role = role
-
-
 class _TokenEvent:
     """池的 ``stop_event`` 只需要 ``is_set()``；由 token 的取消状态提供。"""
 
@@ -88,7 +81,7 @@ def _cancelled(token: CancelToken | None) -> Cancelled:
 
 
 class CameraStream:
-    """一次会话的摄像头句柄：等每路有效首帧 → 接管租约 → 读帧 → 归还或释放。"""
+    """一次会话的摄像头句柄：等每路有效首帧 → 接管租约并启动各路 reader → 取帧 → 停 reader → 归还或释放。"""
 
     def __init__(
         self,
@@ -106,6 +99,9 @@ class CameraStream:
         self._claim_timeout = claim_timeout
         self._generations: dict[str, int] = {}
         self._leases: dict[str, CameraLease] = {}
+        self._readers: dict[str, CaptureReader] = {}
+        self._cursor: dict[str, int] = {}
+        self._tasks = TaskGroup("camera-stream")
         self._closed = False
 
     @property
@@ -120,7 +116,7 @@ class CameraStream:
     def claimed(self) -> bool:
         return bool(self._leases) and not self._closed
 
-    def wait_ready(self, cancel: CancelToken | None = None) -> dict[str, WarmFrame]:
+    def wait_ready(self, cancel: CancelToken | None = None) -> dict[str, CapturedFrame]:
         """等每路都收到有效首帧（``wait_one``/``wait_pair``）；无预热时池按规格冷启动。"""
         stop = _TokenEvent(cancel)
         try:
@@ -139,7 +135,7 @@ class CameraStream:
         self._generations = {role: frame.generation for role, frame in ready.items()}
         return ready
 
-    def snapshot(self, after: Mapping[str, int] | None = None) -> dict[str, WarmFrame] | None:
+    def snapshot(self, after: Mapping[str, int] | None = None) -> dict[str, CapturedFrame] | None:
         """模型加载期间的裸帧预览（D-8，单双摄都有）；``after`` 是各路已显示的帧序号，没有更新的帧时返回 None。"""
         if not self.dual:
             frame = self._pool.snapshot_one(
@@ -151,7 +147,7 @@ class CameraStream:
         return None if pair is None else dict(zip(ROLES, pair))
 
     def claim(self, cancel: CancelToken | None = None) -> None:
-        """接管 ``wait_ready`` 观察到的那一代预热（``claim_one``/``claim_pair``），取得租约。"""
+        """接管 ``wait_ready`` 观察到的那一代预热（``claim_one``/``claim_pair``），取得租约，并为每路启动 reader。"""
         stop = _TokenEvent(cancel)
         generations = tuple(self._generations.get(role) for role in self._specs)
         expected = None if None in generations else generations
@@ -169,6 +165,13 @@ class CameraStream:
         except CameraWarmupStopped as exc:
             raise _cancelled(cancel) from exc
         self._leases = dict(zip(self._specs, leases))
+        self._readers = {
+            role: CaptureReader(
+                role, lease, self._tasks, generation=self._generations.get(role, 0), numbered=self.dual,
+            )
+            for role, lease in self._leases.items()
+        }
+        self._cursor = {role: 0 for role in self._readers}
 
     def actual_sizes(self) -> dict[str, tuple[int, int]]:
         """驱动实际给出的宽高（未旋转）；拿不到时回退为请求尺寸。"""
@@ -182,22 +185,27 @@ class CameraStream:
         lease = self._leases.get(role)
         return float(lease.get(5) or 0.0) if lease is not None else 0.0
 
-    def read(self, cancel: CancelToken | None = None) -> FrameSet:
-        """各路各读一帧；任一路失败抛 ``CameraReadError``，驱动异常原样抛出。"""
-        if cancel is not None:
-            cancel.raise_if_cancelled()
-        frames: FrameSet = {}
-        for role, lease in self._leases.items():
-            ok, frame = lease.read()
-            if not ok:
-                raise CameraReadError(role, numbered=self.dual)
-            frames[role] = frame
+    def read(self, cancel: CancelToken | None = None) -> dict[str, CapturedFrame]:
+        """等每路都有上次返回之后的新帧，返回各路此刻的最新帧；中间被覆盖的帧不返回。
+        任一路 reader 失败抛它的 ``CameraReadError``；取消时抛 ``Cancelled``。"""
+        for role, reader in self._readers.items():
+            while reader.latest.take(self._cursor[role], READ_POLL_S) is None:
+                if cancel is not None:
+                    cancel.raise_if_cancelled()
+                if reader.latest.closed:
+                    raise reader.latest.error or CameraReadError(role, numbered=self.dual)
+        frames: dict[str, CapturedFrame] = {}
+        for role, reader in self._readers.items():
+            taken = reader.latest.take(self._cursor[role], 0)
+            if taken is None:  # 只在槽关闭时发生
+                raise reader.latest.error or CameraReadError(role, numbered=self.dual)
+            self._cursor[role], frames[role] = taken
         return frames
 
     def close(self, *, keep_warm: bool = False) -> None:
-        """结束会话。已接管时：``keep_warm`` 且池接收则把设备交回预热（V-1），否则 ``lease.release()``；
-        未接管时只取消本次观察到的那一代预热，不误伤之后重新声明的预热。释放失败的设备由池隔离，
-        各路都处理完后抛出第一个错误。"""
+        """结束会话。已接管时先停各路 reader，再：``keep_warm`` 且池接收则把设备交回预热（V-1），否则 ``lease.release()``；
+        reader 没能按时停下的那一路不交回预热，直接释放。未接管时只取消本次观察到的那一代预热，
+        不误伤之后重新声明的预热。释放失败的设备由池隔离，各路都处理完后抛出第一个错误。"""
         if self._closed:
             return
         self._closed = True
@@ -208,10 +216,13 @@ class CameraStream:
                 except Exception:
                     pass
             return
+        for reader in self._readers.values():
+            reader.request_stop()
+        stopped = {role: reader.stop() for role, reader in self._readers.items()}
         errors: list[BaseException] = []
-        for lease in self._leases.values():
+        for role, lease in self._leases.items():
             try:
-                if keep_warm and lease.restore():
+                if keep_warm and stopped.get(role, True) and lease.restore():
                     continue
                 lease.release()
             except Exception as exc:
@@ -281,7 +292,6 @@ class CameraService:
 
 
 __all__ = [
-    "CameraReadError",
     "CameraService",
     "CameraStream",
     "DEFAULT_CLAIM_TIMEOUT_S",

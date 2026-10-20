@@ -30,7 +30,7 @@ from core.live import (
     camera_session,
     video_session,
 )
-from core.media import PRIMARY, CameraService, CaptureSpec
+from core.media import PRIMARY, CameraService, CaptureSpec, capture_clock_ns
 
 WINDOW_TITLE = "MediaPipe (Video/Camera)"
 PARALLEL_TITLE = "MediaPipe (Realtime Parallel)"
@@ -274,9 +274,8 @@ def run_realtime_latest_frame_smoke(
     rendered: list[float] = []
 
     def on_frame(packet: FramePacket) -> None:
-        now = time.monotonic()
-        rendered.append(now)
-        latency.append(now - packet.captured_at)
+        rendered.append(time.monotonic())
+        latency.append((capture_clock_ns() - packet.captured_at_ns) / 1e9)
 
     outcome, runner = _run_session(
         config, source, out_path=None, display=_window(SMOKE_TITLE, show, on_frame), progress=False,

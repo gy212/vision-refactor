@@ -11,7 +11,7 @@ from core.live.config import (
     camera_session,
     video_session,
 )
-from core.live.inputs import CameraInput, FrameInput, VideoFileInput
+from core.live.inputs import CameraInput, FrameInput, InputFrames, VideoFileInput
 from core.live.manager import IDLE, RUNNING, STARTING, STOPPING, LiveSessionManager
 from core.live.metrics import StartupMetrics
 from core.live.preview import PreviewFrame, PreviewStore, fit_preview_rgb
@@ -31,6 +31,7 @@ __all__ = [
     "DEFAULT_OCCUPANCY_STRIDE",
     "DEFAULT_ROI",
     "FrameInput",
+    "InputFrames",
     "FramePacket",
     "FrameSink",
     "IDLE",

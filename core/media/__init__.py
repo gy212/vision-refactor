@@ -29,18 +29,19 @@ from core.media.camera import (
     CameraWarmupError,
     CameraWarmupStopped,
     CameraWarmupTimeout,
+    CaptureReader,
     CaptureSpec,
     CatalogSnapshot,
     DeviceCatalog,
+    LatestSlot,
     ProcessCamera,
     RoleSpecs,
-    WarmFrame,
     enumerate_cameras,
     list_device_names,
     make_label,
     probe_camera,
 )
-from core.media.frames import FrameSet, is_valid_bgr
+from core.media.frames import CapturedFrame, FrameSet, capture_clock_ns, is_valid_bgr
 from core.media.segment_layout import VIDEO_SUFFIXES, SegmentLayout, view_for_role
 from core.media.writer import open_video_writer, transcode_to_h264
 
@@ -54,6 +55,9 @@ __all__ = [
     "CameraWarmupError",
     "CameraWarmupStopped",
     "CameraWarmupTimeout",
+    "CapturedFrame",
+    "capture_clock_ns",
+    "CaptureReader",
     "CaptureSpec",
     "CatalogSnapshot",
     "DecodeOptions",
@@ -64,6 +68,7 @@ __all__ = [
     "Frame",
     "FrameSet",
     "is_valid_bgr",
+    "LatestSlot",
     "list_device_names",
     "make_label",
     "NO_END",
@@ -87,5 +92,4 @@ __all__ = [
     "VideoOpenError",
     "VideoSource",
     "view_for_role",
-    "WarmFrame",
 ]

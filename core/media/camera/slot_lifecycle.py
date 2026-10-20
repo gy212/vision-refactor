@@ -10,9 +10,10 @@ from __future__ import annotations
 import threading
 from typing import Any
 
+from core.media.camera.reader import read_stamped
 from core.media.camera.slot import WarmupSlot
-from core.media.camera.spec import CameraWarmupError, CameraWarmupStopped, WarmFrame
-from core.media.frames import is_valid_bgr
+from core.media.camera.spec import CameraWarmupError, CameraWarmupStopped
+from core.media.frames import CapturedFrame, is_valid_bgr
 
 
 class SlotLifecycle:
@@ -47,23 +48,20 @@ class SlotLifecycle:
 
             phase = "first_frame"
             while not slot.stop_event.is_set():
-                ok, frame = cap.read()
+                ok, frame, captured_at_ns = read_stamped(cap)
                 if slot.stop_event.is_set():
                     break
                 if not ok or not is_valid_bgr(frame):
                     raise CameraWarmupError(
                         f"{slot.role} camera {slot.index} failed to read a frame"
                     )
-                captured_at = self._clock()
+                ready_at = self._clock()
                 with self._condition:
                     if not self._slot_is_current(slot) or slot.stop_event.is_set():
                         break
                     slot.sequence += 1
-                    slot.latest = WarmFrame(
-                        frame=frame,
-                        captured_at=captured_at,
-                        sequence=slot.sequence,
-                        generation=slot.generation,
+                    slot.latest = CapturedFrame(
+                        slot.role, slot.sequence, captured_at_ns, frame, slot.generation,
                     )
                     opened_at = slot.open_started_at
                     self._condition.notify_all()
@@ -74,7 +72,7 @@ class SlotLifecycle:
                         slot,
                         actual=self._frame_size(frame),
                         open_ms=(
-                            round((captured_at - opened_at) * 1000.0, 1)
+                            round((ready_at - opened_at) * 1000.0, 1)
                             if opened_at is not None
                             else None
                         ),

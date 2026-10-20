@@ -2,11 +2,12 @@
 """会话的帧来源：``CameraInput`` 包装 ``CameraStream``，``VideoFileInput`` 包装 ``VideoSource``，对 runner 提供同一组步骤。
 
 步骤顺序：``wait_ready``（摄像头等各路有效首帧；视频已打开）→ ``snapshot``（模型加载期的裸帧）→
-``start``（摄像头接管租约）→ ``actual_sizes`` → ``read``（视频读完返回 None；摄像头断流抛 ``CameraReadError``）→
-``close``。阻塞调用只在 runner 线程里执行。
+``start``（摄像头接管租约，各路 reader 开始持续读帧）→ ``actual_sizes`` → ``read``（返回 ``InputFrames``；
+视频读完返回 None；摄像头断流抛 ``CameraReadError``）→ ``close``。阻塞调用只在 runner 线程里执行。
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
@@ -23,6 +24,14 @@ from core.media import (
 FALLBACK_SIZE = (1920, 1080)  # 视频元数据缺尺寸时的回退，与采集格式一致（D-17）
 
 
+@dataclass(frozen=True)
+class InputFrames:
+    """一次 ``read`` 的结果：各路帧，以及主路的采集时刻（``capture_clock_ns``；视频文件没有采集时刻，为 None）。"""
+
+    frames: FrameSet
+    captured_at_ns: int | None = None
+
+
 class FrameInput(Protocol):
     is_file: bool
     roles: tuple[str, ...]
@@ -34,12 +43,12 @@ class FrameInput(Protocol):
     def actual_sizes(self) -> dict[str, tuple[int, int]]: ...
     def fps(self) -> float: ...
     def total_frames(self) -> int: ...
-    def read(self, cancel: CancelToken) -> FrameSet | None: ...
+    def read(self, cancel: CancelToken) -> InputFrames | None: ...
     def close(self, *, keep_warm: bool) -> None: ...
 
 
 class CameraInput:
-    """摄像头会话：等池里各路首帧 → 加载期取最新预热帧 → 接管租约 → 逐帧读 → 归还或释放（V-1）。"""
+    """摄像头会话：等池里各路首帧 → 加载期取最新预热帧 → 接管租约 → 取各路最新帧 → 归还或释放（V-1）。"""
 
     is_file = False
 
@@ -55,8 +64,8 @@ class CameraInput:
 
     def wait_ready(self, cancel: CancelToken) -> FrameSet:
         ready = self._stream.wait_ready(cancel)
-        self._cursor = {role: frame.sequence for role, frame in ready.items()}
-        return {role: frame.frame for role, frame in ready.items()}
+        self._cursor = {role: frame.seq for role, frame in ready.items()}
+        return {role: frame.bgr for role, frame in ready.items()}
 
     def first_cursor(self) -> dict[str, int]:
         return dict(self._cursor)
@@ -66,8 +75,8 @@ class CameraInput:
         if latest is None:
             return None
         return (
-            {role: frame.frame for role, frame in latest.items()},
-            {role: frame.sequence for role, frame in latest.items()},
+            {role: frame.bgr for role, frame in latest.items()},
+            {role: frame.seq for role, frame in latest.items()},
         )
 
     def start(self, cancel: CancelToken) -> None:
@@ -82,8 +91,11 @@ class CameraInput:
     def total_frames(self) -> int:
         return 0
 
-    def read(self, cancel: CancelToken) -> FrameSet:
-        return self._stream.read(cancel)
+    def read(self, cancel: CancelToken) -> InputFrames:
+        captured = self._stream.read(cancel)
+        return InputFrames(
+            {role: frame.bgr for role, frame in captured.items()}, captured[PRIMARY].captured_at_ns,
+        )
 
     def close(self, *, keep_warm: bool) -> None:
         self._stream.close(keep_warm=keep_warm)
@@ -127,15 +139,15 @@ class VideoFileInput:
     def total_frames(self) -> int:
         return self._source.meta.frame_count if self._source is not None else 0
 
-    def read(self, cancel: CancelToken) -> FrameSet | None:
+    def read(self, cancel: CancelToken) -> InputFrames | None:
         if self._frames is None:
             return None
         frame = next(self._frames, None)
-        return None if frame is None else {PRIMARY: frame.bgr}
+        return None if frame is None else InputFrames({PRIMARY: frame.bgr})
 
     def close(self, *, keep_warm: bool) -> None:
         if self._source is not None:
             self._source.close()
 
 
-__all__ = ["CameraInput", "FrameInput", "VideoFileInput"]
+__all__ = ["CameraInput", "FrameInput", "InputFrames", "VideoFileInput"]
