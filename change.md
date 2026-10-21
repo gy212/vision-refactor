@@ -1,3 +1,31 @@
+## 2026-10-21: [feat] D-18 第 7 层：站位检测按时间采样最新帧，样本带源帧采集时刻（D-30）
+
+- 问题描述：站位检测是处理循环里的一个 stage，每 3 个处理帧推理一次。频率随处理循环变化，循环慢时检测变稀；样本时刻是推理完成时刻，到位、离场的判定时间会漂移。上一流程或暂停前采到的样本迟到时，考试仍会计入。
+- 修改内容：
+  - 新增 `core/live/presence.py` 的 `PresenceSampler`。runner 在接管设备后把它放进会话的任务组，在自己的线程里运行，不经处理循环：
+    - 启用时每 0.1 s 取一次主路最新帧（`CameraStream.latest`），按当前旋转转正。
+    - 用独立的 Lite 引擎推理并判 ROI；VIDEO 模式时间戳按采集时刻计，严格递增。
+    - 样本 `PresenceSample(present, captured_at, seq)` 的时刻是源帧采集时刻，经新增的 `media.monotonic_of_capture` 换算到工作流使用的 `time.monotonic`。
+    - 没有新帧时不推理、不发结果（没有新结果不等于离场）。推理期间站位设置变了（停用、重新启用、改 ROI）的结果作废。停用即关闭引擎。
+  - `OccupancyStage` 改为只在预览上画 ROI 的 `RoiStage`；删除 `OccupancySettings.stride` 与 `DEFAULT_OCCUPANCY_STRIDE`。`build_stages` 的 `probe` 参数改为 `roi`，由 `LiveSessionManager` 构造采样器。
+  - 工作流：
+    - `PresenceRecordingCycle.recording_started(now)` 起丢弃采集于开录之前的样本。
+    - 考试在叫号守护结束、开录失败重试、暂停后恢复时以当时时刻作 `ignore_before`（练习原本如此）。守护期间与暂停前采到的帧迟到时不算进场。
+  - Tk 会话控制器把 `captured_at` 交给工作流。
+  - 设计文档：§2.2、§8.2、§8.8 第 7 层同步，D-30 记为已实施。`AGENTS.md` 代码地图同步。
+- 被替换的测试（D-13）：
+  - `tests/test_live_session.py::test_occupancy_samples_every_stride_frames_when_armed` 改为 `test_presence_samples_latest_frame_on_a_timer_independent_of_the_loop`（循环约 4 fps 时仍约 10 次/秒），并新增无新帧、启用与停用、转正与作废三项。
+  - `tests/test_s5_hands_toggle.py` 的站位引擎检查改为经 `PresenceSampler` 构造。
+- 验证方法：
+  - 新增或改写的测试：
+    - `tests/test_live_session.py` 4 项，用按真实时间以 30 fps 出帧的假来源，连跑 15 次稳定。
+    - `tests/test_presence_gate.py` 1 项：武装前、开录前采到的样本不计入。
+    - `tests/test_exam_session.py` 1 项：守护期间、暂停前采到的样本不算进场。
+  - 受影响套件（实时会话、考试、练习、站位）229 项通过；`scripts/sim_exam_flow.py` 37 项通过。
+  - 门禁（golden、契约、架构）62 项通过。
+  - 全量 `pytest tests -q`：1322 项通过（含真实 Tk + spawn 的模式切换检查）。
+  - 实机：开发机只有一个摄像头且被占用，Lite 自动录制负载下的实拍留待甲方机器（§8.8 验收）。
+
 ## 2026-10-21: [feat] D-18 第 6 层：摄像头录像改由每路录像线程写，原始录像与录后骨架成片
 
 - 问题描述：录像仍在处理循环里"推理一帧、写一帧"，按名义 30 fps 写文件。推理慢时录像变速（甲方第一批样本 8～20 fps，回放快 1.5～3.7 倍）。第 3 层的 `Timeline`、第 5 层的 `FrameClock` 已就位，还没接进录像通路。

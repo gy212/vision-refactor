@@ -294,9 +294,9 @@ class SessionController:
             self.view.status.match_var.set(text)
 
     def _on_presence(self, sample: PresenceSample) -> None:
-        """站位采样：会话未在停止时交给当前激活的工作流（考试或学生练习）。"""
+        """站位采样：会话未在停止时交给当前激活的工作流（考试或学生练习），时刻是源帧的采集时刻（D-30）。"""
         if self.live_now():
-            self.workflows.presence(self.live.token, bool(sample.present), float(sample.sampled_at))
+            self.workflows.presence(self.live.token, bool(sample.present), float(sample.captured_at))
 
     def _on_running(self, _info: RunningInfo) -> None:
         """会话已接管设备并登记录制：双摄此时才允许录制，学生练习据此启用站位检测。"""

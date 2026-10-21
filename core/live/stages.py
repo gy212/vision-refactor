@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
-"""逐帧处理步骤：转正、姿态推理、平滑、在线识别、标签与骨架、站位检测、HUD（设计文档 §8.2）。
+"""逐帧处理步骤：转正、姿态推理、平滑、在线识别、标签与骨架、站位 ROI、HUD（设计文档 §8.2）。
 
 每个 stage 实现 ``open(ctx)``（可能很慢，如加载模型）、``process(packet, ctx)``、``close()``；
 runner 在自己的线程里依次调用，stage 之间只通过 ``FramePacket`` 传数据。并行推理时 ``PoseStage``
-不在 ``process`` 里推理，而是由 runner 经 ``submit``/``take`` 投递与按序取回。
+不在 ``process`` 里推理，而是由 runner 经 ``submit``/``take`` 投递与按序取回。站位检测不在逐帧 stage 里，
+由 ``live/presence.py`` 的采样线程按时间采样（D-30）。
 """
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass, field
 from typing import Callable, Protocol
 
@@ -28,7 +28,7 @@ from core.pose import (
     normalize_pose_xy_v3,
     render_pose,
 )
-from core.live.config import LiveControls, PresenceProbe, SessionConfig
+from core.live.config import LiveControls, SessionConfig
 
 _MATCH_SUFFIXES = ("_正面", "_侧面", "_左侧", "_右侧")
 
@@ -43,14 +43,6 @@ def match_text(result: MatchResult) -> str:
             name = name[: -len(suffix)]
             break
     return f"识别到：{name} ({result.score:.2f})"
-
-
-@dataclass
-class PresenceSample:
-    """站位检测的一次采样：人是否在 ROI 内、采样时刻（``time.monotonic``）。"""
-
-    present: bool
-    sampled_at: float
 
 
 @dataclass
@@ -70,7 +62,7 @@ class FramePacket:
 
 @dataclass
 class StageContext:
-    """stage 共用的会话信息与回调；``emit`` 发送会话事件（在线识别命中、站位采样）。"""
+    """stage 共用的会话信息与回调；``emit`` 发送会话事件（在线识别命中）。"""
 
     config: SessionConfig
     controls: LiveControls
@@ -232,51 +224,23 @@ class LabelsStage:
         return None
 
 
-class OccupancyStage:
-    """推理关闭且站位检测已启用时，每 ``stride`` 帧用独立 Lite 引擎推理主路，发 ``presence`` 事件，并在预览上画 ROI。
-
-    引擎在启用后第一次需要时构造、停用后关闭；推理或绘制失败不影响会话。
-    """
-
-    def __init__(self, probe: PresenceProbe) -> None:
-        self._probe = probe
-        self._engine = None
+class RoiStage:
+    """站位检测启用时在主路预览上画 ROI；检测本身由采样线程做（``PresenceSampler``）。"""
 
     def open(self, ctx: StageContext) -> None:
         return None
 
     def process(self, packet: FramePacket, ctx: StageContext) -> FramePacket:
         settings = ctx.controls.occupancy.get()
-        if not settings.armed:
-            self._close_engine()
-            return packet
-        primary = ctx.config.roles[0]
-        try:
-            if self._engine is None:
-                self._engine = create_engine(
-                    EngineSpec(pose_variant="lite", running_mode="video", enable_hands=False),
-                    models_dir=models_dir(),
-                )
-            if packet.index % max(1, int(settings.stride or 3)) == 0:
-                ts = self._engine.next_timestamp_ms(is_file=False, fps_for_ts=ctx.fps)
-                sampled_at = time.monotonic()
-                pose, _ = self._engine.infer(packet.frames[primary], timestamp_ms=ts)
-                ctx.emit("presence", PresenceSample(bool(self._probe(pose, settings.roi)), sampled_at))
-            draw_roi(packet.out[primary], settings.roi)
-        except Exception:
-            pass
-        return packet
-
-    def _close_engine(self) -> None:
-        if self._engine is not None:
+        if settings.armed:
             try:
-                self._engine.close()
+                draw_roi(packet.out[ctx.config.roles[0]], settings.roi)
             except Exception:
                 pass
-            self._engine = None
+        return packet
 
     def close(self) -> None:
-        self._close_engine()
+        return None
 
 
 class OverlayStage:
@@ -298,8 +262,9 @@ class OverlayStage:
         return None
 
 
-def build_stages(config: SessionConfig, *, probe: PresenceProbe | None = None) -> tuple[PoseStage | None, list]:
-    """按配置组装 stage：推理关闭时没有 ``PoseStage``；返回 ``(pose, 推理之后的 stages)``。"""
+def build_stages(config: SessionConfig, *, roi: bool = False) -> tuple[PoseStage | None, list]:
+    """按配置组装 stage：推理关闭时没有 ``PoseStage``；``roi`` 表示会话有站位采样、预览要画 ROI。
+    返回 ``(pose, 推理之后的 stages)``。"""
     pose = PoseStage(config.roles) if config.inference else None
     after: list = []
     if config.inference:
@@ -308,19 +273,18 @@ def build_stages(config: SessionConfig, *, probe: PresenceProbe | None = None) -
         if config.online_match:
             after.append(OnlineMatchStage())
         after.append(LabelsStage())
-    if config.occupancy and probe is not None:
-        after.append(OccupancyStage(probe))
+    if roi:
+        after.append(RoiStage())
     return pose, after
 
 
 __all__ = [
     "FramePacket",
     "LabelsStage",
-    "OccupancyStage",
     "OnlineMatchStage",
     "OverlayStage",
     "PoseStage",
-    "PresenceSample",
+    "RoiStage",
     "SmoothStage",
     "Stage",
     "StageContext",

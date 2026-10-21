@@ -8,6 +8,7 @@ import time
 import numpy as np
 import pytest
 
+import core.live.presence as presence_mod
 import core.live.stages as stages_mod
 from core.foundation.tasks import Cancelled
 from core.live import (
@@ -17,12 +18,13 @@ from core.live import (
     LiveControls,
     LiveSessionManager,
     PresenceSample,
+    PresenceSampler,
     camera_session,
     video_session,
 )
 from core.live.preview import PreviewStore
 from core.media import apply_rotation, rotated_size
-from core.media import PRIMARY, SECONDARY, CameraReadError, CaptureSpec
+from core.media import PRIMARY, SECONDARY, CameraReadError, CapturedFrame, CaptureSpec
 
 WAIT = 5.0
 
@@ -35,6 +37,8 @@ class FakeEngine:
         type(self).built += 1
         self.spec = spec
         self.closed = False
+        self.frames: list = []
+        self.timestamps: list[int] = []
         if type(self).gate is not None:
             type(self).gate.wait(WAIT)
 
@@ -42,6 +46,8 @@ class FakeEngine:
         return 0
 
     def infer(self, frame, *, timestamp_ms=None):
+        self.frames.append(frame)
+        self.timestamps.append(timestamp_ms)
         return None, []
 
     def close(self):
@@ -55,6 +61,8 @@ def fake_engine(monkeypatch, tmp_path):
     monkeypatch.setattr(stages_mod, "create_engine", lambda spec, models_dir=None: FakeEngine(spec))
     monkeypatch.setattr(stages_mod, "models_dir", lambda: tmp_path)
     monkeypatch.setattr(stages_mod, "templates_dir", lambda: tmp_path)
+    monkeypatch.setattr(presence_mod, "create_engine", lambda spec, models_dir=None: FakeEngine(spec))
+    monkeypatch.setattr(presence_mod, "models_dir", lambda: tmp_path)
     yield
 
 
@@ -62,11 +70,30 @@ def frame(value: int = 0, shape=(4, 6, 3)) -> np.ndarray:
     return np.full(shape, value, dtype=np.uint8)
 
 
+class FakeFeed:
+    """按真实时间以 30 fps 出帧的摄像头（只提供采样用的 ``latest``）；``frozen`` 时不再出新帧。"""
+
+    PERIOD_NS = 33_333_333
+
+    def __init__(self, shape=(4, 6, 3)) -> None:
+        self._t0 = time.perf_counter_ns()
+        self._shape = shape
+        self.frozen = False
+        self._last: dict[str, CapturedFrame] = {}
+
+    def latest(self, role):
+        if self.frozen and role in self._last:
+            return self._last[role]
+        seq = (time.perf_counter_ns() - self._t0) // self.PERIOD_NS   # 采集时刻不晚于现在
+        self._last[role] = CapturedFrame(role, seq, self._t0 + seq * self.PERIOD_NS, frame(5, self._shape))
+        return self._last[role]
+
+
 class FakeInput:
     """按 ``roles`` 产出帧；``fail_after`` 帧后读帧失败，``frames`` 读完后返回 None（视频）。"""
 
     def __init__(self, roles=(PRIMARY,), *, is_file=False, frames=None, fail_after=None,
-                 ready_gate: threading.Event | None = None, shape=(4, 6, 3)) -> None:
+                 ready_gate: threading.Event | None = None, shape=(4, 6, 3), read_delay=0.002) -> None:
         self.roles = tuple(roles)
         self._shape = shape
         self.is_file = is_file
@@ -77,7 +104,8 @@ class FakeInput:
         self._ready_gate = ready_gate
         self._read = 0
         self._seq = 0
-        self.feed = None if is_file else object()   # 交给录制层的帧来源（录像线程从中订阅）
+        self._read_delay = read_delay
+        self.feed = None if is_file else FakeFeed(shape)   # 交给录制层的帧来源；站位采样取它的最新帧
 
     @property
     def reads(self) -> int:
@@ -117,7 +145,7 @@ class FakeInput:
         if self._frames is not None and self._read >= self._frames:
             return None
         self._read += 1
-        time.sleep(0.002)
+        time.sleep(self._read_delay)
         return InputFrames({role: frame(3, self._shape) for role in self.roles}, None if self.is_file else time.perf_counter_ns())
 
     def capture_feed(self):
@@ -443,25 +471,101 @@ def test_loading_preview_shows_raw_then_annotated_without_regressing():
     h.outcome()
 
 
-def test_occupancy_samples_every_stride_frames_when_armed():
+def test_presence_samples_latest_frame_on_a_timer_independent_of_the_loop():
+    """D-30：处理循环慢到约 4 fps 时，站位仍按约 10 次/秒取最新帧，样本时刻是源帧的采集时刻。"""
     calls = []
 
     def probe(pose, roi):
         calls.append(roi)
         return True
 
-    h = Harness(FakeInput((PRIMARY, SECONDARY)), probe=probe)
+    source = FakeInput((PRIMARY, SECONDARY), read_delay=0.25)
+    h = Harness(source, probe=probe)
     h.controls.arm_occupancy("exam", True)
     h.controls.set_roi((0.1, 0.1, 0.9, 0.9))
     h.manager.start(dual(skeleton=False))
-    h.wait_for(lambda: h.source.reads >= 7)
+    h.wait_for(lambda: "running" in h.kinds())
+    h.wait_for(lambda: len([e for e in h.events if e.kind == "presence"]) >= 8)
+    seen_at = time.monotonic()
+    reads = source.reads
     h.manager.stop()
-    outcome = h.outcome()
+    h.outcome()
     samples = [e.payload for e in h.events if e.kind == "presence"]
-    assert samples and all(isinstance(s, PresenceSample) and s.present for s in samples)
+    assert all(isinstance(s, PresenceSample) and s.present for s in samples)
+    assert reads <= 6                                   # 循环只跑了几帧，采样不受它限制
+    seqs = [s.seq for s in samples]
+    assert seqs == sorted(set(seqs))                    # 每次都是新帧，不重复
+    gaps = np.diff([s.captured_at for s in samples])
+    assert gaps.min() > 0.05 and np.median(gaps) < 0.2  # 约 10 次/秒
+    assert samples[7].captured_at <= seen_at + 0.02     # 采集时刻不晚于收到它的时刻（monotonic 分辨率 15.6 ms）
     assert calls[0] == (0.1, 0.1, 0.9, 0.9)
-    assert len(samples) == (outcome.frames + 2) // 3
-    assert FakeEngine.built == 1        # 独立的 Lite 引擎
+    assert FakeEngine.built == 1                        # 独立的 Lite 引擎，会话结束时关闭
+
+
+def test_presence_sends_nothing_without_new_frames():
+    """没有新帧时不发结果：没有新结果不等于离场（D-30）。"""
+    source = FakeInput((PRIMARY, SECONDARY))
+    h = Harness(source, probe=lambda *_: False)
+    h.controls.arm_occupancy("practice", True)
+    h.manager.start(dual(skeleton=False))
+    h.wait_for(lambda: any(e.kind == "presence" for e in h.events))
+    source.feed.frozen = True
+    time.sleep(0.15)
+    before = len([e for e in h.events if e.kind == "presence"])
+    time.sleep(0.4)
+    after = len([e for e in h.events if e.kind == "presence"])
+    h.manager.stop()
+    h.outcome()
+    assert after == before
+
+
+def test_presence_waits_until_armed_and_closes_engine_when_disarmed():
+    source = FakeInput((PRIMARY, SECONDARY))
+    h = Harness(source, probe=lambda *_: True)
+    h.manager.start(dual(skeleton=False))
+    h.wait_for(lambda: "running" in h.kinds())
+    time.sleep(0.3)
+    assert FakeEngine.built == 0 and not [e for e in h.events if e.kind == "presence"]
+    h.controls.arm_occupancy("exam", True)
+    h.wait_for(lambda: any(e.kind == "presence" for e in h.events))
+    h.controls.arm_occupancy("exam", False)
+    time.sleep(0.2)
+    count = len([e for e in h.events if e.kind == "presence"])
+    time.sleep(0.3)
+    assert len([e for e in h.events if e.kind == "presence"]) == count
+    h.manager.stop()
+    h.outcome()
+    assert FakeEngine.built == 1
+
+
+def test_presence_sampler_rotates_drops_stale_results_and_keeps_timestamps_increasing():
+    """采样转正主路；推理期间站位设置变了的结果作废；VIDEO 模式时间戳按采集时刻且严格递增。"""
+    controls = LiveControls()
+    controls.rotation[PRIMARY].set(90)
+    controls.arm_occupancy("exam", True)
+    feed = FakeFeed(shape=(4, 6, 3))
+    emitted = []
+    changes = iter([False, True, False])
+
+    def probe(_pose, _roi):
+        if next(changes):
+            controls.set_roi((0.0, 0.0, 1.0, 1.0))    # 推理期间改了 ROI
+        return True
+
+    sampler = PresenceSampler(probe)
+    for _ in range(3):
+        time.sleep(0.04)
+        assert sampler._sample(feed, controls, lambda kind, payload: emitted.append(payload))
+    engine = sampler._engine
+    assert [f.shape[:2] for f in engine.frames] == [(6, 4)] * 3
+    assert len(emitted) == 2
+    assert engine.timestamps[0] == 0 and all(b > a for a, b in zip(engine.timestamps, engine.timestamps[1:]))
+    feed.frozen = True                                 # 没有新帧：不推理、不发结果
+    assert not sampler._sample(feed, controls, lambda kind, payload: emitted.append(payload))
+    assert len(engine.frames) == 3 and len(emitted) == 2
+    controls.arm_occupancy("exam", False)
+    assert not sampler._sample(feed, controls, lambda *_: None)
+    assert engine.closed and sampler._engine is None
 
 
 def test_occupancy_not_run_for_skeleton_sessions():

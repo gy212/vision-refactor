@@ -111,7 +111,8 @@ class PresenceRecordingCycle:
 
     最短录制时长 ``min_record_s`` 只挡离场结束（考试 3 s，练习 0）；强制结束由拥有者调用 ``disarm``，
     不受它约束。``enter_stable`` 发出后停在 wait_enter，直到拥有者确认开录（``recording_started``）
-    或重新武装；``empty_stable`` 发出后回到 idle。``ignore_before`` 用来丢弃武装前排队的旧样本。
+    或重新武装；``empty_stable`` 发出后回到 idle。样本时刻是源帧的采集时刻（D-30）：``ignore_before``
+    丢弃武装前采到的旧样本，开录后同样丢弃采集于开录之前的样本。
     """
 
     def __init__(self, config: PresenceGateConfig | None = None) -> None:
@@ -130,8 +131,9 @@ class PresenceRecordingCycle:
         self.gate.begin_wait_enter()
 
     def recording_started(self, now: float) -> None:
-        """拥有者已开录：从 ``now`` 起计最短录制时长并等待离场。"""
+        """拥有者已开录：从 ``now`` 起计最短录制时长并等待离场；采集于 ``now`` 之前的样本不再计入。"""
         self.phase = "recording"
+        self._ignore_before = now
         self.gate.begin_recording(now)
 
     def disarm(self) -> None:

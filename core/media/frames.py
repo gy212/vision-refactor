@@ -21,6 +21,11 @@ def capture_clock_ns() -> int:
     return time.perf_counter_ns()
 
 
+def monotonic_of_capture(captured_at_ns: int) -> float:
+    """把采集时刻换算到 ``time.monotonic`` 的秒数（工作流与界面用的时钟），误差在 ``monotonic`` 的分辨率以内。"""
+    return time.monotonic() - (capture_clock_ns() - captured_at_ns) / 1e9
+
+
 @dataclass(frozen=True)
 class CapturedFrame:
     """一路摄像头采到的一帧。``captured_at_ns`` 是主机取帧完成的时刻（不是曝光时刻），
@@ -45,4 +50,4 @@ def is_valid_bgr(frame: Any) -> bool:
     )
 
 
-__all__ = ["CapturedFrame", "FrameSet", "capture_clock_ns", "is_valid_bgr"]
+__all__ = ["CapturedFrame", "FrameSet", "capture_clock_ns", "is_valid_bgr", "monotonic_of_capture"]

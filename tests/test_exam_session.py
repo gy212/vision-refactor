@@ -212,3 +212,22 @@ def test_complete_exports() -> None:
     cmds = s.handle("record_stopped", now=5.1)
     assert s.phase == "completed"
     assert "EXPORT" in _kinds(cmds)
+
+
+def test_presence_samples_captured_before_arming_or_pause_are_ignored() -> None:
+    """D-30：叫号守护期间与暂停前采到的样本迟到时不算进场。"""
+    s = ExamSession(ExamSessionConfig(post_call_guard_s=1.0))
+    s.load_roster(_cands(1))
+    s.handle("start_exam", now=0.0)
+    s.handle("tick", now=1.0)                       # 守护结束，从 1.0 起等进场
+    assert s.phase == "wait_enter"
+    for t in (0.2, 0.5, 0.95):                      # 守护期间采到的帧
+        assert s.handle("presence", present=True, now=t) == []
+    assert s.handle("presence", present=True, now=1.1) == []
+    s.handle("pause", now=1.5)
+    s.handle("resume", now=3.0)
+    for t in (1.4, 2.0, 2.9):                       # 暂停前与暂停期间采到的帧
+        assert s.handle("presence", present=True, now=t) == []
+    assert s.handle("presence", present=True, now=3.1) == []
+    cmds = s.handle("presence", present=True, now=3.95)
+    assert "BEGIN_SEGMENT" in _kinds(cmds)

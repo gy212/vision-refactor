@@ -173,12 +173,13 @@ class ExamSession:
             ExamCommand("UPDATE_ROW", {"row_id": row.row_id, "status": row.status}),
         ]
 
-    def _on_call_guard_elapsed(self, **_: Any) -> list[ExamCommand]:
+    def _on_call_guard_elapsed(self, *, now: float | None = None, **_: Any) -> list[ExamCommand]:
         if self.phase != "calling":
             return []
         self.phase = "wait_enter"
         self.call_guard_deadline = None
-        self.presence.arm_enter()
+        # 站位样本带源帧采集时刻：叫号守护期间采到的帧不算进场（D-30）
+        self.presence.arm_enter(ignore_before=now)
         return [ExamCommand("ARM_OCCUPANCY")]
 
     def _on_enter_stable(self, *, now: float, **_: Any) -> list[ExamCommand]:
@@ -362,7 +363,7 @@ class ExamSession:
             and self.call_guard_deadline is not None
             and now >= self.call_guard_deadline
         ):
-            cmds.extend(self._on_call_guard_elapsed())
+            cmds.extend(self._on_call_guard_elapsed(now=now))
         return cmds
 
     def _on_skip(self, *, now: float, **_: Any) -> list[ExamCommand]:
@@ -435,7 +436,7 @@ class ExamSession:
         self.phase = "wait_enter"
         self.call_guard_deadline = None
         self.inter_gap_deadline = None
-        self.presence.arm_enter()
+        self.presence.arm_enter(ignore_before=now)
         return [
             ExamCommand("DISARM_OCCUPANCY"),
             ExamCommand(
@@ -475,7 +476,7 @@ class ExamSession:
         self.phase = prev
         cmds: list[ExamCommand] = []
         if prev == "wait_enter":
-            self.presence.arm_enter()
+            self.presence.arm_enter(ignore_before=now)   # 暂停前采到的样本不算（D-30）
         elif prev == "recording":
             # 恢复录制：最短录制时长从恢复时刻重新计
             self.presence.recording_started(now)

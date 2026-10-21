@@ -20,7 +20,6 @@ Roi = tuple[float, float, float, float]
 PresenceProbe = Callable[[object, Roi], bool]   # (pose landmarks, ROI) -> 人是否在 ROI 内
 
 DEFAULT_ROI: Roi = (0.2, 0.1, 0.8, 0.95)
-DEFAULT_OCCUPANCY_STRIDE = 3
 NOMINAL_CAMERA_FPS = 30.0
 
 
@@ -161,7 +160,6 @@ class Versioned(Generic[T]):
 class OccupancySettings:
     armed_by: frozenset[str] = frozenset()   # 谁在用站位检测（考试、学生练习）；非空即启用
     roi: Roi = DEFAULT_ROI
-    stride: int = DEFAULT_OCCUPANCY_STRIDE
 
     @property
     def armed(self) -> bool:
@@ -170,7 +168,7 @@ class OccupancySettings:
 
 @dataclass
 class LiveControls:
-    """会话运行中可调的参数（§8.1）：每路旋转每帧读取，站位检测的启用与 ROI 每帧读取。"""
+    """会话运行中可调的参数（§8.1）：每路旋转每帧读取，站位检测的启用与 ROI 由采样线程每次采样时读取。"""
 
     rotation: dict[str, Versioned[int]] = field(
         default_factory=lambda: {role: Versioned(0) for role in ROLES}
@@ -182,22 +180,21 @@ class LiveControls:
         return self.rotation[role].get()
 
     def arm_occupancy(self, owner: str, armed: bool) -> None:
-        """``owner`` 是启用方的名字（如 ``exam``、``practice``）；任一方启用即在推理关的会话里采样。"""
+        """``owner`` 是启用方的名字（如 ``exam``、``practice``）；任一方启用即在有站位检测的会话里按时间采样。"""
         with self._lock:
             current = self.occupancy.get()
             owners = current.armed_by | {owner} if armed else current.armed_by - {owner}
             if owners != current.armed_by:
-                self.occupancy.set(OccupancySettings(frozenset(owners), current.roi, current.stride))
+                self.occupancy.set(OccupancySettings(frozenset(owners), current.roi))
 
     def set_roi(self, roi: Roi) -> None:
         with self._lock:
             current = self.occupancy.get()
             value = tuple(float(x) for x in roi)
-            self.occupancy.set(OccupancySettings(current.armed_by, value, current.stride))  # type: ignore[arg-type]
+            self.occupancy.set(OccupancySettings(current.armed_by, value))  # type: ignore[arg-type]
 
 
 __all__ = [
-    "DEFAULT_OCCUPANCY_STRIDE",
     "DEFAULT_ROI",
     "LiveControls",
     "NOMINAL_CAMERA_FPS",

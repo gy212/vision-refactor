@@ -2,9 +2,9 @@
 """``SessionRunner``：实时会话唯一的逐帧循环（设计文档 §8.2），Tk 与 CLI 共用。
 
 一次会话在 runner 线程里依次：等输入就绪 → 构造推理 stage（期间裸帧泵发布预览，D-8）→ 接管输入 →
-开始录制会话 → 逐帧"读 → 转正 → 推理 → 后续 stages → 发布预览"→ 收尾。摄像头会话的录像不经这个循环：
+开始录制会话（有站位检测时同时启动采样线程，D-30）→ 逐帧"读 → 转正 → 推理 → 后续 stages → 发布预览"→ 收尾。摄像头会话的录像不经这个循环：
 录制层的每路录像线程直接订阅摄像头的帧（D-18，§8.8），循环慢不影响录像；视频文件会话仍由循环逐帧写。
-收尾总是关闭 stages、关闭录制会话（摄像头仍在出帧，录像线程能写完结束边界之前的帧）、关闭输入
+收尾总是停下采样线程、关闭 stages、关闭录制会话（摄像头仍在出帧，录像线程能写完结束边界之前的帧）、关闭输入
 （正常结束时把摄像头交回预热，V-1），最后发出 ``ended``。
 """
 from __future__ import annotations
@@ -21,6 +21,7 @@ from core.foundation.tasks import Cancelled, CancelToken, TaskGroup
 from core.live.config import LiveControls, SessionConfig
 from core.live.inputs import FrameInput
 from core.live.metrics import StartupMetrics
+from core.live.presence import PresenceSampler
 from core.live.preview import PreviewStore
 from core.live.stages import (
     FramePacket,
@@ -128,6 +129,7 @@ class SessionRunner:
         controls: LiveControls | None = None,
         metrics: StartupMetrics | None = None,
         display: Callable[[FramePacket], bool] | None = None,
+        presence: PresenceSampler | None = None,
     ) -> None:
         self.config = config
         self._source = source
@@ -141,6 +143,7 @@ class SessionRunner:
         self._controls = controls or LiveControls()
         self._metrics = metrics
         self._display = display
+        self._presence = presence
         self._transform = TransformStage()
         self._overlay = OverlayStage()
         self._opened: list = []
@@ -219,11 +222,23 @@ class SessionRunner:
             self._sink.begin_session(record_sizes, self.ctx.fps, feed=self._source.capture_feed(),
                                      rotation_of=self._controls.rotation_of)
             self._sink_open = True
+        self._start_presence()
         if self._metrics is not None:
             self._metrics.set_outcome("running")
         self._emit("running", RunningInfo(actual, record_sizes))
         self._status(self._running_text(actual))
         self._emit("progress", (0, self._source.total_frames()))
+
+    def _start_presence(self) -> None:
+        """站位采样线程：按时间取主路最新帧，与本循环的速度无关（D-30）；没有帧来源（视频文件）时不启动。"""
+        feed = self._source.capture_feed()
+        if self._presence is None or feed is None:
+            return
+        sampler = self._presence
+        self._tasks.spawn(
+            "presence", lambda token: sampler.run(token, feed, self._controls, self._emit),
+            owner="runner", close_budget_s=2.0,
+        )
 
     def _running_text(self, actual: Mapping[str, tuple[int, int]]) -> str:
         cfg = self.config

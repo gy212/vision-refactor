@@ -42,7 +42,7 @@ from core.media.camera import (
     make_label,
     probe_camera,
 )
-from core.media.frames import CapturedFrame, FrameSet, capture_clock_ns, is_valid_bgr
+from core.media.frames import CapturedFrame, FrameSet, capture_clock_ns, is_valid_bgr, monotonic_of_capture
 from core.media.capture_record import capture_document, read_capture_record, write_capture_record
 from core.media.frame_clock import BoundaryShift, FrameClock, FrameClockStats
 from core.media.pacing import Timeline, TimelineStats
@@ -83,6 +83,7 @@ __all__ = [
     "LatestSlot",
     "list_device_names",
     "make_label",
+    "monotonic_of_capture",
     "NO_END",
     "open_video",
     "open_video_writer",
