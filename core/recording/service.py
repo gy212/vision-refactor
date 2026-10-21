@@ -2,7 +2,8 @@
 """录制服务 ``RecordingService``：开始、暂停、结束片段，并在同一把锁内把结束的片段连同处理计划提交给 finalizer。
 
 "结束片段 + 提交"在同一把锁内完成，关窗时的 ``cancel_all`` 不会插进两者之间，因此每个结束的片段要么已提交、
-要么在关窗后被拒绝提交，不会出现"既没提交也没有取消终态"的片段。写帧不经这把锁，提交不阻塞采集线程。
+要么在关窗后被拒绝提交，不会出现"既没提交也没有取消终态"的片段。写帧不经这把锁（摄像头的帧由各路录像线程取，
+视频文件的帧由会话线程写），提交不阻塞采集。
 处理计划由构建方给出：显式传入 ``plan``，或由构造时注入的 ``plan_for`` 按片段生成（返回 None 表示不提交）。
 """
 from __future__ import annotations
@@ -19,10 +20,12 @@ from core.recording.recorder import (
     BeginError,
     FinishedSegment,
     RecorderSnapshot,
+    RotationOf,
     SegmentMeta,
     SegmentRecorder,
     SegmentRef,
 )
+from core.recording.worker import FrameFeed
 
 PlanBuilder = Callable[[FinishedSegment], "ProcessingPlan | None"]
 
@@ -52,12 +55,11 @@ class RecordingService:
         return self._finalizer
 
     # ------------------------------------------------------------------ 会话（采集线程）
-    def begin_session(self, sizes: Mapping[str, tuple[int, int]], fps: float) -> None:
+    def begin_session(self, sizes: Mapping[str, tuple[int, int]], fps: float, *,
+                      feed: FrameFeed | None = None, rotation_of: RotationOf | None = None) -> None:
+        """摄像头会话给出 ``feed``，各路录像线程从中取帧；视频文件会话没有，由会话线程 ``write``。"""
         with self._lock:
-            self._recorder.begin_session(sizes, fps)
-
-    def update_sizes(self, sizes: Mapping[str, tuple[int, int]]) -> None:
-        self._recorder.update_sizes(sizes)
+            self._recorder.begin_session(sizes, fps, feed=feed, rotation_of=rotation_of)
 
     def write(self, frames: Mapping[str, np.ndarray]) -> None:
         self._recorder.write(frames)

@@ -19,9 +19,10 @@
   退化为不去抖，不会把帧排到到达之后。
 - 输出相位：去抖后的帧落在固定相位上；若它恰在输出槽边界附近，亚毫秒的估计误差也会让它在相邻两槽间来回，
   同样重复一帧、跳过一帧。``segment_shift`` 在一段录制开始时为这一路算一次平移量（不到一个周期），
-  这一段的开录、暂停、继续、结束边界都减去同一个量，使输出槽落在两帧之间的中点：仍只用边界之前的帧；
+  这一段的开录、暂停、继续、结束边界都推迟同一个量，使输出槽落在两帧之间的中点：仍只用边界之前的帧；
   每路各自的平移在段内不变，所以各路的录制区间长度相同、帧数相同（不能每个边界各算一次：
-  各路相位不同时，起止平移不同会让区间长度相差近一个周期，帧数差一帧）。
+  各路相位不同时，起止平移不同会让区间长度相差近一个周期，帧数差一帧）。只推迟不提前：录像线程收到边界命令时，
+  已经交给时间轴的帧都到达于命令之前，估计时刻不晚于边界，推迟后的边界因此不会落在已交出的帧之前。
 - ``generation`` 变化（设备重开）时重新起算。
 """
 from __future__ import annotations
@@ -59,12 +60,12 @@ class FrameClockStats:
 
 @dataclass(frozen=True)
 class BoundaryShift:
-    """一路在一段录制内固定的边界平移量：本段开录、暂停、继续、结束都用 ``apply`` 换算，区间长度因此不变。"""
+    """一路在一段录制内固定的边界推迟量：本段开录、暂停、继续、结束都用 ``apply`` 换算，区间长度因此不变。"""
 
     ns: int
 
     def apply(self, at_ns: int) -> int:
-        return at_ns - self.ns
+        return at_ns + self.ns
 
 
 class FrameClock:
@@ -110,12 +111,12 @@ class FrameClock:
         return [self._release() for _ in range(len(self._pending))]
 
     def segment_shift(self, start_ns: int) -> BoundaryShift:
-        """在一段录制开始时调用一次：这一路本段所有边界要提前的量（``0 <= ns < P``），使 ``start_ns - ns`` 落在
-        最近一帧网格曝光之后半个周期，输出槽离帧时刻最远。还没有时钟（尚未放出帧）时为 0。"""
+        """在一段录制开始时调用一次：这一路本段所有边界要推迟的量（``0 <= ns < P``），使 ``start_ns + ns`` 落在
+        一帧网格曝光之后半个周期，输出槽离帧时刻最远。还没有时钟（尚未放出帧）时为 0。"""
         if self._clock is None:
             return BoundaryShift(0)
         age = (start_ns - self._clock) % self._period
-        return BoundaryShift(int((age - self._period / 2) % self._period))
+        return BoundaryShift(int((self._period / 2 - age) % self._period))
 
     def _release(self) -> CapturedFrame:
         frame = self._pending[0]

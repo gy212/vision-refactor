@@ -43,6 +43,14 @@ def view_for_role(role: str) -> str:
         raise ValueError(f"未知摄像头角色：{role!r}") from None
 
 
+def role_for_view(view: str) -> str:
+    """视角名到摄像头角色：front→primary，side→secondary。"""
+    for role, name in _ROLE_VIEWS.items():
+        if name == view:
+            return role
+    raise ValueError(f"未知视角：{view!r}")
+
+
 @dataclass(frozen=True)
 class SegmentLayout:
     """以录制根目录为基准的片段路径。"""

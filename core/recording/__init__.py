@@ -17,9 +17,10 @@ from core.recording.recorder import (
     SegmentRecorder,
     SegmentRef,
     ViewRecording,
-    fit_frame_to_size,
 )
 from core.recording.service import FinishOutcome, RecordingService
+from core.recording.skeleton import RenderSkeleton, skeleton_engine
+from core.recording.worker import QUEUE_CAPACITY, FrameFeed, ViewResult, ViewWorker
 from core.recording.steps import (
     TERMINAL_STATUSES,
     CheckRecording,
@@ -49,9 +50,12 @@ __all__ = [
     "CompareGate",
     "FinishOutcome",
     "FinishedSegment",
+    "FrameFeed",
     "PostprocessError",
+    "QUEUE_CAPACITY",
     "ProcessingPlan",
     "RecorderSnapshot",
+    "RenderSkeleton",
     "RecordingController",
     "RecordingService",
     "RecordingSnapshot",
@@ -72,10 +76,12 @@ __all__ = [
     "Transcode",
     "ValidateVideos",
     "ViewRecording",
+    "ViewResult",
+    "ViewWorker",
     "default_template_paths",
     "dual_segment_steps",
-    "fit_frame_to_size",
     "single_segment_steps",
+    "skeleton_engine",
     "template_action_name",
     "try_load_heavy_template",
     "utc_timestamp",

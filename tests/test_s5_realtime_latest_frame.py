@@ -62,6 +62,9 @@ class FakeVideoInput:
             time.sleep(self.delay)
         return InputFrames({PRIMARY: np.zeros((8, 8, 3), dtype=np.uint8)})
 
+    def capture_feed(self):
+        return None
+
     def close(self, *, keep_warm):
         self.closed = True
 

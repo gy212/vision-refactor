@@ -136,6 +136,11 @@ class FrameQueue:
             self._condition.wait_for(lambda: self._items or self._closed, timeout)
             return self._items.popleft() if self._items else None
 
+    def reset_peak(self) -> None:
+        """峰值从此刻的排队帧数重新统计（录像每段开始时调用）。"""
+        with self._condition:
+            self.peak = len(self._items)
+
     def close(self) -> None:
         """不再接收新帧；已排队的帧仍可取完。"""
         with self._condition:

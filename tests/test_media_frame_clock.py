@@ -39,7 +39,7 @@ def _dejitter(frames, fps=30.0):
 
 def _repeats(frames, seed, seconds=30.0, clock=None, phase=None):
     """30 s 录像的补帧数。开录时刻相对帧的相位随 ``seed`` 变化（或由 ``phase`` 指定，单位为周期）；
-    给出 ``clock`` 时按 ``segment_shift`` 提前这一路本段的边界。"""
+    给出 ``clock`` 时按 ``segment_shift`` 推迟这一路本段的边界。"""
     rng = np.random.default_rng(1000 + seed)
     timeline = Timeline(30)
     start = int(frames[150].captured_at_ns + (rng.uniform(0, P_NS) if phase is None else phase * P_NS))
@@ -67,14 +67,14 @@ def test_client_like_jitter_no_longer_stutters(seed):
 
 
 def test_segment_shift_keeps_slots_away_from_frames_at_every_phase():
-    """帧恰在输出槽边界附近时，亚毫秒的估计误差就会来回跨界；按 ``segment_shift`` 提前边界后任何相位都不重复。"""
+    """帧恰在输出槽边界附近时，亚毫秒的估计误差就会来回跨界；按 ``segment_shift`` 推迟边界后任何相位都不重复。"""
     estimated, clock = _dejitter(_frames(_camera(seed=4)[1]))
     phases = np.linspace(0, 1, 40, endpoint=False)
     assert max(_repeats(estimated, 0, phase=ph) for ph in phases) > 0              # 不对齐时总有相位会重复
     assert [_repeats(estimated, 0, clock=clock, phase=ph) for ph in phases] == [0] * 40
     for at in (5_000_000_000, 5_012_345_678):
         shift = clock.segment_shift(at)
-        assert 0 <= shift.ns < P_NS and shift.apply(at) == at - shift.ns
+        assert 0 <= shift.ns < P_NS and shift.apply(at) == at + shift.ns
     assert FrameClock(30).segment_shift(123) == BoundaryShift(0)
 
 
@@ -116,7 +116,8 @@ def test_views_with_different_phases_keep_equal_frame_counts():
         def apply(self, at):
             return self.clock.segment_shift(at).apply(at)
 
-    assert (_record(front, events, PerBoundary(front_clock)), _record(side, events, PerBoundary(side_clock))) == (30, 31)
+    per_boundary = (_record(front, events, PerBoundary(front_clock)), _record(side, events, PerBoundary(side_clock)))
+    assert per_boundary[0] != per_boundary[1]
     counts = (_record(front, events, front_clock.segment_shift(start)),
               _record(side, events, side_clock.segment_shift(start)))
     assert counts[0] == counts[1] == 31

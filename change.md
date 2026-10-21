@@ -1,3 +1,51 @@
+## 2026-10-21: [feat] D-18 第 6 层：摄像头录像改由每路录像线程写，原始录像与录后骨架成片
+
+- 问题描述：录像仍在处理循环里"推理一帧、写一帧"，按名义 30 fps 写文件。推理慢时录像变速（甲方第一批样本 8～20 fps，回放快 1.5～3.7 倍）。第 3 层的 `Timeline`、第 5 层的 `FrameClock` 已就位，还没接进录像通路。
+- 修改内容：
+  - 新增 `core/recording/worker.py` 的 `ViewWorker`，摄像头会话每路一个录像线程：
+    - 会话开始时订阅该路的 `FrameQueue`（容量 8），整个会话都在取帧、交给 `FrameClock`。
+    - 开录、暂停、继续、结束是带共同边界（`capture_clock_ns`）的命令。第一帧去抖时刻晚于边界的帧放出时才执行该边界，第 3 层的调用约定（边界之前的帧先推完、之后的不提前推）由线程保证。边界之后 0.6 s 仍无新帧时按已到的帧执行。
+    - 方向在开录时取一次，段内不变（D-29）；删除 `fit_frame_to_size`。
+    - 录制期间队列溢出、该路断流、写盘出错都记为该路错误，之后不再写，已写文件保留（D-27）。现有的"见错即结束整段"与 `CheckRecording` 使该段失败、不评分。
+    - 结束时返回时间轴与队列峰值、溢出、`FrameClock` 统计，`SegmentRecorder` 写出 `capture.json`。
+  - `segment_shift` 由提前边界改为推迟边界（`BoundaryShift.apply` 是加），相位与段内固定的性质不变。命令到达前已交给时间轴的帧都到达于命令之前，推迟后的边界不会落在它们之前。
+  - `SegmentRecorder`/`RecordingService.begin_session` 新增 `feed` 与 `rotation_of`：
+    - 摄像头会话为每路建录像线程，并等每路拿到首帧（最多 1 s）再返回，开录总有边界之前的帧。
+    - 结束时等各路写完（最多 3 s；第 8 层改为异步确认）。
+    - 视频文件会话仍由处理循环逐帧写（保序、源帧率）。
+  - `SessionRunner`：
+    - 摄像头会话在 `begin_session` 交出 `CameraStream`（`FrameInput.capture_feed`），不再写录像。
+    - 收尾时先关录制会话再关输入，录像线程能用仍在出帧的摄像头写完结束边界。
+    - 删除 `FrameSink.update_sizes` 与 `SessionConfig.record_overlay`。
+  - D-26：摄像头录像一律是转正后的原始画面，单摄不再带 HUD。
+    - 新增 `core/pose/annotate.py` 的 `annotate_video`（`services/preview.write_pose_preview` 改用它）。
+    - 新增 `core/recording/skeleton.py` 的 `RenderSkeleton`：开了"录制骨架"的片段录后用会话的模型与手部设置生成成片，转码、校验首帧后替换原始录像，文件名不变；失败或取消时删临时文件、保留原始录像，失败码 `skeleton_render_failed`。
+    - 双摄放在校验之后、`CompareGate` 之前；单摄放在转码之后，这类计划关窗时取消。
+    - 单摄计划失败时 finalizer 发一次更新（仍不写结果 JSON），Tk 弹窗提示。新状态 `rendering`。
+  - CLI 摄像头 `--out`：先把原始画面按真实时间录到 `--out` 旁的临时 AVI，会话结束后画骨架写成 mp4v 的 `--out` 并删除临时文件；失败时保留它并以失败退出。视频文件 `--out` 不变。
+  - 设计文档：§8.8 第 6 层与表格、§2.2、§8.2 的 CLI 端口说明同步；D-26、D-29 记为已实施，D-27 记为部分实施（开录确认、`begin_failed` 与练习失败原因在第 8 层）。`AGENTS.md` 代码地图同步。
+- 被替换的测试（D-13）：
+  - `test_live_session.py` 中断言摄像头录像帧内容的用例，改为断言交出的 `feed` 与旋转读取函数、循环不写录像、录制先于输入关闭：
+    - `test_single_camera_recording_keeps_hud_even_without_skeleton`
+    - `test_dual_records_raw_without_skeleton_and_annotated_with_skeleton`
+    - `test_dual_rotation_is_per_role_for_sizes_and_frames`
+    - `test_rotation_applies_to_recording_size_and_frames`
+    - `test_dual_write_failure_closes_recording_and_releases_without_engines`（改为录制会话开始失败）
+  - 两项 `fit_frame_to_size` 用例删除。
+  - 录像内容与时间的断言移到新的 `tests/test_recording_worker.py`。
+- 验证方法：
+  - 新增 `tests/test_recording_worker.py` 9 项，假来源按真实时间以 30 fps 出帧：
+    - 时长与墙钟一致、两路帧数相同；
+    - `capture.json` 中每个输出槽的源帧都采集于该槽之前且不晚于结束边界；暂停时长扣除；
+    - 段内方向固定、下一段才生效；慢 writer 使队列溢出、该段失败；断流使该路失败；卡顿时结束不无限等待；
+    - 会话结束提交进行中的片段；
+    - 真实 MJPG 写出后解码，核对每帧画面的源序号与采集时间；
+    - 真实 `CameraPool`/`CameraStream`/`LiveSessionManager` 下处理循环慢到约 5 fps 时，录像仍几乎每帧都是新源帧、两路帧数相同。
+  - 新增 `tests/test_recording_skeleton.py` 8 项：成片替换原始录像、失败与取消保留原始录像并清理临时文件、处理计划、单摄失败上报、`annotate_video` 逐帧绘制、CLI 摄像头 `--out`。
+  - `tests/test_media_frame_clock.py` 改为推迟边界后仍 27 项通过。
+  - 全量 `pytest tests -q`：1317 通过（含真实 Tk + spawn 的模式切换检查）；`scripts/sim_exam_flow.py` 37 项通过；门禁与空白检查通过。
+  - 实机：开发机只有一个摄像头且被占用，双摄 1080p 实拍与冻结 EXE 自检留待甲方机器（§8.8 验收）。
+
 ## 2026-10-21: [feat] D-18 第 5 层：录像时间轴的到达时刻去抖（FrameClock）
 
 - 问题描述：甲方录制性能测试（2026-10-21）四段全部达标，帧数完整，但帧到达有抖动：间隔中位 32 ms、p95 50～55 ms、最大 85 ms。原因是采集时刻取的是主机读到帧的时刻，摄像头本身按节拍曝光，USB、驱动与解码让帧成批到达。按该量级的抖动（每帧约 8 ms 的随机延迟）仿真，`Timeline` 直接用到达时刻时有 5%～24% 的输出槽是"重复一帧、跳过下一帧"，回放会一顿一顿。用户同意在录像 writer 之前加一层去抖（2026-10-21）。

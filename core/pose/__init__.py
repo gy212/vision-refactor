@@ -4,6 +4,7 @@
 入口层（apps/batch/analysis/scripts）只从这里导入；YOLO 后端（``core.pose.backends.yolo``）不在此导出，
 避免桌面打包把 YOLO 链拉进来。
 """
+from core.pose.annotate import annotate_video
 from core.pose.engine import (
     MISSING_MODEL_HINTS,
     EngineSpec,
@@ -90,6 +91,7 @@ from core.pose.validity import DEFAULT_VALID_CONF_THR, MEDIAPIPE_VALIDITY_POLICY
 from core.pose.view_score import pose_view_score
 
 __all__ = [
+    "annotate_video",
     "MEDIAPIPE_MODELS",
     "ModelSpec",
     "download_model",

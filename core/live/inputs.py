@@ -4,6 +4,7 @@
 步骤顺序：``wait_ready``（摄像头等各路有效首帧；视频已打开）→ ``snapshot``（模型加载期的裸帧）→
 ``start``（摄像头接管租约，各路 reader 开始持续读帧）→ ``actual_sizes`` → ``read``（返回 ``InputFrames``；
 视频读完返回 None；摄像头断流抛 ``CameraReadError``）→ ``close``。阻塞调用只在 runner 线程里执行。
+``capture_feed`` 是交给录制层的帧来源：摄像头会话是 ``CameraStream``（录像线程订阅每路的帧），视频为 None。
 """
 from __future__ import annotations
 
@@ -44,6 +45,7 @@ class FrameInput(Protocol):
     def fps(self) -> float: ...
     def total_frames(self) -> int: ...
     def read(self, cancel: CancelToken) -> InputFrames | None: ...
+    def capture_feed(self) -> CameraStream | None: ...
     def close(self, *, keep_warm: bool) -> None: ...
 
 
@@ -97,6 +99,9 @@ class CameraInput:
             {role: frame.bgr for role, frame in captured.items()}, captured[PRIMARY].captured_at_ns,
         )
 
+    def capture_feed(self) -> CameraStream:
+        return self._stream
+
     def close(self, *, keep_warm: bool) -> None:
         self._stream.close(keep_warm=keep_warm)
 
@@ -144,6 +149,9 @@ class VideoFileInput:
             return None
         frame = next(self._frames, None)
         return None if frame is None else InputFrames({PRIMARY: frame.bgr})
+
+    def capture_feed(self) -> None:
+        return None
 
     def close(self, *, keep_warm: bool) -> None:
         if self._source is not None:

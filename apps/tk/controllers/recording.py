@@ -32,7 +32,8 @@ from apps.tk.controllers.flags import LiveFlags
 from apps.tk.views.status_panel import EMPTY_SCORES
 
 STATUS_LABELS = {
-    "queued": "排队中", "transcoding": "正在转码", "validating": "正在校验", "comparing": "正在比对",
+    "queued": "排队中", "transcoding": "正在转码", "validating": "正在校验", "rendering": "正在生成骨架成片",
+    "comparing": "正在比对",
     "completed": "已完成", "failed": "失败", "skipped": "已跳过", "cancelled": "已取消",
 }
 
@@ -88,11 +89,8 @@ class RecordingController:
         return self.service.state
 
     # ------------------------------------------------------------------ FrameSink
-    def begin_session(self, sizes, fps: float) -> None:
-        self.service.begin_session(sizes, fps)
-
-    def update_sizes(self, sizes) -> None:
-        self.service.update_sizes(sizes)
+    def begin_session(self, sizes, fps: float, *, feed=None, rotation_of=None) -> None:
+        self.service.begin_session(sizes, fps, feed=feed, rotation_of=rotation_of)
 
     def write(self, frames) -> None:
         self.service.write(frames)
@@ -307,13 +305,18 @@ class RecordingController:
     # ------------------------------------------------------------------ 录后处理
     def plan(self, segment: FinishedSegment) -> ProcessingPlan | None:
         """按开录时登记的意图与结束时的设置构建处理计划；在服务锁内、提交前先把本片段登记为最新。"""
+        flags = self.flags
         if not segment.multi:
-            return build_segment_plan(segment, PlanSettings(record_skeleton=False, auto_compare=False))
+            return build_segment_plan(segment, PlanSettings(
+                record_skeleton=flags.record_skeleton, auto_compare=False,
+                pose_variant=flags.pose_variant, enable_hands=flags.enable_hands,
+            ))
         front, side = self._templates
         plan = build_segment_plan(segment, PlanSettings(
-            record_skeleton=self.flags.record_skeleton,
+            record_skeleton=flags.record_skeleton,
             auto_compare=bool(self.current_auto_compare()),
             front_templates=tuple(front), side_templates=tuple(side),
+            pose_variant=flags.pose_variant, enable_hands=flags.enable_hands,
         ))
         self.latest_segment_id = segment.segment_id
         return plan
@@ -327,6 +330,8 @@ class RecordingController:
     def apply_update(self, update: SegmentUpdate) -> None:
         """Tk 线程：比对状态栏只显示最新片段；考试台账按 segment_id 回填每一位，关窗收尾时只回填台账。"""
         closing = self.flags.closing
+        if update.segment_id != self.latest_segment_id and update.error_code == "skeleton_render_failed" and not closing:
+            messagebox.showwarning("骨架成片失败", update.message, parent=self.view.recording.root)
         if update.segment_id == self.latest_segment_id and not closing:
             label = f"自动比对：{STATUS_LABELS.get(update.status, update.status)}"
             if update.status == "completed":

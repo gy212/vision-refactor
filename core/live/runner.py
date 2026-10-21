@@ -2,8 +2,10 @@
 """``SessionRunner``：实时会话唯一的逐帧循环（设计文档 §8.2），Tk 与 CLI 共用。
 
 一次会话在 runner 线程里依次：等输入就绪 → 构造推理 stage（期间裸帧泵发布预览，D-8）→ 接管输入 →
-登记录制尺寸 → 逐帧"读 → 转正 → 推理 → 后续 stages → 写录像 → 发布预览"→ 收尾。收尾总是关闭 stages、
-关闭输入（正常结束时把摄像头交回预热，V-1）、关闭录制会话，最后发出 ``ended``。
+开始录制会话 → 逐帧"读 → 转正 → 推理 → 后续 stages → 发布预览"→ 收尾。摄像头会话的录像不经这个循环：
+录制层的每路录像线程直接订阅摄像头的帧（D-18，§8.8），循环慢不影响录像；视频文件会话仍由循环逐帧写。
+收尾总是关闭 stages、关闭录制会话（摄像头仍在出帧，录像线程能写完结束边界之前的帧）、关闭输入
+（正常结束时把摄像头交回预热，V-1），最后发出 ``ended``。
 """
 from __future__ import annotations
 
@@ -30,6 +32,7 @@ from core.live.stages import (
 from core.media import (
     PRIMARY,
     SECONDARY,
+    CameraStream,
     LatestSlot,
     VideoOpenError,
     capture_clock_ns,
@@ -59,10 +62,14 @@ _DUAL_ERRORS = {
 
 
 class FrameSink(Protocol):
-    """录制端口（由 ``recording.RecordingService`` 适配实现）；帧按视角名（front/side）组织。"""
+    """录制端口（由 ``recording.RecordingService`` 适配实现）；帧按视角名（front/side）组织。
 
-    def begin_session(self, sizes: Mapping[str, tuple[int, int]], fps: float) -> None: ...
-    def update_sizes(self, sizes: Mapping[str, tuple[int, int]]) -> None: ...
+    摄像头会话在 ``begin_session`` 交出 ``feed``（各路的帧由录制层自己订阅）与每路旋转的读取函数，
+    之后不再 ``write``；视频文件会话没有 ``feed``，由 runner 逐帧 ``write``。"""
+
+    def begin_session(self, sizes: Mapping[str, tuple[int, int]], fps: float, *,
+                      feed: CameraStream | None = None,
+                      rotation_of: Callable[[str], int] | None = None) -> None: ...
     def write(self, frames: Mapping[str, np.ndarray]) -> None: ...
     def close_session(self) -> None: ...
 
@@ -209,7 +216,8 @@ class SessionRunner:
             for role, size in actual.items()
         }
         if self._sink is not None:
-            self._sink.begin_session(record_sizes, self.ctx.fps)
+            self._sink.begin_session(record_sizes, self.ctx.fps, feed=self._source.capture_feed(),
+                                     rotation_of=self._controls.rotation_of)
             self._sink_open = True
         if self._metrics is not None:
             self._metrics.set_outcome("running")
@@ -284,7 +292,6 @@ class SessionRunner:
         frames_iter = self._latest_frames() if self.config.latest_frame else self._read_frames(self._cancel)
         for index, frames, captured_at_ns in frames_iter:
             packet = self._transform.process(FramePacket(index, frames, captured_at_ns=captured_at_ns), self.ctx)
-            self._update_sizes(packet.frames)
             if self._pose is not None:
                 self._pose.process(packet, self.ctx)
             if not self._finish_frame(packet):
@@ -350,7 +357,6 @@ class SessionRunner:
             try:
                 for index, frames, captured_at_ns in self._read_frames(token):
                     frames = self._transform.process(FramePacket(index, frames), self.ctx).frames
-                    self._update_sizes(frames)
                     if self.config.is_file:
                         ts = int(index * 1000.0 / max(1e-6, self.ctx.fps))
                     else:
@@ -397,7 +403,7 @@ class SessionRunner:
             raise error
 
     def _finish_frame(self, packet: FramePacket) -> bool:
-        """推理之后的 stages、HUD、写录像、发布预览；CLI 窗口要求退出时返回 False。"""
+        """推理之后的 stages、HUD、（视频文件会话）写录像、发布预览；CLI 窗口要求退出时返回 False。"""
         if self._pose is None:
             packet.out = {role: frame.copy() for role, frame in packet.frames.items()}
         for stage in self._stages:
@@ -410,12 +416,11 @@ class SessionRunner:
         fps = loop.frames / max(1e-6, time.monotonic() - loop.t0)
         suffix = f" (x{self.config.workers})" if self.config.parallel and not self.config.is_file else ""
         self.ctx.fps_text = f"{self.config.hud_title}: {fps:.1f}{suffix}"
-        record = packet.out if self.config.record_overlay else packet.frames
         if self.config.record_hud:
             self._overlay.process(packet, self.ctx)
-            self._write(record)
+            self._write(packet.out)
         else:
-            self._write(record)
+            self._write(packet.out)
             self._overlay.process(packet, self.ctx)
         stage = "annotated" if self._pose is not None else "raw"
         self._publish(stage, packet.out, {role: actions_text(a) for role, a in packet.actions.items()})
@@ -429,14 +434,9 @@ class SessionRunner:
         packet = FramePacket(0, dict(frames))
         return self._transform.process(packet, self.ctx).frames
 
-    def _update_sizes(self, frames) -> None:
-        if self._sink is not None and self._sink_open and not self.config.is_file:
-            self._sink.update_sizes({
-                view_for_role(role): (int(frame.shape[1]), int(frame.shape[0])) for role, frame in frames.items()
-            })
-
     def _write(self, frames) -> None:
-        if self._sink is not None and self._sink_open:
+        """只有视频文件会话由循环写录像；摄像头会话的录像线程自己取帧。"""
+        if self._sink is not None and self._sink_open and self.config.is_file:
             self._sink.write({view_for_role(role): frame for role, frame in frames.items()})
 
     def _publish(self, stage: str, frames, actions) -> None:
@@ -455,6 +455,12 @@ class SessionRunner:
                 stage.close()
             except Exception:
                 pass
+        if self._sink is not None and self._sink_open:   # 先于输入：录像线程要用仍在出帧的摄像头写完结束边界
+            self._sink_open = False
+            try:
+                self._sink.close_session()
+            except Exception:
+                traceback.print_exc()
         # 正常结束把设备交回预热（V-1）；失败或关窗（池随后关闭）时直接释放。
         keep_warm = not outcome.failed and self._cancel.reason != APP_CLOSE
         try:
@@ -467,9 +473,6 @@ class SessionRunner:
                 outcome.error_type or "CameraReleaseError", outcome.frames, error=outcome.error or exc,
             )
             self._status(outcome.status or error)
-        if self._sink is not None and self._sink_open:
-            self._sink_open = False
-            self._sink.close_session()
         if self._preview is not None:
             self._preview.close()
         if self._metrics is not None:

@@ -2,7 +2,8 @@
 
 - 默认：顺序 VIDEO 推理；``--workers`` > 1 时并行推理（摄像头满则丢帧，视频保序）。
 - ``--realtime-latest-frame``：采集与推理分线程、推理只取最新帧，结束时打印延迟与吞吐指标（冒烟用）。
-- 导出用 mp4v 编码写到 ``--out``；按 ``q`` 退出预览窗口。
+- 导出用 mp4v 编码写到 ``--out``：视频文件逐帧写叠加帧；摄像头先按真实时间录原始画面，会话结束后
+  再画骨架写成 ``--out``（D-26）。按 ``q`` 退出预览窗口。
 
 Run (camera):  .venv\\Scripts\\python.exe apps/main.py
 Run (video):   .venv\\Scripts\\python.exe apps/main.py --source demo.mp4 --out out.mp4
@@ -12,7 +13,8 @@ from __future__ import annotations
 import argparse
 import time
 from dataclasses import asdict, dataclass, replace
-from typing import Any, Mapping
+from pathlib import Path
+from typing import Any, Callable, Mapping
 
 import cv2
 import numpy as np
@@ -30,7 +32,9 @@ from core.live import (
     camera_session,
     video_session,
 )
-from core.media import PRIMARY, CameraService, CaptureSpec, capture_clock_ns
+from core.media import PRIMARY, CameraService, CaptureSpec, capture_clock_ns, open_video_writer
+from core.pose import EngineSpec, annotate_video
+from core.recording import SegmentMeta, SegmentRecorder, skeleton_engine
 
 WINDOW_TITLE = "MediaPipe (Video/Camera)"
 PARALLEL_TITLE = "MediaPipe (Realtime Parallel)"
@@ -70,20 +74,42 @@ def open_input(source: str) -> FrameInput:
     return VideoFileInput(source)
 
 
-class Mp4vSink:
-    """CLI 导出：会话登记尺寸后建 mp4v writer，逐帧写主路；``path`` 为空时什么都不做。"""
+def _open_mp4v(path: Path, *, fps: float, size: tuple[int, int]) -> tuple[cv2.VideoWriter, Path, str]:
+    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"mp4v"), float(fps), tuple(size))
+    if not writer.isOpened():
+        writer.release()
+        raise RuntimeError(f"无法写出视频：{path}")
+    return writer, Path(path), "mp4v"
 
-    def __init__(self, path: str | None) -> None:
-        self._path = path
+
+class CliExport:
+    """CLI 的 ``--out`` 导出；``path`` 为空时什么都不做。
+
+    - 视频文件：会话线程逐帧写主路叠加帧（mp4v）。
+    - 摄像头：录制层的录像线程按真实时间把原始画面录到 ``--out`` 旁的临时文件；会话结束后 ``finish``
+      再画骨架写成 ``--out``，成功后删除临时文件，失败时保留它（D-26）。
+    """
+
+    def __init__(self, path: str | None, engine: EngineSpec) -> None:
+        self._path = Path(path) if path else None
+        self._engine = engine
         self._writer: cv2.VideoWriter | None = None
+        self._recorder: SegmentRecorder | None = None
+        self._raw: Path | None = None
+        self.error: str | None = None
 
-    def begin_session(self, sizes: Mapping[str, tuple[int, int]], fps: float) -> None:
-        if self._path:
-            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-            self._writer = cv2.VideoWriter(self._path, fourcc, float(fps), tuple(sizes["front"]))
-
-    def update_sizes(self, sizes: Mapping[str, tuple[int, int]]) -> None:
-        return None
+    def begin_session(self, sizes: Mapping[str, tuple[int, int]], fps: float, *, feed=None,
+                      rotation_of: Callable[[str], int] | None = None) -> None:
+        if self._path is None:
+            return
+        if feed is None:
+            self._writer, _path, _codec = _open_mp4v(self._path, fps=fps, size=tuple(sizes["front"]))
+            return
+        temporary = self._path.with_name(f".{self._path.stem}.raw.avi")
+        self._recorder = SegmentRecorder(lambda _target, rate, size: open_video_writer(temporary, fps=rate, size=size))
+        self._recorder.begin_session(sizes, fps, feed=feed, rotation_of=rotation_of)
+        if not self._recorder.start_segment(SegmentMeta(self._path.parent)):
+            raise RuntimeError("无法开始录制摄像头画面")
 
     def write(self, frames: Mapping[str, np.ndarray]) -> None:
         if self._writer is not None:
@@ -93,6 +119,36 @@ class Mp4vSink:
         if self._writer is not None:
             self._writer.release()
             self._writer = None
+        if self._recorder is not None:
+            finished = self._recorder.close_session()
+            self._recorder = None
+            view = None if finished is None else finished.views.get("front")
+            if view is None or view.path is None or view.frames <= 0:
+                self.error = "摄像头录像没有写出画面"
+            elif view.error:
+                self.error = f"摄像头录像失败：{view.error}（原始录像保留在 {view.path}）"
+            else:
+                self._raw = view.path
+
+    def finish(self, progress: bool = True) -> None:
+        """摄像头导出：会话结束后把原始录像画上骨架写成 ``--out``。"""
+        raw, self._raw = self._raw, None
+        if raw is None or self._path is None:
+            return
+
+        def report(done: int, total: int) -> None:
+            if progress:
+                print(f"\r骨架成片 {done}/{total}", end="", flush=True)
+
+        try:
+            annotate_video(raw, self._path, self._engine, open_writer=_open_mp4v, progress=report)
+        except Exception as exc:
+            self.error = f"骨架成片失败（原始录像保留在 {raw}）：{exc}"
+            return
+        finally:
+            if progress:
+                print()
+        raw.unlink(missing_ok=True)
 
 
 def _fmt_seconds(s: float) -> str:
@@ -177,14 +233,19 @@ def _run_session(config, source: str, *, out_path: str | None, display, progress
                 _print_progress(done, total, t0)
 
     pose, stages = build_stages(config)
+    export = CliExport(out_path, skeleton_engine(config.pose_variant, config.enable_hands))
     runner = SessionRunner(
-        config, open_input(source), pose, stages, Mp4vSink(out_path), None, on_event, 1, CancelToken(),
+        config, open_input(source), pose, stages, export, None, on_event, 1, CancelToken(),
         display=display,
     )
     try:
         outcome = runner.run()
     finally:
         cv2.destroyAllWindows()
+    if not outcome.failed:
+        export.finish()
+    if export.error is not None and not outcome.failed:
+        outcome = replace(outcome, outcome="failed", status=export.error, error=RuntimeError(export.error))
     return outcome, runner
 
 

@@ -23,7 +23,6 @@ from core.live import (
 from core.live.preview import PreviewStore
 from core.media import apply_rotation, rotated_size
 from core.media import PRIMARY, SECONDARY, CameraReadError, CaptureSpec
-from core.recording import fit_frame_to_size
 
 WAIT = 5.0
 
@@ -78,6 +77,11 @@ class FakeInput:
         self._ready_gate = ready_gate
         self._read = 0
         self._seq = 0
+        self.feed = None if is_file else object()   # 交给录制层的帧来源（录像线程从中订阅）
+
+    @property
+    def reads(self) -> int:
+        return self._read
 
     def wait_ready(self, cancel):
         self.calls.append("wait_ready")
@@ -116,6 +120,9 @@ class FakeInput:
         time.sleep(0.002)
         return InputFrames({role: frame(3, self._shape) for role in self.roles}, None if self.is_file else time.perf_counter_ns())
 
+    def capture_feed(self):
+        return self.feed
+
     def close(self, *, keep_warm):
         self.calls.append("close")
         self.keep_warm = keep_warm
@@ -125,14 +132,16 @@ class FakeSink:
     def __init__(self) -> None:
         self.calls: list = []
         self.writes: list[dict] = []
-        self.sizes: list[dict] = []
         self.fail_write = False
+        self.fail_begin = False
+        self.feed = None
+        self.rotation_of = None
 
-    def begin_session(self, sizes, fps):
+    def begin_session(self, sizes, fps, *, feed=None, rotation_of=None):
+        if self.fail_begin:
+            raise RuntimeError("begin failed")
         self.calls.append(("begin", dict(sizes), fps))
-
-    def update_sizes(self, sizes):
-        self.sizes.append(dict(sizes))
+        self.feed, self.rotation_of = feed, rotation_of
 
     def write(self, frames):
         if self.fail_write:
@@ -257,8 +266,7 @@ def test_dual_failure_uses_numbered_dual_message_and_both_views_converge():
     h.manager.start(dual())
     outcome = h.outcome()
     assert outcome.status == "双摄像头运行失败：第2路摄像头读帧失败，请检查连接后重新开始"
-    assert len(h.sink.writes) == 4
-    assert all(set(w) == {"front", "side"} for w in h.sink.writes)
+    assert outcome.frames == 4 and h.sink.writes == []
     assert h.sink.calls[0] == ("begin", {"front": (6, 4), "side": (6, 4)}, 30.0)
 
 
@@ -287,15 +295,15 @@ def test_events_from_an_old_session_are_dropped():
     assert len(h.events) == count
 
 
-def test_rotation_applies_to_recording_size_and_frames():
+def test_rotation_applies_to_recording_size_and_is_read_live_by_recording():
     h = Harness(FakeInput())
     h.controls.rotation[PRIMARY].set(90)
     h.manager.start(single(skeleton=False))
-    h.wait_for(lambda: len(h.sink.writes) >= 2)
+    h.wait_for(lambda: h.source.reads >= 2)
     h.manager.stop()
     h.outcome()
     assert h.sink.calls[0][1] == {"front": (4, 6)}
-    assert h.sink.writes[0]["front"].shape[:2] == (6, 4)
+    assert h.sink.rotation_of(PRIMARY) == 90     # 录像线程在开录时读取（D-29）
 
 
 # ---- §8.2 表 ----
@@ -304,26 +312,30 @@ def test_rotation_applies_to_recording_size_and_frames():
 def test_skeleton_off_builds_no_engine_and_previews_raw_frames():
     h = Harness(FakeInput((PRIMARY, SECONDARY)))
     h.manager.start(dual(skeleton=False))
-    h.wait_for(lambda: len(h.sink.writes) >= 3)
+    h.wait_for(lambda: h.source.reads >= 3)
     store = h.manager.preview
     h.manager.stop()
     h.outcome()
     assert FakeEngine.built == 0
     assert store.stage == "raw"
-    # 双摄骨架关：录制原始帧，HUD 只在预览帧上
-    written = h.sink.writes[0]["front"]
-    assert int(written.max()) == 3
 
 
-def test_single_camera_recording_keeps_hud_even_without_skeleton():
-    """单摄录像一直带 HUD（旧单摄循环写的是叠加后的帧）；双摄骨架关时录原始帧。"""
-    h = Harness(FakeInput(shape=(80, 120, 3)))
-    h.manager.start(single(skeleton=False))
-    h.wait_for(lambda: len(h.sink.writes) >= 2)
+@pytest.mark.parametrize("skeleton", [False, True])
+def test_camera_sessions_hand_the_feed_to_recording_and_never_write_from_the_loop(skeleton, monkeypatch):
+    """D-18/D-26：摄像头会话的录像由录制层的录像线程从摄像头取帧（原始画面），处理循环不写录像；
+    录制会话先于输入关闭，录像线程能用仍在出帧的摄像头写完结束边界。"""
+    monkeypatch.setattr(stages_mod, "render_pose", lambda img, *_a, **_k: (np.full_like(img, 9), []))
+    h = Harness(FakeInput((PRIMARY, SECONDARY), shape=(80, 120, 3)))
+    order: list[str] = []
+    h.sink.close_session = lambda: order.append("sink")
+    close = h.source.close
+    h.source.close = lambda *, keep_warm: (order.append("source"), close(keep_warm=keep_warm))
+    h.manager.start(dual(skeleton=skeleton))
+    h.wait_for(lambda: h.source.reads >= 3)
     h.manager.stop()
     h.outcome()
-    assert int(h.sink.writes[0]["front"].max()) == 255
-    assert dual(skeleton=False).record_overlay is False
+    assert h.sink.feed is h.source.feed and h.sink.writes == []
+    assert order == ["sink", "source"]
 
 
 def test_parallel_camera_drops_into_ordered_results(monkeypatch):
@@ -332,7 +344,7 @@ def test_parallel_camera_drops_into_ordered_results(monkeypatch):
     )
     h = Harness(FakeInput(frames=None))
     h.manager.start(single(skeleton=True, workers=2))
-    h.wait_for(lambda: len(h.sink.writes) >= 5)
+    h.wait_for(lambda: h.source.reads >= 5)
     h.manager.stop()
     outcome = h.outcome()
     assert outcome.outcome == "stopped"
@@ -442,13 +454,13 @@ def test_occupancy_samples_every_stride_frames_when_armed():
     h.controls.arm_occupancy("exam", True)
     h.controls.set_roi((0.1, 0.1, 0.9, 0.9))
     h.manager.start(dual(skeleton=False))
-    h.wait_for(lambda: len(h.sink.writes) >= 7)
+    h.wait_for(lambda: h.source.reads >= 7)
     h.manager.stop()
-    h.outcome()
+    outcome = h.outcome()
     samples = [e.payload for e in h.events if e.kind == "presence"]
     assert samples and all(isinstance(s, PresenceSample) and s.present for s in samples)
     assert calls[0] == (0.1, 0.1, 0.9, 0.9)
-    assert len(samples) == (len(h.sink.writes) + 2) // 3
+    assert len(samples) == (outcome.frames + 2) // 3
     assert FakeEngine.built == 1        # 独立的 Lite 引擎
 
 
@@ -456,7 +468,7 @@ def test_occupancy_not_run_for_skeleton_sessions():
     h = Harness(FakeInput((PRIMARY, SECONDARY)), probe=lambda *_: True)
     h.controls.arm_occupancy("exam", True)
     h.manager.start(dual(skeleton=True))
-    h.wait_for(lambda: len(h.sink.writes) >= 4)
+    h.wait_for(lambda: h.source.reads >= 4)
     h.manager.stop()
     h.outcome()
     assert not [e for e in h.events if e.kind == "presence"]
@@ -562,31 +574,15 @@ def test_second_engine_failure_closes_first_and_never_claims_or_records(monkeypa
     assert h.source.keep_warm is False
 
 
-def test_dual_write_failure_closes_recording_and_releases_without_engines():
+def test_recording_begin_failure_fails_session_and_releases_without_engines():
     h = Harness(FakeInput((PRIMARY, SECONDARY)))
-    h.sink.fail_write = True
+    h.sink.fail_begin = True
     h.manager.start(dual(skeleton=False))
     outcome = h.outcome()
-    assert outcome.status == "双摄像头运行失败：write failed"
+    assert outcome.failed and outcome.status == "双摄像头接管失败：begin failed"
     assert FakeEngine.built == 0
-    assert h.sink.calls[-1] == ("close",)
+    assert ("close",) not in h.sink.calls
     assert h.source.calls[-1] == "close" and h.source.keep_warm is False
-
-
-def test_dual_records_raw_without_skeleton_and_annotated_with_skeleton(monkeypatch):
-    monkeypatch.setattr(stages_mod, "render_pose", lambda img, *_a, **_k: (np.full_like(img, 9), []))
-    # 旧双摄循环：HUD 画在主路标注帧上再写录像；骨架关写原始帧（无 HUD），骨架开写标注帧（主路带 HUD）
-    for skeleton, expected in ((False, (3, 3)), (True, (255, 9))):
-        h = Harness(FakeInput((PRIMARY, SECONDARY), shape=(80, 120, 3)))
-        h.manager.start(dual(skeleton=skeleton))
-        h.wait_for(lambda: len(h.sink.writes) >= 2)
-        store = h.manager.preview
-        h.manager.stop()
-        h.outcome()
-        written = h.sink.writes[0]
-        assert set(written) == {"front", "side"}
-        assert (int(written["front"].max()), int(written["side"].max())) == expected, skeleton
-        assert store.stage == ("annotated" if skeleton else "raw")
 
 
 def test_dual_loading_keeps_raw_pairs_flowing_without_writes_then_annotates():
@@ -602,29 +598,24 @@ def test_dual_loading_keeps_raw_pairs_flowing_without_writes_then_annotates():
         assert shown[-1].stage == "raw" and set(shown[-1].images) == {PRIMARY, SECONDARY}
         store.mark_rendered(shown[-1])
     assert "模型加载中…（双摄裸帧预览）" in h.statuses()
-    assert h.sink.writes == [] and "running" not in h.kinds()
+    assert h.sink.calls == [] and "running" not in h.kinds()
     FakeEngine.gate.set()
-    h.wait_for(lambda: len(h.sink.writes) >= 2)
-    assert store.stage == "annotated"
+    h.wait_for(lambda: store.stage == "annotated")
     h.manager.stop()
     h.outcome()
     assert h.kinds()[0] == "running"
 
 
-def test_dual_rotation_is_per_role_for_sizes_and_frames():
+def test_dual_rotation_is_per_role_for_sizes_and_read_live_by_recording():
     h = Harness(FakeInput((PRIMARY, SECONDARY)))
     h.controls.rotation[SECONDARY].set(90)
     h.manager.start(dual(skeleton=False))
-    h.wait_for(lambda: len(h.sink.writes) >= 2)
-    h.controls.rotation[PRIMARY].set(270)          # 运行中改旋转：之后的帧与录制尺寸随之改变
-    h.wait_for(lambda: h.sink.writes[-1]["front"].shape[:2] == (6, 4))
+    h.wait_for(lambda: h.source.reads >= 2)
+    h.controls.rotation[PRIMARY].set(270)          # 运行中改旋转：录制层下一段开录时读到新值（D-29）
     h.manager.stop()
     h.outcome()
     assert h.sink.calls[0] == ("begin", {"front": (6, 4), "side": (4, 6)}, 30.0)
-    assert h.sink.writes[0]["front"].shape[:2] == (4, 6)
-    assert h.sink.writes[0]["side"].shape[:2] == (6, 4)
-    assert h.sink.sizes[0] == {"front": (6, 4), "side": (4, 6)}
-    assert h.sink.sizes[-1] == {"front": (4, 6), "side": (4, 6)}
+    assert (h.sink.rotation_of(PRIMARY), h.sink.rotation_of(SECONDARY)) == (270, 90)
 
 
 def test_video_file_ignores_camera_rotation():
@@ -633,7 +624,7 @@ def test_video_file_ignores_camera_rotation():
     h.manager.start(video_session("clip.mp4", workers=1))
     h.outcome()
     assert h.sink.calls[0] == ("begin", {"front": (6, 4)}, 25.0)
-    assert h.sink.writes[0]["front"].shape[:2] == (4, 6) and h.sink.sizes == []
+    assert h.sink.writes[0]["front"].shape[:2] == (4, 6) and h.sink.feed is None
 
 
 def test_parallel_camera_applies_rotation(monkeypatch):
@@ -643,11 +634,10 @@ def test_parallel_camera_applies_rotation(monkeypatch):
     h = Harness(FakeInput())
     h.controls.rotation[PRIMARY].set(90)
     h.manager.start(single(skeleton=True, workers=2))
-    h.wait_for(lambda: len(h.sink.writes) >= 2)
+    h.wait_for(lambda: h.source.reads >= 2)
     h.manager.stop()
     h.outcome()
     assert h.sink.calls[0][1] == {"front": (4, 6)}
-    assert h.sink.writes[0]["front"].shape[:2] == (6, 4)
 
 
 def test_claim_failure_emits_failed_metrics_once(monkeypatch):
@@ -707,17 +697,6 @@ def test_normal_stop_keeps_device_warm_but_app_close_releases(reason, keep_warm)
 
 
 # --- 旋转与尺寸适配（原 test_app_ui_dual_camera.py，与 Tk 无关）---------------------------
-
-def test_fit_frame_to_size_resizes_when_mismatch():
-    frame = np.zeros((4, 6, 3), dtype=np.uint8)
-    fitted = fit_frame_to_size(frame, (3, 2))
-    assert fitted.shape[:2] == (2, 3)
-
-
-def test_fit_frame_to_size_returns_same_when_match():
-    frame = np.zeros((4, 6, 3), dtype=np.uint8)
-    assert fit_frame_to_size(frame, (6, 4)) is frame
-
 
 @pytest.mark.parametrize(
     ("degrees", "turns"),

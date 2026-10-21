@@ -27,7 +27,7 @@ from core.pose.raw_series import extract_pose_raw_series
 
 Lane = Literal["io", "analysis"]
 SegmentStatus = Literal[
-    "queued", "transcoding", "validating", "comparing", "completed", "failed", "skipped", "cancelled",
+    "queued", "transcoding", "validating", "rendering", "comparing", "completed", "failed", "skipped", "cancelled",
 ]
 TERMINAL_STATUSES = frozenset({"completed", "failed", "skipped", "cancelled"})
 VIEW_LABELS = {"front": "正面", "side": "侧面"}
@@ -360,12 +360,16 @@ def dual_segment_steps(
     front_templates: tuple[Path, ...] = (),
     side_templates: tuple[Path, ...] = (),
     deps: StepDeps = StepDeps(),
+    skeleton: Step | None = None,
 ) -> tuple[Step, ...]:
-    """双路片段：检查 → 转码 → 校验 →（自动比对开时）考试池评分。考试计划在前面加裁剪步骤。"""
+    """双路片段：检查 → 转码 → 校验 →（``skeleton`` 给出时）骨架成片 →（自动比对开时）考试池评分。
+    考试计划在前面加裁剪步骤；带骨架的片段由 ``CompareGate`` 跳过比对。"""
+    rendered = () if skeleton is None else (skeleton,)
     return (
         CheckRecording(),
         Transcode(deps.transcode),
         ValidateVideos(deps.video_validator),
+        *rendered,
         CompareGate(record_skeleton=record_skeleton, auto_compare=auto_compare),
         ScoreExamPool(
             tuple(front_templates), tuple(side_templates),
@@ -374,6 +378,6 @@ def dual_segment_steps(
     )
 
 
-def single_segment_steps(deps: StepDeps = StepDeps()) -> tuple[Step, ...]:
-    """单路片段：只转码（V-4）。"""
-    return (Transcode(deps.transcode),)
+def single_segment_steps(deps: StepDeps = StepDeps(), *, skeleton: Step | None = None) -> tuple[Step, ...]:
+    """单路片段：转码（V-4）；``skeleton`` 给出时再生成骨架成片（D-26）。"""
+    return (Transcode(deps.transcode),) if skeleton is None else (Transcode(deps.transcode), skeleton)

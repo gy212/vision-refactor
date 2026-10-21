@@ -494,6 +494,9 @@ def test_cli_run_releases_capture_writer_and_windows_on_disconnect(monkeypatch):
         def __init__(self, *_args):
             self.release_calls = 0
 
+        def isOpened(self):
+            return True
+
         def write(self, _frame):
             pass
 

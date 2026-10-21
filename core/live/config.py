@@ -36,8 +36,7 @@ class SessionConfig:
     workers: int = 1
     parallel: bool = False            # True：ParallelPoseEngine（IMAGE 模式）；摄像头满则丢帧，视频保序
     inference: bool = True            # False：不构造引擎，预览与录制都是裸帧（摄像头骨架关）
-    record_overlay: bool = True       # 录制写叠加后的帧（骨架、HUD）还是转正后的原始帧
-    record_hud: bool = True           # HUD 在写录像之前画上（并行视频的旧行为是写完再画）
+    record_hud: bool = True           # 视频文件会话：HUD 在写录像之前画上（并行视频的旧行为是写完再画）
     smoothing: bool = False           # 预览平滑（PreviewLandmarkSmoother）
     online_match: bool = False        # 在线动作识别（OnlineActionMatcher）
     loading_raw_preview: bool = False  # 构造模型期间由裸帧泵发布预览（D-8）
@@ -90,6 +89,7 @@ def camera_session(
 
     双摄的平滑与在线识别保持关闭（D-7），``dual_smoothing``/``dual_online_match`` 是保留的配置项。
     并行单摄的引擎与摄像头同时启动，没有加载期裸帧。站位检测只在骨架关的双摄会话里可用。
+    录像一律是转正后的原始画面（D-26），由录制层的录像线程写，与骨架、HUD 无关。
     """
     dual = SECONDARY in cameras
     parallel = (not dual) and workers > 1 and skeleton
@@ -101,7 +101,6 @@ def camera_session(
         workers=max(1, int(workers)),
         parallel=parallel,
         inference=skeleton,
-        record_overlay=skeleton or not dual,   # 单摄的录像一直带 HUD；双摄骨架关时录原始帧
         smoothing=skeleton and (dual_smoothing if dual else smoothing),
         online_match=skeleton and (dual_online_match if dual else online_match),
         loading_raw_preview=skeleton and loading_raw_preview and not parallel,
