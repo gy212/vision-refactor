@@ -196,3 +196,52 @@ def test_stream_subscription_delivers_every_frame_in_order(service):
         stream.close()
     with pytest.raises(RuntimeError):
         service.open_stream({PRIMARY: CaptureSpec(0)}).subscribe(PRIMARY, 4)
+
+
+class StoppingCapture(TimedCapture):
+    """读到第 ``limit`` 帧之后读帧失败（摄像头中途断开）；预热阶段读的帧也计入。"""
+
+    limit = 10_000
+    last = None
+
+    def __init__(self, index, **kwargs) -> None:
+        super().__init__(index, **kwargs)
+        StoppingCapture.last = self
+
+    def read(self):
+        if self.reads >= self.limit:
+            return False, None
+        return super().read()
+
+
+def test_camera_stopping_mid_phase_fails_the_phase(tmp_path, monkeypatch):
+    """评审复现：2 秒的只采集段里摄像头读了 28 帧就停了；剩下的帧间隔正常也不能判达标。"""
+    service = CameraService(pool=CameraPool(StoppingCapture, join_timeout=0.5))
+    try:
+        stream = service.open_stream({PRIMARY: CaptureSpec(0)})
+        stream.wait_ready(CancelToken())
+        stream.claim(CancelToken())
+        monkeypatch.setattr(StoppingCapture, "limit", StoppingCapture.last.reads + 28)
+        setup = BenchmarkSetup(stream=stream, rotations={}, labels={}, work_dir=tmp_path / "work",
+                               engine_factory=FakeEngine, phases=(BenchmarkPhase("capture", "只采集", 2.0),))
+        phase = bench.run_phase(setup, setup.phases[0], 0, stream.actual_sizes(), {}, lambda *_: None, CancelToken())
+        capture = phase["roles"]["front"]["capture"]
+        assert capture["frames"] <= 30 and capture["covered_s"] < 1.2
+        assert capture["fps"] < bench.MIN_CAPTURE_FPS and capture["error"]
+        assert not phase["verdict"]["ok"]
+        assert any("停止出帧" in problem for problem in phase["verdict"]["problems"])
+        assert stream.failure(PRIMARY) is not None
+        stream.close()
+    finally:
+        service.close(2.0)
+
+
+def test_capture_stats_cover_the_whole_phase_window():
+    start, period = 1_000_000_000, 33_333_333
+    stamps = [start + k * period for k in range(1, 31)]                # 前 1 秒正常，之后不再出帧
+    stats = bench._capture_stats(stamps, (start, start + 2_000_000_000), None)
+    assert stats["frames"] == 30 and stats["fps"] == 15.0 and stats["covered_s"] == 1.0 and stats["error"] is None
+    verdict = bench.phase_verdict({"seconds": 2.0, "roles": {"front": {"capture": stats}}})
+    assert not verdict["ok"] and any("不再出帧" in problem for problem in verdict["problems"])
+    healthy = bench._capture_stats([start + k * period for k in range(1, 61)], (start, start + 2_000_000_000), None)
+    assert healthy["fps"] == 30.0 and bench.phase_verdict({"seconds": 2.0, "roles": {"front": {"capture": healthy}}})["ok"]

@@ -36,6 +36,7 @@ from core.media import (
     CameraStream,
     FrameQueue,
     apply_rotation,
+    capture_clock_ns,
     open_video_writer,
     rotated_size,
     view_for_role,
@@ -47,6 +48,7 @@ PRODUCTION_QUEUE = 8           # 第 5 层录像队列的容量（D-27）
 BENCH_QUEUE = 16               # 测试用的队列容量：两路 1080p 约 200 MB 上限
 MIN_CAPTURE_FPS = 28.5         # 判定"采集达到 30 fps"的下限
 LITE_INTERVAL_S = 0.1
+STOP_TOLERANCE_S = 0.5         # 最后一帧离段末超过它即判该路中途停止（甲方实测最大帧间隔 85 ms）
 REPORT_SCHEMA = 1
 REPORT_PREFIX = "录制性能测试"
 
@@ -196,23 +198,34 @@ def _run_skeleton(stream: CameraStream, rotations: Mapping[str, int], engines: M
 # --------------------------------------------------------------------------- #
 
 
-def _interval_stats(stamps: list[int]) -> dict[str, Any]:
-    gaps = [(b - a) / 1e6 for a, b in zip(stamps, stamps[1:])]
-    seconds = (stamps[-1] - stamps[0]) / 1e9 if len(stamps) > 1 else 0.0
-    return {"frames": len(stamps), "fps": _rate(len(stamps) - 1, seconds), "interval_ms": _ms_stats(gaps)}
+def _capture_stats(stamps: list[int], window: tuple[int, int], failure: BaseException | None) -> dict[str, Any]:
+    """一路在本段窗口 ``(开始, 结束)`` 内的采集：采集率按整段窗口算（中途停止的那路不会因剩下的帧间隔正常而达标），
+    ``covered_s`` 是最后一帧离段首的秒数，``error`` 是 reader 停止的原因。"""
+    start, end = window
+    inside = [t for t in stamps if start < t <= end]
+    gaps = [(b - a) / 1e6 for a, b in zip(inside, inside[1:])]
+    seconds = (end - start) / 1e9
+    return {
+        "frames": len(inside),
+        "fps": _rate(len(inside), seconds),
+        "interval_ms": _ms_stats(gaps),
+        "covered_s": round(((inside[-1] if inside else start) - start) / 1e9, 2),
+        "error": None if failure is None else str(failure),
+    }
 
 
 def _start_phase_workers(setup: BenchmarkSetup, phase: Phase, sizes: Mapping[str, tuple[int, int]],
                          engines: Mapping[str, Any], tasks: TaskGroup, phase_dir: Path) -> dict:
-    stream, state = setup.stream, {"roles": {}, "queues": {}}
-    for role, size in sizes.items():
-        rotation = setup.rotations.get(role, 0)
+    stream, state = setup.stream, {"roles": {}, "queues": {}, "window": [capture_clock_ns(), None]}
+    for role in sizes:                       # 先让各路都开始计数，段的窗口对各路相同
         role_state: dict[str, Any] = {"stamps": []}
         state["roles"][role] = role_state
         counter = stream.subscribe(role, 64)
         state["queues"][(role, "count")] = counter
         tasks.spawn(f"count-{role}", lambda t, q=counter, s=role_state["stamps"]: _count_frames(q, s, t),
                     owner="benchmark")
+    for role, size in sizes.items():
+        rotation, role_state = setup.rotations.get(role, 0), state["roles"][role]
         if phase.write:
             result = role_state["writer"] = {}
             writer = _open_writer(phase_dir / f"{view_for_role(role)}.mp4", rotated_size(*size, rotation), result)
@@ -244,8 +257,9 @@ def _wait_phase(phase: Phase, index: int, total: int, progress: Progress, cancel
 
 def _collect_phase(phase: Phase, state: dict) -> dict[str, Any]:
     result: dict[str, Any] = {"key": phase.key, "label": phase.label, "seconds": phase.seconds, "roles": {}}
+    window = tuple(state["window"])
     for role, role_state in state["roles"].items():
-        entry = {"capture": _interval_stats(role_state["stamps"])}
+        entry = {"capture": _capture_stats(role_state["stamps"], window, state["failures"].get(role))}
         writer = role_state.get("writer")
         if writer is not None:
             queue = state["queues"][(role, "write")]
@@ -287,6 +301,8 @@ def run_phase(setup: BenchmarkSetup, phase: Phase, index: int, sizes: Mapping[st
         _wait_phase(phase, index, len(setup.phases), progress, cancel)
     finally:
         cpu_end = system_cpu_times()
+        state["window"][1] = capture_clock_ns()
+        state["failures"] = {role: setup.stream.failure(role) for role in sizes}
         for (role, _kind), queue in state["queues"].items():
             setup.stream.unsubscribe(role, queue)
         tasks.cancel(reason="phase_end")
@@ -299,10 +315,16 @@ def run_phase(setup: BenchmarkSetup, phase: Phase, index: int, sizes: Mapping[st
 
 
 def phase_verdict(result: Mapping[str, Any]) -> dict[str, Any]:
-    """这一段是否达标：各路采集不低于 ``MIN_CAPTURE_FPS``，写盘时没有一帧遇到 8 帧排队（否则生产配置会判录制失败）。"""
+    """这一段是否达标：各路采集一直持续到段末、整段不低于 ``MIN_CAPTURE_FPS``，写盘时没有一帧遇到 8 帧排队
+    （否则生产配置会判录制失败）。"""
     problems: list[str] = []
     for view, entry in result["roles"].items():
-        fps = entry["capture"]["fps"]
+        capture = entry["capture"]
+        fps = capture["fps"]
+        if capture.get("error"):
+            problems.append(f"{view} 摄像头在第 {capture['covered_s']} 秒后停止出帧：{capture['error']}")
+        elif capture["covered_s"] < result["seconds"] - STOP_TOLERANCE_S:
+            problems.append(f"{view} 摄像头在第 {capture['covered_s']} 秒后不再出帧")
         if fps is None or fps < MIN_CAPTURE_FPS:
             problems.append(f"{view} 采集 {fps} fps，低于 {MIN_CAPTURE_FPS}")
         write = entry.get("write")

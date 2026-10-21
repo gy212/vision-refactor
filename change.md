@@ -8,7 +8,8 @@
   - 桌面：主窗口隐藏快捷键 Ctrl+Shift+B 打开模态「录制性能测试」窗口（`apps/tk/controllers/benchmark.py`、`apps/tk/views/benchmark_dialog.py`）；要求未在预览、普通模式、已选摄像头、录制目录磁盘空闲 ≥3 GB；报告保存为桌面上的 `录制性能测试_<日期>_<时间>.json`，桌面不可写时退到数据目录的 `录制性能测试/`；窗口先写明保存位置，测完显示完整路径，可「打开所在文件夹」（资源管理器选中文件）和「复制路径」；主程序退出时取消测试。
   - `load_build_info` 从 `apps/tk/self_check.py` 移到新模块 `apps/tk/build_info.py`（自检会导入组合根，benchmark 控制器经它导入会形成环），自检与 `tests/test_packaging_build_info.py` 改用新路径。
   - 新增甲方操作说明 `docs/录制性能测试操作说明.md`；设计文档 §2.2、§8.8（插入第 4 层 `d18/bench`，原第 4–6 层顺延为 5–7）与 `AGENTS.md` 代码地图同步。
-- 验证方法：新增 `tests/test_recording_benchmark.py` 7 项（假摄像头与假引擎跑完四段、慢 writer 判不达标、取消、引擎失败、报告文件名与编码、`FrameQueue` 计数、订阅收到每一帧且有序）与 `tests/test_tk_benchmark.py` 9 项（开始条件、磁盘不足、报告存桌面并显示完整路径、桌面不可写时的回退、取消、窗口真实 Tk 冒烟、组合根快捷键与退出时关窗）；本机只有一个摄像头，且验证时被占用（OpenCV DSHOW/MSMF 直接打开也失败），未能用真实设备跑完四段，打不开摄像头的路径实测：报告照常保存、写明原因、临时目录已删除；全量 `pytest tests -q`、门禁与空白检查通过；冻结 EXE `--offline-self-check` 通过。
+- 评审修复（PR #41，P2）：摄像头在某段中途停止时，原来只按收到的帧算采集率，剩下的帧间隔正常就能判达标。改为按整段窗口算采集率，并检查最后一帧是否持续到段末（容差 0.5 s）；reader 停止的原因经新增的 `CameraStream.failure(role)` 写进该段结果；各路先全部开始计数再打开 writer，窗口对各路相同。
+- 验证方法：新增 `tests/test_recording_benchmark.py` 9 项（假摄像头与假引擎跑完四段、慢 writer 判不达标、取消、引擎失败、报告文件名与编码、`FrameQueue` 计数、订阅收到每一帧且有序、2 秒段中摄像头读 28 帧后停止判不达标并带出原因、采集统计按整段窗口）与 `tests/test_tk_benchmark.py` 9 项（开始条件、磁盘不足、报告存桌面并显示完整路径、桌面不可写时的回退、取消、窗口真实 Tk 冒烟、组合根快捷键与退出时关窗）；本机只有一个摄像头，且验证时被占用（OpenCV DSHOW/MSMF 直接打开也失败），未能用真实设备跑完四段，打不开摄像头的路径实测：报告照常保存、写明原因、临时目录已删除；全量 `pytest tests -q`、门禁与空白检查通过；冻结 EXE `--offline-self-check` 通过。
 
 ## 2026-10-20: [feat] D-18 第 3 层：录像时间轴只用之前的源帧，新增 capture.json 采集记录
 

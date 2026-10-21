@@ -210,6 +210,13 @@ class CameraStream:
         taken = reader.latest.take(0, 0)
         return None if taken is None else taken[1]
 
+    def failure(self, role: str) -> BaseException | None:
+        """该路 reader 已因读帧失败停止时返回原因（``CameraReadError``）；仍在运行、正常停止或没有接管时为 None。"""
+        reader = self._readers.get(role)
+        if reader is None or not reader.latest.closed:
+            return None
+        return reader.latest.error
+
     def subscribe(self, role: str, capacity: int, *, watermark: int | None = None) -> FrameQueue:
         """订阅该路之后采到的每一帧（录像用，见 ``FrameQueue``）；须在 ``claim`` 之后调用。"""
         reader = self._readers.get(role)
