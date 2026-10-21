@@ -4,7 +4,7 @@
 分四段依次运行，每段结束删除临时录像：
 
 1. ``capture``：只采集，得到各路真实采集率与帧间隔；
-2. ``record``：采集并各路一个写盘线程，写法与第 5 层的录像 writer 相同（每路一个有界队列、转正后写出）；
+2. ``record``：采集并各路一个写盘线程，写法与第 6 层的录像 writer 相同（每路一个有界队列、转正后写出）；
 3. ``record_lite``：再加 Lite 站位检测（约每秒 10 次取最新主路画面，D-30）；
 4. ``record_skeleton``：再加骨架识别（各路最新画面逐路推理并绘制，和普通模式骨架开时的处理循环相当）。
 
@@ -44,7 +44,7 @@ from core.media import (
 from core.pose import EngineSpec
 
 TARGET_FPS = 30.0
-PRODUCTION_QUEUE = 8           # 第 5 层录像队列的容量（D-27）
+PRODUCTION_QUEUE = 8           # 第 6 层录像队列的容量（D-27）
 BENCH_QUEUE = 16               # 测试用的队列容量：两路 1080p 约 200 MB 上限
 MIN_CAPTURE_FPS = 28.5         # 判定"采集达到 30 fps"的下限
 LITE_INTERVAL_S = 0.1
@@ -134,7 +134,7 @@ def _open_writer(path: Path, size: tuple[int, int], result: dict) -> Any | None:
 
 
 def _write_frames(queue: FrameQueue, writer: Any, rotation: int, result: dict, token: CancelToken) -> None:
-    """按序取帧、转正、写出（第 5 层录像 writer 的写法），记每帧耗时；出错时记下原因并停止取帧。"""
+    """按序取帧、转正、写出（第 6 层录像 writer 的写法），记每帧耗时；出错时记下原因并停止取帧。"""
     actual: Path = result["actual"]
     try:
         while not token.cancelled:
