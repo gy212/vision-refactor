@@ -6,7 +6,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from core.media import CapturedFrame, FrameClock, Timeline
+from core.media import BoundaryShift, CapturedFrame, FrameClock, Timeline
 
 P_NS = 1e9 / 30
 
@@ -39,12 +39,12 @@ def _dejitter(frames, fps=30.0):
 
 def _repeats(frames, seed, seconds=30.0, clock=None, phase=None):
     """30 s 录像的补帧数。开录时刻相对帧的相位随 ``seed`` 变化（或由 ``phase`` 指定，单位为周期）；
-    给出 ``clock`` 时按 ``boundary_offset`` 提前这一路的边界。"""
+    给出 ``clock`` 时按 ``segment_shift`` 提前这一路本段的边界。"""
     rng = np.random.default_rng(1000 + seed)
     timeline = Timeline(30)
     start = int(frames[150].captured_at_ns + (rng.uniform(0, P_NS) if phase is None else phase * P_NS))
     if clock is not None:
-        start -= clock.boundary_offset(start)
+        start = clock.segment_shift(start).apply(start)
     timeline.start(start, max((f for f in frames if f.captured_at_ns <= start), key=lambda f: f.captured_at_ns))
     end = start + int(seconds * 1e9)
     for frame in frames:
@@ -66,16 +66,72 @@ def test_client_like_jitter_no_longer_stutters(seed):
     assert sum(_repeats(_frames(_camera(seed=s)[1]), s) for s in range(5)) > 100   # 不去抖时整体明显重复
 
 
-def test_boundary_offset_keeps_slots_away_from_frames_at_every_phase():
-    """帧恰在输出槽边界附近时，亚毫秒的估计误差就会来回跨界；按 ``boundary_offset`` 提前边界后任何相位都不重复。"""
+def test_segment_shift_keeps_slots_away_from_frames_at_every_phase():
+    """帧恰在输出槽边界附近时，亚毫秒的估计误差就会来回跨界；按 ``segment_shift`` 提前边界后任何相位都不重复。"""
     estimated, clock = _dejitter(_frames(_camera(seed=4)[1]))
     phases = np.linspace(0, 1, 40, endpoint=False)
     assert max(_repeats(estimated, 0, phase=ph) for ph in phases) > 0              # 不对齐时总有相位会重复
     assert [_repeats(estimated, 0, clock=clock, phase=ph) for ph in phases] == [0] * 40
     for at in (5_000_000_000, 5_012_345_678):
-        offset = clock.boundary_offset(at)
-        assert 0 <= offset < P_NS
-    assert FrameClock(30).boundary_offset(123) == 0
+        shift = clock.segment_shift(at)
+        assert 0 <= shift.ns < P_NS and shift.apply(at) == at - shift.ns
+    assert FrameClock(30).segment_shift(123) == BoundaryShift(0)
+
+
+def _record(frames, events, shift):
+    """按调用约定驱动一段录制：每个边界（已用 ``shift`` 换算）之前推完采集于它之前的帧，再执行边界；返回输出帧数。"""
+    timeline, pushed = Timeline(30), 0
+    for kind, at in events:
+        at = shift.apply(at)
+        while pushed < len(frames) and frames[pushed].captured_at_ns <= at:
+            if kind != "start":
+                timeline.push(frames[pushed])
+            pushed += 1
+        if kind == "start":
+            timeline.start(at, frames[pushed - 1])
+        else:
+            getattr(timeline, kind)(at)
+    return timeline.stats.slots
+
+
+def _phased_camera(phase, seed=0):
+    """无掉帧的 30 fps 摄像头，曝光网格错开 ``phase`` 个周期，到达带甲方量级的抖动；返回去抖后的帧与时钟。"""
+    _exposure, arrival = _camera(seed=seed)
+    return _dejitter(_frames(arrival + int(phase * P_NS)))
+
+
+def test_views_with_different_phases_keep_equal_frame_counts():
+    """评审复现（PR #42，P1）：正侧相位差半帧、区间 30.3 帧时，每个边界各算一次平移会让两路区间长度不同、
+    帧数 31 比 30；每路在段首算一次平移、整段沿用，两路帧数相同。"""
+    front, front_clock = _phased_camera(0.0)
+    side, side_clock = _phased_camera(0.5, seed=1)
+    start = 6_000_000_000
+    stop = start + int(30.3 * P_NS)
+    events = [("start", start), ("stop", stop)]
+
+    class PerBoundary:                  # 被评审否定的用法：每个边界各算一次平移
+        def __init__(self, clock):
+            self.clock = clock
+
+        def apply(self, at):
+            return self.clock.segment_shift(at).apply(at)
+
+    assert (_record(front, events, PerBoundary(front_clock)), _record(side, events, PerBoundary(side_clock))) == (30, 31)
+    counts = (_record(front, events, front_clock.segment_shift(start)),
+              _record(side, events, side_clock.segment_shift(start)))
+    assert counts[0] == counts[1] == 31
+
+
+@pytest.mark.parametrize("seed", range(4))
+def test_equal_frame_counts_with_pauses_at_random_boundaries(seed):
+    rng = np.random.default_rng(seed)
+    cameras = [_phased_camera(phase, seed=k) for k, phase in enumerate(rng.uniform(0, 1, 2))]
+    for _ in range(25):
+        start = int(6e9 + rng.uniform(0, 2e9))
+        cuts = np.sort(rng.uniform(0.2e9, 20e9, 3)).astype(np.int64)
+        events = [("start", start), ("pause", start + cuts[0]), ("resume", start + cuts[1]), ("stop", start + cuts[2])]
+        counts = {_record(frames, events, clock.segment_shift(start)) for frames, clock in cameras}
+        assert len(counts) == 1
 
 
 @pytest.mark.parametrize("fps, max_repeats", [(29.97, 2), (30.03, 0)])

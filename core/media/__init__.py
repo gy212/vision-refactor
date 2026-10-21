@@ -44,13 +44,14 @@ from core.media.camera import (
 )
 from core.media.frames import CapturedFrame, FrameSet, capture_clock_ns, is_valid_bgr
 from core.media.capture_record import capture_document, read_capture_record, write_capture_record
-from core.media.frame_clock import FrameClock, FrameClockStats
+from core.media.frame_clock import BoundaryShift, FrameClock, FrameClockStats
 from core.media.pacing import Timeline, TimelineStats
 from core.media.transforms import apply_rotation, rotated_size
 from core.media.segment_layout import CAPTURE_FILE, VIDEO_SUFFIXES, SegmentLayout, view_for_role
 from core.media.writer import open_video_writer, transcode_to_h264
 
 __all__ = [
+    "BoundaryShift",
     "CAPTURE_FILE",
     "CameraDevice",
     "CameraLease",

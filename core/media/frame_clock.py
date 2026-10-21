@@ -18,8 +18,10 @@
   摄像头真实帧率低于标称（如弱光下 15 fps）表现为每帧都掉一帧，时间轴照实重复；快于标称时估计值贴着到达时刻，
   退化为不去抖，不会把帧排到到达之后。
 - 输出相位：去抖后的帧落在固定相位上；若它恰在输出槽边界附近，亚毫秒的估计误差也会让它在相邻两槽间来回，
-  同样重复一帧、跳过一帧。``boundary_offset`` 给出每路把开录、暂停、继续、结束边界统一提前多少（不到一个周期），
-  使输出槽落在两帧之间的中点：仍只用边界之前的帧，同一路所有边界平移相同的量，各路帧数仍然相同。
+  同样重复一帧、跳过一帧。``segment_shift`` 在一段录制开始时为这一路算一次平移量（不到一个周期），
+  这一段的开录、暂停、继续、结束边界都减去同一个量，使输出槽落在两帧之间的中点：仍只用边界之前的帧；
+  每路各自的平移在段内不变，所以各路的录制区间长度相同、帧数相同（不能每个边界各算一次：
+  各路相位不同时，起止平移不同会让区间长度相差近一个周期，帧数差一帧）。
 - ``generation`` 变化（设备重开）时重新起算。
 """
 from __future__ import annotations
@@ -53,6 +55,16 @@ class FrameClockStats:
             "max_correction_ns": self.max_correction_ns,
             "resets": self.resets,
         }
+
+
+@dataclass(frozen=True)
+class BoundaryShift:
+    """一路在一段录制内固定的边界平移量：本段开录、暂停、继续、结束都用 ``apply`` 换算，区间长度因此不变。"""
+
+    ns: int
+
+    def apply(self, at_ns: int) -> int:
+        return at_ns - self.ns
 
 
 class FrameClock:
@@ -97,13 +109,13 @@ class FrameClock:
     def flush(self) -> list[CapturedFrame]:
         return [self._release() for _ in range(len(self._pending))]
 
-    def boundary_offset(self, at_ns: int) -> int:
-        """这一路的录制边界要提前的纳秒数（``0 <= 值 < P``）：``at_ns - 值`` 落在最近一帧网格曝光之后半个周期，
-        输出槽因此离帧时刻最远。还没有时钟（尚未放出帧）时为 0。"""
+    def segment_shift(self, start_ns: int) -> BoundaryShift:
+        """在一段录制开始时调用一次：这一路本段所有边界要提前的量（``0 <= ns < P``），使 ``start_ns - ns`` 落在
+        最近一帧网格曝光之后半个周期，输出槽离帧时刻最远。还没有时钟（尚未放出帧）时为 0。"""
         if self._clock is None:
-            return 0
-        age = (at_ns - self._clock) % self._period
-        return int((age - self._period / 2) % self._period)
+            return BoundaryShift(0)
+        age = (start_ns - self._clock) % self._period
+        return BoundaryShift(int((age - self._period / 2) % self._period))
 
     def _release(self) -> CapturedFrame:
         frame = self._pending[0]
@@ -166,4 +178,4 @@ class FrameClock:
             self._clock = min(lowest, self._clock + step)
 
 
-__all__ = ["CLOCK_RISE", "CLOCK_WINDOW_S", "FrameClock", "FrameClockStats", "LOOKAHEAD"]
+__all__ = ["BoundaryShift", "CLOCK_RISE", "CLOCK_WINDOW_S", "FrameClock", "FrameClockStats", "LOOKAHEAD"]
