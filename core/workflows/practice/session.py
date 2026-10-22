@@ -196,7 +196,7 @@ class PracticeSession:
         return [Command("BEGIN_SEGMENT", {})]
 
     def _on_record_started(self, *, now: float, segment: Any = None, **_: Any) -> list[Command]:
-        if self.phase != "waiting_enter":
+        if self.phase != "waiting_enter" or not self.starting:   # 没有在等的开录：不是这次尝试的确认
             return []
         self.starting = False
         self.phase = "recording"
@@ -213,7 +213,7 @@ class PracticeSession:
         ]
 
     def _on_begin_failed(self, *, message: str = "", **_: Any) -> list[Command]:
-        if self.phase != "waiting_enter":
+        if self.phase != "waiting_enter" or not self.starting:
             return []
         self.starting = False
         self._pending_identity = None

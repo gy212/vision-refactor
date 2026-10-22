@@ -144,6 +144,9 @@ def test_practice_invalid_identity_or_begin_failure_disarm():
     assert s.phase == "idle" and s.presence.phase == "idle"
     s = _practice()
     s.handle("start", now=0.0, session_ready=True)
+    assert s.handle("begin_failed") == []                 # 还没开录：不是这次尝试的失败
+    s.handle("presence", present=True, now=0.0)
+    assert _kinds_of(s.handle("presence", present=True, now=0.8)) == ["BEGIN_SEGMENT"]
     cmds = s.handle("begin_failed")
     assert _kinds_of(cmds) == ["DISARM_OCCUPANCY", "STATUS"] and cmds[1].payload["error"] is True
     assert s.phase == "idle"
@@ -530,8 +533,48 @@ def test_executor_start_confirmation_is_asynchronous():
     assert ports.recorder.calls[1:] == [("pause",), ("resume",)]
     confirm[0](segment, None)
     assert flow.events[-1] == ("record_started", {"now": 3.0, "segment": segment})
-    confirm[0](segment, "正面：写盘失败")
+    confirm[0](segment, "正面：写盘失败")                    # 同一尝试只回送一次
+    assert len(flow.events) == 2
+    flow.cmds = [Command("BEGIN_SEGMENT", {})]
+    executor.dispatch(flow, "go")
+    confirm[1](segment, "正面：写盘失败")
     assert flow.events[-1] == ("begin_failed", {"now": 3.0, "message": "正面：写盘失败"})
+
+
+def test_executor_drops_confirmations_of_superseded_start_attempts():
+    """确认只回送给最近一次、仍在等待的开录：结束或丢弃之后、或又开录之后，迟到的确认作废（#45 评审）。"""
+    confirm = []
+
+    class Pending(_Recorder):
+        def start_segment(self, payload, on_confirm):
+            confirm.append(on_confirm)
+            return self.segment
+
+    old, new = SimpleNamespace(segment_id="old"), SimpleNamespace(segment_id="new")
+    ports = _ports()
+    ports.recorder = Pending(old)
+    flow = _Flow([Command("BEGIN_SEGMENT", {}), Command("DISCARD_SEGMENT", {})])
+    executor = CommandExecutor(ports, clock=lambda: 1.0)
+    executor.dispatch(flow, "go")
+    confirm[0](old, None)                                  # 已丢弃的尝试
+    assert "record_started" not in [e for e, _ in flow.events]
+    flow.cmds = [Command("BEGIN_SEGMENT", {})]
+    executor.dispatch(flow, "go")
+    flow.cmds = [Command("BEGIN_SEGMENT", {})]
+    executor.dispatch(flow, "go")
+    confirm[1](old, "正面：写盘失败")                        # 被后一次开录取代
+    assert "begin_failed" not in [e for e, _ in flow.events]
+    confirm[2](new, None)
+    assert flow.events[-1] == ("record_started", {"now": 1.0, "segment": new})
+
+
+def test_practice_ignores_confirmation_without_a_pending_start():
+    """练习：没有在等的开录时，等待到位阶段收到的确认不录、不绑定片段。"""
+    s = _practice()
+    s.handle("start", now=0.0, session_ready=True)
+    assert s.phase == "waiting_enter" and not s.starting
+    assert s.handle("record_started", now=0.5, segment=SimpleNamespace(segment_id="stale", directory=None)) == []
+    assert s.phase == "waiting_enter" and s.segment is None
 
 
 def test_executor_immediate_begin_failure_carries_the_reason():

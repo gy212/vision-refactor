@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -554,9 +555,46 @@ def test_manual_start_failure_resets_button_and_tells_the_user(root, tmp_path, m
     segment = app.recording.begin()
     assert segment and _text(app.window.recording.record_btn) == "暂停录制"
     app.recording.service.finish(discard=True)              # 录制端在开录失败时已结束整段
-    app.recording._confirmed(segment, "侧面：写盘失败", None)
+    attempt = app.recording._attempt
+    app.recording._confirmed(attempt, segment, "侧面：写盘失败", None)
     assert shown and "侧面：写盘失败" in shown[0][1]
     assert _text(app.window.recording.record_btn) == "开始录制"
     forwarded = []
-    app.recording._confirmed(segment, "侧面：写盘失败", lambda seg, err: forwarded.append(err))
+    app.recording._confirmed(attempt, segment, "侧面：写盘失败", lambda seg, err: forwarded.append(err))
     assert forwarded == ["侧面：写盘失败"] and len(shown) == 1   # 工作流开录的失败由工作流提示
+
+
+def test_queued_confirmation_of_an_ended_attempt_is_dropped(root, tmp_path):
+    """开录确认排队回 Tk 线程期间这一段已丢弃、又开了新的一段：旧确认作废，新确认照常（#45 评审）。"""
+    app, _finalizer = _recording_app(root, tmp_path)
+    queued = []
+    app.recording._post = lambda fn, **_k: queued.append(fn)
+    app.recording.service.begin_session({"front": (4, 3), "side": (4, 3)}, 30.0)
+    forwarded = []
+    first = app.recording.begin(on_confirm=lambda seg, err: forwarded.append((seg, err)))
+    app.recording.end(discard=True)
+    second = app.recording.begin(on_confirm=lambda seg, err: forwarded.append((seg, err)))
+    assert first and second and len(queued) == 2           # 视频会话开录即确认，两次确认都在排队
+    for deliver in queued:
+        deliver()
+    assert forwarded == [(second, None)]
+
+
+def test_record_button_recovers_after_a_failed_segment_drains(root, tmp_path, monkeypatch):
+    """录像线程的错误留在快照里直到下次开录：结束写完后的 tick 仍复位按钮，可以重录（#45 评审）。"""
+    app, _finalizer = _recording_app(root, tmp_path)
+    service = app.recording.service
+    state = {"value": "recording"}
+    monkeypatch.setattr(type(service), "state", property(lambda _self: state["value"]))
+    monkeypatch.setattr(service, "finish", lambda **_k: state.update(value="stopping"))
+    view = SimpleNamespace(result_path=None)
+    monkeypatch.setattr(service, "snapshot", lambda: SimpleNamespace(
+        views={"front": view, "side": view}, errors={"side": "写盘失败"}, state=state["value"]))
+    panel = app.window.recording
+    app.recording.refresh_status()                          # 首次发现错误：结束整段
+    assert _text(panel.record_btn) == "正在结束…" and _state(panel.record_btn) == "disabled"
+    app.recording.refresh_status()
+    assert _state(panel.record_btn) == "disabled"
+    state["value"] = "idle"
+    app.recording.refresh_status()
+    assert _text(panel.record_btn) == "开始录制" and _state(panel.record_btn) == "normal"

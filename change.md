@@ -1,3 +1,30 @@
+## 2026-10-22: [fix] D-18 评审修复：CLI 成片校验、迟到的开录确认、录制失败后按钮复位（#43、#45）
+
+- 问题描述（#43、#45 评审）：
+  - #43：CLI 摄像头 `--out` 成片后不校验就删除原始录像。`annotate_video` 正常返回但写出的文件不可读时，CLI 报成功并删掉唯一可用的录像。
+  - #45：开录确认排队回 Tk 线程期间，这一段可能已被结束或丢弃、又开了新的一段；旧确认照样交给工作流，练习在等待到位阶段把已丢弃的片段当成新的一次开录。
+  - #45：录像线程的错误留在快照里直到下次开录，`refresh_status` 有错误时提前返回，结束写完后按钮停在"正在结束…"且不可用，无法重录。
+  - #43 的停止边界问题（一路停完才给另一路停止命令）已由第 8 层的先发后等修复，评审确认保留。
+- 修改内容：
+  - `apps/cli/main.py`（第 6 层）：成片后检查帧数与首帧可解码（`first_frame_ok`），通过才删除原始录像，否则保留并报错。
+  - `apps/tk/controllers/recording.py`：开录尝试编号在开录、结束、会话开始与结束时加一，排队的确认执行时编号已变即作废；`refresh_status` 只在首次发现错误时结束并提示，之后的 tick 照常同步按钮。
+  - `core/workflows/executor.py`：确认只回送给最近一次、仍在等待的 `BEGIN_SEGMENT`，结束、丢弃或再次开录后迟到的确认作废，同一尝试只回送一次。
+  - `core/workflows/practice/session.py`：`record_started`、`begin_failed` 只在有在等的开录（`starting`）时接受。
+  - 设计文档 §8.8 第 8 层补记作废规则。
+- 被替换的测试（D-13）：
+  - `tests/test_recording_skeleton.py::test_cli_camera_out_records_raw_then_renders_skeleton_video`：替身改为写出可读视频（原先写的字节不是视频，校验后会失败）。
+  - `tests/test_workflows.py::test_executor_start_confirmation_is_asynchronous`：同一尝试不再回送两次，失败改由第二次开录的确认验证。
+  - `tests/test_workflows.py::test_practice_invalid_identity_or_begin_failure_disarm`：`begin_failed` 先经站稳发出 `BEGIN_SEGMENT`，未开录时的失败断言为忽略。
+  - `tests/test_tk_recording.py::test_manual_start_failure_resets_button_and_tells_the_user`：`_confirmed` 多一个尝试编号参数。
+- 验证方法：
+  - 新增 5 项，修复前均失败、修复后通过：
+    - `test_recording_skeleton.py::test_cli_camera_out_keeps_raw_when_rendered_video_is_unreadable`；
+    - `test_tk_recording.py::test_queued_confirmation_of_an_ended_attempt_is_dropped`（真实 Tk 控制器与录制端）；
+    - `test_tk_recording.py::test_record_button_recovers_after_a_failed_segment_drains`；
+    - `test_workflows.py::test_executor_drops_confirmations_of_superseded_start_attempts`；
+    - `test_workflows.py::test_practice_ignores_confirmation_without_a_pending_start`。
+  - 全量、门禁与 `scripts/sim_exam_flow.py` 结果见 PR。
+
 ## 2026-10-22: [feat] D-18 第 8 层：开录确认、考试暂停同时暂停录像、异步结束与练习失败原因（D-27、D-28）
 
 - 问题描述：

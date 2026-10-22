@@ -71,6 +71,7 @@ class RecordingController:
         self.pending_errors: list[str] = []   # 会话关闭前转存、尚未提示的单摄写错误
         self._error_shown = False             # 同一录制错误只提示一次
         self._shown_state: SegmentState = "idle"   # 上次 tick 显示的录制状态（结束完成时复位按钮）
+        self._attempt = 0   # 开录尝试编号：开录、结束、会话更替时加一，排队中的旧确认据此作废
         self.pools = TemplatePools(view.recording)
 
     def build_service(self) -> RecordingService:
@@ -84,6 +85,7 @@ class RecordingController:
 
     # ------------------------------------------------------------------ FrameSink
     def begin_session(self, sizes, fps: float, *, feed=None, rotation_of=None) -> None:
+        self._attempt += 1
         self.service.begin_session(sizes, fps, feed=feed, rotation_of=rotation_of)
 
     def write(self, frames) -> None:
@@ -91,6 +93,7 @@ class RecordingController:
 
     def close_session(self) -> None:
         """会话结束时关闭录制：仍在进行的片段照常提交；单摄写错误留给下一次 Tk tick 提示。"""
+        self._attempt += 1
         outcome = self.service.close_session()
         self.flags.dual_active = False
         segment = outcome.segment
@@ -148,9 +151,11 @@ class RecordingController:
         intent = intent or SegmentIntent()
         if intent.auto_compare is None:
             intent = replace(intent, auto_compare=self.modes.segment_auto_compare)
+        self._attempt += 1
+        attempt = self._attempt
         segment = self.service.start(
             SegmentMeta(self.record_base_dir, context=intent),
-            on_confirm=lambda started, error: self._post(lambda: self._confirmed(started, error, on_confirm)),
+            on_confirm=lambda started, error: self._post(lambda: self._confirmed(attempt, started, error, on_confirm)),
         )
         if isinstance(segment, BeginError):
             return segment
@@ -161,10 +166,13 @@ class RecordingController:
         self.sync_stop_enabled("recording")
         return segment
 
-    def _confirmed(self, segment: SegmentRef, error: str | None,
+    def _confirmed(self, attempt: int, segment: SegmentRef, error: str | None,
                    on_confirm: Callable[[SegmentRef, str | None], None] | None) -> None:
-        """Tk 线程：开录结果。失败时录制端已结束整段（落盘、不提交）：复位按钮，手动开录时弹框，再交给工作流。"""
-        if self.flags.closing:
+        """Tk 线程：开录结果。失败时录制端已结束整段（落盘、不提交）：复位按钮，手动开录时弹框，再交给工作流。
+
+        录制端只在片段仍是当前片段时回送，但回送排队到 Tk 线程期间这一段可能已被结束或丢弃、又开了新的一段：
+        执行时尝试编号已变就作废，不把旧片段的结果交给新的尝试。"""
+        if self.flags.closing or attempt != self._attempt:
             return
         if error is not None:
             self.sync_record_state(self.service.state)
@@ -184,6 +192,7 @@ class RecordingController:
         """结束当前片段；``discard`` 只落盘不比对。discard 在关窗/中止路径也必须执行，否则已中止的片段会被送去评分。"""
         if not discard and (self.flags.closing or not self._session_live()):
             return
+        self._attempt += 1
         self.service.finish(discard=discard)
         self.sync_record_state(self.service.state)
 
@@ -328,7 +337,9 @@ class RecordingController:
         self.workflows.segment_update(update, route=not closing)
 
     def refresh_status(self) -> None:
-        """每 tick：显示录制状态与保存路径；写错误时结束各路当前片段并提交，单摄弹框提示（只提示一次）。"""
+        """每 tick：显示录制状态与保存路径；写错误时结束各路当前片段并提交，单摄弹框提示（只提示一次）。
+
+        错误留在录制快照里直到下次开录：之后的 tick 照常同步按钮，结束写完后可以重录。"""
         if self.flags.closing:
             return
         recorder = self.service.snapshot()
@@ -341,16 +352,15 @@ class RecordingController:
             if text not in errors:
                 errors.append(text)
         status_var = self.view.status.recording_status_var
-        if errors:
-            if not self._error_shown:
-                self._error_shown = True
-                self.service.finish()   # 双摄必须保持成对：任一路失败即结束各路并提交
-                self.sync_record_state(self.service.state)
-                status_var.set("")
-                if not multi:
-                    messagebox.showerror("录制失败", "录制发生错误：\n" + "\n".join(errors))
+        if errors and not self._error_shown:
+            self._error_shown = True
+            self.service.finish()   # 双摄必须保持成对：任一路失败即结束各路并提交
+            self.sync_record_state(self.service.state)
+            status_var.set("")
+            if not multi:
+                messagebox.showerror("录制失败", "录制发生错误：\n" + "\n".join(errors))
             return
-        self._error_shown = False
+        self._error_shown = bool(errors)
         if recorder.state in ("recording", "paused"):
             texts = [str(snap.result_path) if snap.result_path is not None else "（准备中）"
                      for snap in recorder.views.values()]
