@@ -5,6 +5,7 @@
 
 - 单路：``<目录>/<YYYYMMDD>/record_<stamp>.mp4``
 - 多路：``<目录>/<YYYYMMDD>/record_<stamp>/<view>.mp4``
+- 采集记录（D-18）：多路为片段目录下的 ``capture.json``，单路为录像旁的 ``record_<stamp>.capture.json``
 
 ``stamp`` 形如 ``20261011_093015_123456``（含微秒，快速重录不撞名）；日期父目录取 stamp 前 8 位，
 跨零点续写也落在开录当天。片段 id 是 ``record_<stamp>``。
@@ -20,6 +21,7 @@ VIEWS = ("front", "side")
 VIDEO_SUFFIXES = frozenset({".mp4", ".avi", ".mkv", ".mov", ".wmv", ".m4v"})
 _ROLE_VIEWS = {"primary": "front", "secondary": "side"}
 _ID_PREFIX = "record_"
+CAPTURE_FILE = "capture.json"
 
 DirectoryKey = tuple[str, int, int] | tuple[str, str]
 
@@ -39,6 +41,14 @@ def view_for_role(role: str) -> str:
         return _ROLE_VIEWS[role]
     except KeyError:
         raise ValueError(f"未知摄像头角色：{role!r}") from None
+
+
+def role_for_view(view: str) -> str:
+    """视角名到摄像头角色：front→primary，side→secondary。"""
+    for role, name in _ROLE_VIEWS.items():
+        if name == view:
+            return role
+    raise ValueError(f"未知视角：{view!r}")
 
 
 @dataclass(frozen=True)
@@ -61,6 +71,12 @@ class SegmentLayout:
     def view_path(self, stamp: str, view: str) -> Path:
         """多路片段中某一视角的文件。"""
         return self.segment_dir(stamp) / f"{view}.mp4"
+
+    def capture_path(self, stamp: str, *, multi: bool) -> Path:
+        """片段的采集记录 ``capture.json``：多路在片段目录里，单路是录像旁的同名旁文件。"""
+        if multi:
+            return self.segment_dir(stamp) / CAPTURE_FILE
+        return self.day_dir(stamp) / f"{segment_id_for_stamp(stamp)}.{CAPTURE_FILE}"
 
     @staticmethod
     def segment_id(path: Path | str) -> str:

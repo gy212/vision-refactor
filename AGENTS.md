@@ -108,6 +108,7 @@ CI（`.github/workflows/gates.yml`，检查名 `gates`）在每个 PR 和 `main`
 
 - 重构的提交只进本仓库，默认分支 `main`，不直接推送 `main`。
 - 一个阶段一个分支、一个 PR：前置阶段的 PR 合并后，从最新的 `main` 新建 `refactor/p<N>-<主题>`，开工时 `git status` 干净；阶段内可以分多次提交。验收标准全部满足后推送分支，用 `gh pr create --base main` 开 PR。用户已同意：阶段分支上的提交、推送和开 PR 不必逐次询问；PR 由用户确认后合并。
+- 跨多层的大改动用 stacked PR（官方扩展 `gh stack`，安装：`gh extension install github/gh-stack`），不开一串互不相干的 PR：每层一个分支、一个 PR，基于下一层，最底层基于 `main`；分支名 `<决策编号>/<层名>`，如 `d18/capture`。每层单独过门禁、单独可审阅，不留半接线的旧路径；文档与决策放最底层。`gh stack add` 加层，`gh stack submit` 推送并开 PR，`gh stack rebase` 在下层变动后重排。整栈由用户确认后合入（`gh stack merge`）。
 - Conventional Commits：`feat:`、`fix:`、`refactor:`、`docs:`、`test:`、`chore:`。PR 和 issue 用中文，写明问题、改动、验证命令和结果，以及被替换的测试和对应的新测试（D-13）；UI 改动附截图，或说明可见行为。
 - 提交或推送前确认身份：`gh auth status`、`gh api user`、`git config user.name`、`git config user.email`。GitHub connector 不可用时，用本地的 `gh pr view`、`gh pr checks`、`gh issue view`。
 
@@ -122,14 +123,14 @@ CI（`.github/workflows/gates.yml`，检查名 `gates`）在每个 PR 和 `main`
 路径相对于本仓库根。分层与各模块职责见设计文档 §2；旧项目文件的去向见设计文档附录 B，需要保留的能力清单见附录 A。
 
 - `core/`（按层，从低到高；各包经 `__init__` 导出公共 API）：
-  - `foundation/`（L0）：路径（`paths.py`）、用户偏好（`prefs.py`）、原子写、几何与信号基元、任务取消、JSON 化、非模板 npz 读取（`npz.py`）、诊断日志。
-  - `media/`（L1）：视频读取（`video_source.py`）、视频写出与转码（`writer.py`）、帧校验、片段布局；`media/camera/` 是摄像头：设备目录（`devices.py`）、采集子进程（`capture_process.py`）、池（`pool.py` 占用表与租约，`slot.py`、`slot_lifecycle.py` reader 与释放重试，`pool_checks.py` 参数校验）与 `CameraService`（`service.py`）。
-  - `pose/`（L2）：MediaPipe 引擎与模型、`PoseSequence` 提取、`derive_valid_mask`（`validity.py`）、特征与布局（`pose33_v3`、`body_core_v1`）、归一化、并行引擎、平滑与绘制；`pose/backends/` 是 router、body_core 特征与 YOLO 适配（`yolo/`，不进 EXE）。
+  - `foundation/`（L0）：路径（`paths.py`）、用户偏好（`prefs.py`）、原子写、几何与信号基元、任务取消、JSON 化、非模板 npz 读取（`npz.py`）、诊断日志、本机环境查询（`host.py`：桌面目录、CPU 与内存）。
+  - `media/`（L1）：视频读取（`video_source.py`）、视频写出与转码（`writer.py`）、画面旋转（`transforms.py`）、帧契约与采集时钟（`frames.py`）、录像时间轴（`pacing.py`）、到达时刻去抖（`frame_clock.py`）与采集记录 `capture.json`（`capture_record.py`）、片段布局；`media/camera/` 是摄像头：设备目录（`devices.py`）、采集子进程（`capture_process.py`）、会话期间每路的持续读帧线程、最新帧槽与录像用的有界帧队列（`reader.py`）、池（`pool.py` 占用表与租约，`slot.py`、`slot_lifecycle.py` reader 与释放重试，`pool_checks.py` 参数校验）与 `CameraService`（`service.py`）。
+  - `pose/`（L2）：MediaPipe 引擎与模型、`PoseSequence` 提取、`derive_valid_mask`（`validity.py`）、特征与布局（`pose33_v3`、`body_core_v1`）、归一化、并行引擎、平滑与绘制、骨架视频导出（`annotate.py`）；`pose/backends/` 是 router、body_core 特征与 YOLO 适配（`yolo/`，不进 EXE）。
   - `evaluation/`（L3）：模板（`templates.py`）、匹配（`matching/`：DTW、单/双模板、双流、在线匹配、body_core）、切分与相位、测量（`measures/`）、规则（`rules/`：`spec.py`、唯一引擎 `engine.py` 的 `evaluate_rules`、唯一目录 `sanda_v5.py`、`adapters.py`；考试、练习、离线共用的单视角判定 `rule_checks.py`）、评分口径（`scoring/`）、学生练习分析（`practice.py`）、技术指标（`techeval/`）。
-  - L4：`services/`（离线分析、模板生成、练习历史）、`recording/`（录制控制、录后 finalizer 与步骤）、`live/`（实时会话 `SessionRunner` 与预览）、`reporting/`（练习文本与 HTML 报告）。
+  - L4：`services/`（离线分析、模板生成、练习历史、录制性能测试 `recording_benchmark.py`）、`recording/`（录制控制、摄像头会话每路的录像线程 `worker.py`、开录确认与异步结束 `recorder.py`、录后 finalizer 与步骤、录后骨架成片 `skeleton.py`）、`live/`（实时会话 `SessionRunner`、预览与按时间采样的站位检测 `presence.py`）、`reporting/`（练习文本与 HTML 报告）。
   - `workflows/`（L5）：考试（`exam/`：会话、名册、片段、成绩表）、学生练习会话、命令执行器与工作流宿主、在场闸门、播报。
 - `apps/`（入口）：
-  - 桌面：`app_ui.py`（入口壳）→ `tk/`（`app.py` 组合根、`controllers/`、`views/`、`dispatcher.py`、`shutdown.py`、`self_check.py` 自检内容）；`desktop_launcher.py` 是打包入口（`--offline-self-check`）。
+  - 桌面：`app_ui.py`（入口壳）→ `tk/`（`app.py` 组合根、`controllers/`、`views/`、`dispatcher.py`、`shutdown.py`、`self_check.py` 自检内容、`build_info.py`；录制性能测试是隐藏入口 Ctrl+Shift+B → `controllers/benchmark.py` 与 `views/benchmark_dialog.py`，报告存到桌面，甲方操作见 `docs/录制性能测试操作说明.md`）；`desktop_launcher.py` 是打包入口（`--offline-self-check`）。
   - CLI：`main.py`、`make_template.py`、`match_template.py`（入口壳）→ `cli/`。
 - `batch/`、`analysis/`：离线批处理、tech_eval、标定和 benchmark，只用 `core` 各包的公共 API，不接入默认的生产评分路径。
 - `scripts/`：`sim_exam_flow.py`（无摄像头模拟考试）、`match_segments_probe.py`、`generate_feedback_icons.py`。

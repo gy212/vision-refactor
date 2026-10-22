@@ -30,7 +30,6 @@ from core.media.camera.spec import (
     CameraWarmupStopped,
     CameraWarmupTimeout,
     CaptureSpec,
-    WarmFrame,
 )
 
 _RELEASE_RETRY_INTERVAL_S: Final = 1.0
@@ -186,7 +185,7 @@ class CameraPool(SlotLifecycle, PoolArgumentChecks):
         *,
         timeout: float,
         stop_event: threading.Event,
-    ) -> tuple[WarmFrame, WarmFrame]:
+    ) -> tuple[CapturedFrame, CapturedFrame]:
         """Wait until both roles have valid frames.
 
         Missing or differently configured roles are (re)started concurrently,
@@ -204,7 +203,7 @@ class CameraPool(SlotLifecycle, PoolArgumentChecks):
         *,
         timeout: float,
         stop_event: threading.Event,
-    ) -> WarmFrame:
+    ) -> CapturedFrame:
         """单摄：primary 按 spec 就绪，secondary 不保留任何设备。"""
 
         desired = {PRIMARY: self._validate_spec(spec), SECONDARY: None}
@@ -216,13 +215,13 @@ class CameraPool(SlotLifecycle, PoolArgumentChecks):
         secondary: CaptureSpec | int,
         *,
         after: tuple[int, int] | None = None,
-    ) -> tuple[WarmFrame, WarmFrame] | None:
+    ) -> tuple[CapturedFrame, CapturedFrame] | None:
         """Return the current pair if ready and newer than ``after``, a
         ``(primary_sequence, secondary_sequence)`` cursor; either role advancing counts."""
         wants = self._validate_pair(primary, secondary)
         return self._snapshot(dict(zip(ROLES, wants)), self._validate_after(after))
 
-    def snapshot_one(self, spec: CaptureSpec | int, *, after: int | None = None) -> WarmFrame | None:
+    def snapshot_one(self, spec: CaptureSpec | int, *, after: int | None = None) -> CapturedFrame | None:
         """单摄：primary 的最新预热帧，比 ``after`` 新时才返回（模型加载期的裸帧预览，D-8）。"""
         result = self._snapshot({PRIMARY: self._validate_spec(spec)}, None if after is None else (int(after),))
         return None if result is None else result[0]
@@ -235,7 +234,7 @@ class CameraPool(SlotLifecycle, PoolArgumentChecks):
             ):
                 return None
             result = tuple(slot.latest for slot in slots)
-            if cursor is not None and all(frame.sequence <= seen for frame, seen in zip(result, cursor)):
+            if cursor is not None and all(frame.seq <= seen for frame, seen in zip(result, cursor)):
                 return None
             return result
 
@@ -382,7 +381,7 @@ class CameraPool(SlotLifecycle, PoolArgumentChecks):
         desired: Mapping[str, CaptureSpec | None],
         timeout: float,
         stop_event: threading.Event,
-    ) -> tuple[WarmFrame, ...]:
+    ) -> tuple[CapturedFrame, ...]:
         timeout = self._validate_timeout(timeout)
         if not hasattr(stop_event, "is_set"):
             raise TypeError("stop_event must provide is_set()")
@@ -406,7 +405,7 @@ class CameraPool(SlotLifecycle, PoolArgumentChecks):
         expected: tuple[WarmupSlot, ...],
         timeout: float,
         stop_event: threading.Event,
-    ) -> tuple[WarmFrame, ...]:
+    ) -> tuple[CapturedFrame, ...]:
         deadline = self._clock() + timeout
         with self._condition:
             while True:
@@ -705,5 +704,4 @@ __all__ = [
     "CaptureSpec",
     "PRIMARY",
     "SECONDARY",
-    "WarmFrame",
 ]

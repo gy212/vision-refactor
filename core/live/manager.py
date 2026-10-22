@@ -16,6 +16,7 @@ from core.foundation.tasks import CancelToken, TaskGroup, TaskHandle
 from core.live.config import LiveControls, PresenceProbe, SessionConfig
 from core.live.inputs import FrameInput
 from core.live.metrics import StartupMetrics
+from core.live.presence import PresenceSampler
 from core.live.preview import PreviewStore, TargetSize
 from core.live.runner import FrameSink, SessionEvent, SessionRunner
 from core.live.stages import build_stages
@@ -115,11 +116,12 @@ class LiveSessionManager:
                 self._state = IDLE
                 self._preview = None
             raise
-        pose, stages = build_stages(config, probe=self._probe)
+        presence = PresenceSampler(self._probe) if config.occupancy and self._probe is not None else None
+        pose, stages = build_stages(config, roi=presence is not None)
         runner = SessionRunner(
             config, source, pose, stages, self._sink, preview,
             lambda event: self._dispatch(event), token, cancel,
-            controls=self.controls, metrics=metrics,
+            controls=self.controls, metrics=metrics, presence=presence,
         )
         self._handle = self._tasks.spawn(
             f"session-{token}", lambda _t: runner.run(), owner="session", close_budget_s=SESSION_CLOSE_BUDGET_S,

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from core.workflows import PresenceGate, PresenceGateConfig, hip_midpoint_in_roi
+from core.workflows import PresenceGate, PresenceGateConfig, PresenceRecordingCycle, hip_midpoint_in_roi
 
 
 def test_enter_stable_requires_duration() -> None:
@@ -71,3 +71,18 @@ def test_hip_midpoint_in_roi() -> None:
     landmarks[23] = lm(0.4, 0.5, 0.1)
     landmarks[24] = lm(0.6, 0.5, 0.1)
     assert hip_midpoint_in_roi(landmarks, roi, vis_thr=0.3) is False
+
+
+def test_cycle_ignores_samples_captured_before_arming_or_recording_start() -> None:
+    """D-30：样本时刻是源帧采集时刻；武装前、开录前采到的样本迟到时不计入。"""
+    cycle = PresenceRecordingCycle(PresenceGateConfig(enter_stable_s=0.8, empty_hold_s=2.0, min_record_s=0.0))
+    cycle.arm_enter(ignore_before=10.0)
+    assert cycle.update(True, 9.0) == [] and cycle.update(True, 9.95) == []
+    assert cycle.update(True, 10.1) == []
+    assert [e.kind for e in cycle.update(True, 10.9)] == ["enter_stable"]
+    cycle.recording_started(12.0)
+    # 开录前采到的空场样本迟到：不能让离场计时从开录之前算起
+    assert cycle.update(False, 11.0) == []
+    assert cycle.update(False, 12.5) == []
+    assert cycle.update(False, 14.0) == []
+    assert [e.kind for e in cycle.update(False, 14.6)] == ["empty_stable"]

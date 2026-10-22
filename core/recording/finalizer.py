@@ -52,7 +52,7 @@ class ResultSpec:
 
 @dataclass(frozen=True)
 class ProcessingPlan:
-    """处理计划：步骤列表；``result`` 为 None 时不写结果 JSON、不发更新（单摄）。"""
+    """处理计划：步骤列表；``result`` 为 None 时不写结果 JSON，只在失败时发一次更新（单摄）。"""
 
     steps: tuple[Step, ...]
     result: ResultSpec | None = None
@@ -336,6 +336,8 @@ class SegmentFinalizer:
         result: dict[str, Any] | None = None,
     ) -> None:
         if job.plan.result is None or job.segment.directory is None:
+            if job.plan.result is None and status == "failed":   # 单摄不写结果 JSON，只把失败告诉订阅者（D-26）
+                self._notify(SegmentUpdate(job.segment.segment_id, status, message, error_code=error_code))
             return
         segment_id = job.segment.segment_id
         payload = self._payload(job, status, message, error_code, result)

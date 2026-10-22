@@ -173,12 +173,13 @@ class ExamSession:
             ExamCommand("UPDATE_ROW", {"row_id": row.row_id, "status": row.status}),
         ]
 
-    def _on_call_guard_elapsed(self, **_: Any) -> list[ExamCommand]:
+    def _on_call_guard_elapsed(self, *, now: float | None = None, **_: Any) -> list[ExamCommand]:
         if self.phase != "calling":
             return []
         self.phase = "wait_enter"
         self.call_guard_deadline = None
-        self.presence.arm_enter()
+        # 站位样本带源帧采集时刻：叫号守护期间采到的帧不算进场（D-30）
+        self.presence.arm_enter(ignore_before=now)
         return [ExamCommand("ARM_OCCUPANCY")]
 
     def _on_enter_stable(self, *, now: float, **_: Any) -> list[ExamCommand]:
@@ -197,10 +198,8 @@ class ExamSession:
         # 注意：UPDATE_ROW(recording) 必须在 BEGIN 成功后由执行层发出。
         # 若与 BEGIN_SEGMENT 同批且 BEGIN 失败触发 begin_failed，外层后续
         # UPDATE_ROW(recording) 会把 failed 盖回 recording。
-        return [
-            ExamCommand("ANNOUNCE", {"text": "考试开始"}),
-            ExamCommand("BEGIN_SEGMENT", {"row_id": row.row_id, "exam": self._segment_meta(row)}),
-        ]
+        # "考试开始"等两路写出首帧（record_started）后才播报（D-27）。
+        return [ExamCommand("BEGIN_SEGMENT", {"row_id": row.row_id, "exam": self._segment_meta(row)})]
 
     def _segment_meta(self, row: ExamResultRow) -> dict[str, Any]:
         """写入片段结果 JSON 的考生信息（``ResultSpec.exam``），录后结果按其中的 run_id 回填台账。"""
@@ -257,14 +256,19 @@ class ExamSession:
         return cmds
 
     def _on_record_started(self, *, now: float, segment: Any = None, **_: Any) -> list[ExamCommand]:
-        """开录成功（执行层回送）：从此刻起等待离场，绑定片段并把行状态改为 recording（清掉上次失败标记）。"""
-        if self.phase != "recording":
+        """开录成功（两路写出首帧后回送）：播报开始、从此刻起等待离场，绑定片段并把行状态改为 recording。
+
+        确认到达前已暂停时照常绑定，等待离场从恢复时刻算起（D-28）。
+        """
+        paused = self.phase == "paused" and self.paused_from == "recording"
+        if self.phase != "recording" and not paused:
             return []
         row = self.current
-        self.presence.recording_started(now)
+        if not paused:
+            self.presence.recording_started(now)
         if row is None:
             return []
-        cmds: list[ExamCommand] = []
+        cmds: list[ExamCommand] = [ExamCommand("ANNOUNCE", {"text": "考试开始"})]
         if segment is not None:
             directory = getattr(segment, "directory", None)
             cmds.append(
@@ -362,7 +366,7 @@ class ExamSession:
             and self.call_guard_deadline is not None
             and now >= self.call_guard_deadline
         ):
-            cmds.extend(self._on_call_guard_elapsed())
+            cmds.extend(self._on_call_guard_elapsed(now=now))
         return cmds
 
     def _on_skip(self, *, now: float, **_: Any) -> list[ExamCommand]:
@@ -420,9 +424,10 @@ class ExamSession:
         """开录失败：标记 failed，回到 wait_enter 供考官重试或 skip；不静默 advance。
 
         设计契约 docs/exam_system_design.md §6.6：BEGIN_SEGMENT 失败可 skip/重试，
-        不得自动 pointer+=1。
+        不得自动 pointer+=1。确认到达前已暂停时只记失败，恢复后回到等待到位（D-28）。
         """
-        if self.phase != "recording":
+        paused = self.phase == "paused" and self.paused_from == "recording"
+        if self.phase != "recording" and not paused:
             return []
         row = self.current
         if row is None:
@@ -432,10 +437,13 @@ class ExamSession:
         row.error_message = message or "开录失败"
         # 不写 record_ended_at：允许同一次尝试重试开录
         self.record_started_mono = None
-        self.phase = "wait_enter"
         self.call_guard_deadline = None
         self.inter_gap_deadline = None
-        self.presence.arm_enter()
+        if paused:
+            self.paused_from = "wait_enter"
+        else:
+            self.phase = "wait_enter"
+            self.presence.arm_enter(ignore_before=now)
         return [
             ExamCommand("DISARM_OCCUPANCY"),
             ExamCommand(
@@ -455,8 +463,8 @@ class ExamSession:
                     "error_message": row.error_message,
                 },
             ),
-            # 重新武装占用，便于进场稳定后再次 BEGIN
-            ExamCommand("ARM_OCCUPANCY"),
+            # 重新武装占用，便于进场稳定后再次 BEGIN（暂停中不武装，恢复时再武装）
+            *([] if paused else [ExamCommand("ARM_OCCUPANCY")]),
         ]
 
     def _on_pause(self, **_: Any) -> list[ExamCommand]:
@@ -465,7 +473,10 @@ class ExamSession:
         self.paused_from = self.phase
         self.phase = "paused"
         self.presence.disarm()
-        return [ExamCommand("DISARM_OCCUPANCY")]
+        cmds = [ExamCommand("DISARM_OCCUPANCY")]
+        if self.paused_from == "recording":   # 录制中暂停同时暂停录像，输出时间扣除暂停区间（D-28）
+            cmds.append(ExamCommand("PAUSE_SEGMENT"))
+        return cmds
 
     def _on_resume(self, *, now: float, **_: Any) -> list[ExamCommand]:
         if self.phase != "paused" or self.paused_from is None:
@@ -475,10 +486,11 @@ class ExamSession:
         self.phase = prev
         cmds: list[ExamCommand] = []
         if prev == "wait_enter":
-            self.presence.arm_enter()
+            self.presence.arm_enter(ignore_before=now)   # 暂停前采到的样本不算（D-30）
         elif prev == "recording":
-            # 恢复录制：最短录制时长从恢复时刻重新计
+            # 恢复录制：录像从新的源帧继续，最短录制时长从恢复时刻重新计
             self.presence.recording_started(now)
+            cmds.append(ExamCommand("RESUME_SEGMENT"))
         if prev in {"wait_enter", "recording"}:
             cmds.append(ExamCommand("ARM_OCCUPANCY"))
         return cmds

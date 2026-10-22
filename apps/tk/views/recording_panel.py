@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """录制控件组：开始/暂停/继续与结束录制、"仅录制 ↔ 自动比对"滑块、正/侧模板池、骨架开关与保存目录。
 
-录制按钮是三态（``RECORD_BTN_TEXT``）；会话未运行时整组禁用。命令在控制器建好后经 ``connect`` 接上。
+录制按钮是三态，结束写盘期间另显示"正在结束…"（``RECORD_BTN_TEXT``）；会话未运行时整组禁用。命令在控制器建好后经 ``connect`` 接上。
 """
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from pathlib import Path
 from tkinter import BooleanVar, DoubleVar, Listbox, StringVar, filedialog, ttk
 from typing import Any
 
-RECORD_BTN_TEXT = {"idle": "开始录制", "recording": "暂停录制", "paused": "继续录制"}
+RECORD_BTN_TEXT = {"idle": "开始录制", "recording": "暂停录制", "paused": "继续录制", "stopping": "正在结束…"}
 TEMPLATE_VIEWS = (("front", "正面模板池"), ("side", "侧面模板池"))
 
 

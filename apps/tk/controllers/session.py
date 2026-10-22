@@ -231,7 +231,8 @@ class SessionController:
         self.set_rotation(state.rotate2, SECONDARY, announce=False)
         self.flags.auto_compare = self.recording.current_auto_compare()
         self.flags.recording_ready = not config.dual
-        self.flags.record_skeleton = bool(state.record_skeleton)
+        self.flags.record_skeleton = bool(state.record_skeleton) and not config.is_file
+        self.flags.pose_variant, self.flags.enable_hands = config.pose_variant, config.enable_hands
         self._shown_seq = 0
         token = self.live.start(config, start_click=start_click)
         self.workflows.session_started(token)
@@ -293,9 +294,9 @@ class SessionController:
             self.view.status.match_var.set(text)
 
     def _on_presence(self, sample: PresenceSample) -> None:
-        """站位采样：会话未在停止时交给当前激活的工作流（考试或学生练习）。"""
+        """站位采样：会话未在停止时交给当前激活的工作流（考试或学生练习），时刻是源帧的采集时刻（D-30）。"""
         if self.live_now():
-            self.workflows.presence(self.live.token, bool(sample.present), float(sample.sampled_at))
+            self.workflows.presence(self.live.token, bool(sample.present), float(sample.captured_at))
 
     def _on_running(self, _info: RunningInfo) -> None:
         """会话已接管设备并登记录制：双摄此时才允许录制，学生练习据此启用站位检测。"""

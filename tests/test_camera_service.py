@@ -13,6 +13,7 @@ import pytest
 
 from core.foundation import Cancelled, CancelToken
 from core.media import (
+    CapturedFrame,
     PRIMARY,
     SECONDARY,
     CameraPool,
@@ -103,8 +104,8 @@ def test_unclaimed_stream_cancels_only_its_observed_generations():
         def wait_pair(self, primary, secondary, *, timeout, stop_event):
             frame = np.zeros((2, 3, 3), np.uint8)
             return (
-                pool_module.WarmFrame(frame, 0.0, 1, 3),
-                pool_module.WarmFrame(frame, 0.0, 1, 7),
+                CapturedFrame("primary", 1, 0, frame, 3),
+                CapturedFrame("secondary", 1, 0, frame, 7),
             )
 
         def cancel(self, role, *, generation=None):
@@ -129,8 +130,10 @@ def test_read_failure_names_the_failed_role_in_dual_stream(service):
         # 两路预热线程的打开顺序不确定，按设备号找第二路。
         next(cap for cap in StreamingCapture.opened if cap.index == 1).release()  # 第二路断流
 
+        # 断流前已采到的帧照常交出；reader 读到断流后关闭槽，之后的 read 抛出该路的错误。
         with pytest.raises(service_module.CameraReadError, match="第2路"):
-            stream.read()
+            for _ in range(100):
+                stream.read()
     finally:
         stream.close()
 
@@ -433,8 +436,9 @@ def test_cli_camera_source_opens_through_camera_service(monkeypatch):
         source.start(token)
         # CLI 按默认采集尺寸打开（D-17：1080p，策略仍为 prefer）
         assert source.actual_sizes() == {PRIMARY: (1920, 1080)}
-        frames = source.read(token)
-        assert frames[PRIMARY].shape == (1080, 1920, 3)
+        got = source.read(token)
+        assert got.frames[PRIMARY].shape == (1080, 1920, 3)
+        assert got.captured_at_ns > 0
     finally:
         source.close(keep_warm=True)
 
@@ -489,6 +493,9 @@ def test_cli_run_releases_capture_writer_and_windows_on_disconnect(monkeypatch):
     class _Writer:
         def __init__(self, *_args):
             self.release_calls = 0
+
+        def isOpened(self):
+            return True
 
         def write(self, _frame):
             pass

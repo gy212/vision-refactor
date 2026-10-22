@@ -3,7 +3,7 @@
 
 开录方把 ``SegmentIntent`` 放进 ``SegmentMeta.context``，片段结束时 ``build_segment_plan`` 读回它：
 考试片段在步骤前加裁剪并强制比对，学生练习强制不比对，普通片段跟随结束时的自动比对开关（设计文档 §8.4、§8.5）。
-单路片段只转码（V-4）。
+单路片段只转码（V-4）。录像本身是原始画面，开了"录制骨架"的片段在录后生成骨架成片（D-26）。
 """
 
 from __future__ import annotations
@@ -13,7 +13,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from core.recording import FinishedSegment, ProcessingPlan, ResultSpec, dual_segment_steps, single_segment_steps
+from core.recording import (
+    FinishedSegment,
+    ProcessingPlan,
+    RenderSkeleton,
+    ResultSpec,
+    dual_segment_steps,
+    single_segment_steps,
+    skeleton_engine,
+)
 from core.workflows.exam.clip import EXAM_CLOSE_BUDGET_S, ExamClipStep
 
 
@@ -33,6 +41,8 @@ class PlanSettings:
     auto_compare: bool
     front_templates: tuple[Path, ...] = ()
     side_templates: tuple[Path, ...] = ()
+    pose_variant: str = "full"        # 骨架成片用会话的模型与手部设置
+    enable_hands: bool = True
 
 
 def segment_intent(segment: FinishedSegment) -> SegmentIntent:
@@ -43,8 +53,12 @@ def segment_intent(segment: FinishedSegment) -> SegmentIntent:
 
 def build_segment_plan(segment: FinishedSegment, settings: PlanSettings) -> ProcessingPlan:
     """按片段意图与结束时的设置组装处理计划。"""
+    skeleton = None
+    if settings.record_skeleton:
+        skeleton = RenderSkeleton(skeleton_engine(settings.pose_variant, settings.enable_hands))
     if not segment.multi:
-        return ProcessingPlan(single_segment_steps(), finish_on_close=True)
+        # 骨架成片可能很久：关窗时取消（保留原始录像），只转码的计划关窗后仍做完（V-4）
+        return ProcessingPlan(single_segment_steps(skeleton=skeleton), finish_on_close=skeleton is None)
     intent = segment_intent(segment)
     auto_compare = settings.auto_compare if intent.auto_compare is None else intent.auto_compare
     steps = dual_segment_steps(
@@ -52,6 +66,7 @@ def build_segment_plan(segment: FinishedSegment, settings: PlanSettings) -> Proc
         auto_compare=auto_compare,
         front_templates=settings.front_templates,
         side_templates=settings.side_templates,
+        skeleton=skeleton,
     )
     exam = dict(intent.exam) if intent.exam is not None else None
     if exam is not None:

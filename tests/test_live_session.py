@@ -8,21 +8,23 @@ import time
 import numpy as np
 import pytest
 
+import core.live.presence as presence_mod
 import core.live.stages as stages_mod
 from core.foundation.tasks import Cancelled
 from core.live import (
     APP_CLOSE,
     IDLE,
+    InputFrames,
     LiveControls,
     LiveSessionManager,
     PresenceSample,
+    PresenceSampler,
     camera_session,
     video_session,
 )
 from core.live.preview import PreviewStore
-from core.live.stages import apply_rotation, rotated_size
-from core.media import PRIMARY, SECONDARY, CameraReadError, CaptureSpec
-from core.recording import fit_frame_to_size
+from core.media import apply_rotation, rotated_size
+from core.media import PRIMARY, SECONDARY, CameraReadError, CapturedFrame, CaptureSpec
 
 WAIT = 5.0
 
@@ -35,6 +37,8 @@ class FakeEngine:
         type(self).built += 1
         self.spec = spec
         self.closed = False
+        self.frames: list = []
+        self.timestamps: list[int] = []
         if type(self).gate is not None:
             type(self).gate.wait(WAIT)
 
@@ -42,6 +46,8 @@ class FakeEngine:
         return 0
 
     def infer(self, frame, *, timestamp_ms=None):
+        self.frames.append(frame)
+        self.timestamps.append(timestamp_ms)
         return None, []
 
     def close(self):
@@ -55,6 +61,8 @@ def fake_engine(monkeypatch, tmp_path):
     monkeypatch.setattr(stages_mod, "create_engine", lambda spec, models_dir=None: FakeEngine(spec))
     monkeypatch.setattr(stages_mod, "models_dir", lambda: tmp_path)
     monkeypatch.setattr(stages_mod, "templates_dir", lambda: tmp_path)
+    monkeypatch.setattr(presence_mod, "create_engine", lambda spec, models_dir=None: FakeEngine(spec))
+    monkeypatch.setattr(presence_mod, "models_dir", lambda: tmp_path)
     yield
 
 
@@ -62,11 +70,30 @@ def frame(value: int = 0, shape=(4, 6, 3)) -> np.ndarray:
     return np.full(shape, value, dtype=np.uint8)
 
 
+class FakeFeed:
+    """按真实时间以 30 fps 出帧的摄像头（只提供采样用的 ``latest``）；``frozen`` 时不再出新帧。"""
+
+    PERIOD_NS = 33_333_333
+
+    def __init__(self, shape=(4, 6, 3)) -> None:
+        self._t0 = time.perf_counter_ns()
+        self._shape = shape
+        self.frozen = False
+        self._last: dict[str, CapturedFrame] = {}
+
+    def latest(self, role):
+        if self.frozen and role in self._last:
+            return self._last[role]
+        seq = (time.perf_counter_ns() - self._t0) // self.PERIOD_NS   # 采集时刻不晚于现在
+        self._last[role] = CapturedFrame(role, seq, self._t0 + seq * self.PERIOD_NS, frame(5, self._shape))
+        return self._last[role]
+
+
 class FakeInput:
     """按 ``roles`` 产出帧；``fail_after`` 帧后读帧失败，``frames`` 读完后返回 None（视频）。"""
 
     def __init__(self, roles=(PRIMARY,), *, is_file=False, frames=None, fail_after=None,
-                 ready_gate: threading.Event | None = None, shape=(4, 6, 3)) -> None:
+                 ready_gate: threading.Event | None = None, shape=(4, 6, 3), read_delay=0.002) -> None:
         self.roles = tuple(roles)
         self._shape = shape
         self.is_file = is_file
@@ -77,6 +104,12 @@ class FakeInput:
         self._ready_gate = ready_gate
         self._read = 0
         self._seq = 0
+        self._read_delay = read_delay
+        self.feed = None if is_file else FakeFeed(shape)   # 交给录制层的帧来源；站位采样取它的最新帧
+
+    @property
+    def reads(self) -> int:
+        return self._read
 
     def wait_ready(self, cancel):
         self.calls.append("wait_ready")
@@ -112,8 +145,11 @@ class FakeInput:
         if self._frames is not None and self._read >= self._frames:
             return None
         self._read += 1
-        time.sleep(0.002)
-        return {role: frame(3, self._shape) for role in self.roles}
+        time.sleep(self._read_delay)
+        return InputFrames({role: frame(3, self._shape) for role in self.roles}, None if self.is_file else time.perf_counter_ns())
+
+    def capture_feed(self):
+        return self.feed
 
     def close(self, *, keep_warm):
         self.calls.append("close")
@@ -124,14 +160,16 @@ class FakeSink:
     def __init__(self) -> None:
         self.calls: list = []
         self.writes: list[dict] = []
-        self.sizes: list[dict] = []
         self.fail_write = False
+        self.fail_begin = False
+        self.feed = None
+        self.rotation_of = None
 
-    def begin_session(self, sizes, fps):
+    def begin_session(self, sizes, fps, *, feed=None, rotation_of=None):
+        if self.fail_begin:
+            raise RuntimeError("begin failed")
         self.calls.append(("begin", dict(sizes), fps))
-
-    def update_sizes(self, sizes):
-        self.sizes.append(dict(sizes))
+        self.feed, self.rotation_of = feed, rotation_of
 
     def write(self, frames):
         if self.fail_write:
@@ -256,8 +294,7 @@ def test_dual_failure_uses_numbered_dual_message_and_both_views_converge():
     h.manager.start(dual())
     outcome = h.outcome()
     assert outcome.status == "双摄像头运行失败：第2路摄像头读帧失败，请检查连接后重新开始"
-    assert len(h.sink.writes) == 4
-    assert all(set(w) == {"front", "side"} for w in h.sink.writes)
+    assert outcome.frames == 4 and h.sink.writes == []
     assert h.sink.calls[0] == ("begin", {"front": (6, 4), "side": (6, 4)}, 30.0)
 
 
@@ -286,15 +323,15 @@ def test_events_from_an_old_session_are_dropped():
     assert len(h.events) == count
 
 
-def test_rotation_applies_to_recording_size_and_frames():
+def test_rotation_applies_to_recording_size_and_is_read_live_by_recording():
     h = Harness(FakeInput())
     h.controls.rotation[PRIMARY].set(90)
     h.manager.start(single(skeleton=False))
-    h.wait_for(lambda: len(h.sink.writes) >= 2)
+    h.wait_for(lambda: h.source.reads >= 2)
     h.manager.stop()
     h.outcome()
     assert h.sink.calls[0][1] == {"front": (4, 6)}
-    assert h.sink.writes[0]["front"].shape[:2] == (6, 4)
+    assert h.sink.rotation_of(PRIMARY) == 90     # 录像线程在开录时读取（D-29）
 
 
 # ---- §8.2 表 ----
@@ -303,26 +340,30 @@ def test_rotation_applies_to_recording_size_and_frames():
 def test_skeleton_off_builds_no_engine_and_previews_raw_frames():
     h = Harness(FakeInput((PRIMARY, SECONDARY)))
     h.manager.start(dual(skeleton=False))
-    h.wait_for(lambda: len(h.sink.writes) >= 3)
+    h.wait_for(lambda: h.source.reads >= 3)
     store = h.manager.preview
     h.manager.stop()
     h.outcome()
     assert FakeEngine.built == 0
     assert store.stage == "raw"
-    # 双摄骨架关：录制原始帧，HUD 只在预览帧上
-    written = h.sink.writes[0]["front"]
-    assert int(written.max()) == 3
 
 
-def test_single_camera_recording_keeps_hud_even_without_skeleton():
-    """单摄录像一直带 HUD（旧单摄循环写的是叠加后的帧）；双摄骨架关时录原始帧。"""
-    h = Harness(FakeInput(shape=(80, 120, 3)))
-    h.manager.start(single(skeleton=False))
-    h.wait_for(lambda: len(h.sink.writes) >= 2)
+@pytest.mark.parametrize("skeleton", [False, True])
+def test_camera_sessions_hand_the_feed_to_recording_and_never_write_from_the_loop(skeleton, monkeypatch):
+    """D-18/D-26：摄像头会话的录像由录制层的录像线程从摄像头取帧（原始画面），处理循环不写录像；
+    录制会话先于输入关闭，录像线程能用仍在出帧的摄像头写完结束边界。"""
+    monkeypatch.setattr(stages_mod, "render_pose", lambda img, *_a, **_k: (np.full_like(img, 9), []))
+    h = Harness(FakeInput((PRIMARY, SECONDARY), shape=(80, 120, 3)))
+    order: list[str] = []
+    h.sink.close_session = lambda: order.append("sink")
+    close = h.source.close
+    h.source.close = lambda *, keep_warm: (order.append("source"), close(keep_warm=keep_warm))
+    h.manager.start(dual(skeleton=skeleton))
+    h.wait_for(lambda: h.source.reads >= 3)
     h.manager.stop()
     h.outcome()
-    assert int(h.sink.writes[0]["front"].max()) == 255
-    assert dual(skeleton=False).record_overlay is False
+    assert h.sink.feed is h.source.feed and h.sink.writes == []
+    assert order == ["sink", "source"]
 
 
 def test_parallel_camera_drops_into_ordered_results(monkeypatch):
@@ -331,7 +372,7 @@ def test_parallel_camera_drops_into_ordered_results(monkeypatch):
     )
     h = Harness(FakeInput(frames=None))
     h.manager.start(single(skeleton=True, workers=2))
-    h.wait_for(lambda: len(h.sink.writes) >= 5)
+    h.wait_for(lambda: h.source.reads >= 5)
     h.manager.stop()
     outcome = h.outcome()
     assert outcome.outcome == "stopped"
@@ -430,32 +471,108 @@ def test_loading_preview_shows_raw_then_annotated_without_regressing():
     h.outcome()
 
 
-def test_occupancy_samples_every_stride_frames_when_armed():
+def test_presence_samples_latest_frame_on_a_timer_independent_of_the_loop():
+    """D-30：处理循环慢到约 4 fps 时，站位仍按约 10 次/秒取最新帧，样本时刻是源帧的采集时刻。"""
     calls = []
 
     def probe(pose, roi):
         calls.append(roi)
         return True
 
-    h = Harness(FakeInput((PRIMARY, SECONDARY)), probe=probe)
+    source = FakeInput((PRIMARY, SECONDARY), read_delay=0.25)
+    h = Harness(source, probe=probe)
     h.controls.arm_occupancy("exam", True)
     h.controls.set_roi((0.1, 0.1, 0.9, 0.9))
     h.manager.start(dual(skeleton=False))
-    h.wait_for(lambda: len(h.sink.writes) >= 7)
+    h.wait_for(lambda: "running" in h.kinds())
+    h.wait_for(lambda: len([e for e in h.events if e.kind == "presence"]) >= 8)
+    seen_at = time.monotonic()
+    reads = source.reads
     h.manager.stop()
     h.outcome()
     samples = [e.payload for e in h.events if e.kind == "presence"]
-    assert samples and all(isinstance(s, PresenceSample) and s.present for s in samples)
+    assert all(isinstance(s, PresenceSample) and s.present for s in samples)
+    assert reads <= 6                                   # 循环只跑了几帧，采样不受它限制
+    seqs = [s.seq for s in samples]
+    assert seqs == sorted(set(seqs))                    # 每次都是新帧，不重复
+    gaps = np.diff([s.captured_at for s in samples])
+    assert gaps.min() > 0.05 and np.median(gaps) < 0.2  # 约 10 次/秒
+    assert samples[7].captured_at <= seen_at + 0.02     # 采集时刻不晚于收到它的时刻（monotonic 分辨率 15.6 ms）
     assert calls[0] == (0.1, 0.1, 0.9, 0.9)
-    assert len(samples) == (len(h.sink.writes) + 2) // 3
-    assert FakeEngine.built == 1        # 独立的 Lite 引擎
+    assert FakeEngine.built == 1                        # 独立的 Lite 引擎，会话结束时关闭
+
+
+def test_presence_sends_nothing_without_new_frames():
+    """没有新帧时不发结果：没有新结果不等于离场（D-30）。"""
+    source = FakeInput((PRIMARY, SECONDARY))
+    h = Harness(source, probe=lambda *_: False)
+    h.controls.arm_occupancy("practice", True)
+    h.manager.start(dual(skeleton=False))
+    h.wait_for(lambda: any(e.kind == "presence" for e in h.events))
+    source.feed.frozen = True
+    time.sleep(0.15)
+    before = len([e for e in h.events if e.kind == "presence"])
+    time.sleep(0.4)
+    after = len([e for e in h.events if e.kind == "presence"])
+    h.manager.stop()
+    h.outcome()
+    assert after == before
+
+
+def test_presence_waits_until_armed_and_closes_engine_when_disarmed():
+    source = FakeInput((PRIMARY, SECONDARY))
+    h = Harness(source, probe=lambda *_: True)
+    h.manager.start(dual(skeleton=False))
+    h.wait_for(lambda: "running" in h.kinds())
+    time.sleep(0.3)
+    assert FakeEngine.built == 0 and not [e for e in h.events if e.kind == "presence"]
+    h.controls.arm_occupancy("exam", True)
+    h.wait_for(lambda: any(e.kind == "presence" for e in h.events))
+    h.controls.arm_occupancy("exam", False)
+    time.sleep(0.2)
+    count = len([e for e in h.events if e.kind == "presence"])
+    time.sleep(0.3)
+    assert len([e for e in h.events if e.kind == "presence"]) == count
+    h.manager.stop()
+    h.outcome()
+    assert FakeEngine.built == 1
+
+
+def test_presence_sampler_rotates_drops_stale_results_and_keeps_timestamps_increasing():
+    """采样转正主路；推理期间站位设置变了的结果作废；VIDEO 模式时间戳按采集时刻且严格递增。"""
+    controls = LiveControls()
+    controls.rotation[PRIMARY].set(90)
+    controls.arm_occupancy("exam", True)
+    feed = FakeFeed(shape=(4, 6, 3))
+    emitted = []
+    changes = iter([False, True, False])
+
+    def probe(_pose, _roi):
+        if next(changes):
+            controls.set_roi((0.0, 0.0, 1.0, 1.0))    # 推理期间改了 ROI
+        return True
+
+    sampler = PresenceSampler(probe)
+    for _ in range(3):
+        time.sleep(0.04)
+        assert sampler._sample(feed, controls, lambda kind, payload: emitted.append(payload))
+    engine = sampler._engine
+    assert [f.shape[:2] for f in engine.frames] == [(6, 4)] * 3
+    assert len(emitted) == 2
+    assert engine.timestamps[0] == 0 and all(b > a for a, b in zip(engine.timestamps, engine.timestamps[1:]))
+    feed.frozen = True                                 # 没有新帧：不推理、不发结果
+    assert not sampler._sample(feed, controls, lambda kind, payload: emitted.append(payload))
+    assert len(engine.frames) == 3 and len(emitted) == 2
+    controls.arm_occupancy("exam", False)
+    assert not sampler._sample(feed, controls, lambda *_: None)
+    assert engine.closed and sampler._engine is None
 
 
 def test_occupancy_not_run_for_skeleton_sessions():
     h = Harness(FakeInput((PRIMARY, SECONDARY)), probe=lambda *_: True)
     h.controls.arm_occupancy("exam", True)
     h.manager.start(dual(skeleton=True))
-    h.wait_for(lambda: len(h.sink.writes) >= 4)
+    h.wait_for(lambda: h.source.reads >= 4)
     h.manager.stop()
     h.outcome()
     assert not [e for e in h.events if e.kind == "presence"]
@@ -561,31 +678,15 @@ def test_second_engine_failure_closes_first_and_never_claims_or_records(monkeypa
     assert h.source.keep_warm is False
 
 
-def test_dual_write_failure_closes_recording_and_releases_without_engines():
+def test_recording_begin_failure_fails_session_and_releases_without_engines():
     h = Harness(FakeInput((PRIMARY, SECONDARY)))
-    h.sink.fail_write = True
+    h.sink.fail_begin = True
     h.manager.start(dual(skeleton=False))
     outcome = h.outcome()
-    assert outcome.status == "双摄像头运行失败：write failed"
+    assert outcome.failed and outcome.status == "双摄像头接管失败：begin failed"
     assert FakeEngine.built == 0
-    assert h.sink.calls[-1] == ("close",)
+    assert ("close",) not in h.sink.calls
     assert h.source.calls[-1] == "close" and h.source.keep_warm is False
-
-
-def test_dual_records_raw_without_skeleton_and_annotated_with_skeleton(monkeypatch):
-    monkeypatch.setattr(stages_mod, "render_pose", lambda img, *_a, **_k: (np.full_like(img, 9), []))
-    # 旧双摄循环：HUD 画在主路标注帧上再写录像；骨架关写原始帧（无 HUD），骨架开写标注帧（主路带 HUD）
-    for skeleton, expected in ((False, (3, 3)), (True, (255, 9))):
-        h = Harness(FakeInput((PRIMARY, SECONDARY), shape=(80, 120, 3)))
-        h.manager.start(dual(skeleton=skeleton))
-        h.wait_for(lambda: len(h.sink.writes) >= 2)
-        store = h.manager.preview
-        h.manager.stop()
-        h.outcome()
-        written = h.sink.writes[0]
-        assert set(written) == {"front", "side"}
-        assert (int(written["front"].max()), int(written["side"].max())) == expected, skeleton
-        assert store.stage == ("annotated" if skeleton else "raw")
 
 
 def test_dual_loading_keeps_raw_pairs_flowing_without_writes_then_annotates():
@@ -601,29 +702,24 @@ def test_dual_loading_keeps_raw_pairs_flowing_without_writes_then_annotates():
         assert shown[-1].stage == "raw" and set(shown[-1].images) == {PRIMARY, SECONDARY}
         store.mark_rendered(shown[-1])
     assert "模型加载中…（双摄裸帧预览）" in h.statuses()
-    assert h.sink.writes == [] and "running" not in h.kinds()
+    assert h.sink.calls == [] and "running" not in h.kinds()
     FakeEngine.gate.set()
-    h.wait_for(lambda: len(h.sink.writes) >= 2)
-    assert store.stage == "annotated"
+    h.wait_for(lambda: store.stage == "annotated")
     h.manager.stop()
     h.outcome()
     assert h.kinds()[0] == "running"
 
 
-def test_dual_rotation_is_per_role_for_sizes_and_frames():
+def test_dual_rotation_is_per_role_for_sizes_and_read_live_by_recording():
     h = Harness(FakeInput((PRIMARY, SECONDARY)))
     h.controls.rotation[SECONDARY].set(90)
     h.manager.start(dual(skeleton=False))
-    h.wait_for(lambda: len(h.sink.writes) >= 2)
-    h.controls.rotation[PRIMARY].set(270)          # 运行中改旋转：之后的帧与录制尺寸随之改变
-    h.wait_for(lambda: h.sink.writes[-1]["front"].shape[:2] == (6, 4))
+    h.wait_for(lambda: h.source.reads >= 2)
+    h.controls.rotation[PRIMARY].set(270)          # 运行中改旋转：录制层下一段开录时读到新值（D-29）
     h.manager.stop()
     h.outcome()
     assert h.sink.calls[0] == ("begin", {"front": (6, 4), "side": (4, 6)}, 30.0)
-    assert h.sink.writes[0]["front"].shape[:2] == (4, 6)
-    assert h.sink.writes[0]["side"].shape[:2] == (6, 4)
-    assert h.sink.sizes[0] == {"front": (6, 4), "side": (4, 6)}
-    assert h.sink.sizes[-1] == {"front": (4, 6), "side": (4, 6)}
+    assert (h.sink.rotation_of(PRIMARY), h.sink.rotation_of(SECONDARY)) == (270, 90)
 
 
 def test_video_file_ignores_camera_rotation():
@@ -632,7 +728,7 @@ def test_video_file_ignores_camera_rotation():
     h.manager.start(video_session("clip.mp4", workers=1))
     h.outcome()
     assert h.sink.calls[0] == ("begin", {"front": (6, 4)}, 25.0)
-    assert h.sink.writes[0]["front"].shape[:2] == (4, 6) and h.sink.sizes == []
+    assert h.sink.writes[0]["front"].shape[:2] == (4, 6) and h.sink.feed is None
 
 
 def test_parallel_camera_applies_rotation(monkeypatch):
@@ -642,11 +738,10 @@ def test_parallel_camera_applies_rotation(monkeypatch):
     h = Harness(FakeInput())
     h.controls.rotation[PRIMARY].set(90)
     h.manager.start(single(skeleton=True, workers=2))
-    h.wait_for(lambda: len(h.sink.writes) >= 2)
+    h.wait_for(lambda: h.source.reads >= 2)
     h.manager.stop()
     h.outcome()
     assert h.sink.calls[0][1] == {"front": (4, 6)}
-    assert h.sink.writes[0]["front"].shape[:2] == (6, 4)
 
 
 def test_claim_failure_emits_failed_metrics_once(monkeypatch):
@@ -706,17 +801,6 @@ def test_normal_stop_keeps_device_warm_but_app_close_releases(reason, keep_warm)
 
 
 # --- 旋转与尺寸适配（原 test_app_ui_dual_camera.py，与 Tk 无关）---------------------------
-
-def test_fit_frame_to_size_resizes_when_mismatch():
-    frame = np.zeros((4, 6, 3), dtype=np.uint8)
-    fitted = fit_frame_to_size(frame, (3, 2))
-    assert fitted.shape[:2] == (2, 3)
-
-
-def test_fit_frame_to_size_returns_same_when_match():
-    frame = np.zeros((4, 6, 3), dtype=np.uint8)
-    assert fit_frame_to_size(frame, (6, 4)) is frame
-
 
 @pytest.mark.parametrize(
     ("degrees", "turns"),

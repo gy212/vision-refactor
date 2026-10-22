@@ -114,7 +114,7 @@ def test_wait_pair_opens_both_roles_concurrently() -> None:
         primary, secondary = pool.wait_pair(
             0, 1, timeout=1.0, stop_event=threading.Event()
         )
-        assert (_value(primary.frame), _value(secondary.frame)) == (10, 20)
+        assert (_value(primary.bgr), _value(secondary.bgr)) == (10, 20)
         assert sorted(calls) == [0, 1]
     finally:
         pool.close()
@@ -125,7 +125,7 @@ def test_latest_only_snapshot_and_after_cursor() -> None:
     pool = CameraPool(captures.__getitem__)
     try:
         first = pool.wait_pair(0, 1, timeout=1.0, stop_event=threading.Event())
-        cursor = (first[0].sequence, first[1].sequence)
+        cursor = (first[0].seq, first[1].seq)
         assert pool.snapshot_pair(0, 1, after=cursor) is None
 
         captures[0].push(2)
@@ -137,12 +137,12 @@ def test_latest_only_snapshot_and_after_cursor() -> None:
         def has_latest() -> bool:
             nonlocal latest
             latest = pool.snapshot_pair(0, 1, after=cursor)
-            return latest is not None and _value(latest[0].frame) == 3
+            return latest is not None and _value(latest[0].bgr) == 3
 
         _eventually(has_latest)
         assert latest is not None
-        assert (_value(latest[0].frame), _value(latest[1].frame)) == (3, 11)
-        new_cursor = (latest[0].sequence, latest[1].sequence)
+        assert (_value(latest[0].bgr), _value(latest[1].bgr)) == (3, 11)
+        new_cursor = (latest[0].seq, latest[1].seq)
         assert pool.snapshot_pair(0, 1, after=new_cursor) is None
     finally:
         pool.close()
@@ -190,7 +190,7 @@ def test_role_index_change_invalidates_late_old_generation() -> None:
         allow_old_open.set()
 
         pair = pool.wait_pair(2, 1, timeout=1.0, stop_event=threading.Event())
-        assert (_value(pair[0].frame), _value(pair[1].frame)) == (20, 10)
+        assert (_value(pair[0].bgr), _value(pair[1].bgr)) == (20, 10)
         _eventually(lambda: old.release_calls == 1)
         assert pair[0].generation > 1
     finally:
@@ -372,7 +372,7 @@ def test_restart_waits_for_cancelled_capture_release(prewarm, finish) -> None:
         worker.join(1.0)
         assert not worker.is_alive()
         assert "error" not in result, result.get("error")
-        assert [_value(frame.frame) for frame in result["pair"]] == [20, 30]
+        assert [_value(frame.bgr) for frame in result["pair"]] == [20, 30]
         assert calls.count(0) == 2
         assert previous.release_calls == 1
     finally:
@@ -770,7 +770,7 @@ def test_spec_change_renegotiates_after_old_format_releases() -> None:
         allow_release.set()
         worker.join(1.0)
         assert calls == [(0, 1280, 720), (0, 1920, 1080)]
-        assert _value(result["frame"].frame) == 2
+        assert _value(result["frame"].bgr) == 2
     finally:
         allow_release.set()
         pool.close()
@@ -828,7 +828,7 @@ def test_failed_lease_release_is_quarantined_then_retried_before_reopen() -> Non
             lease.release()
         assert pool.device_busy(0)
         frame = pool.wait_one(0, timeout=1.0, stop_event=threading.Event())
-        assert _value(frame.frame) == 2
+        assert _value(frame.bgr) == 2
         assert stuck.release_attempts == 2 and stuck.release_calls == 1
         assert opened == [0, 0]
     finally:
@@ -861,7 +861,7 @@ def test_sync_swaps_roles_without_rejecting_same_index() -> None:
     try:
         pool.wait_pair(0, 1, timeout=1.0, stop_event=threading.Event())
         swapped = pool.wait_pair(1, 0, timeout=1.0, stop_event=threading.Event())
-        assert (_value(swapped[0].frame), _value(swapped[1].frame)) == (6, 5)
+        assert (_value(swapped[0].bgr), _value(swapped[1].bgr)) == (6, 5)
         assert all(cap.release_calls == 1 for cap in captures.values())
     finally:
         pool.close()

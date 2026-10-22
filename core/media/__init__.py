@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""媒体层（L1）的公共 API：离线视频解码、帧有效性、视频写出/转码、片段路径布局与摄像头子系统。"""
+"""媒体层（L1）的公共 API：离线视频解码、帧契约、视频写出/转码、录像时间轴与采集记录、片段路径布局与摄像头子系统。"""
 from core.media.video_source import (
     DEFAULT_FPS,
     NO_END,
@@ -29,22 +29,30 @@ from core.media.camera import (
     CameraWarmupError,
     CameraWarmupStopped,
     CameraWarmupTimeout,
+    CaptureReader,
     CaptureSpec,
     CatalogSnapshot,
     DeviceCatalog,
+    FrameQueue,
+    LatestSlot,
     ProcessCamera,
     RoleSpecs,
-    WarmFrame,
     enumerate_cameras,
     list_device_names,
     make_label,
     probe_camera,
 )
-from core.media.frames import FrameSet, is_valid_bgr
-from core.media.segment_layout import VIDEO_SUFFIXES, SegmentLayout, view_for_role
+from core.media.frames import CapturedFrame, FrameSet, capture_clock_ns, is_valid_bgr, monotonic_of_capture
+from core.media.capture_record import capture_document, read_capture_record, write_capture_record
+from core.media.frame_clock import BoundaryShift, FrameClock, FrameClockStats
+from core.media.pacing import Timeline, TimelineStats
+from core.media.transforms import apply_rotation, rotated_size
+from core.media.segment_layout import CAPTURE_FILE, VIDEO_SUFFIXES, SegmentLayout, role_for_view, view_for_role
 from core.media.writer import open_video_writer, transcode_to_h264
 
 __all__ = [
+    "BoundaryShift",
+    "CAPTURE_FILE",
     "CameraDevice",
     "CameraLease",
     "CameraPool",
@@ -54,6 +62,11 @@ __all__ = [
     "CameraWarmupError",
     "CameraWarmupStopped",
     "CameraWarmupTimeout",
+    "CapturedFrame",
+    "capture_clock_ns",
+    "apply_rotation",
+    "capture_document",
+    "CaptureReader",
     "CaptureSpec",
     "CatalogSnapshot",
     "DecodeOptions",
@@ -62,10 +75,15 @@ __all__ = [
     "enumerate_cameras",
     "first_frame_ok",
     "Frame",
+    "FrameClock",
+    "FrameClockStats",
+    "FrameQueue",
     "FrameSet",
     "is_valid_bgr",
+    "LatestSlot",
     "list_device_names",
     "make_label",
+    "monotonic_of_capture",
     "NO_END",
     "open_video",
     "open_video_writer",
@@ -73,11 +91,15 @@ __all__ = [
     "probe_camera",
     "probe_video",
     "ProcessCamera",
+    "read_capture_record",
     "read_frame_at",
+    "rotated_size",
     "ROLES",
     "RoleSpecs",
     "SECONDARY",
     "SegmentLayout",
+    "Timeline",
+    "TimelineStats",
     "transcode_to_h264",
     "UndecodableFrame",
     "VIDEO_SUFFIXES",
@@ -86,6 +108,7 @@ __all__ = [
     "VideoMeta",
     "VideoOpenError",
     "VideoSource",
+    "role_for_view",
     "view_for_role",
-    "WarmFrame",
+    "write_capture_record",
 ]
