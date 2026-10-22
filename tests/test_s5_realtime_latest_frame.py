@@ -15,6 +15,7 @@ if str(_REPO_ROOT) not in sys.path:
 
 from apps.cli import main as app_main  # noqa: E402
 import core.live.stages as live_stages  # noqa: E402
+from core.live import InputFrames  # noqa: E402
 from core.media import PRIMARY  # noqa: E402
 
 
@@ -59,7 +60,10 @@ class FakeVideoInput:
             import time
 
             time.sleep(self.delay)
-        return {PRIMARY: np.zeros((8, 8, 3), dtype=np.uint8)}
+        return InputFrames({PRIMARY: np.zeros((8, 8, 3), dtype=np.uint8)})
+
+    def capture_feed(self):
+        return None
 
     def close(self, *, keep_warm):
         self.closed = True

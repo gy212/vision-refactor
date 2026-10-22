@@ -519,7 +519,13 @@ def test_presence_gate_completely_disarmed_on_practice_again(root, monkeypatch):
     app.practice.practice.phase = "showing_result"
     app.practice.practice.presence.arm_enter()
     begin_record_mock = MagicMock(return_value=SimpleNamespace(segment_id="record_1", directory=None))
-    app.recording.begin = lambda _intent=None: begin_record_mock()
+    def begin(_intent=None, on_confirm=None):
+        segment = begin_record_mock()
+        if on_confirm is not None:   # 两路写出首帧的确认（真实录制经 Tk 线程回送）
+            on_confirm(segment, None)
+        return segment
+
+    app.recording.begin = begin
 
     # 2. 点击“再练一次”
     app.practice.practice_again()

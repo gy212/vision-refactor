@@ -6,7 +6,8 @@ import threading
 from dataclasses import dataclass, field
 from typing import Any
 
-from core.media.camera.spec import CaptureSpec, WarmFrame
+from core.media.camera.spec import CaptureSpec
+from core.media.frames import CapturedFrame
 
 
 @dataclass(eq=False)
@@ -16,7 +17,7 @@ class WarmupSlot:
     generation: int
     stop_event: threading.Event = field(default_factory=threading.Event)
     cap: Any | None = None
-    latest: WarmFrame | None = None
+    latest: CapturedFrame | None = None
     error: BaseException | None = None
     thread: threading.Thread | None = None
     claim_token: object | None = None

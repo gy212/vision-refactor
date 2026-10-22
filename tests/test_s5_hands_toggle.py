@@ -85,10 +85,11 @@ def test_ui_session_pipelines_use_state_enable_hands(monkeypatch):
     """
     import numpy as np
 
+    import core.live.presence as presence
     import core.live.stages as stages
-    from core.live import LiveControls
-    from core.live.stages import FramePacket, OccupancyStage, PoseStage, StageContext
-    from core.media import PRIMARY
+    from core.live import LiveControls, PresenceSampler
+    from core.live.stages import PoseStage, StageContext
+    from core.media import PRIMARY, CapturedFrame
 
     specs = []
 
@@ -107,6 +108,8 @@ def test_ui_session_pipelines_use_state_enable_hands(monkeypatch):
 
     monkeypatch.setattr(stages, "create_engine", lambda spec, models_dir=None: _Engine(spec))
     monkeypatch.setattr(stages, "models_dir", lambda: Path("models"))
+    monkeypatch.setattr(presence, "create_engine", lambda spec, models_dir=None: _Engine(spec))
+    monkeypatch.setattr(presence, "models_dir", lambda: Path("models"))
 
     for source, source2 in (("0", None), ("0", "1"), ("video.mp4", None)):
         for hands in (True, False):
@@ -125,9 +128,13 @@ def test_ui_session_pipelines_use_state_enable_hands(monkeypatch):
     controls = LiveControls()
     controls.arm_occupancy("exam", True)
     specs.clear()
-    stage = OccupancyStage(lambda _pose, _roi: True)
-    frame = np.zeros((8, 8, 3), np.uint8)
-    stage.process(FramePacket(0, {PRIMARY: frame}, out={PRIMARY: frame.copy()}),
-                  StageContext(config, controls, lambda *_: None))
+    assert config.occupancy
+    sampler = PresenceSampler(lambda _pose, _roi: True)
+
+    class _Feed:
+        def latest(self, role):
+            return CapturedFrame(role, 1, 0, np.zeros((8, 8, 3), np.uint8))
+
+    sampler._sample(_Feed(), controls, lambda *_: None)
     assert len(specs) == 1
     assert specs[0].pose_variant == "lite" and specs[0].enable_hands is False

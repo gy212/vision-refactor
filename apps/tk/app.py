@@ -14,6 +14,7 @@ from core.live import APP_CLOSE, LiveControls
 from core.foundation import models_dir
 from core.workflows import ModeManager, ScorebookRegistry, WorkflowHost
 
+from apps.tk.controllers.benchmark import BenchmarkContext
 from apps.tk.controllers.cameras import CameraController, make_camera_service
 from apps.tk.controllers.exam_host import ExamHostAdapter
 from apps.tk.controllers.flags import LiveFlags
@@ -22,6 +23,7 @@ from apps.tk.controllers.recording import RecordingController
 from apps.tk.controllers.session import SessionController
 from apps.tk.dispatcher import UiDispatcher
 from apps.tk.shutdown import ShutdownCoordinator, ShutdownSteps
+from apps.tk.views.benchmark_dialog import BenchmarkDialog
 from apps.tk.views.compare_dialog import CompareDialog
 from apps.tk.views.exam_window import ExamWindow
 from apps.tk.views.main_window import MainWindow
@@ -92,13 +94,15 @@ class DesktopApp:
                                stop=session.stop, camera_selected=self.cameras.primary_selected,
                                camera_2_selected=self.cameras.secondary_selected)
         window.recording.connect(toggle=recording.toggle, stop=recording.stop_clicked,
-                                 add_templates=recording.add_templates, remove_templates=recording.remove_templates,
+                                 add_templates=recording.pools.add, remove_templates=recording.pools.remove,
                                  auto_scale=recording.auto_scale_moved, auto_changed=recording.auto_changed,
                                  choose_dir=recording.choose_record_dir)
-        recording.sync_template_status()
+        recording.pools.sync_status()
         recording.sync_hint()
         window.connect(compare=self.open_compare, exam=self.exam.open, practice=practice.enter,
                        back_to_preview=practice.show_preview_view)
+        for key in ("<Control-Shift-KeyPress-B>", "<Control-Shift-KeyPress-b>"):   # 隐藏入口：录制性能测试
+            self.root.bind_all(key, lambda _event: self.open_benchmark())
         window.practice.connect(exit=practice.exit, start=practice.start, end=practice.end, judge=practice.judge,
                                 set_busy=practice.analysis_busy, can_analyze=practice.can_analyze,
                                 identity_changed=practice.identity_changed, cancelled=practice.cancelled)
@@ -130,6 +134,16 @@ class DesktopApp:
             self.root, self.ui.post, current_pose=capture.pose_var.get(),
             hands_enabled=bool(capture.enable_hands_var.get())))
 
+    def open_benchmark(self) -> None:
+        capture = self.window.capture
+        ctx = BenchmarkContext(
+            cameras=self.cameras, session_active=self.session.active, mode_name=lambda: self.modes.name,
+            rotation_of=self.controls.rotation_of, pose_variant=lambda: capture.pose_var.get(),
+            enable_hands=lambda: bool(capture.enable_hands_var.get()), record_dir=self.recording.record_dir,
+            post=self.ui.post,
+        )
+        self._open_dialog("benchmark", "录制性能测试窗口", lambda: BenchmarkDialog(self.root, self.ui.post, ctx))
+
     # ------------------------------------------------------------------ 关窗
     def close(self) -> None:
         if self.shutdown is None:
@@ -153,6 +167,9 @@ class DesktopApp:
         """第 1 步（尚未进入关闭态，discard 仍可走）：考试中止并移交台账，练习取消等待与分析。"""
         self.exam.prepare_for_app_close()
         self.practice.close()
+        benchmark = self._dialogs.get("benchmark")
+        if benchmark is not None and benchmark.is_open():
+            benchmark.close()
 
     def _enter_closing(self) -> None:
         """第 2 步：进入关闭态，取消会话，释放预热并禁用录制控件。"""

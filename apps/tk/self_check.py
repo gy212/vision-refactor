@@ -16,6 +16,8 @@ import traceback
 import urllib.request
 from pathlib import Path
 
+from apps.tk.build_info import load_build_info, package_root
+
 
 class _CameraSmokeCapture:
     """打包检查用驱动；不接触物理摄像头。"""
@@ -67,19 +69,6 @@ REPORT_TEMPLATES = (
 )
 
 
-def _package_root() -> Path:
-    """源码模式为仓库根，冻结模式为 PyInstaller 解包目录；与模块的 ``__file__`` 定位一致。"""
-    return Path(__file__).resolve().parents[2]
-
-
-def load_build_info(root: Path) -> dict | None:
-    """读取构建时打进包内的 ``build_info.json``；源码运行没有该文件时返回 None。"""
-    path = root / "build_info.json"
-    if not path.is_file():
-        return None
-    return json.loads(path.read_text(encoding="utf-8"))
-
-
 def check_feedback_icons(root: Path) -> int:
     """断言结果页的全部状态图标都能解码且尺寸正确，返回图标个数。"""
     from PIL import Image
@@ -111,14 +100,14 @@ def block_network() -> None:
 def check_build_info(report: dict) -> None:
     """冻结包必须带 ``build_info.json``，来自干净工作区且规则版本一致；同时检查结果页图标。"""
     from core.evaluation import RULE_VERSION
-    build = load_build_info(_package_root())
+    build = load_build_info(package_root())
     report["buildInfo"] = build
     if report["frozen"]:
         assert build is not None, "包内缺少 build_info.json"
         assert build["clean"] is True, "EXE 不是从干净的工作区构建的"
         assert build["ruleVersion"] == RULE_VERSION
     report["checks"].append("build_info")
-    report["feedbackIcons"] = check_feedback_icons(_package_root())
+    report["feedbackIcons"] = check_feedback_icons(package_root())
     report["checks"].append("feedback_status_icons")
 
 
@@ -211,7 +200,7 @@ def check_html_report(report: dict, history, record: dict) -> None:
     """图文报告的模板全部随包分发，导出的 HTML 已填充、不引用外部资源、不泄露本机数据目录。"""
     from core import foundation
 
-    template_dir = _package_root() / "core" / "reporting" / "html" / "templates"
+    template_dir = package_root() / "core" / "reporting" / "html" / "templates"
     missing = [name for name in REPORT_TEMPLATES if not (template_dir / f"{name}.html").is_file()]
     assert not missing, f"包内缺少图文报告模板：{missing}"
     target = foundation.outputs_dir() / "图文报告.html"

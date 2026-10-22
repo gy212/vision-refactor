@@ -14,6 +14,224 @@
   - `docs/规则检出修复计划.md` 步骤 2 记为已改写。
 - 验证方法：清单各项与 #32、#33 的汇总评论逐条核对；数量表逐行重算；`git diff --check` 无空白错误。
 
+## 2026-10-22: [fix] D-18 评审修复：CLI 成片校验、迟到的开录确认、录制失败后按钮复位（#43、#45）
+
+- 问题描述（#43、#45 评审）：
+  - #43：CLI 摄像头 `--out` 成片后不校验就删除原始录像。`annotate_video` 正常返回但写出的文件不可读时，CLI 报成功并删掉唯一可用的录像。
+  - #45：开录确认排队回 Tk 线程期间，这一段可能已被结束或丢弃、又开了新的一段；旧确认照样交给工作流，练习在等待到位阶段把已丢弃的片段当成新的一次开录。
+  - #45：录像线程的错误留在快照里直到下次开录，`refresh_status` 有错误时提前返回，结束写完后按钮停在"正在结束…"且不可用，无法重录。
+  - #43 的停止边界问题（一路停完才给另一路停止命令）已由第 8 层的先发后等修复，评审确认保留。
+- 修改内容：
+  - `apps/cli/main.py`（第 6 层）：成片后检查帧数与首帧可解码（`first_frame_ok`），通过才删除原始录像，否则保留并报错。
+  - `apps/tk/controllers/recording.py`：开录尝试编号在开录、结束、会话开始与结束时加一，排队的确认执行时编号已变即作废；`refresh_status` 只在首次发现错误时结束并提示，之后的 tick 照常同步按钮。
+  - `core/workflows/executor.py`：确认只回送给最近一次、仍在等待的 `BEGIN_SEGMENT`，结束、丢弃或再次开录后迟到的确认作废，同一尝试只回送一次。
+  - `core/workflows/practice/session.py`：`record_started`、`begin_failed` 只在有在等的开录（`starting`）时接受。
+  - 设计文档 §8.8 第 8 层补记作废规则。
+- 被替换的测试（D-13）：
+  - `tests/test_recording_skeleton.py::test_cli_camera_out_records_raw_then_renders_skeleton_video`：替身改为写出可读视频（原先写的字节不是视频，校验后会失败）。
+  - `tests/test_workflows.py::test_executor_start_confirmation_is_asynchronous`：同一尝试不再回送两次，失败改由第二次开录的确认验证。
+  - `tests/test_workflows.py::test_practice_invalid_identity_or_begin_failure_disarm`：`begin_failed` 先经站稳发出 `BEGIN_SEGMENT`，未开录时的失败断言为忽略。
+  - `tests/test_tk_recording.py::test_manual_start_failure_resets_button_and_tells_the_user`：`_confirmed` 多一个尝试编号参数。
+- 验证方法：
+  - 新增 5 项，修复前均失败、修复后通过：
+    - `test_recording_skeleton.py::test_cli_camera_out_keeps_raw_when_rendered_video_is_unreadable`；
+    - `test_tk_recording.py::test_queued_confirmation_of_an_ended_attempt_is_dropped`（真实 Tk 控制器与录制端）；
+    - `test_tk_recording.py::test_record_button_recovers_after_a_failed_segment_drains`；
+    - `test_workflows.py::test_executor_drops_confirmations_of_superseded_start_attempts`；
+    - `test_workflows.py::test_practice_ignores_confirmation_without_a_pending_start`。
+  - 全量、门禁与 `scripts/sim_exam_flow.py` 结果见 PR。
+
+## 2026-10-22: [feat] D-18 第 8 层：开录确认、考试暂停同时暂停录像、异步结束与练习失败原因（D-27、D-28）
+
+- 问题描述：
+  - 开录请求被接受即视为开录，考试在开录前就播报"考试开始"；两路 writer 是否真正写出了画面没人确认。
+  - 结束片段在 Tk 线程里最多阻塞 3 s 等两路写完。
+  - 考试暂停只关站位检测，暂停期间的画面照样进录像与评分。
+  - 练习对录制失败（队列溢出、断流、写盘失败）但文件可读的片段仍走降级通路评判。
+- 修改内容：
+  - 开录确认（D-27）：
+    - `ViewWorker.start` 带回调：这一路写出本段首帧时回调 None，之前失败时回调原因。
+    - `SegmentRecorder.start_segment(meta, on_confirm)` 立即返回片段，在录制的任务线程里汇总。全部写出、任一路失败、或 2 s（`START_CONFIRM_S`）内没写出首帧时回送一次；失败时先结束整段（落盘、不提交）。片段已结束或被替换时不回送。
+    - `CommandExecutor` 只在立即失败时当场回送 `begin_failed`（带 `BeginError.message`），否则等确认回送 `record_started` 或带原因的 `begin_failed`。
+    - 考试"考试开始"改在 `record_started` 时播报。练习在确认前点"结束"或退出时丢弃这一段。
+    - Tk 经 dispatcher 回到 Tk 线程，手动开录失败弹框并复位按钮。CLI 摄像头 `--out` 记下开录失败的原因。
+  - 异步结束：
+    - `request_end` 给各路同一个结束边界后立即返回，录制进入 `stopping`：按钮显示"正在结束…"且不可用，开录返回 `BeginError("stopping")`。
+    - 任务线程等各路写完、写 `capture.json` 后交出片段，`RecordingService` 此时才构建计划并提交一次。
+    - `end_segment`、会话结束的 `close_session` 仍等写完；关窗收尾先 `wait_idle` 再 `cancel_all`。
+  - 考试暂停（D-28）：
+    - 新增显式的 `pause()`/`resume()` 与命令 `PAUSE_SEGMENT`/`RESUME_SEGMENT`。录制中暂停同时暂停录像（输出时间扣除暂停区间），等待到位时只暂停流程。
+    - 确认在暂停期间到达时照常绑定片段；开录失败则恢复后回到等待到位。
+  - 练习失败原因（D-27）：失败码 `*_recording_failed` 的片段不能评判、不走降级。录制中失败时离开录制阶段并提示重录；只是转码失败、源文件可读的降级保留。
+  - Tk 录制控制器在超出 400 行前把模板池拆到 `apps/tk/controllers/template_pools.py`（`TemplatePools`）。
+  - 设计文档：§2.2、§8.6 注、§8.8 第 8 层与标题、附录模板池去向同步；D-27、D-28 记为已实施，D-18 记为代码已实施、待实机验收。`AGENTS.md` 代码地图同步。
+- 被替换的测试（D-13）：
+  - `tests/test_segment_recording.py::test_service_finish_and_close_cancel_never_interleave`：`finish` 不再返回 `FinishOutcome`，改为等 `wait_idle` 后断言没有提交。
+  - `tests/test_recording_worker.py::test_slow_processing_loop_does_not_slow_the_recording`：第 7 层后站位检测不在循环里，改由逐帧 stage 把循环拖到约 5 fps；片段经 `plan_for` 取得。
+  - `tests/test_tk_recording.py` 的模板池用例改用 `app.recording.pools`。
+  - `tests/test_ui_controls.py::test_record_btn_text_has_exactly_three_states` 改为 `test_record_btn_text_covers_toggle_states_and_stopping`（多一个只显示的 stopping）。
+  - 练习与压力测试中替换 `begin` 的替身增加 `on_confirm` 并同步确认。
+- 验证方法：
+  - 新增 `tests/test_recording_controls.py` 7 项，用按真实时间以 30 fps 出帧的假来源，连跑 3 次稳定：
+    - 确认晚于两路首帧；
+    - 单路无画面、超时失败都结束整段；
+    - 结束立即返回、stopping 拒绝开录、写完交出一次；
+    - 迟到确认作废；显式暂停扣除；服务写完才提交、会话结束等写完。
+  - `tests/test_workflows.py` 新增 5 项：
+    - 练习开录失败带原因；
+    - 确认前结束丢弃；
+    - 录制失败不评判而转码失败仍可评判；
+    - 执行器异步确认与立即失败带原因。
+  - `tests/test_exam_session.py` 新增 2 项：确认后才播报、录制中暂停与恢复、暂停期间到达的确认与失败。
+  - `tests/test_tk_recording.py` 新增 2 项：stopping 按钮、手动开录失败提示。
+  - 全量 `pytest tests -q`：1338 项通过（含真实 Tk + spawn 的模式切换检查）；门禁（golden、契约、架构）62 项通过；`scripts/sim_exam_flow.py` 37 项通过。
+  - 实机：开发机只有一个摄像头且被占用，双摄 1080p 实拍与冻结 EXE 自检留待甲方机器（§8.8 验收）。
+
+## 2026-10-21: [feat] D-18 第 7 层：站位检测按时间采样最新帧，样本带源帧采集时刻（D-30）
+
+- 问题描述：站位检测是处理循环里的一个 stage，每 3 个处理帧推理一次。频率随处理循环变化，循环慢时检测变稀；样本时刻是推理完成时刻，到位、离场的判定时间会漂移。上一流程或暂停前采到的样本迟到时，考试仍会计入。
+- 修改内容：
+  - 新增 `core/live/presence.py` 的 `PresenceSampler`。runner 在接管设备后把它放进会话的任务组，在自己的线程里运行，不经处理循环：
+    - 启用时每 0.1 s 取一次主路最新帧（`CameraStream.latest`），按当前旋转转正。
+    - 用独立的 Lite 引擎推理并判 ROI；VIDEO 模式时间戳按采集时刻计，严格递增。
+    - 样本 `PresenceSample(present, captured_at, seq)` 的时刻是源帧采集时刻，经新增的 `media.monotonic_of_capture` 换算到工作流使用的 `time.monotonic`。
+    - 没有新帧时不推理、不发结果（没有新结果不等于离场）。推理期间站位设置变了（停用、重新启用、改 ROI）的结果作废。停用即关闭引擎。
+  - `OccupancyStage` 改为只在预览上画 ROI 的 `RoiStage`；删除 `OccupancySettings.stride` 与 `DEFAULT_OCCUPANCY_STRIDE`。`build_stages` 的 `probe` 参数改为 `roi`，由 `LiveSessionManager` 构造采样器。
+  - 工作流：
+    - `PresenceRecordingCycle.recording_started(now)` 起丢弃采集于开录之前的样本。
+    - 考试在叫号守护结束、开录失败重试、暂停后恢复时以当时时刻作 `ignore_before`（练习原本如此）。守护期间与暂停前采到的帧迟到时不算进场。
+  - Tk 会话控制器把 `captured_at` 交给工作流。
+  - 设计文档：§2.2、§8.2、§8.8 第 7 层同步，D-30 记为已实施。`AGENTS.md` 代码地图同步。
+- 被替换的测试（D-13）：
+  - `tests/test_live_session.py::test_occupancy_samples_every_stride_frames_when_armed` 改为 `test_presence_samples_latest_frame_on_a_timer_independent_of_the_loop`（循环约 4 fps 时仍约 10 次/秒），并新增无新帧、启用与停用、转正与作废三项。
+  - `tests/test_s5_hands_toggle.py` 的站位引擎检查改为经 `PresenceSampler` 构造。
+- 验证方法：
+  - 新增或改写的测试：
+    - `tests/test_live_session.py` 4 项，用按真实时间以 30 fps 出帧的假来源，连跑 15 次稳定。
+    - `tests/test_presence_gate.py` 1 项：武装前、开录前采到的样本不计入。
+    - `tests/test_exam_session.py` 1 项：守护期间、暂停前采到的样本不算进场。
+  - 受影响套件（实时会话、考试、练习、站位）229 项通过；`scripts/sim_exam_flow.py` 37 项通过。
+  - 门禁（golden、契约、架构）62 项通过。
+  - 全量 `pytest tests -q`：1322 项通过（含真实 Tk + spawn 的模式切换检查）。
+  - 实机：开发机只有一个摄像头且被占用，Lite 自动录制负载下的实拍留待甲方机器（§8.8 验收）。
+
+## 2026-10-21: [feat] D-18 第 6 层：摄像头录像改由每路录像线程写，原始录像与录后骨架成片
+
+- 问题描述：录像仍在处理循环里"推理一帧、写一帧"，按名义 30 fps 写文件。推理慢时录像变速（甲方第一批样本 8～20 fps，回放快 1.5～3.7 倍）。第 3 层的 `Timeline`、第 5 层的 `FrameClock` 已就位，还没接进录像通路。
+- 修改内容：
+  - 新增 `core/recording/worker.py` 的 `ViewWorker`，摄像头会话每路一个录像线程：
+    - 会话开始时订阅该路的 `FrameQueue`（容量 8），整个会话都在取帧、交给 `FrameClock`。
+    - 开录、暂停、继续、结束是带共同边界（`capture_clock_ns`）的命令。第一帧去抖时刻晚于边界的帧放出时才执行该边界，第 3 层的调用约定（边界之前的帧先推完、之后的不提前推）由线程保证。边界之后 0.6 s 仍无新帧时按已到的帧执行。
+    - 方向在开录时取一次，段内不变（D-29）；删除 `fit_frame_to_size`。
+    - 录制期间队列溢出、该路断流、写盘出错都记为该路错误，之后不再写，已写文件保留（D-27）。现有的"见错即结束整段"与 `CheckRecording` 使该段失败、不评分。
+    - 结束时返回时间轴与队列峰值、溢出、`FrameClock` 统计，`SegmentRecorder` 写出 `capture.json`。
+  - `segment_shift` 由提前边界改为推迟边界（`BoundaryShift.apply` 是加），相位与段内固定的性质不变。命令到达前已交给时间轴的帧都到达于命令之前，推迟后的边界不会落在它们之前。
+  - `SegmentRecorder`/`RecordingService.begin_session` 新增 `feed` 与 `rotation_of`：
+    - 摄像头会话为每路建录像线程，并等每路拿到首帧（最多 1 s）再返回，开录总有边界之前的帧。
+    - 结束时等各路写完（最多 3 s；第 8 层改为异步确认）。
+    - 视频文件会话仍由处理循环逐帧写（保序、源帧率）。
+  - `SessionRunner`：
+    - 摄像头会话在 `begin_session` 交出 `CameraStream`（`FrameInput.capture_feed`），不再写录像。
+    - 收尾时先关录制会话再关输入，录像线程能用仍在出帧的摄像头写完结束边界。
+    - 删除 `FrameSink.update_sizes` 与 `SessionConfig.record_overlay`。
+  - D-26：摄像头录像一律是转正后的原始画面，单摄不再带 HUD。
+    - 新增 `core/pose/annotate.py` 的 `annotate_video`（`services/preview.write_pose_preview` 改用它）。
+    - 新增 `core/recording/skeleton.py` 的 `RenderSkeleton`：开了"录制骨架"的片段录后用会话的模型与手部设置生成成片，转码、校验首帧后替换原始录像，文件名不变；失败或取消时删临时文件、保留原始录像，失败码 `skeleton_render_failed`。
+    - 双摄放在校验之后、`CompareGate` 之前；单摄放在转码之后，这类计划关窗时取消。
+    - 单摄计划失败时 finalizer 发一次更新（仍不写结果 JSON），Tk 弹窗提示。新状态 `rendering`。
+  - CLI 摄像头 `--out`：先把原始画面按真实时间录到 `--out` 旁的临时 AVI，会话结束后画骨架写成 mp4v 的 `--out` 并删除临时文件；失败时保留它并以失败退出。视频文件 `--out` 不变。
+  - 设计文档：§8.8 第 6 层与表格、§2.2、§8.2 的 CLI 端口说明同步；D-26、D-29 记为已实施，D-27 记为部分实施（开录确认、`begin_failed` 与练习失败原因在第 8 层）。`AGENTS.md` 代码地图同步。
+- 被替换的测试（D-13）：
+  - `test_live_session.py` 中断言摄像头录像帧内容的用例，改为断言交出的 `feed` 与旋转读取函数、循环不写录像、录制先于输入关闭：
+    - `test_single_camera_recording_keeps_hud_even_without_skeleton`
+    - `test_dual_records_raw_without_skeleton_and_annotated_with_skeleton`
+    - `test_dual_rotation_is_per_role_for_sizes_and_frames`
+    - `test_rotation_applies_to_recording_size_and_frames`
+    - `test_dual_write_failure_closes_recording_and_releases_without_engines`（改为录制会话开始失败）
+  - 两项 `fit_frame_to_size` 用例删除。
+  - 录像内容与时间的断言移到新的 `tests/test_recording_worker.py`。
+- 验证方法：
+  - 新增 `tests/test_recording_worker.py` 9 项，假来源按真实时间以 30 fps 出帧：
+    - 时长与墙钟一致、两路帧数相同；
+    - `capture.json` 中每个输出槽的源帧都采集于该槽之前且不晚于结束边界；暂停时长扣除；
+    - 段内方向固定、下一段才生效；慢 writer 使队列溢出、该段失败；断流使该路失败；卡顿时结束不无限等待；
+    - 会话结束提交进行中的片段；
+    - 真实 MJPG 写出后解码，核对每帧画面的源序号与采集时间；
+    - 真实 `CameraPool`/`CameraStream`/`LiveSessionManager` 下处理循环慢到约 5 fps 时，录像仍几乎每帧都是新源帧、两路帧数相同。
+  - 新增 `tests/test_recording_skeleton.py` 8 项：成片替换原始录像、失败与取消保留原始录像并清理临时文件、处理计划、单摄失败上报、`annotate_video` 逐帧绘制、CLI 摄像头 `--out`。
+  - `tests/test_media_frame_clock.py` 改为推迟边界后仍 27 项通过。
+  - 全量 `pytest tests -q`：1317 通过（含真实 Tk + spawn 的模式切换检查）；`scripts/sim_exam_flow.py` 37 项通过；门禁与空白检查通过。
+  - 实机：开发机只有一个摄像头且被占用，双摄 1080p 实拍与冻结 EXE 自检留待甲方机器（§8.8 验收）。
+
+## 2026-10-21: [feat] D-18 第 5 层：录像时间轴的到达时刻去抖（FrameClock）
+
+- 问题描述：甲方录制性能测试（2026-10-21）四段全部达标，帧数完整，但帧到达有抖动：间隔中位 32 ms、p95 50～55 ms、最大 85 ms。原因是采集时刻取的是主机读到帧的时刻，摄像头本身按节拍曝光，USB、驱动与解码让帧成批到达。按该量级的抖动（每帧约 8 ms 的随机延迟）仿真，`Timeline` 直接用到达时刻时有 5%～24% 的输出槽是"重复一帧、跳过下一帧"，回放会一顿一顿。用户同意在录像 writer 之前加一层去抖（2026-10-21）。
+- 修改内容：
+  - 新增 `core/media/frame_clock.py` 的 `FrameClock`（经 `core.media` 导出）：
+    - 模型：到达 = 曝光 + 非负延迟。最近约 1 秒内 `到达 - n·P` 的最小值跟踪摄像头时钟，下调立即、上调每帧不超过 0.5% 周期，估计时刻 = 时钟 + n·P。
+    - 网格号按 `seq` 之差推进，写盘队列丢帧时 seq 跳号。摄像头自己掉的帧靠其后 4 帧的前瞻判定，每帧因此晚约 130 ms 放出；判定了掉帧的帧不拉低时钟；`generation` 变化时重新起算。
+    - `segment_shift(start_ns)` 在段首为每路算一次边界平移量（`BoundaryShift`，不到一个周期），本段开录、暂停、继续、结束都减去同一个量，让输出槽落在两帧中点。不加这一步时，帧恰在槽边界附近，亚毫秒的估计误差也会来回跨界。评审修复（PR #42，P1）：原来的 `boundary_offset(at_ns)` 按每个边界各算一次，各路相位不同时起止平移不同，区间长度不同（正侧相位差半帧、区间 30.3 帧时 30 比 31 帧），破坏 D-18 的同帧数约定；改为段内固定的 `BoundaryShift`，并删去 `boundary_offset`。
+    - 统计：放出帧数、判定的掉帧数、seq 跳号、最大修正量、重新起算次数，供 `capture.json` 使用。
+  - `Timeline` 不变，录像 writer（第 6 层）在两者之间接入。
+  - 设计文档：D-18 补充时间基准为估计采集时刻；D-27 记入甲方实测结论（队列容量保持 8、不降级）；§8.8 第 4 层补实测数据，插入第 5 层 `d18/dejitter`，原第 5～7 层顺延为 6～8；帧身份、时间轴两行与 §2.2 同步。
+  - 同步更新 `AGENTS.md` 代码地图，以及 `recording_benchmark.py` 注释里的层号。
+- 验证方法：
+  - 新增 `tests/test_media_frame_clock.py` 27 项：
+    - 甲方量级的抖动下 5 组随机数均 0 补帧，同样数据不去抖时合计 >100；
+    - 40 个开录相位按 `segment_shift` 对齐后全部 0 补帧，不对齐时有相位会补帧；
+    - 评审复现：正侧相位差半帧、区间 30.3 帧，每个边界各算平移得 30 比 31 帧，段内固定平移两路都是 31 帧；4 组随机数各 25 段（含暂停与继续）两路帧数相同；
+    - 29.97 fps 每 30 s 补 0～2 帧，30.03 fps 补 0 帧；
+    - 每 10 帧掉 1 帧时补帧数等于真实空档、判定的掉帧数相差不超过 2；
+    - 15 fps 每帧补 1 帧，0.5 s 卡顿补 15 帧，60 fps 退化为到达时刻；
+    - 估计值不晚于到达、严格递增，不掉帧时不早于曝光，掉帧时偏早不到一个周期；
+    - 另覆盖 seq 跳号不算掉帧、前瞻与 flush、乱序帧、设备重开、参数检查。
+  - 全量 `pytest tests -q` 通过；门禁与空白检查通过。
+
+## 2026-10-20: [feat] D-18 第 4 层：桌面隐藏入口的录制性能测试，供甲方实测双路 1080p 写盘吞吐
+
+- 问题描述：D-27 要求第 5 层（每路 writer 与 FIFO）实施前，先在甲方机器上测双路 1080p 写盘与 Lite 同时运行的持续吞吐，据此定队列容量和降级方案；甲方只会用桌面程序，不会用命令行，测完还要能找到报告文件发回。
+- 修改内容：
+  - 新增 `core/services/recording_benchmark.py`：用生产的 `CameraStream`、`open_video_writer`、旋转与 MediaPipe 引擎依次跑四段（只采集 10 s；采集+写盘、再加 Lite 约 10 次/秒、再加每路骨架识别各 30 s）；每路写盘线程经 `FrameQueue` 收帧，writer 先打开再订阅；报告各路采集率与间隔、写盘每帧耗时分位、编码器与打开耗时、队列峰值与超过 8 帧的次数、Lite/骨架耗时、全系统 CPU、本机与构建信息，并给出每段达标判定和中文摘要；取消或出错时也返回已完成部分；临时录像每段结束删除。
+  - `core/media/camera/reader.py` 新增 `FrameQueue`（有界、不阻塞读帧线程，满了计数丢弃），`CaptureReader.subscribe/unsubscribe`；`CameraStream` 新增 `latest`、`subscribe`、`unsubscribe`。
+  - 新增 `core/foundation/host.py`（桌面目录按系统登记位置取，OneDrive 重定向也对；CPU、内存、系统 CPU 时间）；`apply_rotation`、`rotated_size` 从 `live/stages` 移到 `core/media/transforms.py`，调用方同步改用新路径。
+  - 桌面：主窗口隐藏快捷键 Ctrl+Shift+B 打开模态「录制性能测试」窗口（`apps/tk/controllers/benchmark.py`、`apps/tk/views/benchmark_dialog.py`）；要求未在预览、普通模式、已选摄像头、录制目录磁盘空闲 ≥3 GB；报告保存为桌面上的 `录制性能测试_<日期>_<时间>.json`，桌面不可写时退到数据目录的 `录制性能测试/`；窗口先写明保存位置，测完显示完整路径，可「打开所在文件夹」（资源管理器选中文件）和「复制路径」；主程序退出时取消测试。
+  - `load_build_info` 从 `apps/tk/self_check.py` 移到新模块 `apps/tk/build_info.py`（自检会导入组合根，benchmark 控制器经它导入会形成环），自检与 `tests/test_packaging_build_info.py` 改用新路径。
+  - 新增甲方操作说明 `docs/录制性能测试操作说明.md`；设计文档 §2.2、§8.8（插入第 4 层 `d18/bench`，原第 4–6 层顺延为 5–7）与 `AGENTS.md` 代码地图同步。
+- 评审修复（PR #41，P2）：摄像头在某段中途停止时，原来只按收到的帧算采集率，剩下的帧间隔正常就能判达标。改为按整段窗口算采集率，并检查最后一帧是否持续到段末（容差 0.5 s）；reader 停止的原因经新增的 `CameraStream.failure(role)` 写进该段结果；各路先全部开始计数再打开 writer，窗口对各路相同。
+- 验证方法：新增 `tests/test_recording_benchmark.py` 9 项（假摄像头与假引擎跑完四段、慢 writer 判不达标、取消、引擎失败、报告文件名与编码、`FrameQueue` 计数、订阅收到每一帧且有序、2 秒段中摄像头读 28 帧后停止判不达标并带出原因、采集统计按整段窗口）与 `tests/test_tk_benchmark.py` 9 项（开始条件、磁盘不足、报告存桌面并显示完整路径、桌面不可写时的回退、取消、窗口真实 Tk 冒烟、组合根快捷键与退出时关窗）；本机只有一个摄像头，且验证时被占用（OpenCV DSHOW/MSMF 直接打开也失败），未能用真实设备跑完四段，打不开摄像头的路径实测：报告照常保存、写明原因、临时目录已删除；全量 `pytest tests -q`、门禁与空白检查通过；冻结 EXE `--offline-self-check` 通过。
+
+## 2026-10-20: [feat] D-18 第 3 层：录像时间轴只用之前的源帧，新增 capture.json 采集记录
+
+- 问题描述：PR #34 的补帧把新到的画面写进它之前的所有空槽（黑帧 100.0 s、白帧 101.0 s，输出成 1 黑 30 白），动作会比实际更早出现；补帧后的帧数也无法说明真实采集率。
+- 修改内容：
+  - 新增 `core/media/pacing.py` 的 `Timeline`：输出第 k 帧显示采集于该时刻之前（含）最近的源帧，收到更晚的源帧或到达暂停、结束边界后才写出；开录、继续的首槽用边界之前的源帧，没有就不能开录；输出时间扣除暂停区间；暂停期间处理到、但采集于继续边界之后的帧在继续时补推；统计源帧、使用帧、输出帧、补帧、跳帧与最大源帧间隔，`slot_sources` 记录每个输出槽的源帧。
+  - 新增 `core/media/capture_record.py`：生成、原子写出与读取 `capture.json`（读不到或版本不认识时返回 None）；`SegmentLayout.capture_path` 给出多路片段目录内、单路录像旁的路径。
+  - 本层只加模块，录像通路在第 4 层接入。设计文档 §2.2、§8.8 与 `AGENTS.md` 代码地图同步。
+- 验证方法：新增 `tests/test_media_pacing.py` 28 项（黑白切换的输出与真实写出再解码、8 组随机帧率与抖动下不取未来帧且取最近的过去帧、开录后才到的边界前帧、8/12/15/20 fps 慢源的时长与统计、60 fps 跳帧、错开网格的小抖动无补帧跳帧、暂停与继续、暂停期间的越界帧补推、正侧不同帧率共用边界后帧数相同、连续两段、无首帧不能开录、乱序与结束后的帧、暂停中结束、`capture.json` 往返/缺失/外来版本/帧率不一致/路径）；全量 `pytest tests -q` 通过；门禁与空白检查通过。
+
+## 2026-10-20: [feat] D-18 第 2 层：摄像头每路持续读帧，帧带采集时间戳
+
+- 问题描述：会话期间 `CameraStream.read` 按顺序直接读两路设备，读帧受整个处理循环拖慢，一路慢会拖住另一路；采集时刻在主进程读完后用 `time.monotonic()` 取，本机分辨率 15.6 ms，还含管道往返与像素拷贝。
+- 修改内容：
+  - `core/media/frames.py`：新增 `CapturedFrame(role, seq, captured_at_ns, bgr, generation)` 与 `capture_clock_ns()`（`perf_counter_ns`），取代 `WarmFrame`，预热帧与会话帧共用。
+  - 新增 `core/media/camera/reader.py`：`CaptureReader`（接管租约后每路一个持续读帧线程，经 `TaskGroup` 启动）、`LatestSlot`（最新帧槽）、`read_stamped`（预热 reader 与会话 reader 共用的带时刻读帧）；`CameraReadError` 移到这里。
+  - `ProcessCamera`：子进程在 `read()` 返回后立即取时刻并随帧元数据回传，新增 `read_with_time()`。
+  - `CameraStream`：`claim` 后启动各路 reader；`read` 等每路都有新帧后取各路最新帧（同一帧不返回两次），返回 `CapturedFrame`；`close` 先停 reader 再归还或释放，没能按时停下的那一路直接释放。
+  - `core/live`：`FrameInput.read` 返回 `InputFrames`（各路帧与主路采集时刻），`FramePacket.captured_at_ns` 取代 `captured_at`；`_latest_frames` 改用 `LatestSlot`；并行模式的时间戳以首帧采集时刻为零点。CLI latency 冒烟按采集时钟算延迟。
+  - 录像仍按处理循环逐帧写、名义 30 fps，时间轴在第 3、4 层修正。
+  - 设计文档 §2.2、§8.8 与 `AGENTS.md` 代码地图同步。
+- 验证方法：新增 `tests/test_camera_reader.py` 13 项（槽语义、设备时间戳、读失败、时钟分辨率、消费方慢到 5 fps 时 reader 照常读帧、慢的第二路不拖慢第一路、不重复返回同一帧、等新帧时响应取消、先停 reader 再释放、reader 超出停止预算时直接释放、真实 spawn 下子进程时间戳落在主进程调用区间内）；全量 `pytest tests -q` 1229 passed（基线 1216）；门禁、架构测试与空白检查通过；冻结 EXE 自检见 PR。
+
+## 2026-10-20: [docs] D-18 改为录像与推理解耦，登记 D-26～D-30，大改动改用 stacked PR
+
+- 问题描述：PR #34 按采集时刻补帧，只修回放时间轴，不能恢复没采到的画面；评审还发现它把新帧复制到之前的时间槽。issue #36 提出把采集、录像和识别解耦。对照源码核对时发现：本机 Python 3.12 的 `time.monotonic()` 分辨率是 15.6 ms；池的预热 reader 与 runner 已有两个读帧线程；单摄录像和 CLI 摄像头导出现在烧录叠加；1080p MJPG 写一帧约 26 ms，两路在循环里串行写就把循环限在 19 fps 以下。
+- 修改内容：
+  - 设计文档 §11.2：D-18 已决（采用 #36 的解耦方案，#34 关闭）；新增并划线已决的 D-26（录像一律原始画面，骨架成片录后生成）、D-27（开录确认与录制失败语义，练习不能判定录制失败的片段）、D-28（考试录制中暂停同时暂停录像）、D-29（片段内固定方向与尺寸）、D-30（站位检测按时间采样最新帧），均待实施。
+  - 设计文档新增 §8.8：数据通路、时间戳、FIFO 与时间轴约定、控制、分层、6 层 stacked PR 的实施顺序与验收。
+  - `docs/规则检出修复计划.md` 步骤 0 记为已决。
+  - `AGENTS.md`：跨多层的大改动用 `gh stack` 开 stacked PR。
+- 验证方法：§8.8 与 D-26～D-30 逐条对照 issue #36 和本次核对的源码位置（`core/live/runner.py`、`core/live/config.py`、`core/media/camera/service.py`、`core/media/camera/slot_lifecycle.py`、`core/workflows/exam/session.py`、`core/workflows/practice/session.py`）；写帧耗时用 1080p 合成帧本机实测；`git diff --check` 无空白错误。
+
 ## 2026-10-19: [docs] 规则检出修复计划按教师答复修订，新增 D-24、D-25
 
 - 问题描述：修复计划（同一 PR 的 2026-10-17 记录）起草时，教师还没答复 #32、#33。之后教师填完五份答题卷，核对了组合拳标准表，拍了步法照片，确认考试只考 5 个动作：上步前后手直拳、摆拳、勾拳组合，上步前低鞭腿，原地后低鞭腿。除后低鞭腿外都要上步，每个动作做 2 次，每次从原位出发。计划里的样本要求（原地单拳）、切分（不认脚步、不统计次数）和"打出后保持"的待问事项都与此不符；新规则的上线顺序也没有写进计划。

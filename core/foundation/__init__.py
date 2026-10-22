@@ -11,6 +11,7 @@ from core.foundation.epoch import Epoch
 from core.foundation.geometry import angle_deg, distance, landmark_xy, torso_length, unit
 from core.foundation.jsonable import to_jsonable
 from core.foundation.npz import load_npz, npz_meta
+from core.foundation.host import cpu_percent, desktop_dir, host_summary, system_cpu_times
 from core.foundation.paths import models_dir, outputs_dir, repo_root, templates_dir
 from core.foundation.prefs import (
     CAMERA_SELECTION,
@@ -106,4 +107,8 @@ __all__ = [
     "translate_interrupted",
     "trimmed_mean",
     "unit",
+    "cpu_percent",
+    "desktop_dir",
+    "host_summary",
+    "system_cpu_times",
 ]

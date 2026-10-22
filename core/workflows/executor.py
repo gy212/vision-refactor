@@ -3,6 +3,9 @@
 
 考试与学生练习共用（设计文档 §8.6）。开录、结束片段的结果以 ``record_started`` / ``begin_failed`` /
 ``record_stopped`` 事件回送，工作流据此推进；单条命令失败只在界面提示，不影响后续命令。
+开录是异步的（D-27）：录制端口立即失败时当场回送 ``begin_failed``，否则等各路写出首帧后经回调回送
+``record_started``，之后失败回送 ``begin_failed``（带原因）。结束不等写完，``record_stopped`` 立即回送。
+确认只回送给最近一次 ``BEGIN_SEGMENT``：之后又开录、结束或丢弃过，迟到的确认作废。
 """
 
 from __future__ import annotations
@@ -24,9 +27,17 @@ class Workflow(Protocol):
     def row(self, row_id: str) -> Any: ...
 
 
+SegmentConfirm = Callable[[Any, "str | None"], None]   # (片段, None 或开录失败原因)
+
+
 class SegmentControl(Protocol):
-    def start_segment(self, payload: dict[str, Any]) -> Any:
-        """开录；成功返回带 ``segment_id``、``directory`` 的片段引用，失败返回 None。"""
+    def start_segment(self, payload: dict[str, Any], on_confirm: SegmentConfirm) -> Any:
+        """开录。立即失败时返回假值（可带 ``message``）；否则返回带 ``segment_id``、``directory`` 的片段引用，
+        各路写出首帧后在 UI 线程调用 ``on_confirm(片段, None)``，失败时 ``on_confirm(片段, 原因)``。"""
+
+    def pause_segment(self) -> None: ...
+
+    def resume_segment(self) -> None: ...
 
     def finish(self, *, discard: bool) -> None: ...
 
@@ -92,6 +103,7 @@ class CommandExecutor:
     def __init__(self, ports: WorkflowPorts, *, clock: Callable[[], float] = time.monotonic) -> None:
         self.ports = ports
         self._clock = clock
+        self._start: object | None = None   # 最近一次开录尝试，等待确认；结束、丢弃或确认后清空
 
     def dispatch(self, workflow: Workflow, event: str, **kw: Any) -> None:
         """把事件交给工作流，执行它产出的命令，最后刷新界面。"""
@@ -118,12 +130,21 @@ class CommandExecutor:
         elif kind in {"ARM_OCCUPANCY", "DISARM_OCCUPANCY"}:
             ports.occupancy.arm(kind == "ARM_OCCUPANCY")
         elif kind == "BEGIN_SEGMENT":
-            segment = ports.recorder.start_segment(payload)
+            attempt = self._start = object()
+            segment = ports.recorder.start_segment(
+                payload, lambda started, error: self._confirmed(workflow, attempt, started, error),
+            )
             if not segment:
-                return "begin_failed", {"now": self._clock()}
-            return "record_started", {"now": self._clock(), "segment": segment}
+                if self._start is attempt:
+                    self._start = None
+                return "begin_failed", self._failure(getattr(segment, "message", None))
+        elif kind == "PAUSE_SEGMENT":
+            ports.recorder.pause_segment()
+        elif kind == "RESUME_SEGMENT":
+            ports.recorder.resume_segment()
         elif kind in {"END_SEGMENT", "DISCARD_SEGMENT"}:
             discard = kind == "DISCARD_SEGMENT"
+            self._start = None
             ports.recorder.finish(discard=discard)
             return "record_stopped", {"now": self._clock(), "discarded": discard}
         elif kind in {"UPDATE_ROW", "BIND_SEGMENT_PENDING"}:
@@ -150,6 +171,20 @@ class CommandExecutor:
             ports.ui.show_result(payload["record"])
         # SCHEDULE_CALL_GUARD / SCHEDULE_INTER_GAP / ADVANCE_POINTER：只是记录，定时由 tick 驱动
         return None
+
+    def _confirmed(self, workflow: Workflow, attempt: object, segment: Any, error: str | None) -> None:
+        """开录结果（UI 线程）：各路写出首帧回送 ``record_started``，失败回送带原因的 ``begin_failed``。
+        不是最近一次、仍在等待确认的开录尝试的结果不回送。"""
+        if attempt is not self._start:
+            return
+        self._start = None
+        if error is None:
+            self.dispatch(workflow, "record_started", now=self._clock(), segment=segment)
+        else:
+            self.dispatch(workflow, "begin_failed", **self._failure(error))
+
+    def _failure(self, message: str | None) -> dict[str, Any]:
+        return {"now": self._clock(), **({"message": message} if message else {})}
 
     def _update_row(self, workflow: Workflow, kind: str, payload: dict[str, Any]) -> None:
         row = workflow.row(str(payload.get("row_id") or ""))

@@ -20,7 +20,6 @@ Roi = tuple[float, float, float, float]
 PresenceProbe = Callable[[object, Roi], bool]   # (pose landmarks, ROI) -> 人是否在 ROI 内
 
 DEFAULT_ROI: Roi = (0.2, 0.1, 0.8, 0.95)
-DEFAULT_OCCUPANCY_STRIDE = 3
 NOMINAL_CAMERA_FPS = 30.0
 
 
@@ -36,8 +35,7 @@ class SessionConfig:
     workers: int = 1
     parallel: bool = False            # True：ParallelPoseEngine（IMAGE 模式）；摄像头满则丢帧，视频保序
     inference: bool = True            # False：不构造引擎，预览与录制都是裸帧（摄像头骨架关）
-    record_overlay: bool = True       # 录制写叠加后的帧（骨架、HUD）还是转正后的原始帧
-    record_hud: bool = True           # HUD 在写录像之前画上（并行视频的旧行为是写完再画）
+    record_hud: bool = True           # 视频文件会话：HUD 在写录像之前画上（并行视频的旧行为是写完再画）
     smoothing: bool = False           # 预览平滑（PreviewLandmarkSmoother）
     online_match: bool = False        # 在线动作识别（OnlineActionMatcher）
     loading_raw_preview: bool = False  # 构造模型期间由裸帧泵发布预览（D-8）
@@ -90,6 +88,7 @@ def camera_session(
 
     双摄的平滑与在线识别保持关闭（D-7），``dual_smoothing``/``dual_online_match`` 是保留的配置项。
     并行单摄的引擎与摄像头同时启动，没有加载期裸帧。站位检测只在骨架关的双摄会话里可用。
+    录像一律是转正后的原始画面（D-26），由录制层的录像线程写，与骨架、HUD 无关。
     """
     dual = SECONDARY in cameras
     parallel = (not dual) and workers > 1 and skeleton
@@ -101,7 +100,6 @@ def camera_session(
         workers=max(1, int(workers)),
         parallel=parallel,
         inference=skeleton,
-        record_overlay=skeleton or not dual,   # 单摄的录像一直带 HUD；双摄骨架关时录原始帧
         smoothing=skeleton and (dual_smoothing if dual else smoothing),
         online_match=skeleton and (dual_online_match if dual else online_match),
         loading_raw_preview=skeleton and loading_raw_preview and not parallel,
@@ -162,7 +160,6 @@ class Versioned(Generic[T]):
 class OccupancySettings:
     armed_by: frozenset[str] = frozenset()   # 谁在用站位检测（考试、学生练习）；非空即启用
     roi: Roi = DEFAULT_ROI
-    stride: int = DEFAULT_OCCUPANCY_STRIDE
 
     @property
     def armed(self) -> bool:
@@ -171,7 +168,7 @@ class OccupancySettings:
 
 @dataclass
 class LiveControls:
-    """会话运行中可调的参数（§8.1）：每路旋转每帧读取，站位检测的启用与 ROI 每帧读取。"""
+    """会话运行中可调的参数（§8.1）：每路旋转每帧读取，站位检测的启用与 ROI 由采样线程每次采样时读取。"""
 
     rotation: dict[str, Versioned[int]] = field(
         default_factory=lambda: {role: Versioned(0) for role in ROLES}
@@ -183,22 +180,21 @@ class LiveControls:
         return self.rotation[role].get()
 
     def arm_occupancy(self, owner: str, armed: bool) -> None:
-        """``owner`` 是启用方的名字（如 ``exam``、``practice``）；任一方启用即在推理关的会话里采样。"""
+        """``owner`` 是启用方的名字（如 ``exam``、``practice``）；任一方启用即在有站位检测的会话里按时间采样。"""
         with self._lock:
             current = self.occupancy.get()
             owners = current.armed_by | {owner} if armed else current.armed_by - {owner}
             if owners != current.armed_by:
-                self.occupancy.set(OccupancySettings(frozenset(owners), current.roi, current.stride))
+                self.occupancy.set(OccupancySettings(frozenset(owners), current.roi))
 
     def set_roi(self, roi: Roi) -> None:
         with self._lock:
             current = self.occupancy.get()
             value = tuple(float(x) for x in roi)
-            self.occupancy.set(OccupancySettings(current.armed_by, value, current.stride))  # type: ignore[arg-type]
+            self.occupancy.set(OccupancySettings(current.armed_by, value))  # type: ignore[arg-type]
 
 
 __all__ = [
-    "DEFAULT_OCCUPANCY_STRIDE",
     "DEFAULT_ROI",
     "LiveControls",
     "NOMINAL_CAMERA_FPS",

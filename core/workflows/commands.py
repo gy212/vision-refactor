@@ -2,7 +2,7 @@
 """业务流程的统一命令词表：工作流状态机只产出 ``Command``，由 ``CommandExecutor`` 映射到端口执行。
 
 名称沿用考试状态机原有的 ``ExamCommandKind``；学生练习只新增 ``START_ANALYSIS``、``SHOW_RESULT``、``STATUS``
-（设计文档 §8.6）。``SCHEDULE_*``、``ADVANCE_POINTER`` 只是记录，执行层不做任何事。
+（设计文档 §8.6）；考试暂停录像用 ``PAUSE_SEGMENT``/``RESUME_SEGMENT``（D-28）。``SCHEDULE_*``、``ADVANCE_POINTER`` 只是记录，执行层不做任何事。
 """
 
 from __future__ import annotations
@@ -17,6 +17,8 @@ CommandKind = Literal[
     "BEGIN_SEGMENT",
     "END_SEGMENT",
     "DISCARD_SEGMENT",
+    "PAUSE_SEGMENT",
+    "RESUME_SEGMENT",
     "UPDATE_ROW",
     "SCHEDULE_CALL_GUARD",
     "SCHEDULE_INTER_GAP",
