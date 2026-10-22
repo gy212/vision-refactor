@@ -273,10 +273,8 @@ def test_service_finish_and_close_cancel_never_interleave(tmp_path):
     assert service.start(SegmentMeta(tmp_path))
     service.cancel_all()
 
-    outcome = service.finish()
-
-    assert outcome.segment is not None
-    assert outcome.submitted is False
+    assert service.finish() is not None     # 结束不等待；写完时提交被拒绝
+    assert service.wait_idle(1.0)
     assert finalizer.wait_idle(1.0)
     assert updates == []
 

@@ -10,6 +10,8 @@
 - 方向与尺寸在开录时固定（D-29）：本段每帧按开录时的旋转转正，writer 的尺寸取首个输出帧。
 - 失败（D-27）：录制期间队列溢出、该路断流或写盘出错，这一段就失败，之后不再写，结束时返回错误；
   已写的文件保留。
+- 开录确认（D-27）：开录命令带回调，这一路写出本段首帧后回调 ``None``，在此之前失败则回调失败原因。
+- 结束分两步：``request_stop`` 立即发出结束边界，``wait_stop`` 等这一路写完边界之前的帧（调用方可在别的线程等）。
 - 写盘经 ``RecordingController``（懒创建 writer、写错误复位），只在本线程调用 ``write``/``release``。
 """
 from __future__ import annotations
@@ -18,7 +20,7 @@ import threading
 from collections import deque
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 import numpy as np
 
@@ -41,6 +43,8 @@ STOP_WAIT_S = 3.0           # 结束一段时等录像线程确认的上限
 PRIME_WAIT_S = 1.0          # 会话开始时等每路录像线程拿到首帧的上限（开录要用边界之前的帧）
 IDLE_POLL_S = 0.05
 _NS = 1_000_000_000
+
+StartCallback = Callable[[str | None], None]   # 写出首帧时 None，首帧之前失败时为原因
 
 
 class FrameFeed(Protocol):
@@ -68,12 +72,13 @@ class _Command:
     at_ns: int
     target: Path | None = None
     rotation: int = 0
+    on_started: StartCallback | None = None
     done: threading.Event = field(default_factory=threading.Event)
     result: ViewResult | None = None
 
 
 class ViewWorker:
-    """一路的录像线程；``start``/``pause``/``resume`` 不等待，``stop`` 等这一段写完（最多 ``STOP_WAIT_S``）。"""
+    """一路的录像线程；``start``/``pause``/``resume``/``request_stop`` 不等待，``wait_stop``/``stop`` 等这一段写完（最多 ``STOP_WAIT_S``）。"""
 
     def __init__(self, view: str, role: str, feed: FrameFeed, *, fps: float, tasks: TaskGroup,
                  writer_factory: WriterFactory | None = None, capacity: int = QUEUE_CAPACITY) -> None:
@@ -102,16 +107,18 @@ class ViewWorker:
         self._target: Path | None = None
         self._rotation = 0
         self._rotated: tuple[tuple[int, int], np.ndarray] | None = None
+        self._on_started: StartCallback | None = None
         self._queue = feed.subscribe(role, self._capacity)
         self._handle = tasks.spawn(f"record-{view}", self._run, owner="recording", close_budget_s=STOP_WAIT_S)
 
     # ------------------------------------------------------------------ 命令（调用方线程）
-    def start(self, at_ns: int, target: Path, rotation: int) -> None:
+    def start(self, at_ns: int, target: Path, rotation: int, on_started: StartCallback | None = None) -> None:
+        """开录；``on_started`` 在录像线程里回调一次：写出本段首帧时为 None，之前失败时为原因。"""
         with self._lock:
             self._error = None
             self._open = True
             self._overflow_base = self._queue.overflows
-            self._enqueue(_Command("start", int(at_ns), Path(target), int(rotation)))
+            self._enqueue(_Command("start", int(at_ns), Path(target), int(rotation), on_started))
 
     def pause(self, at_ns: int) -> None:
         with self._lock:
@@ -123,13 +130,23 @@ class ViewWorker:
 
     def stop(self, at_ns: int, timeout: float = STOP_WAIT_S) -> ViewResult:
         """结束本段并等录像线程写完边界之前的帧；超时或线程已退出时返回错误结果。"""
+        return self.wait_stop(self.request_stop(at_ns), timeout)
+
+    def request_stop(self, at_ns: int) -> _Command:
+        """发出结束边界，不等待；返回的命令交给 ``wait_stop``。"""
         command = _Command("stop", int(at_ns))
         with self._lock:
             if self._dead:
                 self._open = False
-                return ViewResult(self._target, self._controller.snapshot().frames_written,
-                                  self._error or "录像线程已退出")
-            self._enqueue(command)
+                command.result = ViewResult(self._target, self._controller.snapshot().frames_written,
+                                            self._error or "录像线程已退出")
+                command.done.set()
+            else:
+                self._enqueue(command)
+        return command
+
+    def wait_stop(self, command: _Command, timeout: float = STOP_WAIT_S) -> ViewResult:
+        """等 ``request_stop`` 的边界写完；超时返回错误结果。"""
         if command.done.wait(timeout) and command.result is not None:
             return command.result
         with self._lock:
@@ -250,6 +267,7 @@ class ViewWorker:
 
     def _begin(self, command: _Command, boundary: int) -> None:
         self._target, self._rotation, self._rotated = command.target, command.rotation, None
+        self._on_started = command.on_started
         self._clock.stats = FrameClockStats()
         self._queue.reset_peak()
         self._timeline = Timeline(self._fps)
@@ -265,6 +283,7 @@ class ViewWorker:
         timeline = self._timeline
         if timeline is not None and self.error is None:
             self._write(timeline.stop(boundary))
+        self._started(self.error or "写出首帧之前录制就结束了")
         snap = self._controller.snapshot()
         path = self._controller.stop_recording() or snap.result_path
         with self._lock:
@@ -287,9 +306,11 @@ class ViewWorker:
             image = self._oriented(frame)
             self._controller.update_session_size(size=(int(image.shape[1]), int(image.shape[0])))
             self._controller.write_frame(image)
-        error = self._controller.snapshot().last_error
-        if error:
-            self._fail(f"写盘失败：{error}")
+        snap = self._controller.snapshot()
+        if snap.last_error:
+            self._fail(f"写盘失败：{snap.last_error}")
+        elif snap.frames_written > 0:
+            self._started(None)
 
     def _oriented(self, frame: CapturedFrame) -> np.ndarray:
         key = (frame.generation, frame.seq)
@@ -307,13 +328,26 @@ class ViewWorker:
         with self._lock:
             if self._error is None:
                 self._error = message
+        self._started(message)
+
+    def _started(self, error: str | None) -> None:
+        """回调本段的开录结果（只回调一次）；只在录像线程里调用。"""
+        callback, self._on_started = self._on_started, None
+        if callback is not None:
+            try:
+                callback(error)
+            except Exception:
+                pass
 
     def _finish_dead(self) -> None:
         with self._lock:
             self._dead = True
             pending, self._commands = list(self._commands), deque()
         snap = self._controller.snapshot()
+        self._started(self.error or "录像线程已退出")
         for command in pending:
+            if command.kind == "start" and command.on_started is not None:
+                command.on_started(self.error or "录像线程已退出")
             if command.kind == "stop":
                 command.result = ViewResult(snap.result_path, snap.frames_written, self.error or "录像线程已退出")
             command.done.set()

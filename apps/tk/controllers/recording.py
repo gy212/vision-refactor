@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
-"""录制编排：录制按钮三态、片段开录与结束、按模式与用户设置构建录后处理计划、比对状态回显、模板池与保存目录。
+"""录制编排：录制按钮三态、片段开录与结束、按模式与用户设置构建录后处理计划、比对状态回显与保存目录。
 
 本控制器同时是会话的 ``FrameSink``（转给 ``RecordingService``）与工作流的录制端口（``SegmentControl``）。
-录后处理的状态更新从 finalizer 线程经 dispatcher 回到 Tk 线程；考试台账按片段回填，关窗收尾时也要回填。
+开录确认（两路写出首帧，D-27）、录后处理的状态更新都从录制的任务线程经 dispatcher 回到 Tk 线程；
+结束片段不等写完（``stopping`` 期间按钮不可用）。考试台账按片段回填，关窗收尾时也要回填。模板池见 ``template_pools``。
 """
 from __future__ import annotations
 
@@ -12,23 +13,25 @@ from pathlib import Path
 from tkinter import messagebox
 from typing import Any
 
-from core.foundation import save_record_dir, save_template_pools
+from core.foundation import save_record_dir
 from core.foundation import outputs_dir
 from core.pose import MEDIAPIPE_MODELS, is_installed
 from core.recording import (
     BeginError,
     FinishedSegment,
+    STOP_WAIT_S,
     ProcessingPlan,
     RecordingService,
-    RecordingState,
     SegmentFinalizer,
     SegmentMeta,
+    SegmentRef,
+    SegmentState,
     SegmentUpdate,
-    try_load_heavy_template,
 )
 from core.workflows import ModeManager, PlanSettings, PreflightContext, SegmentIntent, WorkflowHost, build_segment_plan
 
 from apps.tk.controllers.flags import LiveFlags
+from apps.tk.controllers.template_pools import TemplatePools
 from apps.tk.views.status_panel import EMPTY_SCORES
 
 STATUS_LABELS = {
@@ -46,16 +49,6 @@ def model_installed(key: str) -> bool:
 
 def percent(score: float | None) -> str:
     return "-" if score is None else f"{float(score) * 100.0:.1f}%"
-
-
-def template_status_text(front: int, side: int) -> str:
-    if front and side:
-        return f"模板池：正面 {front} 个 · 侧面 {side} 个（正对正、侧对侧，逐动作出分）"
-    if front:
-        return f"模板池：正面 {front} 个 · 侧面 0 个（仅比对正面；两侧都空才报错）"
-    if side:
-        return f"模板池：正面 0 个 · 侧面 {side} 个（仅比对侧面；两侧都空才报错）"
-    return "模板池：正/侧均为空 — 开启自动比对将失败"
 
 
 class RecordingController:
@@ -77,7 +70,8 @@ class RecordingController:
         self.latest_segment_id: str | None = None
         self.pending_errors: list[str] = []   # 会话关闭前转存、尚未提示的单摄写错误
         self._error_shown = False             # 同一录制错误只提示一次
-        self._templates = (tuple(view.recording.pool_paths("front")), tuple(view.recording.pool_paths("side")))
+        self._shown_state: SegmentState = "idle"   # 上次 tick 显示的录制状态（结束完成时复位按钮）
+        self.pools = TemplatePools(view.recording)
 
     def build_service(self) -> RecordingService:
         """结束片段并提交处理计划在 ``RecordingService`` 的同一把锁内完成；计划由 ``plan`` 构建。"""
@@ -85,7 +79,7 @@ class RecordingController:
         return self.service
 
     @property
-    def state(self) -> RecordingState:
+    def state(self) -> SegmentState:
         return self.service.state
 
     # ------------------------------------------------------------------ FrameSink
@@ -104,8 +98,14 @@ class RecordingController:
             self.pending_errors.extend(f"第一路：{error}" for error in segment.errors.values())
 
     # ------------------------------------------------------------------ SegmentControl（工作流）
-    def start_segment(self, payload: dict) -> Any:
-        return self.begin(SegmentIntent(exam=payload.get("exam")))
+    def start_segment(self, payload: dict, on_confirm: Callable[[SegmentRef, str | None], None]) -> Any:
+        return self.begin(SegmentIntent(exam=payload.get("exam")), on_confirm=on_confirm)
+
+    def pause_segment(self) -> None:
+        self.service.pause()
+
+    def resume_segment(self) -> None:
+        self.service.resume()
 
     def finish(self, *, discard: bool) -> None:
         self.end(discard=discard)
@@ -116,10 +116,10 @@ class RecordingController:
 
     def toggle(self) -> None:
         """idle→开录、recording→暂停、paused→继续；双摄片段已分叉时先结束并提交，不在分叉状态上开新片段。"""
-        if self.flags.exam_locked or not self._accepting():
+        if self.flags.exam_locked or not self._accepting() or self.service.state == "stopping":
             return
         if self.service.finish_if_broken() is not None:
-            new_state: RecordingState = "idle"
+            new_state: SegmentState = self.service.state
         elif self.service.state == "idle":
             self.begin()
             return
@@ -134,8 +134,10 @@ class RecordingController:
             return
         self.end(discard=False)
 
-    def begin(self, intent: SegmentIntent | None = None) -> Any:
-        """从 idle 开录一段（工作流与手动共用）；成功返回片段，失败返回 None。各路同时开录，任一路失败全部复位。"""
+    def begin(self, intent: SegmentIntent | None = None,
+              on_confirm: Callable[[SegmentRef, str | None], None] | None = None) -> Any:
+        """从 idle 开录一段（工作流与手动共用）；返回片段，立即失败时返回假值（``BeginError`` 带原因）。
+        两路写出首帧或开录失败后在 Tk 线程处理结果并交给 ``on_confirm``（D-27）。"""
         if not self._accepting():
             return None
         typed = self.view.recording.record_dir_var.get().strip()
@@ -146,15 +148,30 @@ class RecordingController:
         intent = intent or SegmentIntent()
         if intent.auto_compare is None:
             intent = replace(intent, auto_compare=self.modes.segment_auto_compare)
-        segment = self.service.start(SegmentMeta(self.record_base_dir, context=intent))
+        segment = self.service.start(
+            SegmentMeta(self.record_base_dir, context=intent),
+            on_confirm=lambda started, error: self._post(lambda: self._confirmed(started, error, on_confirm)),
+        )
         if isinstance(segment, BeginError):
-            return None
+            return segment
         if segment.multi:
             self._show_new_dual_segment(segment.segment_id, intent)
         if not self.flags.exam_locked:
             self.view.recording.set_record_text("recording")
         self.sync_stop_enabled("recording")
         return segment
+
+    def _confirmed(self, segment: SegmentRef, error: str | None,
+                   on_confirm: Callable[[SegmentRef, str | None], None] | None) -> None:
+        """Tk 线程：开录结果。失败时录制端已结束整段（落盘、不提交）：复位按钮，手动开录时弹框，再交给工作流。"""
+        if self.flags.closing:
+            return
+        if error is not None:
+            self.sync_record_state(self.service.state)
+            if on_confirm is None:
+                messagebox.showerror("开录失败", f"录制没有开始：\n{error}", parent=self.view.recording.root)
+        if on_confirm is not None:
+            on_confirm(segment, error)
 
     def _show_new_dual_segment(self, segment_id: str, intent: SegmentIntent) -> None:
         auto_compare = intent.auto_compare
@@ -168,11 +185,18 @@ class RecordingController:
         if not discard and (self.flags.closing or not self._session_live()):
             return
         self.service.finish(discard=discard)
-        if not self.flags.exam_locked:
-            self.view.recording.set_record_text("idle")
-        self.sync_stop_enabled("idle")
+        self.sync_record_state(self.service.state)
 
-    def sync_stop_enabled(self, state: RecordingState) -> None:
+    def sync_record_state(self, state: SegmentState) -> None:
+        """按录制状态更新按钮：考试锁定时不改文字；``stopping`` 期间录制按钮不可用。"""
+        self._shown_state = state
+        if not self.flags.exam_locked:
+            self.view.recording.set_record_text(state)
+            if self.flags.recording_ready:
+                self.view.recording.record_btn.configure(state="disabled" if state == "stopping" else "normal")
+        self.sync_stop_enabled(state)
+
+    def sync_stop_enabled(self, state: SegmentState) -> None:
         enabled = state in ("recording", "paused")
         self.view.recording.record_stop_btn.configure(state="normal" if enabled else "disabled")
 
@@ -212,6 +236,7 @@ class RecordingController:
         """关窗后台步骤：收尾仍在录的双摄片段，再取消后处理队列（考试中止已在进入关闭态前 discard）。"""
         if self.flags.dual_active:
             self.service.finish()
+        self.service.wait_idle(STOP_WAIT_S + 1.0)   # 结束不等写完：取消前等它提交
         self.service.cancel_all()
 
     # ------------------------------------------------------------------ 自动比对开关
@@ -247,50 +272,7 @@ class RecordingController:
         on = bool(self.view.recording.auto_compare_var.get())
         self.view.recording.auto_compare_hint_var.set("录制后自动比对（检测一条龙）" if on else "仅录制落盘，不自动比对")
 
-    # ------------------------------------------------------------------ 模板池与保存目录
-    def template_lists(self) -> tuple[list[Path], list[Path]]:
-        front, side = self._templates
-        return list(front), list(side)
-
-    def add_templates(self, view: str) -> None:
-        paths = self.view.recording.ask_templates(view)
-        if not paths:
-            return
-        existing = {str(p) for p in self.view.recording.pool_paths(view)}
-        rejected: list[str] = []
-        for path in paths:
-            usable = try_load_heavy_template(path)
-            if usable is None:
-                rejected.append(Path(path).name)
-            elif str(usable) not in existing:
-                self.view.recording.add_pool_path(view, usable)
-                existing.add(str(usable))
-        self.templates_changed()
-        if rejected:
-            messagebox.showerror(
-                "部分模板无效",
-                "以下文件不是可用的 heavy + pose33_v3 模板，已跳过：\n" + "\n".join(rejected)
-                + "\n请用 make_template.py --pose heavy 生成后再添加。",
-                parent=self.view.recording.root,
-            )
-
-    def remove_templates(self, view: str) -> None:
-        self.view.recording.remove_selected(view)
-        self.templates_changed()
-
-    def templates_changed(self) -> None:
-        """池变化后缓存为普通路径（录后计划可能在会话线程构建）、持久化并刷新提示。"""
-        panel = self.view.recording
-        self._templates = (tuple(panel.pool_paths("front")), tuple(panel.pool_paths("side")))
-        try:
-            save_template_pools(front=list(self._templates[0]), side=list(self._templates[1]))
-        except Exception:
-            pass
-        self.sync_template_status()
-
-    def sync_template_status(self) -> None:
-        self.view.recording.template_status_var.set(template_status_text(*map(len, self._templates)))
-
+    # ------------------------------------------------------------------ 保存目录
     def choose_record_dir(self) -> None:
         current = self.view.recording.record_dir_var.get().strip()
         chosen = self.view.recording.ask_record_dir(current or str(outputs_dir()))
@@ -311,7 +293,7 @@ class RecordingController:
                 record_skeleton=flags.record_skeleton, auto_compare=False,
                 pose_variant=flags.pose_variant, enable_hands=flags.enable_hands,
             ))
-        front, side = self._templates
+        front, side = self.pools.lists()
         plan = build_segment_plan(segment, PlanSettings(
             record_skeleton=flags.record_skeleton,
             auto_compare=bool(self.current_auto_compare()),
@@ -363,8 +345,7 @@ class RecordingController:
             if not self._error_shown:
                 self._error_shown = True
                 self.service.finish()   # 双摄必须保持成对：任一路失败即结束各路并提交
-                self.view.recording.set_record_text("idle")
-                self.sync_stop_enabled("idle")
+                self.sync_record_state(self.service.state)
                 status_var.set("")
                 if not multi:
                     messagebox.showerror("录制失败", "录制发生错误：\n" + "\n".join(errors))
@@ -376,7 +357,9 @@ class RecordingController:
             path_text = f"正面 {texts[0]}；侧面 {texts[1]}" if multi else texts[0]
             status_var.set(f"{'录制中' if recorder.state == 'recording' else '已暂停'}：{path_text}")
         else:
-            status_var.set("")
+            status_var.set("正在结束录制…" if recorder.state == "stopping" else "")
+        if "stopping" in (recorder.state, self._shown_state) and recorder.state != self._shown_state:
+            self.sync_record_state(recorder.state)
         self.sync_stop_enabled(recorder.state)
 
     # ------------------------------------------------------------------ 预检
@@ -384,7 +367,7 @@ class RecordingController:
                           cameras_error: str | None = None) -> PreflightContext:
         """采集模式预检要用的事实；练习另查身份与双摄选择，考试另查模板池。"""
         skeleton_on = self.flags.record_skeleton or bool(self.view.recording.record_skeleton_var.get())
-        front, side = self._templates if (not practice and self.flags.dual_active) else ((), ())
+        front, side = self.pools.lists() if (not practice and self.flags.dual_active) else ([], [])
         return PreflightContext(
             dual_active=self.flags.dual_active, recording_ready=self.flags.recording_ready,
             skeleton_on=skeleton_on, front_templates=tuple(front), side_templates=tuple(side),

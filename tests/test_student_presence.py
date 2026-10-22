@@ -18,9 +18,12 @@ def practice_app(root, monkeypatch, *, ready=True):
     app = _practice_app(root, ready=ready, identity=lambda: {"studentId": "001"})
     app.recording.service = SimpleNamespace(state="idle")
 
-    def begin(_intent=None):
+    def begin(_intent=None, on_confirm=None):
         app.recording.service.state = "recording"
-        return SimpleNamespace(segment_id="record_1", directory=Path("record_1"))
+        segment = SimpleNamespace(segment_id="record_1", directory=Path("record_1"))
+        if on_confirm is not None:   # 两路写出首帧的确认（真实录制经 Tk 线程回送）
+            on_confirm(segment, None)
+        return segment
 
     def end(**_kwargs):
         app.recording.service.state = "idle"
@@ -135,7 +138,7 @@ def test_manual_end_and_stop_do_not_allow_late_detection(root, monkeypatch):
 
 def test_failed_recording_does_not_announce_or_retry(root, monkeypatch):
     app = practice_app(root, monkeypatch)
-    app.recording.begin = lambda _intent=None: None
+    app.recording.begin = lambda _intent=None, on_confirm=None: None
     showerror = Mock()
     monkeypatch.setattr(practice_mod.messagebox, "showerror", showerror)
     app.practice.start()

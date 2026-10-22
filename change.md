@@ -1,3 +1,49 @@
+## 2026-10-22: [feat] D-18 第 8 层：开录确认、考试暂停同时暂停录像、异步结束与练习失败原因（D-27、D-28）
+
+- 问题描述：
+  - 开录请求被接受即视为开录，考试在开录前就播报"考试开始"；两路 writer 是否真正写出了画面没人确认。
+  - 结束片段在 Tk 线程里最多阻塞 3 s 等两路写完。
+  - 考试暂停只关站位检测，暂停期间的画面照样进录像与评分。
+  - 练习对录制失败（队列溢出、断流、写盘失败）但文件可读的片段仍走降级通路评判。
+- 修改内容：
+  - 开录确认（D-27）：
+    - `ViewWorker.start` 带回调：这一路写出本段首帧时回调 None，之前失败时回调原因。
+    - `SegmentRecorder.start_segment(meta, on_confirm)` 立即返回片段，在录制的任务线程里汇总。全部写出、任一路失败、或 2 s（`START_CONFIRM_S`）内没写出首帧时回送一次；失败时先结束整段（落盘、不提交）。片段已结束或被替换时不回送。
+    - `CommandExecutor` 只在立即失败时当场回送 `begin_failed`（带 `BeginError.message`），否则等确认回送 `record_started` 或带原因的 `begin_failed`。
+    - 考试"考试开始"改在 `record_started` 时播报。练习在确认前点"结束"或退出时丢弃这一段。
+    - Tk 经 dispatcher 回到 Tk 线程，手动开录失败弹框并复位按钮。CLI 摄像头 `--out` 记下开录失败的原因。
+  - 异步结束：
+    - `request_end` 给各路同一个结束边界后立即返回，录制进入 `stopping`：按钮显示"正在结束…"且不可用，开录返回 `BeginError("stopping")`。
+    - 任务线程等各路写完、写 `capture.json` 后交出片段，`RecordingService` 此时才构建计划并提交一次。
+    - `end_segment`、会话结束的 `close_session` 仍等写完；关窗收尾先 `wait_idle` 再 `cancel_all`。
+  - 考试暂停（D-28）：
+    - 新增显式的 `pause()`/`resume()` 与命令 `PAUSE_SEGMENT`/`RESUME_SEGMENT`。录制中暂停同时暂停录像（输出时间扣除暂停区间），等待到位时只暂停流程。
+    - 确认在暂停期间到达时照常绑定片段；开录失败则恢复后回到等待到位。
+  - 练习失败原因（D-27）：失败码 `*_recording_failed` 的片段不能评判、不走降级。录制中失败时离开录制阶段并提示重录；只是转码失败、源文件可读的降级保留。
+  - Tk 录制控制器在超出 400 行前把模板池拆到 `apps/tk/controllers/template_pools.py`（`TemplatePools`）。
+  - 设计文档：§2.2、§8.6 注、§8.8 第 8 层与标题、附录模板池去向同步；D-27、D-28 记为已实施，D-18 记为代码已实施、待实机验收。`AGENTS.md` 代码地图同步。
+- 被替换的测试（D-13）：
+  - `tests/test_segment_recording.py::test_service_finish_and_close_cancel_never_interleave`：`finish` 不再返回 `FinishOutcome`，改为等 `wait_idle` 后断言没有提交。
+  - `tests/test_recording_worker.py::test_slow_processing_loop_does_not_slow_the_recording`：第 7 层后站位检测不在循环里，改由逐帧 stage 把循环拖到约 5 fps；片段经 `plan_for` 取得。
+  - `tests/test_tk_recording.py` 的模板池用例改用 `app.recording.pools`。
+  - `tests/test_ui_controls.py::test_record_btn_text_has_exactly_three_states` 改为 `test_record_btn_text_covers_toggle_states_and_stopping`（多一个只显示的 stopping）。
+  - 练习与压力测试中替换 `begin` 的替身增加 `on_confirm` 并同步确认。
+- 验证方法：
+  - 新增 `tests/test_recording_controls.py` 7 项，用按真实时间以 30 fps 出帧的假来源，连跑 3 次稳定：
+    - 确认晚于两路首帧；
+    - 单路无画面、超时失败都结束整段；
+    - 结束立即返回、stopping 拒绝开录、写完交出一次；
+    - 迟到确认作废；显式暂停扣除；服务写完才提交、会话结束等写完。
+  - `tests/test_workflows.py` 新增 5 项：
+    - 练习开录失败带原因；
+    - 确认前结束丢弃；
+    - 录制失败不评判而转码失败仍可评判；
+    - 执行器异步确认与立即失败带原因。
+  - `tests/test_exam_session.py` 新增 2 项：确认后才播报、录制中暂停与恢复、暂停期间到达的确认与失败。
+  - `tests/test_tk_recording.py` 新增 2 项：stopping 按钮、手动开录失败提示。
+  - 全量 `pytest tests -q`：1338 项通过（含真实 Tk + spawn 的模式切换检查）；门禁（golden、契约、架构）62 项通过；`scripts/sim_exam_flow.py` 37 项通过。
+  - 实机：开发机只有一个摄像头且被占用，双摄 1080p 实拍与冻结 EXE 自检留待甲方机器（§8.8 验收）。
+
 ## 2026-10-21: [feat] D-18 第 7 层：站位检测按时间采样最新帧，样本带源帧采集时刻（D-30）
 
 - 问题描述：站位检测是处理循环里的一个 stage，每 3 个处理帧推理一次。频率随处理循环变化，循环慢时检测变稀；样本时刻是推理完成时刻，到位、离场的判定时间会漂移。上一流程或暂停前采到的样本迟到时，考试仍会计入。

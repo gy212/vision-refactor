@@ -5,6 +5,8 @@
 ``_student_try_begin_recording``、``_student_end``、``_on_student_postprocess_update``、``_student_judge``
 的流程逻辑（设计文档 §8.6）。不依赖 Tk：界面、录制、播报与分析都经命令交给 ``CommandExecutor``。
 到位/离场用 ``PresenceRecordingCycle``，离场 2 s 即结束，不设最短录制时长。
+开录是异步的：两路写出首帧（``record_started``）后才播报"开始"；确认之前结束或退出时丢弃这一段。
+录制失败（队列溢出、断流、写盘失败）的片段不能评判，只有"录制成功、后处理失败但源文件可读"的片段走降级（D-27）。
 """
 
 from __future__ import annotations
@@ -32,6 +34,7 @@ PracticePhase = Literal[
 _WAITING = frozenset({"waiting_session", "waiting_enter"})
 _TERMINAL = frozenset({"completed", "failed", "skipped", "cancelled"})
 _IN_PROGRESS = frozenset({"queued", "transcoding", "validating"})
+_RECORDING_FAILED = "_recording_failed"   # CheckRecording 的失败码后缀（front_/side_recording_failed）
 
 STATUS_WAIT_ENTER = "请进入正面预览黄框，站稳0.8秒后播报开始并自动录制"
 
@@ -84,6 +87,7 @@ class PracticeSession:
         self.active_student_id: str | None = None
         self.current_record: dict[str, Any] | None = None
         self._pending_identity: dict[str, Any] | None = None
+        self.starting = False  # 已请求开录、两路还没确认
 
     # ------------------------------------------------------------------ 查询
     @property
@@ -188,11 +192,13 @@ class PracticeSession:
             self.presence.disarm()
             self.phase = self._rest_phase()
             return [Command("DISARM_OCCUPANCY"), _status(str(exc))]
+        self.starting = True
         return [Command("BEGIN_SEGMENT", {})]
 
     def _on_record_started(self, *, now: float, segment: Any = None, **_: Any) -> list[Command]:
         if self.phase != "waiting_enter":
             return []
+        self.starting = False
         self.phase = "recording"
         self.presence.recording_started(now)
         self.identity = self._pending_identity
@@ -206,16 +212,27 @@ class PracticeSession:
             _status("开始，录制中…离开黄框连续2秒自动结束，也可点「结束」"),
         ]
 
-    def _on_begin_failed(self, **_: Any) -> list[Command]:
+    def _on_begin_failed(self, *, message: str = "", **_: Any) -> list[Command]:
         if self.phase != "waiting_enter":
             return []
+        self.starting = False
         self._pending_identity = None
         self.presence.disarm()
         self.phase = self._rest_phase()
+        reason = f"\n原因：{message}" if message else ""
         return [
             Command("DISARM_OCCUPANCY"),
-            _status("开录失败，请重试「开始」", alert="无法开始录制，请确认双摄已就绪。", title="学生练习", error=True),
+            _status("开录失败，请重试「开始」", alert=f"无法开始录制，请确认双摄已就绪。{reason}", title="学生练习",
+                    error=True),
         ]
+
+    def _abandon_start(self) -> list[Command]:
+        """开录还没确认就结束或退出：丢弃这一段（只落盘），迟到的确认由录制端忽略。"""
+        if not self.starting:
+            return []
+        self.starting = False
+        self._pending_identity = None
+        return [Command("DISCARD_SEGMENT", {})]
 
     # ------------------------------------------------------------------ 结束与后处理
     def _on_end(self, **_: Any) -> list[Command]:
@@ -224,7 +241,7 @@ class PracticeSession:
             return []
         waiting = self.phase in _WAITING
         self.presence.disarm()
-        cmds: list[Command] = [Command("DISARM_OCCUPANCY")]
+        cmds: list[Command] = [Command("DISARM_OCCUPANCY"), *self._abandon_start()]
         if self.phase != "recording":
             if waiting:
                 self.phase = self._rest_phase()
@@ -249,6 +266,8 @@ class PracticeSession:
                 return [_status(f"处理中：{update.message or update.status}…")]
             return []
         segment.terminal = True
+        if (getattr(update, "error_code", None) or "").endswith(_RECORDING_FAILED):
+            return self._recording_failed(segment, update)
         front = _readable(getattr(update, "front_video", None))
         side = _readable(getattr(update, "side_video", None))
         # failed/cancelled 时仍有可读源文件也允许评判（降级），否则禁用
@@ -269,6 +288,18 @@ class PracticeSession:
         if segment.ready:
             return [_status(f"已就绪：{segment.segment_id}，可点「动作评判」")]
         return [_status(f"处理结束但未找到可读视频：{update.error_code or update.status}")]
+
+    def _recording_failed(self, segment: PracticeSegment, update: Any) -> list[Command]:
+        """录制本身失败（D-27）：不评判、不走降级；录制中失败（界面已结束片段）时回到可重新开始的状态。"""
+        segment.ready, segment.front, segment.side = False, None, None
+        cmds: list[Command] = []
+        if self.phase == "recording":
+            self.presence.disarm()
+            self.phase = "waiting_postprocess"
+            cmds.append(Command("DISARM_OCCUPANCY"))
+        self._settle()
+        text = f"录制失败，请重录：{update.message or update.error_code}"
+        return [*cmds, _status(text, alert=text, title="学生练习", error=True)]
 
     def _settle(self) -> None:
         if self.phase == "waiting_postprocess":
@@ -364,6 +395,7 @@ class PracticeSession:
     # ------------------------------------------------------------------ 会话与退出
     def _stop_waiting(self) -> list[Command]:
         self.presence.disarm()
+        self.starting = False   # 会话收尾时录制端结束这一段
         if self.phase in _WAITING:
             self.phase = self._rest_phase()
         elif self.phase == "recording":
@@ -383,6 +415,7 @@ class PracticeSession:
         if self.busy:
             return []
         recording = self.phase == "recording"
+        abandon = self._abandon_start()
         self.presence.disarm()
         self.phase = "idle"
         self.segment = None
@@ -391,5 +424,5 @@ class PracticeSession:
         self.active_token = None
         self.active_student_id = None
         self.current_record = None
-        cmds = [Command("DISARM_OCCUPANCY")]
+        cmds = [Command("DISARM_OCCUPANCY"), *abandon]
         return [*cmds, Command("END_SEGMENT", {})] if recording else cmds

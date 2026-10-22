@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from core.workflows import ExamCandidate
 from core.workflows import ExamSession, ExamSessionConfig
 
@@ -231,3 +233,46 @@ def test_presence_samples_captured_before_arming_or_pause_are_ignored() -> None:
     assert s.handle("presence", present=True, now=3.1) == []
     cmds = s.handle("presence", present=True, now=3.95)
     assert "BEGIN_SEGMENT" in _kinds(cmds)
+
+
+def _to_recording(s: ExamSession) -> None:
+    s.load_roster(_cands(1))
+    s.handle("start_exam", now=0.0, run_id="r1")
+    s.handle("call_guard_elapsed", now=2.0)
+    cmds = s.handle("enter_stable", now=3.0)
+    assert _kinds(cmds) == ["BEGIN_SEGMENT"]                  # "考试开始"等两路写出首帧后才播报（D-27）
+
+
+def test_exam_announces_start_after_confirmation_and_pause_pauses_recording() -> None:
+    """D-28：录制中暂停同时暂停录像，恢复时继续；等待到位时暂停只暂停流程。"""
+    s = ExamSession()
+    _to_recording(s)
+    segment = SimpleNamespace(segment_id="seg1", directory=None)
+    cmds = s.handle("record_started", now=3.3, segment=segment)
+    assert cmds[0].kind == "ANNOUNCE" and cmds[0].payload["text"] == "考试开始"
+    assert "BIND_SEGMENT_PENDING" in _kinds(cmds)
+    assert _kinds(s.handle("pause", now=5.0)) == ["DISARM_OCCUPANCY", "PAUSE_SEGMENT"]
+    assert _kinds(s.handle("resume", now=8.0)) == ["RESUME_SEGMENT", "ARM_OCCUPANCY"]
+    assert s.phase == "recording"
+    s2 = ExamSession()
+    s2.load_roster(_cands(1))
+    s2.handle("start_exam", now=0.0)
+    s2.handle("call_guard_elapsed", now=2.0)
+    assert _kinds(s2.handle("pause", now=3.0)) == ["DISARM_OCCUPANCY"]
+    assert _kinds(s2.handle("resume", now=4.0)) == ["ARM_OCCUPANCY"]
+
+
+def test_exam_confirmation_or_failure_arriving_while_paused() -> None:
+    s = ExamSession()
+    _to_recording(s)
+    s.handle("pause", now=3.1)                                # 确认到达前暂停
+    cmds = s.handle("record_started", now=3.3, segment=SimpleNamespace(segment_id="seg1", directory=None))
+    assert "BIND_SEGMENT_PENDING" in _kinds(cmds) and s.phase == "paused"
+    s = ExamSession()
+    _to_recording(s)
+    s.handle("pause", now=3.1)
+    cmds = s.handle("begin_failed", now=3.5, message="侧面：写盘失败")
+    assert "ARM_OCCUPANCY" not in _kinds(cmds) and s.rows[0].error_message == "侧面：写盘失败"
+    assert s.phase == "paused" and s.paused_from == "wait_enter"
+    assert _kinds(s.handle("resume", now=6.0)) == ["ARM_OCCUPANCY"]
+    assert s.phase == "wait_enter"

@@ -94,10 +94,10 @@ class DesktopApp:
                                stop=session.stop, camera_selected=self.cameras.primary_selected,
                                camera_2_selected=self.cameras.secondary_selected)
         window.recording.connect(toggle=recording.toggle, stop=recording.stop_clicked,
-                                 add_templates=recording.add_templates, remove_templates=recording.remove_templates,
+                                 add_templates=recording.pools.add, remove_templates=recording.pools.remove,
                                  auto_scale=recording.auto_scale_moved, auto_changed=recording.auto_changed,
                                  choose_dir=recording.choose_record_dir)
-        recording.sync_template_status()
+        recording.pools.sync_status()
         recording.sync_hint()
         window.connect(compare=self.open_compare, exam=self.exam.open, practice=practice.enter,
                        back_to_preview=practice.show_preview_view)

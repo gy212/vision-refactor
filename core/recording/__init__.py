@@ -10,17 +10,20 @@ from core.recording.finalizer import (
     write_result_json,
 )
 from core.recording.recorder import (
+    START_CONFIRM_S,
     BeginError,
     FinishedSegment,
     RecorderSnapshot,
     SegmentMeta,
     SegmentRecorder,
     SegmentRef,
+    SegmentState,
+    StartConfirm,
     ViewRecording,
 )
 from core.recording.service import FinishOutcome, RecordingService
 from core.recording.skeleton import RenderSkeleton, skeleton_engine
-from core.recording.worker import QUEUE_CAPACITY, FrameFeed, ViewResult, ViewWorker
+from core.recording.worker import QUEUE_CAPACITY, STOP_WAIT_S, FrameFeed, ViewResult, ViewWorker
 from core.recording.steps import (
     TERMINAL_STATUSES,
     CheckRecording,
@@ -66,6 +69,10 @@ __all__ = [
     "SegmentMeta",
     "SegmentRecorder",
     "SegmentRef",
+    "SegmentState",
+    "START_CONFIRM_S",
+    "STOP_WAIT_S",
+    "StartConfirm",
     "SegmentStatus",
     "SegmentUpdate",
     "Step",

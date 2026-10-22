@@ -56,7 +56,7 @@ def _states(app) -> list[str]:
 
 # ---------------------------------------------------------------- 三态按钮
 def test_record_btn_text_mapping():
-    assert RECORD_BTN_TEXT == {"idle": "开始录制", "recording": "暂停录制", "paused": "继续录制"}
+    assert RECORD_BTN_TEXT == {"idle": "开始录制", "recording": "暂停录制", "paused": "继续录制", "stopping": "正在结束…"}
 
 
 def test_toggle_drives_button_text_cycle(root, tmp_path):
@@ -165,10 +165,10 @@ def test_exam_mode_forces_auto_compare_in_plan(root, tmp_path):
 def test_plan_uses_template_pools_cached_on_tk_thread(root, tmp_path):
     app, finalizer, _ = _dual_app(root, tmp_path)
     app.window.recording.add_pool_path("front", tmp_path / "front_a.npz")
-    app.recording.templates_changed()
+    app.recording.pools.changed()
     assert app.window.recording.template_status_var.get().startswith("模板池：正面 1 个 · 侧面 0 个")
     app.recording.stop_clicked()
-    assert app.recording.template_lists() == ([tmp_path / "front_a.npz"], [])
+    assert app.recording.pools.lists() == ([tmp_path / "front_a.npz"], [])
     assert finalizer.jobs[0].plan is not None
 
 
@@ -525,3 +525,38 @@ def test_exam_preflight_rejects_skeleton_session(root):
     app.flags.record_skeleton = True
     problems = app.exam.exam_preflight()
     assert problems and "骨架" in problems[0]
+
+
+# ---------------------------------------------------------------- D-18 第 8 层：开录确认与结束写盘（D-27）
+def test_stopping_disables_record_button_until_drained(root, tmp_path, monkeypatch):
+    """结束不等写完：stopping 期间按钮显示"正在结束…"且不可用，点击无效；写完后的 tick 复位。"""
+    app, _finalizer = _recording_app(root, tmp_path)
+    service = app.recording.service
+    state = {"value": "stopping"}
+    monkeypatch.setattr(type(service), "state", property(lambda _self: state["value"]))
+    calls = []
+    monkeypatch.setattr(service, "toggle_pause", lambda: calls.append("toggle") or "paused")
+    app.recording.sync_record_state("stopping")
+    panel = app.window.recording
+    assert _text(panel.record_btn) == "正在结束…" and _state(panel.record_btn) == "disabled"
+    app.recording.toggle()
+    assert calls == []
+    state["value"] = "idle"
+    app.recording.refresh_status()
+    assert _text(panel.record_btn) == "开始录制" and _state(panel.record_btn) == "normal"
+
+
+def test_manual_start_failure_resets_button_and_tells_the_user(root, tmp_path, monkeypatch):
+    app, _finalizer = _recording_app(root, tmp_path)
+    shown = []
+    monkeypatch.setattr(recording_mod.messagebox, "showerror", lambda title, text, **_k: shown.append((title, text)))
+    app.recording.service.begin_session({"front": (4, 3), "side": (4, 3)}, 30.0)
+    segment = app.recording.begin()
+    assert segment and _text(app.window.recording.record_btn) == "暂停录制"
+    app.recording.service.finish(discard=True)              # 录制端在开录失败时已结束整段
+    app.recording._confirmed(segment, "侧面：写盘失败", None)
+    assert shown and "侧面：写盘失败" in shown[0][1]
+    assert _text(app.window.recording.record_btn) == "开始录制"
+    forwarded = []
+    app.recording._confirmed(segment, "侧面：写盘失败", lambda seg, err: forwarded.append(err))
+    assert forwarded == ["侧面：写盘失败"] and len(shown) == 1   # 工作流开录的失败由工作流提示

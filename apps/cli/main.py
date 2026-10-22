@@ -108,8 +108,13 @@ class CliExport:
         temporary = self._path.with_name(f".{self._path.stem}.raw.avi")
         self._recorder = SegmentRecorder(lambda _target, rate, size: open_video_writer(temporary, fps=rate, size=size))
         self._recorder.begin_session(sizes, fps, feed=feed, rotation_of=rotation_of)
-        if not self._recorder.start_segment(SegmentMeta(self._path.parent)):
+        if not self._recorder.start_segment(SegmentMeta(self._path.parent), self._confirmed):
             raise RuntimeError("无法开始录制摄像头画面")
+
+    def _confirmed(self, _segment, error: str | None) -> None:
+        """开录确认（录制的任务线程）：没能写出首帧时录制端已结束这一段，记下原因。"""
+        if error is not None:
+            self.error = f"摄像头录像没有开始：{error}"
 
     def write(self, frames: Mapping[str, np.ndarray]) -> None:
         if self._writer is not None:
@@ -123,6 +128,8 @@ class CliExport:
             finished = self._recorder.close_session()
             self._recorder = None
             view = None if finished is None else finished.views.get("front")
+            if self.error is not None:
+                return
             if view is None or view.path is None or view.frames <= 0:
                 self.error = "摄像头录像没有写出画面"
             elif view.error:

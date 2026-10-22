@@ -206,9 +206,18 @@ class _Recorder:
         self.segment = segment
         self.calls = []
 
-    def start_segment(self, payload):
+    def start_segment(self, payload, on_confirm):
+        """开录确认同步回送（真实端口在两路写出首帧后经 Tk 线程回送）。"""
         self.calls.append(("start", payload))
+        if self.segment:
+            on_confirm(self.segment, None)
         return self.segment
+
+    def pause_segment(self):
+        self.calls.append(("pause",))
+
+    def resume_segment(self):
+        self.calls.append(("resume",))
 
     def finish(self, *, discard):
         self.calls.append(("finish", discard))
@@ -448,3 +457,92 @@ def test_exam_and_practice_preflight_order():
     problems = ModeManager().preflight(PRACTICE, ctx)
     assert problems[:2] == ["学号无效", "未选双摄"] and len(problems) == 3
     assert ModeManager().preflight(PRACTICE, PreflightContext()) == []
+
+
+# ---------------------------------------------------------------- D-18 第 8 层：开录确认与录制失败（D-27）
+def _starting(session, now=0.0):
+    session.handle("start", now=now, session_ready=True)
+    session.handle("presence", present=True, now=now)
+    assert _kinds_of(session.handle("presence", present=True, now=now + 0.8)) == ["BEGIN_SEGMENT"]
+    assert session.starting and session.phase == "waiting_enter"
+
+
+def test_practice_begin_failure_shows_the_reason():
+    s = _practice()
+    _starting(s)
+    cmds = s.handle("begin_failed", now=1.0, message="侧面：开录时还没有这一路的画面")
+    assert _kinds_of(cmds) == ["DISARM_OCCUPANCY", "STATUS"]
+    assert "侧面：开录时还没有这一路的画面" in cmds[1].payload["alert"]
+    assert not s.starting and s.phase == "idle"
+
+
+def test_practice_end_or_exit_before_confirmation_discards_the_segment():
+    s = _practice()
+    _starting(s)
+    cmds = s.handle("end")
+    assert _kinds_of(cmds) == ["DISARM_OCCUPANCY", "DISCARD_SEGMENT", "STATUS"]
+    assert not s.starting and s.phase == "idle"
+    assert s.handle("record_started", now=2.0, segment=SimpleNamespace(segment_id="seg", directory=None)) == []
+    s = _practice()
+    _starting(s)
+    assert _kinds_of(s.handle("exit")) == ["DISARM_OCCUPANCY", "DISCARD_SEGMENT"]
+
+
+def test_practice_recording_failure_is_not_judged_even_with_readable_files(tmp_path):
+    """录制失败（队列溢出、断流、写盘失败）不走降级通路；录制中失败时离开录制阶段。"""
+    front, side = tmp_path / "front.mp4", tmp_path / "side.mp4"
+    front.write_bytes(b"x")
+    side.write_bytes(b"x")
+    s = _practice()
+    _record(s)
+    assert s.recording
+    update = SimpleNamespace(segment_id="seg", status="failed", error_code="side_recording_failed",
+                             message="侧面录像失败：录像队列已满", front_video=front, side_video=side)
+    cmds = s.handle("segment_update", update=update)
+    assert "DISARM_OCCUPANCY" in _kinds_of(cmds)
+    assert "录制失败，请重录" in cmds[-1].payload["text"] and cmds[-1].payload["error"]
+    assert not s.recording and s.phase == "idle" and not s.can_judge
+    # 只是转码失败、源文件可读：仍按降级通路允许评判
+    s = _practice()
+    _record(s)
+    s.handle("end")
+    s.handle("segment_update", update=SimpleNamespace(segment_id="seg", status="failed", error_code="transcode_failed",
+                                                     message="", front_video=front, side_video=side))
+    assert s.can_judge
+
+
+def test_executor_start_confirmation_is_asynchronous():
+    confirm = []
+
+    class Pending(_Recorder):
+        def start_segment(self, payload, on_confirm):
+            self.calls.append(("start", payload))
+            confirm.append(on_confirm)
+            return self.segment
+
+    segment = SimpleNamespace(segment_id="s1")
+    ports = _ports()
+    ports.recorder = Pending(segment)
+    flow = _Flow([Command("BEGIN_SEGMENT", {}), Command("PAUSE_SEGMENT"), Command("RESUME_SEGMENT")])
+    executor = CommandExecutor(ports, clock=lambda: 3.0)
+    executor.dispatch(flow, "go")
+    assert [e for e, _ in flow.events] == ["go"]           # 还没确认：不回送
+    assert ports.recorder.calls[1:] == [("pause",), ("resume",)]
+    confirm[0](segment, None)
+    assert flow.events[-1] == ("record_started", {"now": 3.0, "segment": segment})
+    confirm[0](segment, "正面：写盘失败")
+    assert flow.events[-1] == ("begin_failed", {"now": 3.0, "message": "正面：写盘失败"})
+
+
+def test_executor_immediate_begin_failure_carries_the_reason():
+    from core.recording import BeginError
+
+    class Refused(_Recorder):
+        def start_segment(self, payload, on_confirm):
+            return BeginError("stopping")
+
+    ports = _ports()
+    ports.recorder = Refused(None)
+    flow = _Flow([Command("BEGIN_SEGMENT", {})])
+    CommandExecutor(ports, clock=lambda: 1.0).dispatch(flow, "go")
+    assert flow.events[-1] == ("begin_failed", {"now": 1.0, "message": BeginError("stopping").message})

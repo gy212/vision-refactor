@@ -38,9 +38,9 @@ def test_record_btn_text_mapping():
     assert RECORD_BTN_TEXT["paused"] == "继续录制"
 
 
-def test_record_btn_text_has_exactly_three_states():
-    """映射恰好覆盖三种状态，不多不少。"""
-    assert set(RECORD_BTN_TEXT.keys()) == {"idle", "recording", "paused"}
+def test_record_btn_text_covers_toggle_states_and_stopping():
+    """映射覆盖切换的三态，另有结束写盘期间只显示、不可点的 stopping（D-18 第 8 层），不多不少。"""
+    assert set(RECORD_BTN_TEXT.keys()) == {"idle", "recording", "paused", "stopping"}
 
 
 # ---------------------------------------------------------------------------

@@ -344,13 +344,17 @@ class PacedCapture:
         self.released = True
 
 
-def test_slow_processing_loop_does_not_slow_the_recording(tmp_path):
-    """解耦验收：处理循环慢到约 5 fps（站位检测每帧 0.2 s）时，录像仍收到完整的源帧序列，两路帧数相同。"""
+def test_slow_processing_loop_does_not_slow_the_recording(tmp_path, monkeypatch):
+    """解耦验收：处理循环慢到约 5 fps（逐帧 stage 每帧 0.2 s）、站位采样也慢时，录像仍收到完整的源帧序列，两路帧数相同。"""
+    import core.live.presence as presence_mod
+    import core.live.stages as stages_mod
     from core.live import CameraInput, LiveSessionManager, camera_session
     from core.media import CameraPool, CameraService, CaptureSpec
 
     service = CameraService(pool=CameraPool(PacedCapture, join_timeout=0.2))
-    recording = RecordingService(SegmentFinalizer(), plan_for=lambda _s: None, recorder=SegmentRecorder(Writers()))
+    finished_segments = []
+    recording = RecordingService(SegmentFinalizer(), plan_for=lambda seg: finished_segments.append(seg),
+                                 recorder=SegmentRecorder(Writers()))
     running = threading.Event()
     ended = threading.Event()
 
@@ -369,8 +373,13 @@ def test_slow_processing_loop_does_not_slow_the_recording(tmp_path):
         on_event=on_event, sink=recording, probe=slow_probe,
     )
     manager.controls.arm_occupancy("test", True)
-    import core.live.stages as stages_mod
-    original = stages_mod.create_engine
+    roi_process = stages_mod.RoiStage.process
+
+    def slow_roi(self, packet, ctx):
+        time.sleep(0.2)
+        return roi_process(self, packet, ctx)
+
+    monkeypatch.setattr(stages_mod.RoiStage, "process", slow_roi)
 
     class Lite:
         def next_timestamp_ms(self, **_kw):
@@ -382,19 +391,19 @@ def test_slow_processing_loop_does_not_slow_the_recording(tmp_path):
         def close(self):
             pass
 
-    stages_mod.create_engine = lambda *_a, **_k: Lite()
+    monkeypatch.setattr(presence_mod, "create_engine", lambda *_a, **_k: Lite())
     try:
         manager.start(camera_session({PRIMARY: CaptureSpec(0, 64, 48), SECONDARY: CaptureSpec(1, 64, 48)}))
         assert running.wait(10.0)
         assert recording.start(SegmentMeta(tmp_path))
         time.sleep(1.5)
-        outcome = recording.finish()
+        assert recording.finish() is not None
+        assert recording.wait_idle(5.0)
         manager.stop()
         assert ended.wait(10.0)
     finally:
-        stages_mod.create_engine = original
         service.close(2.0)
-    finished = outcome.segment
+    finished = finished_segments[0]
     record = read_capture_record(finished.ref.capture_path)["views"]
     for view in ("front", "side"):
         stats = record[view]["stats"]
