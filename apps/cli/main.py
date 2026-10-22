@@ -32,7 +32,7 @@ from core.live import (
     camera_session,
     video_session,
 )
-from core.media import PRIMARY, CameraService, CaptureSpec, capture_clock_ns, open_video_writer
+from core.media import PRIMARY, CameraService, CaptureSpec, capture_clock_ns, first_frame_ok, open_video_writer
 from core.pose import EngineSpec, annotate_video
 from core.recording import SegmentMeta, SegmentRecorder, skeleton_engine
 
@@ -87,7 +87,7 @@ class CliExport:
 
     - 视频文件：会话线程逐帧写主路叠加帧（mp4v）。
     - 摄像头：录制层的录像线程按真实时间把原始画面录到 ``--out`` 旁的临时文件；会话结束后 ``finish``
-      再画骨架写成 ``--out``，成功后删除临时文件，失败时保留它（D-26）。
+      再画骨架写成 ``--out``，成片校验可读后才删除临时文件，失败时保留它（D-26）。
     """
 
     def __init__(self, path: str | None, engine: EngineSpec) -> None:
@@ -141,13 +141,17 @@ class CliExport:
                 print(f"\r骨架成片 {done}/{total}", end="", flush=True)
 
         try:
-            annotate_video(raw, self._path, self._engine, open_writer=_open_mp4v, progress=report)
+            path, _codec, frames = annotate_video(raw, self._path, self._engine, open_writer=_open_mp4v,
+                                                  progress=report)
         except Exception as exc:
             self.error = f"骨架成片失败（原始录像保留在 {raw}）：{exc}"
             return
         finally:
             if progress:
                 print()
+        if frames <= 0 or not first_frame_ok(path):
+            self.error = f"骨架成片不可读：{path}（原始录像保留在 {raw}）"
+            return
         raw.unlink(missing_ok=True)
 
 

@@ -186,15 +186,8 @@ def test_annotate_video_draws_every_frame_with_increasing_timestamps(tmp_path, m
     assert count == 6
 
 
-def test_cli_camera_out_records_raw_then_renders_skeleton_video(tmp_path, monkeypatch):
-    """CLI 摄像头 ``--out``：会话期间按真实时间录原始画面到临时文件，会话后画骨架写成 ``--out`` 并删掉临时文件。"""
-    rendered: list[tuple[Path, Path]] = []
-
-    def fake_annotate(raw, out, engine, *, open_writer, progress):
-        rendered.append((Path(raw), Path(out)))
-        Path(out).write_bytes(b"skeleton")
-        return Path(out), "mp4v", 1
-
+def _recorded_cli_export(tmp_path: Path, monkeypatch, fake_annotate) -> tuple[cli_main.CliExport, Path]:
+    """录 0.4 s 原始画面后停在 ``finish`` 之前的 CLI 摄像头导出（``annotate_video`` 换成替身）。"""
     monkeypatch.setattr(cli_main, "annotate_video", fake_annotate)
     out = tmp_path / "out.mp4"
     export = cli_main.CliExport(str(out), ENGINE)
@@ -205,8 +198,38 @@ def test_cli_camera_out_records_raw_then_renders_skeleton_video(tmp_path, monkey
         export.close_session()
     finally:
         feed.close()
+    return export, out
+
+
+def test_cli_camera_out_records_raw_then_renders_skeleton_video(tmp_path, monkeypatch):
+    """CLI 摄像头 ``--out``：会话期间按真实时间录原始画面到临时文件，会话后画骨架写成 ``--out``，
+    成片可读后才删掉临时文件。"""
+    rendered: list[tuple[Path, Path]] = []
+
+    def fake_annotate(raw, out, engine, *, open_writer, progress):
+        rendered.append((Path(raw), Path(out)))
+        writer, path, codec = open_writer(Path(out), fps=30.0, size=(32, 24))
+        writer.write(np.full((24, 32, 3), 80, np.uint8))
+        writer.release()
+        return path, codec, 1
+
+    export, out = _recorded_cli_export(tmp_path, monkeypatch, fake_annotate)
     assert export.error is None and not rendered      # 成片在会话之后才生成
     export.finish(progress=False)
     raw = rendered[0][0]
     assert rendered[0][1] == out and raw.name == ".out.raw.avi" and not raw.exists()
-    assert out.read_bytes() == b"skeleton" and export.error is None
+    assert out.stat().st_size > 0 and export.error is None
+
+
+def test_cli_camera_out_keeps_raw_when_rendered_video_is_unreadable(tmp_path, monkeypatch):
+    """成片返回正常但写出的文件读不出画面（静默写失败）时，保留原始录像并报错，不报成功（D-26）。"""
+    def fake_annotate(raw, out, engine, *, open_writer, progress):
+        Path(out).write_bytes(b"")
+        return Path(out), "mp4v", 12
+
+    export, out = _recorded_cli_export(tmp_path, monkeypatch, fake_annotate)
+    raw = out.with_name(".out.raw.avi")
+    assert export.error is None and raw.exists()
+    export.finish(progress=False)
+    assert raw.exists() and raw.stat().st_size > 0
+    assert export.error is not None and "不可读" in export.error and str(raw) in export.error
