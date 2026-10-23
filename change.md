@@ -1,3 +1,37 @@
+## 2026-10-23: [fix] 开录时在后台打开录像 writer，打开慢不再排满录像队列；录制性能测试按生产方式打开 writer
+
+- 问题描述：甲方用 `main` 构建的新 EXE 开录即报"front_recording_failed：正面录像失败：录像队列已满（8 帧），写盘跟不上采集"。在开发机上复现：
+  - 第 6 层的 `ViewWorker` 在录像线程里写首帧时才懒创建 writer（`RecordingController.write_frame` → `open_video_writer`）。对 1080p 的 `.mp4`，`open_video_writer` 先试 `avc1`，经 Windows Media Foundation 能打开，但两路同时打开首次要 0.51～0.58 s、之后 0.17～0.21 s；8 帧队列只盖得住 0.27 s。
+  - 两路合成 30 fps 1080p 加真实 writer（`origin/main` 的代码）录 5 s：两路都只写出 1 帧、队列峰值 8、溢出 7 帧，报的正是甲方看到的错误。同样条件用 MJPG 时没有问题，所以此前的测试和甲方 10-21 的实测（MJPG，打开 28 ms）都没暴露。加载姿态模型不占 GIL（最长停顿 8 ms），已排除。
+  - 录制性能测试（Ctrl+Shift+B）先打开 writer 再订阅帧，测不到生产的打开路径；甲方这台机器现在是否拿到 `avc1` 还没确认，但任何能打开 `avc1` 的机器每段开录都会失败。
+- 修改内容：
+  - `core/media/writer_opener.py`（新增，L1，录像与性能测试共用）：`WriterOpener` 在 `TaskGroup` 任务里打开 writer；`take` 交出一次（失败时抛出打开的异常），`abandon` 时已打开的立即释放、还在打开的打开完由任务释放，不漏 writer。
+  - `core/recording/controller.py`：新增 `open_writer(path)`（用会话的 fps、尺寸打开，不改状态、不持锁）与 `attach_writer(writer, path)`（录制中且没有 writer 时接收）。视频文件会话的懒创建不变。
+  - `core/recording/worker.py`：
+    - 开录边界执行时按首帧转正后的尺寸在后台打开 writer。打开期间录像线程照常取帧，时间轴的输出帧按序积压；打开后每轮先取一帧、再写一帧积压，追平后与之前一样直接写。
+    - 新常量 `WRITER_OPEN_TIMEOUT_S = 1.5`，积压上限取这段时间的帧数（30 fps 下 45 帧）。打开超时、打开失败、积压超限都使这一段失败并写明原因，不报笼统的"队列已满"。1.5 s 加去抖前瞻小于 `START_CONFIRM_S`（2 s，不变），所以确认失败时报的是打开的原因。
+    - 开录确认仍在写出首帧之后。打开期间暂停、继续照常；打开期间结束时等到打开上限，再写完积压。结束、失败、关闭时放弃打开中的 writer。结束时积压期间溢出的是结束边界之后的帧，不计入本段。
+    - `capture.json` 每路另加 `writer`（`codec`、`open_ms`、`backlog_peak`）。
+    - 队列容量 8、录制期间溢出即失败（D-27）不变；`open_video_writer` 的编码顺序不变。
+  - `core/services/recording_benchmark.py`：
+    - 写盘段改为与生产相同：先订阅，收到首帧后在后台打开（`WriterOpener`），按序积压，每轮先取一帧再写一帧积压。
+    - 每路写盘结果另记 `open_backlog`、`backlog_peak`、`backlog_dropped`、`catch_up_ms`，报告顶层记 `production_open_budget_ms`。打开超过 1.5 s 或积压超限判该段不达标，结论行列出各路编码与打开耗时。
+    - 新常量 `PRODUCTION_OPEN_BUDGET_S`、`BACKLOG_LIMIT`。Tk 入口与甲方操作步骤不变，`docs/录制性能测试操作说明.md` 未改。
+  - 文档：设计文档 §2.2 模块表、§8.8 录像一行与第 4 层说明、新增"writer 的打开"一段、D-27 补充；`AGENTS.md` 代码地图加 `writer_opener.py`。
+  - 测试：
+    - `tests/test_recording_worker.py`：打开 0.6 s 时两路开录成功、帧数与时长相符、写出的每帧与 `slot_sources` 一致、无溢出（每帧写 0 ms 与 15 ms 两种；在 `origin/main` 上两例都失败，报"录像队列已满"）；打开失败与超时写明原因并释放迟到的 writer；打开期间结束、暂停继续；会话关闭时释放；超时与确认上限的大小关系。
+    - `tests/test_media_writer_opener.py`（新增）、`tests/test_recording_controller.py`（`attach_writer`）。
+    - `tests/test_recording_benchmark.py`：新字段、打开 0.6 s 时积压而队列不排满、超过上限判不达标、镜像的生产常量与 `core.recording` 一致。
+    - 没有替换或删除测试。
+- 验证方法：
+  - 门禁 `tests/test_pose33_v3_golden.py tests/test_valid_mask_migration.py tests/test_tech_eval_contract.py tests/test_rule_availability.py`：44 passed；`tests/test_architecture.py`：18 passed。
+  - 录制套件 `test_recording_worker.py test_recording_controller.py test_recording_postprocess.py test_recording_benchmark.py test_workflows.py test_tk_recording.py test_media_writer_opener.py test_recording_controls.py`：175 passed。新测试连跑 3 次（全量测试同时在跑）：每次 33 passed。
+  - 全量 `-m pytest tests -q`：1359 passed（基线 `origin/main` 1343 passed，新增 16 项），无失败。
+  - `scripts/sim_exam_flow.py`：37 passed，0 failed。
+  - 开发机真实 `avc1` 两路 1080p 30 fps，经 `SegmentRecorder` 连录两段、每段 22 s：每路 661 帧（解码核对 661 帧、30 fps），无错误，队列峰值 1、无溢出；打开首次 545～575 ms、第二次 172～184 ms，积压峰值 19 帧。
+  - 录制性能测试的写盘段（假 1080p 摄像头加真实 writer）：报告记下 `avc1`、打开 513 ms，打开完成时积压 17 帧、29～37 ms 追平，第二次打开 166～204 ms，两段都判达标。
+  - `git -c core.whitespace=cr-at-eol diff --check origin/main HEAD`：无输出，退出码 0。
+
 ## 2026-10-23: [docs] 第二批采集清单逐项核对补全（约 207 对 → 约 279 对）
 
 - 问题描述：用户要求复核清单是否完整，避免第一批那样漏项。逐条对照来源后发现：

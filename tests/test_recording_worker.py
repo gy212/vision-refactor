@@ -3,7 +3,8 @@
 
 假帧来源按真实时间以 30 fps 产出带采集时刻的帧（像素值编码序号），用真实的 ``FrameQueue``；
 检查：帧数与时长、两路帧数相同、不把边界之后的帧写进片段、暂停扣除、段内方向固定（D-29）、
-队列溢出与断流使该段失败（D-27）、``capture.json``，以及真实 writer 写出后解码检查画面内容的时间。
+队列溢出与断流使该段失败（D-27）、``capture.json``，以及真实 writer 写出后解码检查画面内容的时间；
+writer 在后台打开（打开慢时不排满队列、不丢帧，打开失败或超时写明原因，暂停、结束、关闭时不漏 writer）。
 """
 from __future__ import annotations
 
@@ -25,7 +26,17 @@ from core.media import (
     open_video_writer,
     read_capture_record,
 )
-from core.recording import RecordingService, SegmentFinalizer, SegmentMeta, SegmentRecorder
+from core.foundation import TaskGroup
+from core.media.frame_clock import LOOKAHEAD
+from core.recording import (
+    START_CONFIRM_S,
+    WRITER_OPEN_TIMEOUT_S,
+    RecordingService,
+    SegmentFinalizer,
+    SegmentMeta,
+    SegmentRecorder,
+    ViewWorker,
+)
 
 P_NS = 1e9 / 30
 
@@ -129,6 +140,28 @@ class Writers:
         return self.opened[view][-1]
 
 
+class SlowOpenWriters(Writers):
+    """打开要 ``open_s`` 秒的 writer 工厂（像 1080p ``avc1`` 经 Media Foundation 打开：本机首次约 0.6 s）；
+    ``fail`` 时打开失败。记下每次打开所在的线程与已释放的迟到 writer。"""
+
+    def __init__(self, open_s: float = 0.6, delay: float = 0.0, fail: str | None = None) -> None:
+        super().__init__(delay)
+        self.open_s = open_s
+        self.fail = fail
+        self.threads: list[str] = []
+        self.finished = threading.Event()
+
+    def __call__(self, path, fps, size):
+        self.threads.append(threading.current_thread().name)
+        try:
+            time.sleep(self.open_s)
+            if self.fail:
+                raise RuntimeError(self.fail)
+            return super().__call__(path, fps, size)
+        finally:
+            self.finished.set()
+
+
 @pytest.fixture
 def feed():
     created: list[FakeFeed] = []
@@ -222,6 +255,138 @@ def test_rotation_is_fixed_at_segment_start(tmp_path, feed):
     recorder.close_session()
     second = writers.order[-1]
     assert second is not first and {frame.shape[:2] for frame in second.frames} == {(4, 6)}
+
+
+def _written_seqs(writer: RecordingWriter) -> list[int]:
+    return [int(frame[0, 0, 0]) for frame in writer.frames]
+
+
+@pytest.mark.parametrize("write_s", [0.0, 0.015])
+def test_slow_writer_open_does_not_stall_the_record_queue(tmp_path, feed, write_s):
+    """甲方故障（2026-10-23）：1080p ``avc1`` 打开约 0.6 s，超过 8 帧队列能盖住的 0.27 s，两路开录即报"录像队列已满"。
+    打开不占录像线程：两路照常开录、确认成功，开录到首次写出之间的输出帧按序全部写出（每帧写 15 ms 时也追得上）。"""
+    writers = SlowOpenWriters(open_s=0.6, delay=write_s)
+    source = feed()
+    recorder = _recorder(source, writers)
+    confirmed: list = []
+    ref = recorder.start_segment(SegmentMeta(tmp_path), lambda segment, error: confirmed.append(error))
+    started = time.perf_counter()
+    time.sleep(1.5)
+    elapsed = time.perf_counter() - started
+    finished = recorder.end_segment()
+    recorder.close_session()
+
+    assert confirmed == [None]
+    record = read_capture_record(ref.capture_path)["views"]
+    for view in ("front", "side"):
+        result = finished.views[view]
+        assert result.error is None
+        assert abs(result.frames - elapsed * 30) <= 2
+        writer = writers.last(view)
+        assert writer.released and len(writer.frames) == result.frames
+        assert _written_seqs(writer) == [seq % 256 for seq, _at in record[view]["slot_sources"]]
+        assert record[view]["queue"]["overflows"] == 0
+        assert record[view]["writer"]["codec"] == "fake" and record[view]["writer"]["open_ms"] >= 550
+        assert record[view]["writer"]["backlog_peak"] >= 15
+    assert finished.views["front"].frames == finished.views["side"].frames
+    assert writers.threads and all("open-writer" in name for name in writers.threads)
+
+
+def test_open_budget_fits_inside_the_start_confirmation():
+    """打开超时（加上去抖前瞻）早于开录确认的上限：失败时报的是打开的原因，而不是"没有写出首帧"。"""
+    assert WRITER_OPEN_TIMEOUT_S + (LOOKAHEAD + 1) / 30 < START_CONFIRM_S
+
+
+def _wait_released(writers: Writers, count: int, timeout: float = 3.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if len(writers.order) >= count and all(writer.released for writer in writers.order):
+            return
+        time.sleep(0.02)
+    raise AssertionError(f"writer 未释放：{[(w.path.name, w.released) for w in writers.order]}")
+
+
+def test_writer_open_failure_fails_the_segment_with_its_cause(tmp_path, feed):
+    writers = SlowOpenWriters(open_s=0.1, fail="VideoWriter open failed")
+    recorder = _recorder(feed(), writers)
+    confirmed: list = []
+    assert recorder.start_segment(SegmentMeta(tmp_path), lambda _segment, error: confirmed.append(error))
+    deadline = time.monotonic() + 2.0
+    while not confirmed and time.monotonic() < deadline:
+        time.sleep(0.02)
+    recorder.close_session()
+    assert len(confirmed) == 1 and "打开录像文件失败：VideoWriter open failed" in confirmed[0]
+    assert "录像队列已满" not in confirmed[0]
+
+
+def test_writer_open_slower_than_the_budget_fails_and_releases_the_late_writer(tmp_path, feed):
+    writers = SlowOpenWriters(open_s=WRITER_OPEN_TIMEOUT_S + 0.5)
+    recorder = _recorder(feed(), writers)
+    confirmed: list = []
+    assert recorder.start_segment(SegmentMeta(tmp_path), lambda _segment, error: confirmed.append(error))
+    deadline = time.monotonic() + START_CONFIRM_S + 1.0
+    while not confirmed and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert len(confirmed) == 1 and f"打开录像文件超过 {WRITER_OPEN_TIMEOUT_S:g} 秒" in confirmed[0]
+    _wait_released(writers, 2)
+    recorder.close_session()
+    assert all(not writer.frames for writer in writers.order)
+
+
+def test_stop_before_the_writer_opens_still_writes_every_frame(tmp_path, feed):
+    """打开期间就结束：等打开完成，按序写完积压，片段完整。"""
+    writers = SlowOpenWriters(open_s=0.6)
+    recorder = _recorder(feed(), writers)
+    ref = recorder.start_segment(SegmentMeta(tmp_path))
+    started = time.perf_counter()
+    time.sleep(0.3)
+    elapsed = time.perf_counter() - started
+    finished = recorder.end_segment()
+    recorder.close_session()
+    record = read_capture_record(ref.capture_path)["views"]
+    for view in ("front", "side"):
+        result = finished.views[view]
+        assert result.error is None and abs(result.frames - elapsed * 30) <= 2
+        assert _written_seqs(writers.last(view)) == [seq % 256 for seq, _at in record[view]["slot_sources"]]
+        assert writers.last(view).released
+    assert finished.views["front"].frames == finished.views["side"].frames
+
+
+def test_pause_and_resume_while_the_writer_opens_keep_the_boundaries(tmp_path, feed):
+    writers = SlowOpenWriters(open_s=0.6)
+    recorder = _recorder(feed(), writers)
+    ref = recorder.start_segment(SegmentMeta(tmp_path))
+    time.sleep(0.2)
+    assert recorder.pause() == "paused"
+    time.sleep(0.3)
+    assert recorder.resume() == "recording"
+    time.sleep(0.6)
+    finished = recorder.end_segment()
+    recorder.close_session()
+    record = read_capture_record(ref.capture_path)["views"]
+    for view in ("front", "side"):
+        runs = record[view]["runs"]
+        recorded = sum(end - start for start, end in runs)
+        assert len(runs) == 2 and finished.views[view].error is None
+        assert abs(finished.views[view].frames - recorded / P_NS) <= 1
+        assert _written_seqs(writers.last(view)) == [seq % 256 for seq, _at in record[view]["slot_sources"]]
+    assert finished.views["front"].frames == finished.views["side"].frames
+
+
+def test_closing_while_the_writer_opens_releases_it(tmp_path, feed):
+    """录像线程在打开期间退出（会话关闭）：打开完成后由打开任务释放 writer，不泄漏、不写帧。"""
+    writers = SlowOpenWriters(open_s=0.5)
+    source = feed(roles=(PRIMARY,))
+    worker = ViewWorker("front", PRIMARY, source, fps=30.0, tasks=TaskGroup("test"), writer_factory=writers)
+    assert worker.wait_primed(1.0)
+    outcomes: list = []
+    worker.start(capture_clock_ns(), tmp_path / "front.mp4", 0, outcomes.append)
+    time.sleep(0.2)
+    assert worker.close()
+    assert outcomes and outcomes[0] is not None
+    assert writers.finished.wait(2.0)
+    _wait_released(writers, 1)
+    assert not writers.order[0].frames
 
 
 def test_slow_writer_overflows_the_queue_and_fails_the_segment(tmp_path, feed):
