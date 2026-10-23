@@ -62,6 +62,9 @@ REPORT_SCHEMA = 1
 REPORT_PREFIX = "录制性能测试"
 
 EngineFactory = Callable[[EngineSpec], Any]
+# writer 工厂（与 ``RecordingController`` 的 ``writer_factory`` 同签名）：给定目标路径 / fps / size，
+# 返回 (writer, 实际落盘路径, codec 标签)；默认绑定 ``open_video_writer``。
+WriterFactory = Callable[[Path, float, tuple[int, int]], tuple[Any, Path, str]]
 Progress = Callable[[str, float], None]   # (说明文字, 总进度 0..1)
 
 
@@ -83,9 +86,15 @@ PHASES: tuple[Phase, ...] = (
 )
 
 
+def _default_writer_factory(path: Path, fps: float, size: tuple[int, int]) -> tuple[Any, Path, str]:
+    """默认 writer 工厂：绑定 ``open_video_writer``（生产录像用的同一个）。"""
+    return open_video_writer(path, fps=fps, size=size)
+
+
 @dataclass
 class BenchmarkSetup:
-    """一次测试的输入。``stream`` 未接管；``rotations``、``labels`` 按角色；``work_dir`` 放临时录像（测完删除）。"""
+    """一次测试的输入。``stream`` 未接管；``rotations``、``labels`` 按角色；``work_dir`` 放临时录像（测完删除）；
+    ``writer_factory`` 打开各路 writer，默认 ``open_video_writer``。"""
 
     stream: CameraStream
     rotations: Mapping[str, int]
@@ -96,6 +105,7 @@ class BenchmarkSetup:
     enable_hands: bool = True
     phases: tuple[Phase, ...] = PHASES
     extra: Mapping[str, Any] = field(default_factory=dict)
+    writer_factory: WriterFactory = _default_writer_factory
 
 
 def _ms_stats(values: list[float]) -> dict[str, float | None]:
@@ -129,11 +139,12 @@ def _count_frames(queue: FrameQueue, stamps: list[int], token: CancelToken) -> N
         stamps.append(frame.captured_at_ns)
 
 
-def _start_open(path: Path, frame: CapturedFrame, rotation: int, tasks: TaskGroup) -> WriterOpener:
+def _start_open(factory: WriterFactory, path: Path, frame: CapturedFrame, rotation: int,
+                tasks: TaskGroup) -> WriterOpener:
     """按首帧转正后的尺寸在任务线程里打开 writer（与生产的录像线程相同）。"""
     height, width = frame.bgr.shape[:2]
     size = rotated_size(int(width), int(height), rotation)
-    return WriterOpener(lambda: open_video_writer(path, fps=TARGET_FPS, size=size), tasks,
+    return WriterOpener(lambda: factory(path, TARGET_FPS, size), tasks,
                         name=f"open-{path.stem}", owner="benchmark", close_budget_s=10.0)
 
 
@@ -154,8 +165,8 @@ def _write_one(writer: Any, frame: CapturedFrame, rotation: int, result: dict) -
     result["stamps"].append(frame.captured_at_ns)
 
 
-def _write_frames(queue: FrameQueue, path: Path, rotation: int, tasks: TaskGroup, result: dict,
-                  token: CancelToken) -> None:
+def _write_frames(queue: FrameQueue, factory: WriterFactory, path: Path, rotation: int, tasks: TaskGroup,
+                  result: dict, token: CancelToken) -> None:
     """按序取帧、转正、写出（第 6 层录像线程的写法）：首帧到达后在后台打开 writer，打开期间按序积压
     （超过生产允许的帧数就丢弃并计数），打开后每轮先取一帧再写一帧积压；记每帧耗时，出错时记下原因并停止取帧。"""
     result.update(write_ms=[], stamps=[], backlog_peak=0, backlog_dropped=0)
@@ -166,7 +177,7 @@ def _write_frames(queue: FrameQueue, path: Path, rotation: int, tasks: TaskGroup
         while not token.cancelled:
             frame = queue.get(0.0 if writer is not None and backlog else 0.2)
             if frame is not None:
-                opener = opener or _start_open(path, frame, rotation, tasks)
+                opener = opener or _start_open(factory, path, frame, rotation, tasks)
                 if len(backlog) < BACKLOG_LIMIT:
                     backlog.append(frame)
                     result["backlog_peak"] = max(result["backlog_peak"], len(backlog))
@@ -275,7 +286,7 @@ def _start_phase_workers(setup: BenchmarkSetup, phase: Phase, sizes: Mapping[str
             queue = stream.subscribe(role, BENCH_QUEUE, watermark=PRODUCTION_QUEUE)
             state["queues"][(role, "write")] = queue
             tasks.spawn(f"write-{role}", lambda t, q=queue, p=path, r=rotation, w=result:
-                        _write_frames(q, p, r, tasks, w, t), owner="benchmark")
+                        _write_frames(q, setup.writer_factory, p, r, tasks, w, t), owner="benchmark")
     if phase.lite:
         state["lite"] = {}
         tasks.spawn("lite", lambda t: _run_lite(stream, PRIMARY, setup.rotations.get(PRIMARY, 0),

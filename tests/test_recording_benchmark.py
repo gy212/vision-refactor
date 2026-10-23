@@ -1,12 +1,14 @@
 # -*- coding: utf-8 -*-
-"""录制性能测试（``core.services.recording_benchmark``）：用假摄像头与假引擎跑完四段，检查报告内容、判定与清理；
-writer 与生产一样在帧流动之后打开，报告编码、打开耗时与积压，打开超过生产上限判不达标。"""
+"""录制性能测试（``core.services.recording_benchmark``）：用假摄像头、假引擎与假 writer 跑完四段，检查报告内容、判定与清理；
+writer 与生产一样在帧流动之后打开，报告编码、打开耗时与积压，打开超过生产上限判不达标。
+假 writer 的打开与写入耗时由测试指定，结果不随本机编码器（如 ``avc1`` 打开的快慢）变化。"""
 from __future__ import annotations
 
 import json
 import threading
 import time
 from datetime import datetime
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -61,6 +63,41 @@ class FakeEngine:
         self.closed = True
 
 
+class FakeWriter:
+    """记下写入帧数的假 writer；``delay`` 是每帧写入耗时。"""
+
+    def __init__(self, delay: float = 0.0) -> None:
+        self.delay = delay
+        self.frames = 0
+        self.released = False
+
+    def write(self, frame) -> None:
+        if self.delay:
+            time.sleep(self.delay)
+        self.frames += 1
+
+    def release(self) -> None:
+        self.released = True
+
+
+class FakeWriters:
+    """``BenchmarkSetup.writer_factory`` 的假实现：打开要 ``open_s`` 秒，记下打开参数与 writer。"""
+
+    def __init__(self, *, open_s: float = 0.0, delay: float = 0.0) -> None:
+        self.open_s = open_s
+        self.delay = delay
+        self.calls: list[tuple[Path, float, tuple[int, int]]] = []
+        self.writers: list[FakeWriter] = []
+
+    def __call__(self, path, fps, size):
+        self.calls.append((Path(path), fps, size))
+        if self.open_s:
+            time.sleep(self.open_s)
+        writer = FakeWriter(self.delay)
+        self.writers.append(writer)
+        return writer, Path(path), "fake"
+
+
 SHORT = tuple(BenchmarkPhase(p.key, p.label, 0.6, p.write, p.lite, p.skeleton) for p in BENCHMARK_PHASES)
 
 
@@ -73,7 +110,7 @@ def service():
         svc.close(2.0)
 
 
-def _setup(service, tmp_path, engines, *, phases=SHORT, dual=True):
+def _setup(service, tmp_path, engines, *, phases=SHORT, dual=True, writers=None):
     specs = {PRIMARY: CaptureSpec(0)}
     if dual:
         specs[SECONDARY] = CaptureSpec(1)
@@ -82,13 +119,15 @@ def _setup(service, tmp_path, engines, *, phases=SHORT, dual=True):
         stream=service.open_stream(specs), rotations={PRIMARY: 90, SECONDARY: 0},
         labels={PRIMARY: "正面相机", SECONDARY: "侧面相机"}, work_dir=tmp_path / "work",
         engine_factory=factory, phases=phases, extra={"build": {"commit": "abc1234"}},
+        writer_factory=writers if writers is not None else FakeWriters(),
     )
 
 
 def test_full_run_reports_every_phase_and_cleans_up(service, tmp_path):
     engines: dict = {}
     progress: list = []
-    report = run_recording_benchmark(_setup(service, tmp_path, engines), CancelToken(),
+    writers = FakeWriters()
+    report = run_recording_benchmark(_setup(service, tmp_path, engines, writers=writers), CancelToken(),
                                      lambda text, done: progress.append((text, done)))
     assert report["kind"] == "recording_benchmark" and report["build"] == {"commit": "abc1234"}
     assert [p["key"] for p in report["phases"]] == ["capture", "record", "record_lite", "record_skeleton"]
@@ -100,7 +139,7 @@ def test_full_run_reports_every_phase_and_cleans_up(service, tmp_path):
             assert capture["frames"] >= 10 and capture["fps"] == pytest.approx(30, abs=4)
             if phase["key"] != "capture":
                 write = phase["roles"][view]["write"]
-                assert write["frames"] >= 10 and write["codec"] and write["error"] is None
+                assert write["frames"] >= 10 and write["codec"] == "fake" and write["error"] is None
                 assert write["over_production_queue"] == 0 and write["dropped"] == 0
                 assert write["open_ms"] is not None and write["open_backlog"] >= 1 and write["backlog_dropped"] == 0
                 assert write["catch_up_ms"] is not None
@@ -109,25 +148,18 @@ def test_full_run_reports_every_phase_and_cleans_up(service, tmp_path):
     assert all(engine.closed for engine in engines.values()) and len(engines) == 3   # lite + 每路一个
     assert not (tmp_path / "work").exists()                                          # 临时录像已删除
     assert progress[-1][1] == 1.0 and report["summary"]
-    assert "编码 正面" in report["summary"][1] and report["production_open_budget_ms"] == 1500.0
+    assert "编码 正面 fake 打开" in report["summary"][1] and report["production_open_budget_ms"] == 1500.0
+    assert len(writers.writers) == 6 and all(writer.released for writer in writers.writers)   # 3 个写盘段 × 2 路
+    front_calls = [call for call in writers.calls if call[0].stem == "front"]
+    assert front_calls and all(fps == 30.0 and size == (48, 64) for _path, fps, size in front_calls)  # 转正 90°
     assert not service.device_busy(0) or True                                        # 设备交回池（预热）
 
 
-def _slow_open(monkeypatch, open_s: float) -> None:
-    real_writer = bench.open_video_writer
-
-    def slow(path, *, fps, size):
-        time.sleep(open_s)
-        return real_writer(path, fps=fps, size=size)
-
-    monkeypatch.setattr(bench, "open_video_writer", slow)
-
-
-def test_writer_opens_after_frames_flow_like_production(service, tmp_path, monkeypatch):
+def test_writer_opens_after_frames_flow_like_production(service, tmp_path):
     """与生产相同：帧已经在流动时才打开 writer。打开 0.6 s 期间帧按序积压，写盘队列不排满，打开后追平。"""
-    _slow_open(monkeypatch, 0.6)
     phases = (BenchmarkPhase("record", "采集 + 写盘", 2.0, write=True),)
-    report = run_recording_benchmark(_setup(service, tmp_path, {}, phases=phases), CancelToken(), lambda *_: None)
+    setup = _setup(service, tmp_path, {}, phases=phases, writers=FakeWriters(open_s=0.6))
+    report = run_recording_benchmark(setup, CancelToken(), lambda *_: None)
     for view in ("front", "side"):
         write = report["phases"][0]["roles"][view]["write"]
         assert write["open_ms"] >= 550 and write["open_backlog"] >= 15 and write["backlog_peak"] >= 15
@@ -136,18 +168,29 @@ def test_writer_opens_after_frames_flow_like_production(service, tmp_path, monke
     assert report["ok"] is True, report["summary"]
 
 
-def test_writer_open_over_the_production_budget_is_reported(service, tmp_path, monkeypatch):
+def test_writer_open_over_the_production_budget_is_reported(service, tmp_path):
     """打开超过生产上限（1.5 s）时，生产会判开录失败：报告写明编码与打开耗时，该段不达标。"""
-    _slow_open(monkeypatch, bench.PRODUCTION_OPEN_BUDGET_S + 0.3)
     phases = (BenchmarkPhase("record", "采集 + 写盘", 2.5, write=True),)
-    report = run_recording_benchmark(_setup(service, tmp_path, {}, phases=phases, dual=False), CancelToken(),
-                                     lambda *_: None)
+    writers = FakeWriters(open_s=bench.PRODUCTION_OPEN_BUDGET_S + 0.3)
+    report = run_recording_benchmark(_setup(service, tmp_path, {}, phases=phases, dual=False, writers=writers),
+                                     CancelToken(), lambda *_: None)
     write = report["phases"][0]["roles"]["front"]["write"]
     assert write["open_ms"] >= 1800 and write["backlog_dropped"] > 0 and write["over_production_queue"] == 0
     problems = report["phases"][0]["verdict"]["problems"]
     assert report["ok"] is False
     assert any("打开录像文件用了" in problem and "超过生产上限 1500 ms" in problem for problem in problems)
     assert any(f"开录积压超过 {bench.BACKLOG_LIMIT} 帧" in problem for problem in problems)
+    assert any("编码 正面 fake 打开" in line for line in report["summary"])
+
+
+def test_default_writer_factory_is_the_production_open_video_writer(tmp_path, monkeypatch):
+    """默认工厂把路径、fps、尺寸原样交给 ``open_video_writer``（生产录像用的同一个）。"""
+    calls: list = []
+    monkeypatch.setattr(bench, "open_video_writer",
+                        lambda path, *, fps, size: calls.append((path, fps, size)) or ("w", path, "avc1"))
+    setup = BenchmarkSetup(stream=None, rotations={}, labels={}, work_dir=tmp_path, engine_factory=FakeEngine)
+    assert setup.writer_factory(tmp_path / "front.mp4", 30.0, (1080, 1920)) == ("w", tmp_path / "front.mp4", "avc1")
+    assert calls == [(tmp_path / "front.mp4", 30.0, (1080, 1920))]
 
 
 def test_production_limits_match_the_recording_worker():
@@ -158,28 +201,11 @@ def test_production_limits_match_the_recording_worker():
     assert bench.PRODUCTION_OPEN_BUDGET_S == WRITER_OPEN_TIMEOUT_S
 
 
-def test_slow_writer_is_reported_as_not_keeping_up(service, tmp_path, monkeypatch):
+def test_slow_writer_is_reported_as_not_keeping_up(service, tmp_path):
     """写一帧 60 ms（30 fps 需要 ≤33 ms）时，队列会排到 8 帧以上，判为不达标。"""
-    real_writer = bench.open_video_writer
-
-    class SlowWriter:
-        def __init__(self, inner):
-            self.inner = inner
-
-        def write(self, frame):
-            time.sleep(0.06)
-            self.inner.write(frame)
-
-        def release(self):
-            self.inner.release()
-
-    def slow(path, *, fps, size):
-        writer, actual, codec = real_writer(path, fps=fps, size=size)
-        return SlowWriter(writer), actual, codec
-
-    monkeypatch.setattr(bench, "open_video_writer", slow)
     phases = (BenchmarkPhase("record", "采集 + 写盘", 1.5, write=True),)
-    report = run_recording_benchmark(_setup(service, tmp_path, {}, phases=phases), CancelToken(), lambda *_: None)
+    setup = _setup(service, tmp_path, {}, phases=phases, writers=FakeWriters(delay=0.06))
+    report = run_recording_benchmark(setup, CancelToken(), lambda *_: None)
     write = report["phases"][0]["roles"]["front"]["write"]
     assert write["over_production_queue"] > 0 and write["queue_peak"] >= 8
     assert report["ok"] is False and not report["phases"][0]["verdict"]["ok"]
