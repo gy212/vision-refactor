@@ -23,7 +23,7 @@ r"""S0b 决策 Spike：YOLO vs MediaPipe 基线对照脚本（临时脚本，不
 ::
 
     .\.venv\Scripts\python.exe -m analysis.spike_yolo_baseline \
-        --samples docs/yolo_eval_samples.json \
+        --samples <样本清单.json> \
         --yolo-model models/yolo11n-pose.pt \
         --pose-variant full \
         --out outputs/spike
@@ -588,7 +588,7 @@ def load_samples(samples_json: Path) -> list[Path]:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="S0b YOLO vs MediaPipe 基线对照 spike（不接主链路）")
-    ap.add_argument("--samples", type=str, default=None, help="样本清单 JSON（docs/yolo_eval_samples.json）")
+    ap.add_argument("--samples", type=str, default=None, help="样本清单 JSON（schema 见 git 历史中的 docs/yolo_eval_samples.json；样本登记见 docs/样本清单.md）")
     ap.add_argument("--video", type=str, default=None, help="单个视频路径（与 --samples 二选一）")
     ap.add_argument("--yolo-model", type=str, default="models/yolo11n-pose.pt")
     ap.add_argument("--pose-variant", type=str, default="full", choices=["lite", "full", "heavy"])

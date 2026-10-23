@@ -53,7 +53,7 @@ body_core_v1 的 avg_cost 尺度与 pose33 不同，故按**尺度对齐**标定
 ::
 
     .\.venv\Scripts\python.exe -m analysis.calibrate_body_core \
-        --samples docs/yolo_eval_samples.json \
+        --samples <样本清单.json> \
         --yolo-model models/yolo11n-pose.pt \
         --pose-variant full \
         --out outputs/calib_body_core
@@ -681,7 +681,7 @@ def _write_csv(path: Path, rows: list[dict]) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="S3 body_core_v1 三路对照 + 阈值标定（Issue #10）")
-    p.add_argument("--samples", default="docs/yolo_eval_samples.json")
+    p.add_argument("--samples", required=True, help="样本清单 JSON（schema 见 git 历史中的 docs/yolo_eval_samples.json；样本登记见 docs/样本清单.md）")
     p.add_argument("--yolo-model", default="models/yolo11n-pose.pt")
     p.add_argument("--pose-variant", default="full")
     p.add_argument("--out", default="outputs/calib_body_core")

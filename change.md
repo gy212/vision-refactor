@@ -1,3 +1,22 @@
+## 2026-10-23: [feat] 样本评估工具入库（规则检出修复计划步骤 1，不改行为）
+
+- 问题描述：第一批甲方样本的规则检出分析用的是仓库外的一次性脚本（`outputs/sample_analysis/scripts/`）。修复计划步骤 3～6 的每个规则 PR 都要用同一套指标证明修改前后"变好了"，需要一个入库、可复跑、能对比两次运行的工具；`docs/yolo_eval_samples.json` 登记的旧样本已不符合拍摄规格（D-11 遗留项）。
+- 修改内容：
+  - 新增 `analysis/sample_eval/`（`python -m analysis.sample_eval run / report / compare`），只用 `core` 各包的公共 API，不接入生产路径：
+    - `manifest.py`：样本清单 CSV（英文键或中文表头），按 `pair_id` 归并"第几次"分行的标注，支持整体或逐项的教师判定，给出正确 / 错误 / 不计入的样本口径；
+    - `cache.py`：heavy、FORMAL 顺序跟踪的姿态缓存，多进程、可续跑、原子写，缓存键变了才重提；子进程不下载模型（主进程先检查），正面可按清单旋转；读回后按 `extract_series` 的口径构造规则输入；
+    - `evaluate.py`：每对每动作跑 `evaluate_series` 加 `judge_views`，展开成逐检查项行与相位行；
+    - `metrics.py`：误报率（融合与逐视角）、检出率（逐对最好判定、按错误项、按预期检查项）、非目标项计数、动作阶段检出、正侧对齐失败；
+    - `report.py`：固定章节与列的 Markdown，给基线运行时每格写"基线 → 本次"；`runs.py`、`pipeline.py`、`__main__.py` 负责运行目录、流程与命令行。
+  - 新增 `docs/样本清单.md`（样本根目录、批次、清单格式、样本口径、用法）与第一批清单 `docs/samples/2026-10-16_client_batch1.csv`（71 对，由原分析的 `manifest.csv`、`action_map.csv` 与 C 项对应关系生成）。
+  - 删除 `docs/yolo_eval_samples.json`；`analysis/calibrate_body_core.py` 的 `--samples` 改为必填，`bench_annotate_fps.py` 除 `--env-only` 外必填，`spike_yolo_baseline.py` 只改帮助文字与示例。
+  - `AGENTS.md` 代码地图补 `analysis/sample_eval/`；修复计划步骤 1 记为已实施。
+  - 未搬入的一次性脚本：`qc.py`、`strip.py`、`contact_sheets.py`、`action_detect.py`（人工核对动作标签用，结论已固化进清单的 `rule_actions`）、`calib.py`（D-11 标定，属于 `calibrate_body_core.py`）、`manifest.py`（扫描目录生成清单，改为维护清单 CSV）。
+- 验证方法：
+  - `tests/test_sample_eval.py` 新增 29 项（含参数化），全部用合成小样本（不读真实视频、不加载模型）。
+  - 第一批 71 对重新提取姿态（116 段视频，0 失败）后评估 58 对、64 个对 × 动作：逐检查项结论表与原 `rule_checks.csv` 逐格一致（1720 行，只有 `error_item` 的"无"改为空）；原报告第四节的误报表、逐对最好判定（8/7/8/7/9）、非目标项计数、阶段检出与对齐失败全部复现。
+  - 门禁、架构测试与受影响的测试结果见 PR。
+
 ## 2026-10-22: [fix] D-18 评审修复：CLI 成片校验、迟到的开录确认、录制失败后按钮复位（#43、#45）
 
 - 问题描述（#43、#45 评审）：
