@@ -263,7 +263,7 @@ def bench_sample(
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="S5 GPU annotate FPS benchmark harness (Issue #23)")
-    parser.add_argument("--samples", default="docs/yolo_eval_samples.json")
+    parser.add_argument("--samples", default=None, help="（--env-only 以外必填）样本清单 JSON（schema 见 git 历史中的 docs/yolo_eval_samples.json；样本登记见 docs/样本清单.md）")
     parser.add_argument("--asset-root", default=None, help="Root for ignored local videos when samples paths are relative")
     parser.add_argument("--models-dir", default=None)
     parser.add_argument(
@@ -289,7 +289,10 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     )
     parser.add_argument("--out", default="outputs/gpu_recheck")
     parser.add_argument("--env-only", action="store_true", help="Write environment JSON and exit")
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if not args.env_only and not args.samples:
+        parser.error("除 --env-only 外必须用 --samples 指定样本清单")
+    return args
 
 
 def _bench_all(args: argparse.Namespace, env: dict[str, Any]) -> tuple[list[Sample], list[dict[str, Any]]]:

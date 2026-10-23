@@ -1,0 +1,72 @@
+pair_id,repetition,segment_dir,category,person,action,rule_actions,error_item,expected_codes,teacher_verdict,front_rotation,note
+A_low_kick,,A/低鞭腿,A,,低鞭腿,front_low_kick|rear_low_kick,,,,90,前后腿未标注，两种动作都评
+A_stance,,A/实战式,A,,实战式,stance,,,,90,
+A_straight_combo,,A/前后直拳,A,,前后直拳,straight_combo,,,,90,
+A_straight_swing,,A/前直后摆,A,,前直后摆,,,,,90,前直后摆不在 v5 目录
+A_swing_combo,,A/前后摆拳,A,,前后摆拳,hook_combo,,,,90,
+A_uppercut,,A/勾拳,A,,勾拳,,,,,90,勾拳不在 v5 目录
+B_S1_low_kick,,B/1 低鞭腿,B,S1,低鞭腿,front_low_kick|rear_low_kick,,,,0,前后腿未标注，两种动作都评
+B_S1_straight,,B/1 直拳,B,S1,直拳,straight_combo,,,,0,抽帧：前后手都出拳，按组合评
+B_S1_swing,,B/1 摆拳,B,S1,摆拳,hook_combo,,,,0,按组合评（同直拳）
+B_S1_uppercut,,B/1 勾拳,B,S1,勾拳,,,,,0,勾拳不在 v5 目录
+B_S2_low_kick,,B/2 低鞭腿,B,S2,低鞭腿,front_low_kick|rear_low_kick,,,,0,前后腿未标注，两种动作都评
+B_S2_straight,,B/2 直拳,B,S2,直拳,straight_combo,,,,0,抽帧：前后手都出拳，按组合评
+B_S2_swing,,B/2 摆拳,B,S2,摆拳,hook_combo,,,,0,按组合评（同直拳）
+B_S2_uppercut,,B/2 勾拳,B,S2,勾拳,,,,,0,勾拳不在 v5 目录
+B_S3_low_kick,,B/3 低鞭腿,B,S3,低鞭腿,front_low_kick|rear_low_kick,,,,0,前后腿未标注，两种动作都评
+B_S3_straight,,B/3 直拳,B,S3,直拳,straight_combo,,,,0,抽帧：前后手都出拳，按组合评
+B_S3_swing,,B/3 摆拳,B,S3,摆拳,hook_combo,,,,0,按组合评（同直拳）
+B_S3_uppercut,,B/3 勾拳,B,S3,勾拳,,,,,0,勾拳不在 v5 目录
+B_S4_low_kick,,B/4 低鞭腿,B,S4,低鞭腿,front_low_kick|rear_low_kick,,,,0,前后腿未标注，两种动作都评
+B_S4_straight,,B/4 直拳,B,S4,直拳,straight_combo,,,,0,抽帧：前后手都出拳，按组合评
+B_S4_swing,,B/4 摆拳,B,S4,摆拳,hook_combo,,,,0,按组合评（同直拳）
+B_S4_uppercut,,B/4 勾拳,B,S4,勾拳,,,,,0,勾拳不在 v5 目录
+B_S5_low_kick,,B/5 低鞭腿,B,S5,低鞭腿,front_low_kick|rear_low_kick,,,,0,前后腿未标注，两种动作都评
+B_S5_straight,,B/5 直拳,B,S5,直拳,straight_combo,,,,0,抽帧：前后手都出拳，按组合评
+B_S5_swing,,B/5 摆拳,B,S5,摆拳,hook_combo,,,,0,按组合评（同直拳）
+B_S5_uppercut,,B/5 勾拳,B,S5,勾拳,,,,,0,勾拳不在 v5 目录
+C1,,C  前半部分/C1,C,,实战式,stance,C1 前手肘角过直,stance_elbow,,0,
+C2,,C  前半部分/C2,C,,实战式,stance,C2 前手肘角过弯,stance_elbow,,0,
+C3,,C  前半部分/C3,C,,实战式,stance,C3 前手拳峰低于鼻尖,stance_height,,0,
+C4,,C  前半部分/C4,C,,实战式,stance,C4 前手拳峰高于鼻尖,stance_height,,0,
+C5,,C  前半部分/C5,C,,实战式,stance,C5 后手离开下颚和肋骨,stance_rear_guard,,0,
+C6,,C  前半部分/C6,C,,实战式,stance,C6 双腿伸直,stance_knee,,0,
+C7,,C  前半部分/C7,C,,实战式,stance,C7 站距过宽,stance_width,,0,
+C8,,C  前半部分/C8,C,,实战式,stance,C8 站距过窄,stance_width,,0,
+C9,,C  前半部分/C9,C,,实战式,stance,C9 两脚内八,stance_toes,,0,
+C10,,C  前半部分/C10,C,,实战式,stance,C10 两脚外八,stance_toes,,0,
+C11,,C 后半部分/C11,C,,实战式,stance,C11 躯干正对前方,stance_torso,,0,
+C12_lead_straight,,C 后半部分/C12/前直拳,C,,前直拳,front_straight,C12 护手掉手,guard_low,,0,
+C12_lead_swing,,C 后半部分/C12/前摆拳,C,,前摆拳,front_hook,C12 护手掉手,guard_low,,0,
+C12_lead_uppercut,,C 后半部分/C12/前勾拳,C,,前勾拳,,C12 护手掉手,guard_low,,0,勾拳不在 v5 目录
+C12_rear_straight,,C 后半部分/C12/后直拳,C,,后直拳,rear_straight,C12 护手掉手,guard_low,,0,
+C12_rear_swing,,C 后半部分/C12/后摆拳,C,,后摆拳,rear_hook,C12 护手掉手,guard_low,,0,
+C12_rear_uppercut,,C 后半部分/C12/后勾拳,C,,后勾拳,,C12 护手掉手,guard_low,,0,勾拳不在 v5 目录
+C13_lead_straight,,C 后半部分/C13/前直拳,C,,前直拳,front_straight,C13 护手向后拉,guard_back,,0,
+C13_lead_swing,,C 后半部分/C13/前摆拳,C,,前摆拳,front_hook,C13 护手向后拉,guard_back,,0,
+C13_lead_uppercut,,C 后半部分/C13/前勾拳,C,,前勾拳,,C13 护手向后拉,guard_back,,0,勾拳不在 v5 目录
+C13_rear_straight,,C 后半部分/C13/后直拳,C,,后直拳,rear_straight,C13 护手向后拉,guard_back,,0,
+C13_rear_swing,,C 后半部分/C13/后摆拳,C,,后摆拳,rear_hook,C13 护手向后拉,guard_back,,0,
+C13_rear_uppercut,,C 后半部分/C13/后 勾拳,C,,后勾拳,,C13 护手向后拉,guard_back,,0,勾拳不在 v5 目录
+C14_lead_straight,,C 后半部分/C14/前直拳,C,,前直拳,front_straight,C14 护手抬肘,guard_elbow,,0,
+C14_lead_swing,,C 后半部分/C14/前摆拳,C,,前摆拳,front_hook,C14 护手抬肘,guard_elbow,,0,
+C14_lead_uppercut,,C 后半部分/C14/前勾拳,C,,前勾拳,,C14 护手抬肘,guard_elbow,,0,勾拳不在 v5 目录
+C14_rear_straight,,C 后半部分/C14/后直拳,C,,后直拳,rear_straight,C14 护手抬肘,guard_elbow,,0,
+C14_rear_swing,,C 后半部分/C14/后摆拳,C,,后摆拳,rear_hook,C14 护手抬肘,guard_elbow,,0,
+C14_rear_uppercut,,C 后半部分/C14/后勾拳,C,,后勾拳,,C14 护手抬肘,guard_elbow,,0,勾拳不在 v5 目录
+C15_straight_t1,,C 后半部分/C15/直拳/record_20261016_092505_222100,C,,直拳,front_straight,C15 出拳不与肩齐平,shoulder_level,,0,抽帧：前手、过高
+C15_straight_t2,,C 后半部分/C15/直拳/record_20261016_092530_753964,C,,直拳,rear_straight,C15 出拳不与肩齐平,shoulder_level,,0,抽帧：后手、过高
+C15_straight_t3,,C 后半部分/C15/直拳/record_20261016_092553_807020,C,,直拳,front_straight,C15 出拳不与肩齐平,shoulder_level,,0,抽帧：前手、过低
+C15_straight_t4,,C 后半部分/C15/直拳/record_20261016_092617_031688,C,,直拳,rear_straight,C15 出拳不与肩齐平,shoulder_level,,0,抽帧：后手、过低
+C15_swing_t1,,C 后半部分/C15/摆拳/record_20261016_092817_136295,C,,摆拳,front_hook,C15 出拳不与肩齐平,shoulder_level,,0,抽帧：前手、过高
+C15_swing_t2,,C 后半部分/C15/摆拳/record_20261016_092841_753102,C,,摆拳,front_hook,C15 出拳不与肩齐平,shoulder_level,,0,抽帧：前手、过低
+C15_swing_t3,,C 后半部分/C15/摆拳/record_20261016_092909_152761,C,,摆拳,rear_hook,C15 出拳不与肩齐平,shoulder_level,,0,抽帧：后手、过高
+C15_swing_t4,,C 后半部分/C15/摆拳/record_20261016_092936_742364,C,,摆拳,rear_hook,C15 出拳不与肩齐平,shoulder_level,,0,抽帧：后手、过低
+C16,,C 后半部分/C16,C,,后摆拳,rear_hook,C16 后手摆拳后前手不回收,guard_recover,,0,
+C17_t1,,C 后半部分/C17       1,C,,低鞭腿,front_low_kick,C17 勾脚尖,foot_flexed,,0,抽帧+踝高：t1 前腿、t2 后腿
+C17_t2,,C 后半部分/C17      2,C,,低鞭腿,rear_low_kick,C17 勾脚尖,foot_flexed,,0,抽帧+踝高：t1 前腿、t2 后腿
+C18_t1,,C 后半部分/C18        1,C,,低鞭腿,front_low_kick,C18 不翻胯,hip_turn,,0,抽帧+踝高：t1 前腿、t2 后腿
+C18_t2,,C 后半部分/C18       2,C,,低鞭腿,rear_low_kick,C18 不翻胯,hip_turn,,0,抽帧+踝高：t1 前腿、t2 后腿
+C19_t1,,C 后半部分/C19     1,C,,低鞭腿,front_low_kick,C19 踢腿同侧手不下甩,arm_swing,,0,抽帧+踝高：t1 前腿、t2 后腿
+C19_t2,,C 后半部分/C19    2,C,,低鞭腿,rear_low_kick,C19 踢腿同侧手不下甩,arm_swing,,0,抽帧+踝高：t1 前腿、t2 后腿
+C20,,C 后半部分/C20,C,,后低鞭腿,rear_low_kick,C20 后低鞭腿后前手不回收,guard_recover,,0,

@@ -133,5 +133,6 @@ CI（`.github/workflows/gates.yml`，检查名 `gates`）在每个 PR 和 `main`
   - 桌面：`app_ui.py`（入口壳）→ `tk/`（`app.py` 组合根、`controllers/`、`views/`、`dispatcher.py`、`shutdown.py`、`self_check.py` 自检内容、`build_info.py`；录制性能测试是隐藏入口 Ctrl+Shift+B → `controllers/benchmark.py` 与 `views/benchmark_dialog.py`，报告存到桌面，甲方操作见 `docs/录制性能测试操作说明.md`）；`desktop_launcher.py` 是打包入口（`--offline-self-check`）。
   - CLI：`main.py`、`make_template.py`、`match_template.py`（入口壳）→ `cli/`。
 - `batch/`、`analysis/`：离线批处理、tech_eval、标定和 benchmark，只用 `core` 各包的公共 API，不接入默认的生产评分路径。
+  - `analysis/sample_eval/` 是样本评估工具（`python -m analysis.sample_eval`）：按样本清单 CSV 建姿态缓存（`cache.py`，多进程、可续跑），逐对跑 `evaluate_series` 加 `judge_views`（`evaluate.py`），算误报率、检出率、阶段检出与对齐失败（`metrics.py`），出固定格式的单次或修改前后对比报告（`report.py`）。规则 PR 附它的对比报告。样本根目录、批次与清单格式见 `docs/样本清单.md`，清单在 `docs/samples/`。
 - `scripts/`：`sim_exam_flow.py`（无摄像头模拟考试）、`match_segments_probe.py`、`generate_feedback_icons.py`。
 - 其它：`tests/` 是 pytest 回归与 fixtures（架构测试 `test_architecture.py`、allowlist `architecture_allowlist.py`、差分基准 `eval_diff/`）；`assets/feedback/` 是结果页状态图标；`packaging/pyinstaller/` 是单文件 spec 也要用的 runtime hook。
