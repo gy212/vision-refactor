@@ -49,6 +49,7 @@ from core.media.pacing import Timeline, TimelineStats
 from core.media.transforms import apply_rotation, rotated_size
 from core.media.segment_layout import CAPTURE_FILE, VIDEO_SUFFIXES, SegmentLayout, role_for_view, view_for_role
 from core.media.writer import open_video_writer, transcode_to_h264
+from core.media.writer_opener import OpenedWriter, OpenWriter, WriterOpener
 
 __all__ = [
     "BoundaryShift",
@@ -87,6 +88,8 @@ __all__ = [
     "NO_END",
     "open_video",
     "open_video_writer",
+    "OpenedWriter",
+    "OpenWriter",
     "PRIMARY",
     "probe_camera",
     "probe_video",
@@ -108,6 +111,7 @@ __all__ = [
     "VideoMeta",
     "VideoOpenError",
     "VideoSource",
+    "WriterOpener",
     "role_for_view",
     "view_for_role",
     "write_capture_record",

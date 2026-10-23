@@ -7,15 +7,21 @@
   第一帧采集于边界之后的帧放出时才执行该边界，因此 ``Timeline`` 的调用约定（边界之前的帧先推完、
   边界之后的帧不提前推）由这里保证。边界按 ``FrameClock.segment_shift`` 在段首取的推迟量换算，段内不变。
   边界之后迟迟没有帧（卡顿、断流）时，等 ``COMMAND_GRACE_S`` 后按已到的帧执行。
-- 方向与尺寸在开录时固定（D-29）：本段每帧按开录时的旋转转正，writer 的尺寸取首个输出帧。
+- 方向与尺寸在开录时固定（D-29）：本段每帧按开录时的旋转转正，writer 的尺寸取开录首帧转正后的尺寸。
+- writer 在开录时由任务线程打开（``WriterOpener``；1080p H.264 打开要 0.2～0.6 s，在本线程打开会让队列排满）：
+  打开期间本线程照常取帧，时间轴的输出帧按序暂存；打开后每轮先取一帧、再写一帧积压，追平后与之前一样直接写。
+  打开超过 ``WRITER_OPEN_TIMEOUT_S``、打开失败或积压超过这段时间的帧数，这一段就失败并写明原因。
+  结束时还在打开就等到上限，再写完积压。
 - 失败（D-27）：录制期间队列溢出、该路断流或写盘出错，这一段就失败，之后不再写，结束时返回错误；
   已写的文件保留。
 - 开录确认（D-27）：开录命令带回调，这一路写出本段首帧后回调 ``None``，在此之前失败则回调失败原因。
 - 结束分两步：``request_stop`` 立即发出结束边界，``wait_stop`` 等这一路写完边界之前的帧（调用方可在别的线程等）。
-- 写盘经 ``RecordingController``（懒创建 writer、写错误复位），只在本线程调用 ``write``/``release``。
+- 写盘经 ``RecordingController``（写错误复位）：打开好的 writer 交给它之后只在本线程 ``write``/``release``；
+  交出之前放弃（结束、失败、关闭）的 writer 由 ``WriterOpener`` 释放，从未写过。
 """
 from __future__ import annotations
 
+import math
 import threading
 from collections import deque
 from dataclasses import dataclass, field, replace
@@ -32,14 +38,18 @@ from core.media import (
     FrameClockStats,
     FrameQueue,
     Timeline,
+    WriterOpener,
     apply_rotation,
     capture_clock_ns,
+    rotated_size,
 )
 from core.recording.controller import RecordingController, RecordingSnapshot, WriterFactory
 
 QUEUE_CAPACITY = 8          # 每路录像队列容量（D-27；甲方实测峰值 2 帧）
 COMMAND_GRACE_S = 0.6       # 边界之后这么久还没有新帧，就按已到的帧执行边界
 STOP_WAIT_S = 3.0           # 结束一段时等录像线程确认的上限
+WRITER_OPEN_TIMEOUT_S = 1.5  # 开录时后台打开 writer 的上限（本机 1080p avc1 两路同时打开 0.2～0.6 s）；
+                             # 加上去抖前瞻仍小于 START_CONFIRM_S，失败时报的是打开的原因而不是"没有写出首帧"
 PRIME_WAIT_S = 1.0          # 会话开始时等每路录像线程拿到首帧的上限（开录要用边界之前的帧）
 IDLE_POLL_S = 0.05
 _NS = 1_000_000_000
@@ -90,6 +100,8 @@ class ViewWorker:
         kwargs = {} if writer_factory is None else {"writer_factory": writer_factory}
         self._controller = RecordingController(path_provider=self._target_path, **kwargs)
         self._controller.begin_session(fps=self._fps, size=(0, 0))
+        self._tasks = tasks
+        self._backlog_limit = math.ceil(WRITER_OPEN_TIMEOUT_S * self._fps)
         self._clock = FrameClock(self._fps)
         self._lock = threading.Condition()
         self._commands: deque[_Command] = deque()
@@ -108,6 +120,9 @@ class ViewWorker:
         self._rotation = 0
         self._rotated: tuple[tuple[int, int], np.ndarray] | None = None
         self._on_started: StartCallback | None = None
+        self._opening: WriterOpener | None = None      # 本段的 writer 还在后台打开
+        self._backlog: deque[CapturedFrame] = deque()  # writer 接上并追平之前的输出帧
+        self._writer_info: dict[str, Any] = {}
         self._queue = feed.subscribe(role, self._capacity)
         self._handle = tasks.spawn(f"record-{view}", self._run, owner="recording", close_budget_s=STOP_WAIT_S)
 
@@ -188,7 +203,8 @@ class ViewWorker:
     def _run(self, token: CancelToken) -> None:
         try:
             while not token.cancelled:
-                frame = self._queue.get(IDLE_POLL_S)
+                catching_up = self._opening is None and bool(self._backlog)
+                frame = self._queue.get(0.0 if catching_up else IDLE_POLL_S)
                 if frame is not None:
                     self._check_overflow()
                     for released in self._clock.push(frame):
@@ -200,6 +216,7 @@ class ViewWorker:
                         self._lock.wait_for(lambda: self._commands or self._closing or token.cancelled, IDLE_POLL_S)
                 else:
                     self._apply_overdue()
+                self._advance_writer()
         except BaseException as exc:  # noqa: BLE001 - 线程出错也要让等待中的 stop 返回
             self._fail(f"录像线程出错：{exc}")
             raise
@@ -266,6 +283,7 @@ class ViewWorker:
             command.done.set()
 
     def _begin(self, command: _Command, boundary: int) -> None:
+        self._drop_writer()
         self._target, self._rotation, self._rotated = command.target, command.rotation, None
         self._on_started = command.on_started
         self._clock.stats = FrameClockStats()
@@ -278,39 +296,119 @@ class ViewWorker:
             return
         self._timeline.start(boundary, seed)
         self._controller.request_toggle()
+        self._open_writer(seed)
 
     def _end(self, boundary: int) -> ViewResult:
+        with self._lock:   # 先记下：结束时写积压期间溢出的是边界之后的帧，不算本段
+            overflows = self._queue.overflows - self._overflow_base
         timeline = self._timeline
         if timeline is not None and self.error is None:
             self._write(timeline.stop(boundary))
+        self._flush_writer()
         self._started(self.error or "写出首帧之前录制就结束了")
         snap = self._controller.snapshot()
         path = self._controller.stop_recording() or snap.result_path
         with self._lock:
             error = self._error or snap.last_error
             self._open = False
-            overflows = self._queue.overflows - self._overflow_base
         extra = {
             "role": self.role,
             "rotation": self._rotation,
             "queue": {"capacity": self._capacity, "peak": self._queue.peak, "overflows": overflows},
             "frame_clock": self._clock.stats.as_dict(),
+            "writer": dict(self._writer_info),
         }
         self._timeline, self._shift, self._shift_for = None, None, None
         return ViewResult(path, int(snap.frames_written), error, timeline, extra)
 
     def _write(self, frames: list[CapturedFrame]) -> None:
+        """写出时间轴确认的输出帧；writer 还没接上或还有积压时排到积压之后。"""
         if not frames or self.error is not None:
             return
+        if self._opening is None and not self._backlog:
+            self._write_now(frames)
+            return
+        self._backlog.extend(frames)
+        self._writer_info["backlog_peak"] = max(self._writer_info.get("backlog_peak", 0), len(self._backlog))
+        if len(self._backlog) > self._backlog_limit:
+            self._fail(self._open_too_slow() if self._opening is not None
+                       else f"开录积压超过 {self._backlog_limit} 帧，写盘跟不上采集")
+
+    def _write_now(self, frames: list[CapturedFrame]) -> None:
         for frame in frames:
-            image = self._oriented(frame)
-            self._controller.update_session_size(size=(int(image.shape[1]), int(image.shape[0])))
-            self._controller.write_frame(image)
+            self._controller.write_frame(self._oriented(frame))
         snap = self._controller.snapshot()
         if snap.last_error:
             self._fail(f"写盘失败：{snap.last_error}")
         elif snap.frames_written > 0:
             self._started(None)
+
+    # ------------------------------------------------------------------ writer 的后台打开与积压
+    def _open_writer(self, seed: CapturedFrame) -> None:
+        """按开录首帧转正后的尺寸，在任务线程里打开本段的 writer。"""
+        height, width = seed.bgr.shape[:2]
+        self._controller.update_session_size(size=rotated_size(int(width), int(height), self._rotation))
+        target = self._target
+        self._writer_info = {"backlog_peak": 0}
+        self._opening = WriterOpener(lambda: self._controller.open_writer(target), self._tasks,
+                                     name=f"open-writer-{self.view}", owner="recording",
+                                     close_budget_s=WRITER_OPEN_TIMEOUT_S)
+
+    def _attach_opened(self, timeout: float) -> bool:
+        """取后台打开的结果：成功则交给控制器并返回 True；失败、超时使本段失败；仍在打开返回 False。"""
+        opening = self._opening
+        try:
+            opened = opening.take(timeout)
+        except Exception as exc:  # noqa: BLE001 - 打开失败即本段失败
+            self._fail(f"打开录像文件失败：{exc}")
+            return False
+        if opened is None:
+            if opening.elapsed_s() >= WRITER_OPEN_TIMEOUT_S:
+                self._fail(self._open_too_slow())
+            return False
+        self._opening = None
+        self._writer_info.update(codec=opened.codec, open_ms=opened.open_ms)
+        if self._controller.attach_writer(opened.writer, opened.path):
+            return True
+        try:
+            opened.writer.release()
+        except Exception:  # noqa: BLE001 - 释放失败不影响报错
+            pass
+        self._fail("录像文件打开后录制状态已变化，未能接上")
+        return False
+
+    def _advance_writer(self) -> None:
+        """每轮一次：writer 打开完就接上；接上后写一帧积压（先取帧再追积压，追赶期间队列不排满）。失败时丢掉积压。"""
+        if self.error is not None:
+            self._drop_writer()
+            return
+        if self._opening is not None and not self._attach_opened(0.0):
+            return
+        if self._backlog:
+            self._write_now([self._backlog.popleft()])
+
+    def _flush_writer(self) -> None:
+        """结束时：writer 还在打开就等到打开上限，再按序写完全部积压；之后不再留着打开中的 writer 与积压。"""
+        if self._opening is not None and self.error is None:
+            self._attach_opened(max(0.0, WRITER_OPEN_TIMEOUT_S - self._opening.elapsed_s()))
+            if self._opening is not None and self.error is None:
+                self._fail(self._open_too_slow())
+        if self.error is None and self._opening is None and self._backlog:
+            frames = list(self._backlog)
+            self._backlog.clear()
+            self._write_now(frames)
+        self._drop_writer()
+
+    def _drop_writer(self) -> None:
+        """放弃还在打开的 writer（由 ``WriterOpener`` 释放）并丢掉积压。"""
+        opening, self._opening = self._opening, None
+        if opening is not None:
+            opening.abandon()
+        self._backlog.clear()
+
+    @staticmethod
+    def _open_too_slow() -> str:
+        return f"打开录像文件超过 {WRITER_OPEN_TIMEOUT_S:g} 秒仍未完成（视频编码器初始化太慢）"
 
     def _oriented(self, frame: CapturedFrame) -> np.ndarray:
         key = (frame.generation, frame.seq)
@@ -343,6 +441,7 @@ class ViewWorker:
         with self._lock:
             self._dead = True
             pending, self._commands = list(self._commands), deque()
+        self._drop_writer()
         snap = self._controller.snapshot()
         self._started(self.error or "录像线程已退出")
         for command in pending:
@@ -358,4 +457,5 @@ class ViewWorker:
         return self._target
 
 
-__all__ = ["COMMAND_GRACE_S", "FrameFeed", "PRIME_WAIT_S", "QUEUE_CAPACITY", "STOP_WAIT_S", "ViewResult", "ViewWorker"]
+__all__ = ["COMMAND_GRACE_S", "FrameFeed", "PRIME_WAIT_S", "QUEUE_CAPACITY", "STOP_WAIT_S", "ViewResult", "ViewWorker",
+           "WRITER_OPEN_TIMEOUT_S"]

@@ -4,6 +4,8 @@
 UI 线程经 ``request_toggle()`` 切换状态；采集线程每帧调用 ``write_frame()``，由控制器按状态决定写或跳过；
 会话结束时 ``close_session()`` 释放 writer 并复位 idle。真实 I/O 经注入的 ``writer_factory`` 完成，
 内部以一把 ``threading.Lock`` 串行化所有状态与写盘操作。多路同边界录制由 ``SegmentRecorder`` 组合本类。
+writer 默认在首个 ``write_frame`` 里懒创建；摄像头录像线程改为用 ``open_writer`` 在别的线程预先打开，
+再经 ``attach_writer`` 交给控制器（打开 1080p H.264 要几百毫秒，不能占着取帧的线程，D-18）。
 P4 从 ``core/recording_controller.py`` 原样迁入。
 """
 
@@ -142,6 +144,27 @@ class RecordingController:
                 self._state = "recording"
 
             return self._state
+
+    def open_writer(self, path: Path) -> Tuple[VideoWriterLike, Path, str]:
+        """用本控制器的 writer 工厂与会话参数（fps、尺寸）打开一个 writer，不改状态、打开期间不持锁。
+
+        供调用方在别的线程预先打开，再经 ``attach_writer`` 交回；返回 (writer, 实际落盘路径, codec 标签)。
+        """
+        with self._lock:
+            fps, size = self._fps, self._size
+        return self._writer_factory(path, fps, size)
+
+    def attach_writer(self, writer: VideoWriterLike, actual_path: Path) -> bool:
+        """接收一个已打开的 writer，之后的 ``write_frame`` 写入它（不再懒创建）。
+
+        只在录制中且尚无 writer 时接收并返回 True；否则不接收、返回 False，调用方负责释放该 writer。
+        """
+        with self._lock:
+            if not self._session_active or self._state != "recording" or self._writer is not None:
+                return False
+            self._writer = writer
+            self._result_path = Path(actual_path)
+            return True
 
     def write_frame(self, frame) -> None:
         """Worker 线程每帧调用：仅当状态为 recording 时写盘（首帧懒创建 writer）。

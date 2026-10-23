@@ -23,7 +23,7 @@ from core.recording.recorder import (
 )
 from core.recording.service import FinishOutcome, RecordingService
 from core.recording.skeleton import RenderSkeleton, skeleton_engine
-from core.recording.worker import QUEUE_CAPACITY, STOP_WAIT_S, FrameFeed, ViewResult, ViewWorker
+from core.recording.worker import QUEUE_CAPACITY, STOP_WAIT_S, WRITER_OPEN_TIMEOUT_S, FrameFeed, ViewResult, ViewWorker
 from core.recording.steps import (
     TERMINAL_STATUSES,
     CheckRecording,
@@ -85,6 +85,7 @@ __all__ = [
     "ViewRecording",
     "ViewResult",
     "ViewWorker",
+    "WRITER_OPEN_TIMEOUT_S",
     "default_template_paths",
     "dual_segment_steps",
     "single_segment_steps",
