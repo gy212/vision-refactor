@@ -34,6 +34,9 @@ MISSING_MODEL_HINTS = {
     "exam_occupancy_lite": "缺少 pose_landmarker_lite.task（占用检测需要）。",
     "postprocess_heavy": "缺少 pose_landmarker_heavy.task，请先在模型管理中安装 heavy 模型",
     "pose_path": "缺少 MediaPipe pose 模型：{path}",
+    "benchmark_lite": "缺少 Lite 模型（pose_landmarker_lite.task）：考试和学生练习都开不了，站位检测这部分负载也没有测。"
+                      "请先在设置→模型管理中安装 Lite 模型，再测一次。",
+    "benchmark_skeleton": "缺少骨架识别模型（{models}）：骨架识别这部分负载没有测。请先在设置→模型管理中安装，再测一次。",
 }
 
 

@@ -11,6 +11,9 @@
     再把 ``FinishedSegment`` 交给 ``on_finished``；``stopping`` 期间不能开始下一段。
 - 视频文件会话（没有 ``feed``）：每路一个 ``RecordingController``，由会话线程逐帧 ``write``，保序、用源帧率。
 
+注入的 ``writer_factory``（测试、CLI 用）两种会话共用，签名同 ``ViewWriterFactory``；视频文件会话的帧不转正，
+调用时旋转为 0。不注入时摄像头会话用 ``open_recording_writer``，视频文件会话用 ``open_video_writer``。
+
 视角名取自 ``begin_session`` 的 ``sizes`` 键（单路 ``("front",)``，双路 ``("front", "side")``）。
 一路是单路片段（``SegmentLayout.single_path``），多路是片段目录下的 ``<view>.mp4``。
 recorder 只管录制边界，不提交后处理；结束后返回 ``FinishedSegment`` 交给 ``RecordingService``。
@@ -29,12 +32,8 @@ import numpy as np
 from core.foundation.tasks import CancelToken, TaskGroup
 from core.media import capture_clock_ns, capture_document, role_for_view, write_capture_record
 from core.media.segment_layout import SegmentLayout, new_stamp, segment_id_for_stamp
-from core.recording.controller import (
-    RecordingController,
-    RecordingSnapshot,
-    WriterFactory,
-)
-from core.recording.worker import PRIME_WAIT_S, STOP_WAIT_S, FrameFeed, ViewResult, ViewWorker
+from core.recording.controller import RecordingController, RecordingSnapshot, WriterFactory
+from core.recording.worker import PRIME_WAIT_S, STOP_WAIT_S, FrameFeed, ViewResult, ViewWorker, ViewWriterFactory
 
 RotationOf = Callable[[str], int]
 SegmentState = Literal["idle", "recording", "paused", "stopping"]
@@ -207,7 +206,7 @@ class RecorderSnapshot:
 class SegmentRecorder:
     """多路录制器（实现 ``live.FrameSink``）。各路片段边界由同一把锁保证一致。"""
 
-    def __init__(self, writer_factory: WriterFactory | None = None) -> None:
+    def __init__(self, writer_factory: ViewWriterFactory | None = None) -> None:
         self._writer_factory = writer_factory
         self._lock = threading.Lock()
         self._controllers: dict[str, RecordingController] = {}   # 视频文件会话
@@ -245,7 +244,7 @@ class SegmentRecorder:
                     worker.wait_primed(max(0.0, deadline - time.monotonic()))
                 return
             for view, size in sizes.items():
-                kwargs = {} if self._writer_factory is None else {"writer_factory": self._writer_factory}
+                kwargs = {} if self._writer_factory is None else {"writer_factory": self._file_writer_factory()}
                 controller = RecordingController(path_provider=self._path_provider(view), **kwargs)
                 controller.begin_session(fps=fps, size=tuple(size))
                 self._controllers[view] = controller
@@ -481,6 +480,11 @@ class SegmentRecorder:
             return segment.target(view)
 
         return provide
+
+    def _file_writer_factory(self) -> WriterFactory:
+        """视频文件会话的 writer 工厂：注入的工厂、旋转 0（会话线程写的是未旋转的叠加帧）。"""
+        factory = self._writer_factory
+        return lambda path, fps, size: factory(path, fps, size, 0)
 
     def _finish(self, *, discard: bool) -> FinishedSegment | None:
         """视频文件会话：各路控制器同步结束。"""

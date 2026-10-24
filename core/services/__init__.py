@@ -8,6 +8,7 @@ from core.services.recording_benchmark import (
     PHASES as BENCHMARK_PHASES,
     BenchmarkSetup,
     Phase as BenchmarkPhase,
+    SessionLoad as BenchmarkSessionLoad,
     run_recording_benchmark,
     save_report as save_benchmark_report,
 )
@@ -21,6 +22,7 @@ from core.services.templates import (
 __all__ = [
     "BENCHMARK_PHASES",
     "BenchmarkPhase",
+    "BenchmarkSessionLoad",
     "BenchmarkSetup",
     "HistoryStore",
     "TemplateAutoCropAnalysis",

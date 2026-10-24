@@ -115,7 +115,7 @@ class FakeWriter:
 def writer_factory(failing: frozenset[str] = frozenset()):
     """按视角决定 writer 是否创建失败；单路文件（record_<stamp>.mp4）算 front。"""
 
-    def factory(path, _fps, _size):
+    def factory(path, _fps, _size, _rotation=0):
         path = Path(path)
         view = "front" if path.stem.startswith("record_") else path.stem
         if view in failing:

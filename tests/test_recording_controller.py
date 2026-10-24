@@ -371,13 +371,11 @@ def test_first_frame_size_overrides_reported_capture_size_before_writer_creation
 
 
 def test_attached_writer_is_used_instead_of_a_lazy_open() -> None:
-    """``open_writer`` 用会话参数打开、不改状态；``attach_writer`` 交回后 ``write_frame`` 写它，不再调用工厂。"""
+    """别处打开的 writer 经 ``attach_writer`` 交回后 ``write_frame`` 写它，不再调用工厂。"""
     factory = make_fake_writer_factory(actual_suffix=".avi")
     rc = _make_controller(factory)
     rc.begin_session(fps=25.0, size=(64, 48))
-    writer, actual, codec = rc.open_writer(Path("seg/front.mp4"))
-    assert factory.create_calls == 1 and actual == Path("seg/front.avi") and codec == "fake"
-    assert rc.state == "idle" and rc.update_session_size(size=(48, 64)) is True    # 打开不登记 writer
+    writer, actual, _codec = make_fake_writer_factory(actual_suffix=".avi")(Path("seg/front.mp4"), 25.0, (64, 48))
 
     assert rc.attach_writer(writer, actual) is False                               # 不在录制中：不接收
     assert rc.request_toggle() == "recording"
@@ -385,10 +383,33 @@ def test_attached_writer_is_used_instead_of_a_lazy_open() -> None:
     assert rc.attach_writer(FakeWriter(), actual) is False                         # 已有 writer：不接收
     rc.write_frame("f1")
     rc.write_frame("f2")
-    assert factory.create_calls == 1 and writer.frames == ["f1", "f2"]
+    assert factory.create_calls == 0 and writer.frames == ["f1", "f2"]
     snap = rc.snapshot()
     assert snap.frames_written == 2 and snap.result_path == actual
     assert rc.stop_recording() == actual and writer.release_calls == 1
+
+
+def test_release_writer_reports_the_release_error_and_stops_writing() -> None:
+    """``release_writer`` 释放 writer 并交回释放时的错误（封装进程写不完文件），之后的帧跳过、不懒创建；
+    路径与帧数保留到 ``stop_recording``。"""
+    factory = make_fake_writer_factory()
+    rc = _make_controller(factory)
+    rc.begin_session(fps=30.0, size=(64, 48))
+    failing, actual, _codec = make_fake_writer_factory(raise_on_release=True)(Path("seg/front.avi"), 30.0, (64, 48))
+    assert rc.request_toggle() == "recording" and rc.attach_writer(failing, actual)
+    rc.write_frame("f1")
+
+    assert rc.release_writer() == "FakeWriter: 模拟 release 失败"
+    assert rc.release_writer() is None and failing.release_calls == 1
+    rc.write_frame("f2")
+    snap = rc.snapshot()
+    assert factory.create_calls == 0 and failing.frames == ["f1"]
+    assert snap.state == "idle" and snap.frames_written == 1 and snap.result_path == actual
+    assert rc.stop_recording() == actual
+
+    healthy, actual, _codec = make_fake_writer_factory()(Path("seg/front.avi"), 30.0, (64, 48))
+    assert rc.request_toggle() == "recording" and rc.attach_writer(healthy, actual)
+    assert rc.release_writer() is None and healthy.release_calls == 1
 
 
 def test_stop_recording_clears_last_error_for_same_session_retry() -> None:

@@ -97,6 +97,8 @@ hiddenimports += [
     "core.media.frames",
     "core.media.video_source",
     "core.media.writer",
+    "core.media.ffmpeg",
+    "core.media.mjpeg_writer",
     "core.pose",
     "core.pose.engine",
     "core.pose.layouts",
@@ -139,6 +141,9 @@ heavy_excludes = [
     "analysis.spike_yolo_baseline",
     "hypothesis",
     "pytest",
+    # 源码环境才经 imageio_ffmpeg 定位 ffmpeg（core/media/ffmpeg.py）；EXE 用上面 datas 随包的可执行文件，
+    # 不排除的话它的 PyInstaller hook 会把同一个 ffmpeg 再打一份。
+    "imageio_ffmpeg",
 ]
 # 排除所有 nvidia-* CUDA 运行时包。
 nvidia_excludes = [

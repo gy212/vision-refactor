@@ -91,6 +91,7 @@ def test_transcode_to_h264_runs_ffmpeg_and_removes_avi(
         return subprocess.CompletedProcess(command, 0)
 
     monkeypatch.setattr(video_writer.subprocess, "run", fake_run)
+    monkeypatch.setattr(video_writer, "ffmpeg_executable", lambda: "ffmpeg")   # 不依赖本机装没装 ffmpeg
 
     result = video_writer.transcode_to_h264(src)
 

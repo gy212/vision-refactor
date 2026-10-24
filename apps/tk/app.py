@@ -20,7 +20,7 @@ from apps.tk.controllers.exam_host import ExamHostAdapter
 from apps.tk.controllers.flags import LiveFlags
 from apps.tk.controllers.practice import PracticeController
 from apps.tk.controllers.recording import RecordingController
-from apps.tk.controllers.session import SessionController
+from apps.tk.controllers.session import SessionController, session_config
 from apps.tk.dispatcher import UiDispatcher
 from apps.tk.shutdown import ShutdownCoordinator, ShutdownSteps
 from apps.tk.views.benchmark_dialog import BenchmarkDialog
@@ -141,6 +141,8 @@ class DesktopApp:
             rotation_of=self.controls.rotation_of, pose_variant=lambda: capture.pose_var.get(),
             enable_hands=lambda: bool(capture.enable_hands_var.get()), record_dir=self.recording.record_dir,
             post=self.ui.post,
+            session_config=lambda: session_config(self.modes.session_settings(self.session.collect_state())),
+            preview=self.window.preview,
         )
         self._open_dialog("benchmark", "录制性能测试窗口", lambda: BenchmarkDialog(self.root, self.ui.post, ctx))
 

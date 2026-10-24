@@ -10,7 +10,7 @@ from core.live.config import (
     camera_session,
     video_session,
 )
-from core.live.inputs import CameraInput, FrameInput, InputFrames, VideoFileInput
+from core.live.inputs import CameraInput, ClaimedCameraInput, FrameInput, InputFrames, VideoFileInput
 from core.live.manager import IDLE, RUNNING, STARTING, STOPPING, LiveSessionManager
 from core.live.metrics import StartupMetrics
 from core.live.presence import PRESENCE_INTERVAL_S, PresenceSample, PresenceSampler
@@ -25,6 +25,7 @@ from core.live.stages import (
 __all__ = [
     "APP_CLOSE",
     "CameraInput",
+    "ClaimedCameraInput",
     "DEFAULT_ROI",
     "FrameInput",
     "InputFrames",

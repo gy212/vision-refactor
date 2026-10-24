@@ -7,6 +7,7 @@ import functools
 import multiprocessing as mp
 import threading
 import time
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -470,7 +471,7 @@ class DisconnectingCliDriver(CliDriver):
         return True, np.full((self.size[1], self.size[0], 3), self.calls % 255, np.uint8)
 
 
-def test_cli_run_releases_capture_writer_and_windows_on_disconnect(monkeypatch):
+def test_cli_run_releases_capture_writer_and_windows_on_disconnect(monkeypatch, tmp_path):
     from apps.cli import main as cli
     import core.live.stages as live_stages
 
@@ -491,11 +492,8 @@ def test_cli_run_releases_capture_writer_and_windows_on_disconnect(monkeypatch):
             pass
 
     class _Writer:
-        def __init__(self, *_args):
+        def __init__(self):
             self.release_calls = 0
-
-        def isOpened(self):
-            return True
 
         def write(self, _frame):
             pass
@@ -507,8 +505,13 @@ def test_cli_run_releases_capture_writer_and_windows_on_disconnect(monkeypatch):
     cli_open = cli.open_input
     monkeypatch.setattr(cli, "open_input", lambda source: inputs.append(cli_open(source)) or inputs[-1])
     monkeypatch.setattr(live_stages, "create_engine", lambda *_a, **_k: _Pipe())
-    monkeypatch.setattr(cli.cv2, "VideoWriter", lambda *a: writers.append(_Writer(*a)) or writers[-1])
+    def open_writer(path, *, fps, size, rotation):      # 摄像头导出经录像 writer（D-31）写临时 AVI
+        writers.append(_Writer())
+        return writers[-1], Path(path), "MJPG"
+
+    monkeypatch.setattr(cli, "open_recording_writer", open_writer)
     monkeypatch.setattr(cli.cv2, "destroyAllWindows", lambda: destroyed.append(True))
+    monkeypatch.chdir(tmp_path)                          # 片段的 capture.json 写在输出目录下，不留在仓库根目录
 
     with pytest.raises(RuntimeError, match="运行失败"):
         cli.run("0", show=False, out_path="unused.mp4")

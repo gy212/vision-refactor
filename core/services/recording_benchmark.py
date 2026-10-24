@@ -1,28 +1,32 @@
 # -*- coding: utf-8 -*-
 """录制性能测试：在实际机器上测各路 1080p 采集、写盘与识别同时运行时能否稳定 30 fps，只生成报告、不改任何设置（D-18、D-27）。
 
-分四段依次运行，每段结束删除临时录像：
+分五段依次运行，每段结束删除临时录像：
 
 1. ``capture``：只采集，得到各路真实采集率与帧间隔；
-2. ``record``：采集并各路一个写盘线程，写法与第 6 层的录像 writer 相同（每路一个有界队列、转正后写出）；
+2. ``record``：采集并各路一个写盘线程，写法与第 6 层的录像线程相同（每路一个有界队列、用生产的录像 writer 写出）；
 3. ``record_lite``：再加 Lite 站位检测（约每秒 10 次取最新主路画面，D-30）；
-4. ``record_skeleton``：再加骨架识别（各路最新画面逐路推理并绘制，和普通模式骨架开时的处理循环相当）。
+4. ``record_skeleton``：再加骨架识别（各路最新画面逐路推理并绘制）；
+5. ``production``：按当前设置录像——写盘之外运行与正式双摄录制相同的处理循环（``BenchmarkSetup.session_load``，
+   由入口层注入：转正、按"录制时识别骨架"推理与绘制、预览画到主窗口，骨架关时加站位检测）。总结论只看这一段，
+   前四段是分项诊断（判定与结论文字见 ``benchmark_verdict``）。
 
 写盘队列按 16 帧开（内存有界），同时统计"到达时已有 8 帧排队"的次数：按生产的 8 帧容量运行时，
 这些帧会让该段录制失败（D-27）。writer 的打开与生产的录像线程相同：先订阅、帧已经在流动，收到首帧后按它转正后的
-尺寸在任务线程里打开（``WriterOpener``），期间写盘线程照常取帧、按序积压，打开后每轮先取一帧再写一帧积压；
-报告记下编码、打开耗时、打开完成时的积压与追平耗时。打开超过生产上限（``PRODUCTION_OPEN_BUDGET_S``）时生产会判
-开录失败，这一段也判不达标。阈值判定见 ``phase_verdict``。
+尺寸与旋转在任务线程里打开（``WriterOpener``），期间写盘线程照常取帧、按序积压，打开后每轮先取一帧再写一帧积压；
+writer 收未转正的源帧（转正在 writer 里，D-31），报告记下编码、打开耗时、打开完成时的积压、追平耗时与每帧写出耗时。
+
+测试不下载模型：入口层先查好本机缺哪些模型（``BenchmarkSetup.missing_models``，键 ``lite``、``skeleton``），
+用到缺失模型的段跳过，报告记下 ``missing_models``，总结论把缺模型的提示放在最前面并判"测试不完整"。
 """
 from __future__ import annotations
 
-import math
 import shutil
-import statistics
+import threading
 import time
 from collections import deque
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -34,6 +38,7 @@ from core.foundation import (
     atomic_write_json,
     cpu_percent,
     host_summary,
+    ms_summary,
     system_cpu_times,
 )
 from core.media import (
@@ -44,27 +49,34 @@ from core.media import (
     WriterOpener,
     apply_rotation,
     capture_clock_ns,
-    open_video_writer,
+    open_recording_writer,
     rotated_size,
     view_for_role,
 )
 from core.pose import EngineSpec
+from core.services.benchmark_verdict import (
+    BACKLOG_LIMIT,
+    PRODUCTION_OPEN_BUDGET_S,
+    PRODUCTION_QUEUE,
+    TARGET_FPS,
+    conclusion,
+    phase_verdict,
+    summary_lines,
+)
 
-TARGET_FPS = 30.0
-PRODUCTION_QUEUE = 8           # 第 6 层录像队列的容量（D-27）
-PRODUCTION_OPEN_BUDGET_S = 1.5  # 第 6 层后台打开 writer 的上限（``WRITER_OPEN_TIMEOUT_S``），超过即开录失败
-BACKLOG_LIMIT = math.ceil(PRODUCTION_OPEN_BUDGET_S * TARGET_FPS)  # 生产允许的开录积压帧数
 BENCH_QUEUE = 16               # 测试用的队列容量：两路 1080p 约 200 MB 上限
-MIN_CAPTURE_FPS = 28.5         # 判定"采集达到 30 fps"的下限
 LITE_INTERVAL_S = 0.1
-STOP_TOLERANCE_S = 0.5         # 最后一帧离段末超过它即判该路中途停止（甲方实测最大帧间隔 85 ms）
-REPORT_SCHEMA = 1
+SESSION_START_S = 60.0         # 处理循环加载模型、开始逐帧处理的上限
+REPORT_SCHEMA = 2              # 2：加 production 段、总结论 conclusion、host.power，写盘用录像 writer
 REPORT_PREFIX = "录制性能测试"
 
 EngineFactory = Callable[[EngineSpec], Any]
-# writer 工厂（与 ``RecordingController`` 的 ``writer_factory`` 同签名）：给定目标路径 / fps / size，
-# 返回 (writer, 实际落盘路径, codec 标签)；默认绑定 ``open_video_writer``。
-WriterFactory = Callable[[Path, float, tuple[int, int]], tuple[Any, Path, str]]
+# writer 工厂（与录像线程的 ``ViewWriterFactory`` 同签名）：(目标路径, 帧率, 转正后的尺寸, 旋转) →
+# (writer, 实际落盘路径, codec 标签)，writer 收未转正的源帧；默认绑定 ``open_recording_writer``。
+WriterFactory = Callable[[Path, float, tuple[int, int], int], tuple[Any, Path, str]]
+# 正式录制时的处理循环负载：在已接管的摄像头上运行，直到 token 取消；开始逐帧处理时调用一次 ``on_running``；
+# 返回循环统计（``frames``、``fps``、``error``、``settings`` 等，原样写进报告）。
+SessionLoad = Callable[[CameraStream, CancelToken, Callable[[], None]], Mapping[str, Any]]
 Progress = Callable[[str, float], None]   # (说明文字, 总进度 0..1)
 
 
@@ -76,6 +88,7 @@ class Phase:
     write: bool = False
     lite: bool = False
     skeleton: bool = False
+    session: bool = False
 
 
 PHASES: tuple[Phase, ...] = (
@@ -83,18 +96,21 @@ PHASES: tuple[Phase, ...] = (
     Phase("record", "采集 + 写盘", 30.0, write=True),
     Phase("record_lite", "采集 + 写盘 + 站位检测（Lite）", 30.0, write=True, lite=True),
     Phase("record_skeleton", "采集 + 写盘 + 骨架识别", 30.0, write=True, skeleton=True),
+    Phase("production", "按当前设置录像（与正式录制相同的负载）", 30.0, write=True, session=True),
 )
 
 
-def _default_writer_factory(path: Path, fps: float, size: tuple[int, int]) -> tuple[Any, Path, str]:
-    """默认 writer 工厂：绑定 ``open_video_writer``（生产录像用的同一个）。"""
-    return open_video_writer(path, fps=fps, size=size)
+def _default_writer_factory(path: Path, fps: float, size: tuple[int, int], rotation: int) -> tuple[Any, Path, str]:
+    """默认 writer 工厂：绑定 ``open_recording_writer``（生产录像线程用的同一个）。"""
+    return open_recording_writer(path, fps=fps, size=size, rotation=rotation)
 
 
 @dataclass
 class BenchmarkSetup:
     """一次测试的输入。``stream`` 未接管；``rotations``、``labels`` 按角色；``work_dir`` 放临时录像（测完删除）；
-    ``writer_factory`` 打开各路 writer，默认 ``open_video_writer``。"""
+    ``writer_factory`` 打开各路 writer，默认 ``open_recording_writer``；``session_load`` 是 ``production`` 段的
+    处理循环，没有时跳过该段；``missing_models`` 是本机缺的模型（``lite``/``skeleton`` → 给用户看的提示），
+    需要它们的段跳过。"""
 
     stream: CameraStream
     rotations: Mapping[str, int]
@@ -106,17 +122,8 @@ class BenchmarkSetup:
     phases: tuple[Phase, ...] = PHASES
     extra: Mapping[str, Any] = field(default_factory=dict)
     writer_factory: WriterFactory = _default_writer_factory
-
-
-def _ms_stats(values: list[float]) -> dict[str, float | None]:
-    if not values:
-        return {"p50": None, "p95": None, "max": None}
-    ordered = sorted(values)
-    return {
-        "p50": round(statistics.median(ordered), 2),
-        "p95": round(ordered[min(len(ordered) - 1, int(0.95 * len(ordered)))], 2),
-        "max": round(ordered[-1], 2),
-    }
+    session_load: SessionLoad | None = None
+    missing_models: Mapping[str, str] = field(default_factory=dict)
 
 
 def _rate(count: int, seconds: float) -> float | None:
@@ -141,10 +148,10 @@ def _count_frames(queue: FrameQueue, stamps: list[int], token: CancelToken) -> N
 
 def _start_open(factory: WriterFactory, path: Path, frame: CapturedFrame, rotation: int,
                 tasks: TaskGroup) -> WriterOpener:
-    """按首帧转正后的尺寸在任务线程里打开 writer（与生产的录像线程相同）。"""
+    """按首帧转正后的尺寸与旋转在任务线程里打开 writer（与生产的录像线程相同）。"""
     height, width = frame.bgr.shape[:2]
     size = rotated_size(int(width), int(height), rotation)
-    return WriterOpener(lambda: factory(path, TARGET_FPS, size), tasks,
+    return WriterOpener(lambda: factory(path, TARGET_FPS, size, rotation), tasks,
                         name=f"open-{path.stem}", owner="benchmark", close_budget_s=10.0)
 
 
@@ -158,16 +165,16 @@ def _take_writer(opener: WriterOpener, backlog: deque, result: dict) -> Any | No
     return opened.writer
 
 
-def _write_one(writer: Any, frame: CapturedFrame, rotation: int, result: dict) -> None:
+def _write_one(writer: Any, frame: CapturedFrame, result: dict) -> None:
     started = time.perf_counter()
-    writer.write(apply_rotation(frame.bgr, rotation))
+    writer.write(frame.bgr)
     result["write_ms"].append((time.perf_counter() - started) * 1000.0)
     result["stamps"].append(frame.captured_at_ns)
 
 
 def _write_frames(queue: FrameQueue, factory: WriterFactory, path: Path, rotation: int, tasks: TaskGroup,
                   result: dict, token: CancelToken) -> None:
-    """按序取帧、转正、写出（第 6 层录像线程的写法）：首帧到达后在后台打开 writer，打开期间按序积压
+    """按序取帧、写出（第 6 层录像线程的写法）：首帧到达后在后台打开 writer，打开期间按序积压
     （超过生产允许的帧数就丢弃并计数），打开后每轮先取一帧再写一帧积压；记每帧耗时，出错时记下原因并停止取帧。"""
     result.update(write_ms=[], stamps=[], backlog_peak=0, backlog_dropped=0)
     backlog: deque[CapturedFrame] = deque()
@@ -188,7 +195,7 @@ def _write_frames(queue: FrameQueue, factory: WriterFactory, path: Path, rotatio
             if writer is None and opener is not None:
                 writer = _take_writer(opener, backlog, result)
             if writer is not None and backlog:
-                _write_one(writer, backlog.popleft(), rotation, result)
+                _write_one(writer, backlog.popleft(), result)
                 if not backlog and "catch_up_ms" not in result:
                     result["catch_up_ms"] = round((time.perf_counter() - result["opened_at"]) * 1000.0, 1)
     except Exception as exc:
@@ -198,9 +205,12 @@ def _write_frames(queue: FrameQueue, factory: WriterFactory, path: Path, rotatio
 
 
 def _close_writer(writer: Any | None, opener: WriterOpener | None, result: dict) -> None:
-    """释放 writer（没打开完就放弃，由打开任务释放）；记下文件大小，没打开完时记下原因。"""
+    """释放 writer（没打开完就放弃，由打开任务释放）；记下文件大小，释放失败或没打开完时记下原因。"""
     if writer is not None:
-        writer.release()
+        try:
+            writer.release()
+        except Exception as exc:
+            result.setdefault("error", f"关闭录像文件失败：{exc}")
     elif opener is not None:
         opener.abandon()
         result.setdefault("error", f"打开录像文件 {opener.elapsed_s():.1f} 秒仍未完成")
@@ -247,6 +257,33 @@ def _run_skeleton(stream: CameraStream, rotations: Mapping[str, int], engines: M
         result["error"] = f"骨架推理失败：{exc}"
 
 
+def _start_session(setup: BenchmarkSetup, tasks: TaskGroup, cancel: CancelToken, progress: Progress,
+                   done: float) -> dict[str, Any]:
+    """启动注入的处理循环，等它开始逐帧处理（最多 ``SESSION_START_S``）；返回它的状态（结束后含统计或错误）。"""
+    state: dict[str, Any] = {}
+    running = threading.Event()
+
+    def run(token: CancelToken) -> None:
+        try:
+            result = dict(setup.session_load(setup.stream, token, running.set))
+            result["error"] = state.get("error") or result.get("error")   # 没按时开始的原因不被覆盖
+            state.update(result)
+        except Exception as exc:
+            state["error"] = f"处理循环失败：{exc}"
+        finally:
+            running.set()
+
+    tasks.spawn("session", run, owner="benchmark", close_budget_s=10.0)
+    deadline = time.monotonic() + SESSION_START_S
+    progress("正在按当前设置启动处理循环（加载模型）…", done)
+    while not running.wait(0.2):
+        cancel.raise_if_cancelled()
+        if time.monotonic() >= deadline:
+            state.setdefault("error", f"处理循环 {SESSION_START_S:g} 秒内没有开始")
+            break
+    return state
+
+
 # --------------------------------------------------------------------------- #
 # 一段
 # --------------------------------------------------------------------------- #
@@ -262,7 +299,7 @@ def _capture_stats(stamps: list[int], window: tuple[int, int], failure: BaseExce
     return {
         "frames": len(inside),
         "fps": _rate(len(inside), seconds),
-        "interval_ms": _ms_stats(gaps),
+        "interval_ms": ms_summary(gaps),
         "covered_s": round(((inside[-1] if inside else start) - start) / 1e9, 2),
         "error": None if failure is None else str(failure),
     }
@@ -308,6 +345,27 @@ def _wait_phase(phase: Phase, index: int, total: int, progress: Progress, cancel
         cancel.wait(min(0.5, phase.seconds - elapsed))
 
 
+def _write_entry(writer: Mapping[str, Any], queue: FrameQueue) -> dict[str, Any]:
+    written = len(writer.get("write_ms", []))
+    stamps = writer.get("stamps", [])
+    seconds = (stamps[-1] - stamps[0]) / 1e9 if len(stamps) > 1 else 0.0
+    return {
+        "error": writer.get("error"),
+        "codec": writer.get("codec"),
+        "open_ms": writer.get("open_ms"),
+        "open_backlog": writer.get("open_backlog"),
+        "backlog_peak": writer.get("backlog_peak", 0),
+        "backlog_dropped": writer.get("backlog_dropped", 0),
+        "catch_up_ms": writer.get("catch_up_ms"),
+        "frames": written,
+        "write_ms": ms_summary(writer.get("write_ms", [])),
+        "queue_peak": queue.peak,
+        "over_production_queue": queue.over_watermark,
+        "dropped": queue.overflows,
+        "mb_per_s": round(writer.get("bytes", 0) / 2**20 / seconds, 1) if seconds > 0 else None,
+    }
+
+
 def _collect_phase(phase: Phase, state: dict) -> dict[str, Any]:
     result: dict[str, Any] = {"key": phase.key, "label": phase.label, "seconds": phase.seconds, "roles": {}}
     window = tuple(state["window"])
@@ -315,53 +373,44 @@ def _collect_phase(phase: Phase, state: dict) -> dict[str, Any]:
         entry = {"capture": _capture_stats(role_state["stamps"], window, state["failures"].get(role))}
         writer = role_state.get("writer")
         if writer is not None:
-            queue = state["queues"][(role, "write")]
-            written = len(writer.get("write_ms", []))
-            stamps = writer.get("stamps", [])
-            seconds = (stamps[-1] - stamps[0]) / 1e9 if len(stamps) > 1 else 0.0
-            entry["write"] = {
-                "error": writer.get("error"),
-                "codec": writer.get("codec"),
-                "open_ms": writer.get("open_ms"),
-                "open_backlog": writer.get("open_backlog"),
-                "backlog_peak": writer.get("backlog_peak", 0),
-                "backlog_dropped": writer.get("backlog_dropped", 0),
-                "catch_up_ms": writer.get("catch_up_ms"),
-                "frames": written,
-                "write_ms": _ms_stats(writer.get("write_ms", [])),
-                "queue_peak": queue.peak,
-                "over_production_queue": queue.over_watermark,
-                "dropped": queue.overflows,
-                "mb_per_s": round(writer.get("bytes", 0) / 2**20 / seconds, 1) if seconds > 0 else None,
-            }
+            entry["write"] = _write_entry(writer, state["queues"][(role, "write")])
         result["roles"][view_for_role(role)] = entry
     if "lite" in state:
         times = state["lite"].get("infer_ms", [])
-        result["lite"] = {"runs": len(times), "per_s": _rate(len(times), phase.seconds), "infer_ms": _ms_stats(times),
+        result["lite"] = {"runs": len(times), "per_s": _rate(len(times), phase.seconds), "infer_ms": ms_summary(times),
                           "error": state["lite"].get("error")}
     if "skeleton" in state:
         times = state["skeleton"].get("loop_ms", [])
-        result["skeleton"] = {"loops": len(times), "fps": _rate(len(times), phase.seconds), "loop_ms": _ms_stats(times),
+        result["skeleton"] = {"loops": len(times), "fps": _rate(len(times), phase.seconds), "loop_ms": ms_summary(times),
                               "error": state["skeleton"].get("error")}
+    if "session" in state:
+        result["session"] = {"error": None, **state["session"]}
     return result
 
 
 def run_phase(setup: BenchmarkSetup, phase: Phase, index: int, sizes: Mapping[str, tuple[int, int]],
               engines: Mapping[str, Any], progress: Progress, cancel: CancelToken) -> dict[str, Any]:
-    """运行一段并返回它的结果；临时录像在段末删除。"""
+    """运行一段并返回它的结果；有处理循环的一段先等循环开始再开计时。临时录像在段末删除。"""
     phase_dir = setup.work_dir / phase.key
     phase_dir.mkdir(parents=True, exist_ok=True)
     tasks = TaskGroup(f"benchmark-{phase.key}")
-    cpu_start = system_cpu_times()
-    state = _start_phase_workers(setup, phase, sizes, engines, tasks, phase_dir)
+    session = None
     try:
-        _wait_phase(phase, index, len(setup.phases), progress, cancel)
+        if phase.session:
+            session = _start_session(setup, tasks, cancel, progress, index / len(setup.phases))
+        cpu_start = system_cpu_times()
+        state = _start_phase_workers(setup, phase, sizes, engines, tasks, phase_dir)
+        if session is not None:
+            state["session"] = session
+        try:
+            _wait_phase(phase, index, len(setup.phases), progress, cancel)
+        finally:
+            cpu_end = system_cpu_times()
+            state["window"][1] = capture_clock_ns()
+            state["failures"] = {role: setup.stream.failure(role) for role in sizes}
+            for (role, _kind), queue in state["queues"].items():
+                setup.stream.unsubscribe(role, queue)
     finally:
-        cpu_end = system_cpu_times()
-        state["window"][1] = capture_clock_ns()
-        state["failures"] = {role: setup.stream.failure(role) for role in sizes}
-        for (role, _kind), queue in state["queues"].items():
-            setup.stream.unsubscribe(role, queue)
         tasks.cancel(reason="phase_end")
         tasks.join_until(time.monotonic() + 10.0)
         shutil.rmtree(phase_dir, ignore_errors=True)
@@ -369,44 +418,6 @@ def run_phase(setup: BenchmarkSetup, phase: Phase, index: int, sizes: Mapping[st
     result["system_cpu_percent"] = cpu_percent(cpu_start, cpu_end)
     result["verdict"] = phase_verdict(result)
     return result
-
-
-def phase_verdict(result: Mapping[str, Any]) -> dict[str, Any]:
-    """这一段是否达标：各路采集一直持续到段末、整段不低于 ``MIN_CAPTURE_FPS``，写盘时没有一帧遇到 8 帧排队，
-    打开 writer 不超过 ``PRODUCTION_OPEN_BUDGET_S``、开录积压不超过 ``BACKLOG_LIMIT``（否则生产配置会判录制失败）。"""
-    problems: list[str] = []
-    for view, entry in result["roles"].items():
-        capture = entry["capture"]
-        fps = capture["fps"]
-        if capture.get("error"):
-            problems.append(f"{view} 摄像头在第 {capture['covered_s']} 秒后停止出帧：{capture['error']}")
-        elif capture["covered_s"] < result["seconds"] - STOP_TOLERANCE_S:
-            problems.append(f"{view} 摄像头在第 {capture['covered_s']} 秒后不再出帧")
-        if fps is None or fps < MIN_CAPTURE_FPS:
-            problems.append(f"{view} 采集 {fps} fps，低于 {MIN_CAPTURE_FPS}")
-        write = entry.get("write")
-        if write is not None and write.get("error"):
-            problems.append(f"{view} {write['error']}")
-        elif write is not None and (write["over_production_queue"] or write["dropped"]):
-            problems.append(f"{view} 写盘跟不上：{write['over_production_queue']} 帧遇到 {PRODUCTION_QUEUE} 帧排队")
-        if write is not None:
-            problems.extend(_open_problems(view, write))
-    for key in ("lite", "skeleton"):
-        if result.get(key, {}).get("error"):
-            problems.append(result[key]["error"])
-    return {"ok": not problems, "problems": problems}
-
-
-def _open_problems(view: str, write: Mapping[str, Any]) -> list[str]:
-    """打开 writer 超过生产上限、开录积压超过生产允许的帧数时，生产会判开录失败。"""
-    problems = []
-    open_ms = write.get("open_ms")
-    if open_ms is not None and open_ms > PRODUCTION_OPEN_BUDGET_S * 1000.0:
-        problems.append(f"{view} 打开录像文件用了 {open_ms:g} ms（{write.get('codec')}），"
-                        f"超过生产上限 {PRODUCTION_OPEN_BUDGET_S * 1000.0:g} ms，录制开始时会失败")
-    if write.get("backlog_dropped"):
-        problems.append(f"{view} 开录积压超过 {BACKLOG_LIMIT} 帧（{write['backlog_dropped']} 帧放不下）")
-    return problems
 
 
 # --------------------------------------------------------------------------- #
@@ -443,26 +454,14 @@ def _camera_entries(setup: BenchmarkSetup, sizes: Mapping[str, tuple[int, int]])
     }
 
 
-def summary_lines(report: Mapping[str, Any]) -> list[str]:
-    """给测试人员看的几行结论。"""
-    names = {"front": "正面", "side": "侧面"}
-    lines = []
-    for phase in report.get("phases", []):
-        rates = "，".join(f"{names.get(view, view)} {entry['capture']['fps']} fps"
-                         for view, entry in phase["roles"].items())
-        writers = "、".join(f"{names.get(view, view)} {entry['write']['codec']} 打开 {entry['write']['open_ms']} ms"
-                            for view, entry in phase["roles"].items() if "write" in entry)
-        if writers:
-            rates += f"；编码 {writers}"
-        verdict = "达标" if phase["verdict"]["ok"] else "不达标：" + "；".join(phase["verdict"]["problems"])
-        lines.append(f"{phase['label']}：{rates}（{verdict}）")
-    if report.get("error"):
-        lines.append(f"测试中断：{report['error']}")
-    return lines
-
-
 def run_recording_benchmark(setup: BenchmarkSetup, cancel: CancelToken, progress: Progress) -> dict[str, Any]:
-    """接管摄像头、加载模型、依次运行各段，返回报告字典（出错或取消时也返回已完成的部分，并写明原因）。"""
+    """接管摄像头、加载模型、依次运行各段，返回报告字典（出错或取消时也返回已完成的部分，并写明原因）。
+    ``report["conclusion"]`` 是总结论，``report["ok"]`` 与它一致。"""
+    missing = dict(setup.missing_models)
+    setup = replace(setup, phases=tuple(
+        phase for phase in setup.phases
+        if not (phase.session and setup.session_load is None)   # 没有注入处理循环（如测试）时不测 production 段
+        and not (phase.lite and "lite" in missing) and not (phase.skeleton and "skeleton" in missing)))
     report: dict[str, Any] = {
         "schema": REPORT_SCHEMA,
         "kind": "recording_benchmark",
@@ -472,6 +471,7 @@ def run_recording_benchmark(setup: BenchmarkSetup, cancel: CancelToken, progress
         "production_open_budget_ms": PRODUCTION_OPEN_BUDGET_S * 1000.0,
         "host": host_summary(),
         **dict(setup.extra),
+        "missing_models": missing,
         "phases": [],
     }
     engines: dict[str, Any] = {}
@@ -485,11 +485,10 @@ def run_recording_benchmark(setup: BenchmarkSetup, cancel: CancelToken, progress
         engines = _open_engines(setup, tuple(sizes), progress)
         for index, phase in enumerate(setup.phases):
             report["phases"].append(run_phase(setup, phase, index, sizes, engines, progress, cancel))
-        report["ok"] = all(phase["verdict"]["ok"] for phase in report["phases"])
     except Cancelled:
-        report["ok"], report["error"] = False, "已取消"
+        report["error"] = "已取消"
     except Exception as exc:
-        report["ok"], report["error"] = False, f"{type(exc).__name__}: {exc}"
+        report["error"] = f"{type(exc).__name__}: {exc}"
     finally:
         for engine in engines.values():
             try:
@@ -501,8 +500,10 @@ def run_recording_benchmark(setup: BenchmarkSetup, cancel: CancelToken, progress
         except Exception:
             pass
         shutil.rmtree(setup.work_dir, ignore_errors=True)
+    report["conclusion"] = conclusion(report)
+    report["ok"] = report["conclusion"]["ok"]
     report["summary"] = summary_lines(report)
-    progress("测试完成" if report.get("ok") else "测试结束", 1.0)
+    progress("测试完成" if report["ok"] else "测试结束", 1.0)
     return report
 
 
@@ -522,6 +523,8 @@ __all__ = [
     "PRODUCTION_OPEN_BUDGET_S",
     "PRODUCTION_QUEUE",
     "Phase",
+    "SessionLoad",
+    "WriterFactory",
     "phase_verdict",
     "run_phase",
     "REPORT_PREFIX",
