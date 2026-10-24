@@ -2,7 +2,8 @@
 """录制性能测试（``core.services.recording_benchmark``）：用假摄像头、假引擎、假 writer 与假处理循环跑完五段，检查报告内容、
 判定、总结论与清理；writer 与生产一样在帧流动之后按旋转打开、收未转正的源帧，报告编码、打开耗时、积压与每帧写出耗时，
 打开超过生产上限判不达标。"按当前设置录像"一段先等注入的处理循环开始再计时，总结论只看这一段。
-假 writer 的打开与写入耗时由测试指定，结果不随本机编码器变化。"""
+假 writer 的打开与写入耗时由测试指定，结果不随本机编码器变化。整机项的系统查询用假实现（``FAST_SYSTEM``），
+录像盘读写在临时目录里用小数据量真实读写。"""
 from __future__ import annotations
 
 import json
@@ -17,7 +18,14 @@ import pytest
 
 from core.foundation import CancelToken
 from core.media import PRIMARY, SECONDARY, CameraPool, CameraService, CaptureSpec, FrameQueue
-from core.services import BENCHMARK_PHASES, BenchmarkPhase, BenchmarkSetup, run_recording_benchmark, save_benchmark_report
+from core.services import (
+    BENCHMARK_PHASES,
+    BenchmarkPhase,
+    BenchmarkSetup,
+    BenchmarkSystemProbes,
+    run_recording_benchmark,
+    save_benchmark_report,
+)
 from core.services import benchmark_verdict as verdict
 from core.services import recording_benchmark as bench
 
@@ -125,6 +133,30 @@ class FakeSessionLoad:
 SHORT = tuple(replace(p, seconds=0.6) for p in BENCHMARK_PHASES)
 
 
+class FakePaging:
+    def __init__(self, rate=12.0):
+        self.rate, self.closed = rate, False
+
+    def read(self):
+        return {"pages_per_s": self.rate, "error": None}
+
+    def close(self):
+        self.closed = True
+
+
+FAKE_HOST = {"os": "test", "memory": {"total_gb": 16.0, "available_gb": 8.0},
+             "power": {"ac_power": True, "battery_saver": False, "power_mode": "balanced",
+                       "plan": {"guid": "381b4222-f694-41f0-9685-ff5bb260df2e", "name": "平衡", "key": "balanced"},
+                       "errors": {}}}
+FAST_SYSTEM = BenchmarkSystemProbes(
+    host=lambda: FAKE_HOST, memory=lambda: {"total_gb": 16.0, "available_gb": 8.0}, paging=FakePaging,
+    volume=lambda _directory: {"root": "T:\\", "drive_type": "fixed", "filesystem": "NTFS", "bus": "nvme",
+                               "free_gb": 500.0, "errors": {}},
+    memory_seconds=0.05, frame_shape=(108, 192, 3), disk_total_bytes=2 * 2**20, disk_chunk_bytes=64 * 2**10,
+    disk_max_write_s=2.0, disk_max_read_s=2.0, disk_spare_bytes=0, sample_s=0.05,
+)
+
+
 @pytest.fixture
 def service():
     svc = CameraService(pool=CameraPool(TimedCapture, join_timeout=0.5))
@@ -144,7 +176,7 @@ def _setup(service, tmp_path, engines, *, phases=SHORT, dual=True, writers=None,
         labels={PRIMARY: "正面相机", SECONDARY: "侧面相机"}, work_dir=tmp_path / "work",
         engine_factory=factory, phases=phases, extra={"build": {"commit": "abc1234"}},
         writer_factory=writers if writers is not None else FakeWriters(),
-        session_load=session, missing_models=missing or {},
+        session_load=session, missing_models=missing or {}, system=FAST_SYSTEM,
     )
 
 
@@ -156,7 +188,16 @@ def test_full_run_reports_every_phase_and_cleans_up(service, tmp_path):
     report = run_recording_benchmark(_setup(service, tmp_path, engines, writers=writers, session=session),
                                      CancelToken(), lambda text, done: progress.append((text, done)))
     assert report["kind"] == "recording_benchmark" and report["build"] == {"commit": "abc1234"}
-    assert report["schema"] == 2 and "power" in report["host"]
+    assert report["schema"] == 2 and report["host"] == FAKE_HOST
+    assert report["memory_bandwidth"]["copies"] > 0 and report["memory_bandwidth"]["gb_per_s"] > 0
+    disk = report["disk"]
+    assert disk["error"] is None and disk["skipped"] is None and disk["volume"]["root"] == "T:\\"
+    assert disk["write"]["bytes"] == 2 * 2**20 and disk["write"]["complete"] and disk["read"]["bytes"] == 2 * 2**20
+    assert Path(disk["directory"]).parent == tmp_path                        # 在录制目录下的临时目录里测
+    for phase in report["phases"]:
+        memory = phase["memory"]
+        assert memory["before"]["available_gb"] == 8.0 and memory["min_available_gb"] == 8.0
+        assert memory["pages_per_s"] == 12.0 and memory["paging_error"] is None
     assert [p["key"] for p in report["phases"]] == ["capture", "record", "record_lite", "record_skeleton",
                                                     "production"]
     assert set(report["cameras"]) == {"front", "side"}
@@ -426,8 +467,9 @@ def test_summary_puts_the_conclusion_first_and_warns_about_power():
     report = {"phases": [_phase("production", 12.0)],
               "host": {"power": {"ac_power": False, "battery_saver": True, "power_mode": "best_efficiency"}}}
     lines = verdict.summary_lines(report)
-    assert lines[0].startswith("结论：按当前设置可以稳定录像")
-    assert "没有接电源" in lines[1] and "节电模式开着" in lines[1] and "最佳能效" in lines[1]
+    assert lines[0].startswith("结论：按当前设置可以稳定录像") and "需要注意：电脑在省电状态" in lines[0]
+    assert "没有接电源" in lines[0] and "节电模式开着" in lines[0] and "最佳能效" in lines[0]
+    assert any(line.startswith("· 电源：用电池，节电开着，电源模式 最佳能效") for line in lines)
     assert any("单独一段正常不代表能录像" in line for line in lines)
     assert any("本段正常" in line for line in lines)
     plugged = {"phases": [_phase("production", 12.0)],

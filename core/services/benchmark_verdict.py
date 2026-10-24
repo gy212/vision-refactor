@@ -3,7 +3,8 @@
 
 总结论只看与正式录制负载相同的那一段（``HEADLINE_PHASE``，没有测这一段时看最后一段并写明）；其余各段是分项诊断，
 单独一段正常不代表能录像。能录时再按每帧写盘耗时的 p95 与帧间隔比较，余量不足 ``TIGHT_RATIO`` 时说"余量小"。
-本机在用电池、开着节电或电源模式是最佳能效时附一句提示（这会让电脑降频，测试结果偏慢）。
+结论后面接实测数据给出的可能原因（``benchmark_causes``：省电、内存不足或换页、内存慢、录像盘慢或卡顿），
+能录时写"需要注意"，不能录或余量小时写"可能的原因"。
 缺少测试要用的模型时（``report["missing_models"]``，如考试与练习都离不开的 Lite 模型），结论判"测试不完整"，
 缺模型的提示放在结论最前面，已测部分的结论接在后面。
 """
@@ -12,6 +13,8 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping
 from typing import Any
+
+from core.services.benchmark_causes import detail_lines, likely_causes, power_hint
 
 TARGET_FPS = 30.0
 FRAME_BUDGET_MS = 1000.0 / TARGET_FPS
@@ -24,7 +27,6 @@ TIGHT_RATIO = 0.6               # 每帧写盘 p95 超过帧间隔的这个比�
 HEADLINE_PHASE = "production"
 
 _VIEW_NAMES = {"front": "正面", "side": "侧面"}
-_SLOW_POWER = {"best_efficiency": "电源模式是「最佳能效」", "better_battery": "电源模式是「更长续航」"}
 
 
 def phase_verdict(result: Mapping[str, Any]) -> dict[str, Any]:
@@ -81,30 +83,20 @@ def _worst_write_p95(phase: Mapping[str, Any]) -> float | None:
     return max(values) if values else None
 
 
-def power_hint(host: Mapping[str, Any] | None) -> str | None:
-    """本机在用电池、开着节电或电源模式偏省电时的提示；都不是或取不到时为 None。"""
-    power = (host or {}).get("power") or {}
-    reasons = []
-    if power.get("ac_power") is False:
-        reasons.append("没有接电源（在用电池）")
-    if power.get("battery_saver"):
-        reasons.append("节电模式开着")
-    if power.get("power_mode") in _SLOW_POWER:
-        reasons.append(_SLOW_POWER[power["power_mode"]])
-    if not reasons:
-        return None
-    return f"测试时电脑{'、'.join(reasons)}，会自动降速；请接上电源、关闭节电、电源模式选「最佳性能」后再测一次。"
-
-
 def conclusion(report: Mapping[str, Any]) -> dict[str, Any]:
     """总结论 ``{"level", "ok", "text"}``：level 是 ok（能稳定录像）、tight（能录但余量小）、fail（不能稳定录像）
-    或 incomplete（测试没做完、或缺模型没测全）；``ok`` 只在 ok/tight 时为 True。"""
-    measured = _measured_conclusion(report)
+    或 incomplete（测试没做完、或缺模型没测全）；``ok`` 只在 ok/tight 时为 True；``causes`` 是实测数据给出的可能原因。"""
+    result = _measured_conclusion(report)
     missing = [hint for hint in (report.get("missing_models") or {}).values() if hint]
-    if not missing:
-        return measured
-    return {"level": "incomplete", "ok": False, "measured_level": measured["level"],
-            "text": "".join(missing) + f"已测的部分：{measured['text']}"}
+    if missing:
+        result = {"level": "incomplete", "ok": False, "measured_level": result["level"],
+                  "text": "".join(missing) + f"已测的部分：{result['text']}"}
+    causes = likely_causes(report)
+    if causes:
+        label = "需要注意" if result["level"] == "ok" else "可能的原因"
+        result["text"] += f"{label}：{'；'.join(causes)}。"
+    result["causes"] = causes
+    return result
 
 
 def _measured_conclusion(report: Mapping[str, Any]) -> dict[str, Any]:
@@ -140,20 +132,22 @@ def _phase_line(phase: Mapping[str, Any]) -> str:
     session = phase.get("session")
     if session and session.get("fps") is not None:
         parts.append(f"预览处理 {session['fps']} 次/秒")
+    memory = phase.get("memory") or {}
+    if memory.get("min_available_gb") is not None:
+        paging = memory.get("pages_per_s")
+        parts.append(f"可用内存最低 {memory['min_available_gb']} GB" + ("" if paging is None else f"，换页 {paging} 页/秒"))
     state = "本段正常" if phase["verdict"]["ok"] else "本段有问题：" + "；".join(phase["verdict"]["problems"])
     return f"· {phase['label']}：{'；'.join(parts)}（{state}）"
 
 
 def summary_lines(report: Mapping[str, Any]) -> list[str]:
-    """给测试人员看的摘要：第一行是总结论，必要时一行电源提示，之后是各段明细。"""
+    """给测试人员看的摘要：第一行是总结论（含可能的原因），之后是整机项与各段明细。"""
     lines = [f"结论：{report.get('conclusion', conclusion(report))['text']}"]
-    hint = power_hint(report.get("host"))
-    if hint:
-        lines.append(hint)
     phases = report.get("phases", [])
-    if phases:
+    details = detail_lines(report)
+    if phases or details:
         lines += ["", "各段明细（给技术人员看；单独一段正常不代表能录像，以上面的结论为准）："]
-        lines += [_phase_line(phase) for phase in phases]
+        lines += details + [_phase_line(phase) for phase in phases]
     if report.get("error"):
         lines.append(f"测试中断：{report['error']}")
     return lines

@@ -20,7 +20,13 @@ from core.foundation import CancelToken, TaskGroup, desktop_dir, models_dir, rep
 from core.live import SessionConfig
 from core.media import PRIMARY, SECONDARY
 from core.pose import create_engine, missing_model_message
-from core.services import BENCHMARK_PHASES, BenchmarkSetup, run_recording_benchmark, save_benchmark_report
+from core.services import (
+    BENCHMARK_PHASES,
+    BenchmarkSetup,
+    BenchmarkSystemProbes,
+    run_recording_benchmark,
+    save_benchmark_report,
+)
 
 from apps.tk.build_info import load_build_info
 from apps.tk.controllers.benchmark_load import BenchmarkSessionLoad
@@ -36,7 +42,8 @@ def report_directory() -> Path:
 
 
 def total_seconds() -> int:
-    return int(sum(phase.seconds for phase in BENCHMARK_PHASES))
+    """各段加整机项（内存、录像盘读写）的最长用时，秒。"""
+    return int(sum(phase.seconds for phase in BENCHMARK_PHASES) + BenchmarkSystemProbes().seconds)
 
 
 def missing_models(pose_variant: str, enable_hands: bool,

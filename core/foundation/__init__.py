@@ -11,7 +11,9 @@ from core.foundation.epoch import Epoch
 from core.foundation.geometry import angle_deg, distance, landmark_xy, torso_length, unit
 from core.foundation.jsonable import to_jsonable
 from core.foundation.npz import load_npz, npz_meta
-from core.foundation.host import cpu_percent, desktop_dir, host_summary, power_status, system_cpu_times
+from core.foundation.host import cpu_percent, desktop_dir, host_summary, system_cpu_times
+from core.foundation.memory import PagingCounter, memory_snapshot
+from core.foundation.power import power_status
 from core.foundation.paths import models_dir, outputs_dir, repo_root, templates_dir
 from core.foundation.prefs import (
     CAMERA_SELECTION,
@@ -44,6 +46,7 @@ from core.foundation.signal import (
     trimmed_mean,
 )
 from core.foundation.timing import ms_summary
+from core.foundation.volume import UnbufferedReader, volume_info
 from core.foundation.tasks import (
     Cancelled,
     CancelToken,
@@ -113,5 +116,9 @@ __all__ = [
     "desktop_dir",
     "host_summary",
     "power_status",
+    "memory_snapshot",
+    "PagingCounter",
+    "volume_info",
+    "UnbufferedReader",
     "system_cpu_times",
 ]

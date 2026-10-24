@@ -8,7 +8,7 @@
 3. ``record_lite``：再加 Lite 站位检测（约每秒 10 次取最新主路画面，D-30）；
 4. ``record_skeleton``：再加骨架识别（各路最新画面逐路推理并绘制）；
 5. ``production``：按当前设置录像——写盘之外运行与正式双摄录制相同的处理循环（``BenchmarkSetup.session_load``，
-   由入口层注入：转正、按"录制时识别骨架"推理与绘制、预览画到主窗口，骨架关时加站位检测）。总结论只看这一段，
+   由入口层注入：转正、按"开启骨架"推理与绘制、预览画到主窗口，骨架关时加站位检测）。总结论只看这一段，
    前四段是分项诊断（判定与结论文字见 ``benchmark_verdict``）。
 
 写盘队列按 16 帧开（内存有界），同时统计"到达时已有 8 帧排队"的次数：按生产的 8 帧容量运行时，
@@ -16,7 +16,8 @@
 尺寸与旋转在任务线程里打开（``WriterOpener``），期间写盘线程照常取帧、按序积压，打开后每轮先取一帧再写一帧积压；
 writer 收未转正的源帧（转正在 writer 里，D-31），报告记下编码、打开耗时、打开完成时的积压、追平耗时与每帧写出耗时。
 
-测试不下载模型：入口层先查好本机缺哪些模型（``BenchmarkSetup.missing_models``，键 ``lite``、``skeleton``），
+开始时先测整机项（``benchmark_probes``：内存复制带宽、录制目录所在盘的顺序读写），每段另记内存与换页；
+这些系统查询经 ``BenchmarkSetup.system`` 注入。测试不下载模型：入口层先查好本机缺哪些模型（``BenchmarkSetup.missing_models``，键 ``lite``、``skeleton``），
 用到缺失模型的段跳过，报告记下 ``missing_models``，总结论把缺模型的提示放在最前面并判"测试不完整"。
 """
 from __future__ import annotations
@@ -37,7 +38,6 @@ from core.foundation import (
     TaskGroup,
     atomic_write_json,
     cpu_percent,
-    host_summary,
     ms_summary,
     system_cpu_times,
 )
@@ -54,6 +54,7 @@ from core.media import (
     view_for_role,
 )
 from core.pose import EngineSpec
+from core.services.benchmark_probes import MemoryWatch, SystemProbes, disk_test, memory_bandwidth
 from core.services.benchmark_verdict import (
     BACKLOG_LIMIT,
     PRODUCTION_OPEN_BUDGET_S,
@@ -67,7 +68,8 @@ from core.services.benchmark_verdict import (
 BENCH_QUEUE = 16               # 测试用的队列容量：两路 1080p 约 200 MB 上限
 LITE_INTERVAL_S = 0.1
 SESSION_START_S = 60.0         # 处理循环加载模型、开始逐帧处理的上限
-REPORT_SCHEMA = 2              # 2：加 production 段、总结论 conclusion、host.power，写盘用录像 writer
+REPORT_SCHEMA = 2              # 2：加 production 段、总结论 conclusion、host.power/memory，整机项 memory_bandwidth、disk，
+                               # 每段 memory，写盘用录像 writer
 REPORT_PREFIX = "录制性能测试"
 
 EngineFactory = Callable[[EngineSpec], Any]
@@ -110,7 +112,7 @@ class BenchmarkSetup:
     """一次测试的输入。``stream`` 未接管；``rotations``、``labels`` 按角色；``work_dir`` 放临时录像（测完删除）；
     ``writer_factory`` 打开各路 writer，默认 ``open_recording_writer``；``session_load`` 是 ``production`` 段的
     处理循环，没有时跳过该段；``missing_models`` 是本机缺的模型（``lite``/``skeleton`` → 给用户看的提示），
-    需要它们的段跳过。"""
+    需要它们的段跳过；``system`` 是整机项与内存监测用的系统查询（默认真实查询）。"""
 
     stream: CameraStream
     rotations: Mapping[str, int]
@@ -124,6 +126,7 @@ class BenchmarkSetup:
     writer_factory: WriterFactory = _default_writer_factory
     session_load: SessionLoad | None = None
     missing_models: Mapping[str, str] = field(default_factory=dict)
+    system: SystemProbes = field(default_factory=SystemProbes)
 
 
 def _rate(count: int, seconds: float) -> float | None:
@@ -400,12 +403,14 @@ def run_phase(setup: BenchmarkSetup, phase: Phase, index: int, sizes: Mapping[st
             session = _start_session(setup, tasks, cancel, progress, index / len(setup.phases))
         cpu_start = system_cpu_times()
         state = _start_phase_workers(setup, phase, sizes, engines, tasks, phase_dir)
+        memory = MemoryWatch(setup.system, tasks).start()
         if session is not None:
             state["session"] = session
         try:
             _wait_phase(phase, index, len(setup.phases), progress, cancel)
         finally:
             cpu_end = system_cpu_times()
+            state["memory"] = memory.stop()
             state["window"][1] = capture_clock_ns()
             state["failures"] = {role: setup.stream.failure(role) for role in sizes}
             for (role, _kind), queue in state["queues"].items():
@@ -416,6 +421,7 @@ def run_phase(setup: BenchmarkSetup, phase: Phase, index: int, sizes: Mapping[st
         shutil.rmtree(phase_dir, ignore_errors=True)
     result = _collect_phase(phase, state)
     result["system_cpu_percent"] = cpu_percent(cpu_start, cpu_end)
+    result["memory"] = state["memory"]
     result["verdict"] = phase_verdict(result)
     return result
 
@@ -469,7 +475,7 @@ def run_recording_benchmark(setup: BenchmarkSetup, cancel: CancelToken, progress
         "target_fps": TARGET_FPS,
         "production_queue": PRODUCTION_QUEUE,
         "production_open_budget_ms": PRODUCTION_OPEN_BUDGET_S * 1000.0,
-        "host": host_summary(),
+        "host": dict(setup.system.host()),
         **dict(setup.extra),
         "missing_models": missing,
         "phases": [],
@@ -477,6 +483,9 @@ def run_recording_benchmark(setup: BenchmarkSetup, cancel: CancelToken, progress
     engines: dict[str, Any] = {}
     stream = setup.stream
     try:
+        progress(f"正在测内存（约 {setup.system.memory_seconds:g} 秒）…", 0.0)
+        report["memory_bandwidth"] = memory_bandwidth(setup.system, cancel)
+        report["disk"] = disk_test(setup.work_dir, setup.system, cancel, lambda text: progress(text, 0.0))
         progress("正在打开摄像头…", 0.0)
         stream.wait_ready(cancel)
         stream.claim(cancel)

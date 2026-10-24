@@ -123,11 +123,11 @@ CI（`.github/workflows/gates.yml`，检查名 `gates`）在每个 PR 和 `main`
 路径相对于本仓库根。分层与各模块职责见设计文档 §2；旧项目文件的去向见设计文档附录 B，需要保留的能力清单见附录 A。
 
 - `core/`（按层，从低到高；各包经 `__init__` 导出公共 API）：
-  - `foundation/`（L0）：路径（`paths.py`）、用户偏好（`prefs.py`）、原子写、几何与信号基元、任务取消、JSON 化、非模板 npz 读取（`npz.py`）、诊断日志、本机环境查询（`host.py`：桌面目录、CPU 与内存、电源状态）、耗时分位（`timing.py`）。
+  - `foundation/`（L0）：路径（`paths.py`）、用户偏好（`prefs.py`）、原子写、几何与信号基元、任务取消、JSON 化、非模板 npz 读取（`npz.py`）、诊断日志、本机环境查询（`host.py`：桌面目录、CPU、本机概况；`power.py` 电源状态与电源计划；`memory.py` 内存快照与换页率；`volume.py` 录像盘卷信息与绕过缓存的读；`winapi.py` ctypes 共用基元）、耗时分位（`timing.py`）。
   - `media/`（L1）：视频读取（`video_source.py`）、视频写出与转码（`writer.py`，离线导出与视频文件会话用）、摄像头录像 writer（`mjpeg_writer.py`：`cv2.imencode` + 随包 ffmpeg 管道封装 MJPG AVI，转正在 writer 里，D-31）、随包 ffmpeg 查找（`ffmpeg.py`）、后台打开 writer（`writer_opener.py`）、画面旋转（`transforms.py`）、帧契约与采集时钟（`frames.py`）、录像时间轴（`pacing.py`）、到达时刻去抖（`frame_clock.py`）与采集记录 `capture.json`（`capture_record.py`）、片段布局；`media/camera/` 是摄像头：设备目录（`devices.py`）、采集子进程（`capture_process.py`）、会话期间每路的持续读帧线程、最新帧槽与录像用的有界帧队列（`reader.py`）、池（`pool.py` 占用表与租约，`slot.py`、`slot_lifecycle.py` reader 与释放重试，`pool_checks.py` 参数校验）与 `CameraService`（`service.py`）。
   - `pose/`（L2）：MediaPipe 引擎与模型、`PoseSequence` 提取、`derive_valid_mask`（`validity.py`）、特征与布局（`pose33_v3`、`body_core_v1`）、归一化、并行引擎、平滑与绘制、骨架视频导出（`annotate.py`）；`pose/backends/` 是 router、body_core 特征与 YOLO 适配（`yolo/`，不进 EXE）。
   - `evaluation/`（L3）：模板（`templates.py`）、匹配（`matching/`：DTW、单/双模板、双流、在线匹配、body_core）、切分与相位、测量（`measures/`）、规则（`rules/`：`spec.py`、唯一引擎 `engine.py` 的 `evaluate_rules`、唯一目录 `sanda_v5.py`、`adapters.py`；考试、练习、离线共用的单视角判定 `rule_checks.py`）、评分口径（`scoring/`）、学生练习分析（`practice.py`）、技术指标（`techeval/`）。
-  - L4：`services/`（离线分析、模板生成、练习历史、录制性能测试 `recording_benchmark.py` 与判定、总结论 `benchmark_verdict.py`）、`recording/`（录制控制、摄像头会话每路的录像线程 `worker.py`、开录确认与异步结束 `recorder.py`、录后 finalizer 与步骤、录后骨架成片 `skeleton.py`）、`live/`（实时会话 `SessionRunner`、预览与按时间采样的站位检测 `presence.py`）、`reporting/`（练习文本与 HTML 报告）。
+  - L4：`services/`（离线分析、模板生成、练习历史、录制性能测试 `recording_benchmark.py`、整机项 `benchmark_probes.py`、判定与总结论 `benchmark_verdict.py`、可能的原因 `benchmark_causes.py`）、`recording/`（录制控制、摄像头会话每路的录像线程 `worker.py`、开录确认与异步结束 `recorder.py`、录后 finalizer 与步骤、录后骨架成片 `skeleton.py`）、`live/`（实时会话 `SessionRunner`、预览与按时间采样的站位检测 `presence.py`）、`reporting/`（练习文本与 HTML 报告）。
   - `workflows/`（L5）：考试（`exam/`：会话、名册、片段、成绩表）、学生练习会话、命令执行器与工作流宿主、在场闸门、播报。
 - `apps/`（入口）：
   - 桌面：`app_ui.py`（入口壳）→ `tk/`（`app.py` 组合根、`controllers/`、`views/`、`dispatcher.py`、`shutdown.py`、`self_check.py` 自检内容、`build_info.py`；录制性能测试是隐藏入口 Ctrl+Shift+B → `controllers/benchmark.py`（"按当前设置录像"一段的正式处理循环负载在 `controllers/benchmark_load.py`）与 `views/benchmark_dialog.py`，报告存到桌面，甲方操作见 `docs/录制性能测试操作说明.md`）；`desktop_launcher.py` 是打包入口（`--offline-self-check`）。

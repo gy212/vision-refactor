@@ -1,3 +1,61 @@
+## 2026-10-24: [feat] 录制性能测试加内存、录像盘读写与电源计划，结论按实测数据写出可能的原因
+
+- 问题描述：
+  - 用户要求测试项加上内存、磁盘读写和测试时的电源计划。
+  - 甲方报告里可用内存只有约 1.8 GB，录制目录在 `F:\10 测试视频`（可能是 USB 盘），但测试只测了摄像头采集与写盘，看不出瓶颈是在内存、录像盘还是省电降频。
+- 修改内容：
+  - L0 系统查询（ctypes，只用文档化 API，取不到的项记 None 并写明原因，不抛出）：
+    - `core/foundation/power.py`（从 `host.py` 拆出）：
+      - `GetSystemPowerStatus`（交流/电池、电量、节电）；
+      - `PowerGetEffectiveOverlayScheme`（Windows 11"电源模式"，与电源计划不同）；
+      - 新增 `PowerGetActiveScheme` + `PowerReadFriendlyName` 读当前电源计划（GUID、显示名，`LocalFree` 释放），常见计划给固定键 balanced/high_performance/power_saver/ultimate/other。
+    - `core/foundation/memory.py`（从 `host.py` 拆出）：`memory_snapshot`（`GlobalMemoryStatusEx`），`PagingCounter`（PDH `\Memory\Pages/sec`，`PdhAddEnglishCounterW` 不受系统语言影响）。
+    - `core/foundation/volume.py`：
+      - `volume_info`：卷根、类型、文件系统、剩余空间；
+      - 经 `IOCTL_STORAGE_QUERY_PROPERTY` 读总线（USB/SATA/NVMe…）、型号与寻道延迟（机械盘）；
+      - `UnbufferedReader`：`FILE_FLAG_NO_BUFFERING` 顺序读，绕过系统缓存。
+    - `core/foundation/winapi.py`：GUID 互转与独立声明的系统库句柄。
+  - `core/services/benchmark_probes.py`（新增）：
+    - 内存复制带宽：反复复制一帧 1080p BGR，2 s，记 GB/s 与每次 p50/p95。
+    - 录像盘顺序读写：在录制目录下的临时目录里以 384 KB 块写 256 MB（最多 20 s），每 30 块 `fsync`；记 MB/s、每块与刷盘耗时分位和最长卡顿；再绕过缓存读回，最多 10 s；`finally` 删文件，空间不够时跳过。
+    - 每段的 `MemoryWatch`：段前、段后、段内最低可用内存与段内换页率。
+    - 系统查询经 `SystemProbes` 注入。
+  - `core/services/benchmark_causes.py`（新增）：只按实测数据给白话原因，接在总结论后面（能录时"需要注意"，否则"可能的原因"）：
+    - 省电（含电源计划"节能"）；
+    - 可用内存 < 2 GB；
+    - 换页 > 1000 页/秒；
+    - 复制一帧 < 2 GB/s；
+    - 录像盘写入不到本机实测录像写入量的 2 倍，或卡顿 > 0.5 s（写明 USB/可移动/机械盘）。
+
+    摘要明细加电源、内存、录像盘三行；电源提示并入结论，不再单独一行。
+  - `recording_benchmark.py`：各段前先测整机项，每段记 `memory`；`BenchmarkSetup.system`。
+  - Tk：总时长计入整机项；说明文字写明先测内存与录像盘；测录像盘时进度显示已写 MB。
+  - 文档：
+    - 设计文档 §2 模块表、§8.8"录像 writer"加整机项一条；
+    - `AGENTS.md` 代码地图；
+    - `docs/录制性能测试操作说明.md`：先测内存和录像盘、录像盘慢或内存不足怎么办，控件名改为界面上的「保存目录」「开启骨架」。
+  - 测试：
+    - 新增 `tests/test_benchmark_probes.py`（15 项）。
+    - `tests/test_recording_benchmark.py` 注入 `FAST_SYSTEM`（假 host、内存、换页、卷信息，小数据量），检查新字段；电源提示用例改为在结论行里。
+- 新报告字段：
+  - `host.memory`（`total_gb`、`available_gb`、`load_percent`、`commit_available_gb`）；
+  - `host.power.plan`（`guid`、`name`、`key`）、`host.power.errors`；
+  - `memory_bandwidth`（`frame_mb`、`copies`、`gb_per_s`、`copy_ms`）；
+  - `disk`（`directory`、`volume{root, drive_type, filesystem, label, free_gb, total_gb, bus, removable_media, product, seek_penalty, errors}`、`write{bytes, seconds, mb_per_s, chunk_kb, chunks, flush_every, complete, write_ms, flush_ms, stall_ms}`、`read{bytes, seconds, mb_per_s, uncached}`、`skipped`、`error`）；
+  - `phases[].memory`（`before`、`after`、`min_available_gb`、`pages_per_s`、`paging_error`）；
+  - `conclusion.causes`。
+- 验证方法：
+  - 开发机实测（Ultra 7 155H，录制目录 `C:\Users\21240\Videos`，接着电源）：
+    - 电源计划 Balanced（`balanced`），电源模式 `best_performance`；
+    - 复制一帧 5.93 MB：p50 1.02 / p95 1.8 ms，5.44 GB/s；
+    - C:（NTFS，NVMe，WD PC SN740）：写 1000.1 MB/s（每块 p95 0.32 ms，刷盘 p95 9.41 ms，最长卡顿 10.2 ms），绕过缓存读 2255.7 MB/s；
+    - 段内可用内存最低 16.34 GB，换页 17 页/秒；
+    - 没有给出原因；临时目录已删除。
+  - 门禁 44 passed；`tests/test_architecture.py` 18 passed；`scripts/sim_exam_flow.py` 37 passed，0 failed。
+  - 全量 `-m pytest tests -q`：1401 passed，无失败（上一条记录时 1386）。
+  - `tests/test_benchmark_probes.py`：15 passed；`tests/test_recording_benchmark.py tests/test_tk_benchmark.py`：30 passed。
+  - EXE 出包与 `--offline-self-check` 结果见下一次提交后的 PR 说明。
+
 ## 2026-10-24: [fix] 摄像头录像改用 imencode + ffmpeg 管道的录像 writer，转正移进 writer；录制性能测试加"按当前设置录像"一段并先给总结论
 
 - 问题描述：
