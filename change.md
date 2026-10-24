@@ -54,7 +54,7 @@
   - 门禁 44 passed；`tests/test_architecture.py` 18 passed；`scripts/sim_exam_flow.py` 37 passed，0 failed。
   - 全量 `-m pytest tests -q`：1401 passed，无失败（上一条记录时 1386）。
   - `tests/test_benchmark_probes.py`：15 passed；`tests/test_recording_benchmark.py tests/test_tk_benchmark.py`：30 passed。
-  - EXE 出包与 `--offline-self-check` 结果见下一次提交后的 PR 说明。
+  - EXE：`62b40f3` clean 出包，`vision_ui.exe --offline-self-check` ok，14 项全过（含 `camera_recording_writer_rotate_transcode_decode`）。
 
 ## 2026-10-24: [fix] 摄像头录像改用 imencode + ffmpeg 管道的录像 writer，转正移进 writer；录制性能测试加"按当前设置录像"一段并先给总结论
 
