@@ -168,7 +168,6 @@ def check_video_record(report: dict) -> Path:
 
 def check_camera_recording_writer(report: dict) -> None:
     """摄像头录像 writer（D-31）：源帧经 imencode + 内置 FFmpeg 管道封装、转正 90°，转成 MP4 后帧数与方向不变。"""
-    import cv2
     import numpy as np
     from core import foundation, media
 
@@ -184,16 +183,8 @@ def check_camera_recording_writer(report: dict) -> None:
     assert codec == "MJPG" and writer.info["backend"] == "ffmpeg_pipe", writer.info
     video = media.transcode_to_h264(video)
     assert video.suffix == ".mp4", "内置 FFmpeg 转码录像失败"
-    capture = cv2.VideoCapture(str(video))
-    try:
-        images = []
-        while True:
-            ok, image = capture.read()
-            if not ok:
-                break
-            images.append(image)
-    finally:
-        capture.release()
+    with media.open_video(video) as source:
+        images = [frame.bgr for frame in source]
     assert len(images) == 24, f"录像应有 24 帧，解码出 {len(images)} 帧"
     assert images[0].shape[:2] == (320, 240), f"录像方向不对：{images[0].shape[:2]}"
     assert images[0][:40, -40:].mean() > 200 > images[0][:40, :40].mean(), "录像没有按旋转转正"
