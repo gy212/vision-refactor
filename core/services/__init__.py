@@ -4,10 +4,12 @@ from core.services.body_core_templates import create_body_core_template
 from core.services.analyze import compare_dual, compare_templates, compare_video, score_segment, tech_eval_video
 from core.services.practice_history import HistoryStore, validate_identity
 from core.services.preview import export_match_preview, write_pose_preview
+from core.services.benchmark_probes import SystemProbes as BenchmarkSystemProbes
 from core.services.recording_benchmark import (
     PHASES as BENCHMARK_PHASES,
     BenchmarkSetup,
     Phase as BenchmarkPhase,
+    SessionLoad as BenchmarkSessionLoad,
     run_recording_benchmark,
     save_report as save_benchmark_report,
 )
@@ -21,6 +23,8 @@ from core.services.templates import (
 __all__ = [
     "BENCHMARK_PHASES",
     "BenchmarkPhase",
+    "BenchmarkSystemProbes",
+    "BenchmarkSessionLoad",
     "BenchmarkSetup",
     "HistoryStore",
     "TemplateAutoCropAnalysis",

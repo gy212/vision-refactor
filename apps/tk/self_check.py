@@ -166,6 +166,31 @@ def check_video_record(report: dict) -> Path:
     return video
 
 
+def check_camera_recording_writer(report: dict) -> None:
+    """摄像头录像 writer（D-31）：源帧经 imencode + 内置 FFmpeg 管道封装、转正 90°，转成 MP4 后帧数与方向不变。"""
+    import numpy as np
+    from core import foundation, media
+
+    frame = np.zeros((240, 320, 3), dtype=np.uint8)
+    frame[:40, :40] = 255                       # 左上角白块：转正 90° 后在右上角
+    writer, video, codec = media.open_recording_writer(
+        foundation.outputs_dir() / "摄像头 录像.mp4", fps=30, size=(240, 320), rotation=90)
+    try:
+        for _ in range(24):
+            writer.write(frame)
+    finally:
+        writer.release()
+    assert codec == "MJPG" and writer.info["backend"] == "ffmpeg_pipe", writer.info
+    video = media.transcode_to_h264(video)
+    assert video.suffix == ".mp4", "内置 FFmpeg 转码录像失败"
+    with media.open_video(video) as source:
+        images = [frame.bgr for frame in source]
+    assert len(images) == 24, f"录像应有 24 帧，解码出 {len(images)} 帧"
+    assert images[0].shape[:2] == (320, 240), f"录像方向不对：{images[0].shape[:2]}"
+    assert images[0][:40, -40:].mean() > 200 > images[0][:40, :40].mean(), "录像没有按旋转转正"
+    report["checks"].append("camera_recording_writer_rotate_transcode_decode")
+
+
 def check_practice_history(report: dict, video: Path) -> tuple[object, dict]:
     """双视角录像走 MediaPipe 练习分析写入历史，结果字段齐全，文字报告能导出；返回历史库与记录。"""
     from core import foundation
@@ -361,6 +386,7 @@ def run_checks(report: dict, temporary: Path) -> None:
     check_models_and_inference(report, temporary)
     check_templates_and_preferences(report)
     video = check_video_record(report)
+    check_camera_recording_writer(report)
     history, record = check_practice_history(report, video)
     check_html_report(report, history, record)
     check_camera_spawn(report)

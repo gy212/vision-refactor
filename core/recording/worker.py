@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""摄像头会话每路一个录像线程 ``ViewWorker``：按序取该路的源帧 → 去抖 → 换成恒定帧率 → 按段首方向转正 → 写盘（D-18，设计文档 §8.8）。
+"""摄像头会话每路一个录像线程 ``ViewWorker``：按序取该路的源帧 → 去抖 → 换成恒定帧率 → 写盘（D-18，设计文档 §8.8）。
 
 - 会话开始时订阅该路 reader 的有界帧队列（``QUEUE_CAPACITY`` 帧，reader 非阻塞投递），整个会话都在取帧：
   没有在录时也把帧交给 ``FrameClock``，开录时时钟已经稳定，并留着开录边界之前最近的一帧作首帧。
@@ -7,8 +7,9 @@
   第一帧采集于边界之后的帧放出时才执行该边界，因此 ``Timeline`` 的调用约定（边界之前的帧先推完、
   边界之后的帧不提前推）由这里保证。边界按 ``FrameClock.segment_shift`` 在段首取的推迟量换算，段内不变。
   边界之后迟迟没有帧（卡顿、断流）时，等 ``COMMAND_GRACE_S`` 后按已到的帧执行。
-- 方向与尺寸在开录时固定（D-29）：本段每帧按开录时的旋转转正，writer 的尺寸取开录首帧转正后的尺寸。
-- writer 在开录时由任务线程打开（``WriterOpener``；1080p H.264 打开要 0.2～0.6 s，在本线程打开会让队列排满）：
+- 方向与尺寸在开录时固定（D-29）：writer 按开录时的旋转打开（转正在 writer 里做，D-31），尺寸取开录首帧转正后的尺寸；
+  默认 writer 是 ``open_recording_writer``（libjpeg-turbo 编码、ffmpeg 封装成 MJPG AVI）。
+- writer 在开录时由任务线程打开（``WriterOpener``；打开要启动子进程或初始化编码器，在本线程打开会让队列排满）：
   打开期间本线程照常取帧，时间轴的输出帧按序暂存；打开后每轮先取一帧、再写一帧积压，追平后与之前一样直接写。
   打开超过 ``WRITER_OPEN_TIMEOUT_S``、打开失败或积压超过这段时间的帧数，这一段就失败并写明原因。
   结束时还在打开就等到上限，再写完积压。
@@ -17,20 +18,22 @@
 - 开录确认（D-27）：开录命令带回调，这一路写出本段首帧后回调 ``None``，在此之前失败则回调失败原因。
 - 结束分两步：``request_stop`` 立即发出结束边界，``wait_stop`` 等这一路写完边界之前的帧（调用方可在别的线程等）。
 - 写盘经 ``RecordingController``（写错误复位）：打开好的 writer 交给它之后只在本线程 ``write``/``release``；
-  交出之前放弃（结束、失败、关闭）的 writer 由 ``WriterOpener`` 释放，从未写过。
+  交出之前放弃（结束、失败、关闭）的 writer 由 ``WriterOpener`` 释放，从未写过。段末释放 writer 出错（封装进程
+  异常退出、没按时写完文件）时这一段失败。``capture.json`` 的 ``writer`` 记下编码、封装方式与每帧写出耗时。
 """
 from __future__ import annotations
 
 import math
 import threading
+import time
 from collections import deque
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
-import numpy as np
 
 from core.foundation.tasks import CancelToken, TaskGroup
+from core.foundation.timing import ms_summary
 from core.media import (
     BoundaryShift,
     CapturedFrame,
@@ -39,11 +42,11 @@ from core.media import (
     FrameQueue,
     Timeline,
     WriterOpener,
-    apply_rotation,
     capture_clock_ns,
+    open_recording_writer,
     rotated_size,
 )
-from core.recording.controller import RecordingController, RecordingSnapshot, WriterFactory
+from core.recording.controller import RecordingController, RecordingSnapshot, VideoWriterLike
 
 QUEUE_CAPACITY = 8          # 每路录像队列容量（D-27；甲方实测峰值 2 帧）
 COMMAND_GRACE_S = 0.6       # 边界之后这么久还没有新帧，就按已到的帧执行边界
@@ -52,9 +55,21 @@ WRITER_OPEN_TIMEOUT_S = 1.5  # 开录时后台打开 writer 的上限（本机 1
                              # 加上去抖前瞻仍小于 START_CONFIRM_S，失败时报的是打开的原因而不是"没有写出首帧"
 PRIME_WAIT_S = 1.0          # 会话开始时等每路录像线程拿到首帧的上限（开录要用边界之前的帧）
 IDLE_POLL_S = 0.05
+WRITE_SAMPLES = 9000        # 每帧写出耗时最多留这么多个样本（30 fps 下 5 分钟）
 _NS = 1_000_000_000
 
 StartCallback = Callable[[str | None], None]   # 写出首帧时 None，首帧之前失败时为原因
+# 录像 writer 工厂：(目标路径, 帧率, 转正后的 (宽, 高), 旋转度数) → (writer, 实际落盘路径, codec 标签)；
+# writer 的 ``write`` 收未转正的源帧，按旋转转正后写出。默认 ``open_recording_writer``。
+ViewWriterFactory = Callable[[Path, float, tuple[int, int], int], tuple[VideoWriterLike, Path, str]]
+
+
+def _default_view_writer(path: Path, fps: float, size: tuple[int, int], rotation: int):
+    return open_recording_writer(path, fps=fps, size=size, rotation=rotation)
+
+
+def _no_lazy_writer(_path: Path, _fps: float, _size: tuple[int, int]):
+    raise RuntimeError("录像线程的 writer 只经后台打开交给控制器")
 
 
 class FrameFeed(Protocol):
@@ -91,14 +106,14 @@ class ViewWorker:
     """一路的录像线程；``start``/``pause``/``resume``/``request_stop`` 不等待，``wait_stop``/``stop`` 等这一段写完（最多 ``STOP_WAIT_S``）。"""
 
     def __init__(self, view: str, role: str, feed: FrameFeed, *, fps: float, tasks: TaskGroup,
-                 writer_factory: WriterFactory | None = None, capacity: int = QUEUE_CAPACITY) -> None:
+                 writer_factory: ViewWriterFactory | None = None, capacity: int = QUEUE_CAPACITY) -> None:
         self.view = view
         self.role = role
         self._feed = feed
         self._fps = float(fps)
         self._capacity = int(capacity)
-        kwargs = {} if writer_factory is None else {"writer_factory": writer_factory}
-        self._controller = RecordingController(path_provider=self._target_path, **kwargs)
+        self._writer_factory = writer_factory or _default_view_writer
+        self._controller = RecordingController(writer_factory=_no_lazy_writer, path_provider=self._target_path)
         self._controller.begin_session(fps=self._fps, size=(0, 0))
         self._tasks = tasks
         self._backlog_limit = math.ceil(WRITER_OPEN_TIMEOUT_S * self._fps)
@@ -118,11 +133,12 @@ class ViewWorker:
         self._shift_for: _Command | None = None
         self._target: Path | None = None
         self._rotation = 0
-        self._rotated: tuple[tuple[int, int], np.ndarray] | None = None
         self._on_started: StartCallback | None = None
         self._opening: WriterOpener | None = None      # 本段的 writer 还在后台打开
         self._backlog: deque[CapturedFrame] = deque()  # writer 接上并追平之前的输出帧
         self._writer_info: dict[str, Any] = {}
+        self._attached: Any = None                     # 本段接上的 writer（取它的说明写进 capture.json）
+        self._write_ms: deque[float] = deque(maxlen=WRITE_SAMPLES)
         self._queue = feed.subscribe(role, self._capacity)
         self._handle = tasks.spawn(f"record-{view}", self._run, owner="recording", close_budget_s=STOP_WAIT_S)
 
@@ -284,7 +300,7 @@ class ViewWorker:
 
     def _begin(self, command: _Command, boundary: int) -> None:
         self._drop_writer()
-        self._target, self._rotation, self._rotated = command.target, command.rotation, None
+        self._target, self._rotation = command.target, command.rotation
         self._on_started = command.on_started
         self._clock.stats = FrameClockStats()
         self._queue.reset_peak()
@@ -305,6 +321,9 @@ class ViewWorker:
         if timeline is not None and self.error is None:
             self._write(timeline.stop(boundary))
         self._flush_writer()
+        release_error = self._controller.release_writer()
+        if release_error is not None:
+            self._fail(f"写盘失败：{release_error}")
         self._started(self.error or "写出首帧之前录制就结束了")
         snap = self._controller.snapshot()
         path = self._controller.stop_recording() or snap.result_path
@@ -316,9 +335,9 @@ class ViewWorker:
             "rotation": self._rotation,
             "queue": {"capacity": self._capacity, "peak": self._queue.peak, "overflows": overflows},
             "frame_clock": self._clock.stats.as_dict(),
-            "writer": dict(self._writer_info),
+            "writer": self._writer_summary(),
         }
-        self._timeline, self._shift, self._shift_for = None, None, None
+        self._timeline, self._shift, self._shift_for, self._attached = None, None, None, None
         return ViewResult(path, int(snap.frames_written), error, timeline, extra)
 
     def _write(self, frames: list[CapturedFrame]) -> None:
@@ -335,8 +354,10 @@ class ViewWorker:
                        else f"开录积压超过 {self._backlog_limit} 帧，写盘跟不上采集")
 
     def _write_now(self, frames: list[CapturedFrame]) -> None:
-        for frame in frames:
-            self._controller.write_frame(self._oriented(frame))
+        for frame in frames:      # 时间轴补帧时同一帧重复出现，writer 复用它的编码
+            started = time.perf_counter()
+            self._controller.write_frame(frame.bgr)
+            self._write_ms.append((time.perf_counter() - started) * 1000.0)
         snap = self._controller.snapshot()
         if snap.last_error:
             self._fail(f"写盘失败：{snap.last_error}")
@@ -345,12 +366,13 @@ class ViewWorker:
 
     # ------------------------------------------------------------------ writer 的后台打开与积压
     def _open_writer(self, seed: CapturedFrame) -> None:
-        """按开录首帧转正后的尺寸，在任务线程里打开本段的 writer。"""
+        """按开录时的旋转与首帧转正后的尺寸，在任务线程里打开本段的 writer。"""
         height, width = seed.bgr.shape[:2]
-        self._controller.update_session_size(size=rotated_size(int(width), int(height), self._rotation))
-        target = self._target
+        size = rotated_size(int(width), int(height), self._rotation)
+        target, fps, rotation, factory = self._target, self._fps, self._rotation, self._writer_factory
         self._writer_info = {"backlog_peak": 0}
-        self._opening = WriterOpener(lambda: self._controller.open_writer(target), self._tasks,
+        self._write_ms.clear()
+        self._opening = WriterOpener(lambda: factory(target, fps, size, rotation), self._tasks,
                                      name=f"open-writer-{self.view}", owner="recording",
                                      close_budget_s=WRITER_OPEN_TIMEOUT_S)
 
@@ -369,6 +391,7 @@ class ViewWorker:
         self._opening = None
         self._writer_info.update(codec=opened.codec, open_ms=opened.open_ms)
         if self._controller.attach_writer(opened.writer, opened.path):
+            self._attached = opened.writer
             return True
         try:
             opened.writer.release()
@@ -410,11 +433,12 @@ class ViewWorker:
     def _open_too_slow() -> str:
         return f"打开录像文件超过 {WRITER_OPEN_TIMEOUT_S:g} 秒仍未完成（视频编码器初始化太慢）"
 
-    def _oriented(self, frame: CapturedFrame) -> np.ndarray:
-        key = (frame.generation, frame.seq)
-        if self._rotated is None or self._rotated[0] != key:
-            self._rotated = (key, apply_rotation(frame.bgr, self._rotation))
-        return self._rotated[1]
+    def _writer_summary(self) -> dict[str, Any]:
+        """``capture.json`` 的 ``writer``：编码、打开耗时、开录积压峰值、writer 自己的说明（封装方式等）与每帧写出耗时。"""
+        info = getattr(self._attached, "info", None)
+        summary = {**self._writer_info, **(dict(info) if isinstance(info, dict) else {})}
+        summary["write_ms"] = ms_summary(self._write_ms)
+        return summary
 
     def _check_overflow(self) -> None:
         with self._lock:
@@ -458,4 +482,4 @@ class ViewWorker:
 
 
 __all__ = ["COMMAND_GRACE_S", "FrameFeed", "PRIME_WAIT_S", "QUEUE_CAPACITY", "STOP_WAIT_S", "ViewResult", "ViewWorker",
-           "WRITER_OPEN_TIMEOUT_S"]
+           "ViewWriterFactory", "WRITER_OPEN_TIMEOUT_S"]

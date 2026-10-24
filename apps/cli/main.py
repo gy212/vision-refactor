@@ -32,7 +32,7 @@ from core.live import (
     camera_session,
     video_session,
 )
-from core.media import PRIMARY, CameraService, CaptureSpec, capture_clock_ns, first_frame_ok, open_video_writer
+from core.media import PRIMARY, CameraService, CaptureSpec, capture_clock_ns, first_frame_ok, open_recording_writer
 from core.pose import EngineSpec, annotate_video
 from core.recording import SegmentMeta, SegmentRecorder, skeleton_engine
 
@@ -106,7 +106,8 @@ class CliExport:
             self._writer, _path, _codec = _open_mp4v(self._path, fps=fps, size=tuple(sizes["front"]))
             return
         temporary = self._path.with_name(f".{self._path.stem}.raw.avi")
-        self._recorder = SegmentRecorder(lambda _target, rate, size: open_video_writer(temporary, fps=rate, size=size))
+        self._recorder = SegmentRecorder(lambda _target, rate, size, rotation: open_recording_writer(
+            temporary, fps=rate, size=size, rotation=rotation))
         self._recorder.begin_session(sizes, fps, feed=feed, rotation_of=rotation_of)
         if not self._recorder.start_segment(SegmentMeta(self._path.parent), self._confirmed):
             raise RuntimeError("无法开始录制摄像头画面")

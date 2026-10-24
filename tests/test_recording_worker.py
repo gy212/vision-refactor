@@ -123,17 +123,19 @@ class RecordingWriter:
 
 
 class Writers:
-    """writer 工厂：按视角（文件名）记下每次打开的 writer。"""
+    """writer 工厂（录像线程的签名，多一个旋转）：按视角（文件名）记下每次打开的 writer 与打开参数。"""
 
     def __init__(self, delay: float = 0.0) -> None:
         self.opened: dict[str, list[RecordingWriter]] = {}
         self.order: list[RecordingWriter] = []   # 按打开顺序（单路片段的文件名是片段 id）
+        self.opens: list[tuple[tuple[int, int], int]] = []   # 每次打开的 (转正后的尺寸, 旋转)
         self.delay = delay
 
-    def __call__(self, path, _fps, _size):
+    def __call__(self, path, _fps, size, rotation=0):
         writer = RecordingWriter(Path(path), self.delay)
         self.opened.setdefault(Path(path).stem, []).append(writer)
         self.order.append(writer)
+        self.opens.append((tuple(size), int(rotation)))
         return writer, Path(path), "fake"
 
     def last(self, view: str) -> RecordingWriter:
@@ -151,13 +153,13 @@ class SlowOpenWriters(Writers):
         self.threads: list[str] = []
         self.finished = threading.Event()
 
-    def __call__(self, path, fps, size):
+    def __call__(self, path, fps, size, rotation=0):
         self.threads.append(threading.current_thread().name)
         try:
             time.sleep(self.open_s)
             if self.fail:
                 raise RuntimeError(self.fail)
-            return super().__call__(path, fps, size)
+            return super().__call__(path, fps, size, rotation)
         finally:
             self.finished.set()
 
@@ -237,7 +239,8 @@ def test_no_frame_captured_after_a_boundary_is_written(tmp_path, feed):
 
 
 def test_rotation_is_fixed_at_segment_start(tmp_path, feed):
-    """D-29：录制中改旋转不影响本段的方向与尺寸，下一段才生效。"""
+    """D-29：录制中改旋转不影响本段的方向与尺寸，下一段才生效。旋转交给 writer（D-31）：writer 按开录时的旋转
+    与转正后的尺寸打开，收到的是未转正的源帧。"""
     rotation = {PRIMARY: 90}
     writers = Writers()
     source = feed(roles=(PRIMARY,))
@@ -248,12 +251,14 @@ def test_rotation_is_fixed_at_segment_start(tmp_path, feed):
     time.sleep(0.2)
     recorder.end_segment()
     first = writers.order[-1]
-    assert first.frames and {frame.shape[:2] for frame in first.frames} == {(6, 4)}
+    assert writers.opens[-1] == ((4, 6), 90)
+    assert first.frames and {frame.shape[:2] for frame in first.frames} == {(4, 6)}
     assert recorder.start_segment(SegmentMeta(tmp_path))
     time.sleep(0.2)
     recorder.end_segment()
     recorder.close_session()
     second = writers.order[-1]
+    assert writers.opens[-1] == ((6, 4), 0)
     assert second is not first and {frame.shape[:2] for frame in second.frames} == {(4, 6)}
 
 
@@ -455,8 +460,8 @@ def test_service_session_close_submits_the_open_segment(tmp_path, feed):
 def test_real_writer_output_shows_each_frame_no_earlier_than_it_was_captured(tmp_path, feed):
     """解码检查：真实 writer（MJPG）写出后，第 k 帧画面的源序号单调不减，且源帧采集于该输出时刻之前。"""
     source = feed(roles=(PRIMARY,), shape=(48, 64, 3))
-    recorder = SegmentRecorder(lambda path, fps, size: open_video_writer(Path(path).with_suffix(".avi"),
-                                                                          fps=fps, size=size))
+    recorder = SegmentRecorder(lambda path, fps, size, _rotation: open_video_writer(Path(path).with_suffix(".avi"),
+                                                                                     fps=fps, size=size))
     recorder.begin_session({"front": (64, 48)}, 30.0, feed=source)
     ref = recorder.start_segment(SegmentMeta(tmp_path))
     time.sleep(1.0)
@@ -478,6 +483,116 @@ def test_real_writer_output_shows_each_frame_no_earlier_than_it_was_captured(tmp
     assert all(abs(a - b) <= 2 for a, b in zip(values, expected))
     start = record["runs"][0][0]
     assert all(at <= start + k * P_NS + 1 for k, (_seq, at) in enumerate(record["slot_sources"]))
+
+
+class ReleaseFailingWriters(Writers):
+    """writer 写得进去，但关闭时报错（像 ffmpeg 封装进程写不完 AVI 索引）。"""
+
+    def __call__(self, path, fps, size, rotation=0):
+        writer, actual, codec = super().__call__(path, fps, size, rotation)
+
+        def release() -> None:
+            writer.released = True
+            raise RuntimeError("ffmpeg 已退出（退出码 1）：Invalid argument")
+
+        writer.release = release
+        return writer, actual, codec
+
+
+def test_writer_release_failure_fails_the_segment(tmp_path, feed):
+    """段末关闭 writer 失败说明文件不完整：这一段写明原因失败，已写的帧数与路径照常返回。"""
+    source = feed(roles=(PRIMARY,))
+    recorder = _recorder(source, ReleaseFailingWriters(), views=("front",))
+    confirmed: list = []
+    assert recorder.start_segment(SegmentMeta(tmp_path), lambda segment, error: confirmed.append(error))
+    time.sleep(0.4)
+    finished = recorder.end_segment()
+    recorder.close_session()
+    result = finished.views["front"]
+    assert confirmed == [None] and result.frames > 0 and result.path is not None
+    assert result.error == "写盘失败：ffmpeg 已退出（退出码 1）：Invalid argument"
+
+
+class InfoWriters(Writers):
+    """writer 带 ``info``（如录像 writer 的封装方式），应合并进 ``capture.json`` 的 ``writer``。"""
+
+    def __call__(self, path, fps, size, rotation=0):
+        writer, actual, codec = super().__call__(path, fps, size, rotation)
+        writer.info = {"backend": "ffmpeg_pipe", "rotation": rotation}
+        return writer, actual, codec
+
+
+def test_capture_record_describes_the_writer_and_its_per_frame_cost(tmp_path, feed):
+    source = feed(roles=(PRIMARY,))
+    recorder = _recorder(source, InfoWriters(delay=0.004), rotation=lambda _role: 90, views=("front",))
+    ref = recorder.start_segment(SegmentMeta(tmp_path))
+    time.sleep(0.5)
+    recorder.end_segment()
+    recorder.close_session()
+    writer = read_capture_record(ref.capture_path)["views"]["front"]["writer"]
+    assert writer["codec"] == "fake" and writer["backend"] == "ffmpeg_pipe" and writer["rotation"] == 90
+    assert writer["write_ms"]["p50"] >= 3.5 and writer["write_ms"]["max"] >= writer["write_ms"]["p95"]
+
+
+def test_view_worker_defaults_to_the_recording_writer(tmp_path, feed, monkeypatch):
+    """不注入工厂时录像线程用 ``open_recording_writer``，按开录时的旋转与转正后的尺寸打开。"""
+    import core.recording.worker as worker_mod
+
+    writers = Writers()
+    calls: list = []
+
+    def fake_open(path, *, fps, size, rotation):
+        calls.append((Path(path).name, fps, tuple(size), rotation))
+        return writers(path, fps, size, rotation)
+
+    monkeypatch.setattr(worker_mod, "open_recording_writer", fake_open)
+    source = feed(roles=(PRIMARY,))
+    recorder = SegmentRecorder()
+    recorder.begin_session({"front": (6, 4)}, 30.0, feed=source, rotation_of=lambda _role: 270)
+    assert recorder.start_segment(SegmentMeta(tmp_path))
+    time.sleep(0.3)
+    finished = recorder.end_segment()
+    recorder.close_session()
+    assert finished.views["front"].error is None and calls and calls[0][1:] == (30.0, (4, 6), 270)
+
+
+def _ffmpeg_available() -> bool:
+    import shutil
+
+    from core.media import ffmpeg_executable
+
+    exe = ffmpeg_executable()
+    return Path(exe).is_file() or shutil.which(exe) is not None
+
+
+@pytest.mark.skipif(not _ffmpeg_available(), reason="本机没有 ffmpeg（CI 不装 imageio-ffmpeg）")
+def test_default_recording_writer_output_is_rotated_and_matches_the_timeline(tmp_path, feed):
+    """真实的录像 writer（ffmpeg 封装）：转正 90° 后的 AVI 帧数与 ``capture.json`` 的槽数相同，第 k 帧就是第 k 个槽的源帧。"""
+    source = feed(roles=(PRIMARY,), shape=(48, 64, 3))
+    recorder = SegmentRecorder()
+    recorder.begin_session({"front": (48, 64)}, 30.0, feed=source, rotation_of=lambda _role: 90)
+    ref = recorder.start_segment(SegmentMeta(tmp_path))
+    time.sleep(1.0)
+    finished = recorder.end_segment()
+    recorder.close_session()
+
+    result = finished.views["front"]
+    assert result.error is None and result.path.suffix == ".avi"
+    capture = cv2.VideoCapture(str(result.path))
+    values, shapes = [], set()
+    while True:
+        ok, image = capture.read()
+        if not ok:
+            break
+        shapes.add(image.shape[:2])
+        values.append(int(round(float(image.mean()))))
+    capture.release()
+    record = read_capture_record(ref.capture_path)["views"]["front"]
+    expected = [seq % 256 for seq, _at in record["slot_sources"]]
+    assert shapes == {(64, 48)} and len(values) == result.frames == len(expected)
+    assert all(abs(a - b) <= 2 for a, b in zip(values, expected))
+    assert record["writer"]["codec"] == "MJPG" and record["writer"]["backend"] == "ffmpeg_pipe"
+    assert record["writer"]["rotation"] == 90 and record["writer"]["write_ms"]["p50"] is not None
 
 
 class PacedCapture:

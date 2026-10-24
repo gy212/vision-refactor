@@ -1,7 +1,9 @@
 # -*- coding: utf-8 -*-
 """录制性能测试的桌面流程：检查能否开始、在后台运行 ``run_recording_benchmark``、把报告存到桌面并把结果交给对话框。
 
-入口是主窗口的隐藏快捷键 Ctrl+Shift+B（``DesktopApp``）。测试用主界面当前选中的摄像头、旋转与骨架模型设置，
+入口是主窗口的隐藏快捷键 Ctrl+Shift+B（``DesktopApp``）。测试用主界面当前选中的摄像头、旋转与骨架模型设置；
+"按当前设置录像"一段另用点「开始」时的会话配置跑正式的处理循环（``BenchmarkSessionLoad``），预览画到主窗口。
+测试不下载模型：开始前查好本机缺哪些模型（``missing_models``），缺的那部分负载不测，结论最前面提醒去模型管理安装。
 临时录像写在当前录制目录下、测完删除；报告固定保存为桌面上的 ``录制性能测试_<日期>_<时间>.json``，
 桌面不可写时退到数据目录下的 ``录制性能测试`` 文件夹，实际路径都显示在对话框里。
 """
@@ -15,11 +17,20 @@ from pathlib import Path
 from typing import Any
 
 from core.foundation import CancelToken, TaskGroup, desktop_dir, models_dir, repo_root
+from core.live import SessionConfig
 from core.media import PRIMARY, SECONDARY
-from core.pose import create_engine
-from core.services import BENCHMARK_PHASES, BenchmarkSetup, run_recording_benchmark, save_benchmark_report
+from core.pose import create_engine, missing_model_message
+from core.services import (
+    BENCHMARK_PHASES,
+    BenchmarkSetup,
+    BenchmarkSystemProbes,
+    run_recording_benchmark,
+    save_benchmark_report,
+)
 
 from apps.tk.build_info import load_build_info
+from apps.tk.controllers.benchmark_load import BenchmarkSessionLoad
+from apps.tk.controllers.recording import model_installed
 
 MIN_FREE_GB = 3.0          # 每段写盘约 1 GB（两路 1080p × 30 s），段末删除
 FALLBACK_FOLDER = "录制性能测试"
@@ -31,7 +42,23 @@ def report_directory() -> Path:
 
 
 def total_seconds() -> int:
-    return int(sum(phase.seconds for phase in BENCHMARK_PHASES))
+    """各段加整机项（内存、录像盘读写）的最长用时，秒。"""
+    return int(sum(phase.seconds for phase in BENCHMARK_PHASES) + BenchmarkSystemProbes().seconds)
+
+
+def missing_models(pose_variant: str, enable_hands: bool,
+                   installed: Callable[[str], bool] = model_installed) -> dict[str, str]:
+    """本机缺的、测试要用的模型：``lite``（站位检测；考试与练习也都离不开）与 ``skeleton``（按当前设置的骨架识别），
+    值是给用户看的提示。"""
+    missing: dict[str, str] = {}
+    if not installed("pose_lite"):
+        missing["lite"] = missing_model_message("benchmark_lite")
+    absent = [name for key, name in ((f"pose_{pose_variant}", f"pose_landmarker_{pose_variant}.task"),
+                                     ("hand", "hand_landmarker.task"))
+              if (key != "hand" or enable_hands) and not installed(key)]
+    if absent:
+        missing["skeleton"] = missing_model_message("benchmark_skeleton", models="、".join(absent))
+    return missing
 
 
 @dataclass(frozen=True)
@@ -46,6 +73,8 @@ class BenchmarkContext:
     enable_hands: Callable[[], bool]
     record_dir: Callable[[], Path]
     post: Callable[[Callable[[], Any]], Any]
+    session_config: Callable[[], SessionConfig]   # 此刻点「开始」会用的会话配置
+    preview: Any                                  # 主窗口的 PreviewSurface
 
 
 class BenchmarkController:
@@ -56,6 +85,7 @@ class BenchmarkController:
         self.view = view
         self._tasks = TaskGroup("benchmark")
         self._token: CancelToken | None = None
+        self._load: BenchmarkSessionLoad | None = None
         self.last_report_path: Path | None = None
 
     @property
@@ -92,15 +122,20 @@ class BenchmarkController:
             build = load_build_info()
         except (OSError, ValueError):
             build = None
+        missing = missing_models(self.ctx.pose_variant(), self.ctx.enable_hands())
+        self._load = BenchmarkSessionLoad(self.ctx.session_config(), rotation_of=self.ctx.rotation_of,
+                                          preview=self.ctx.preview, missing=missing)
         return BenchmarkSetup(
             stream=cameras.service.open_stream(specs),
             rotations={role: int(self.ctx.rotation_of(role)) for role in specs},
             labels=labels,
             work_dir=self.ctx.record_dir() / f"_录制性能测试_临时_{stamp}",
-            engine_factory=lambda spec: create_engine(spec, models_dir=models_dir()),
+            engine_factory=lambda spec: create_engine(spec, models_dir=models_dir(), download=False),
             pose_variant=self.ctx.pose_variant(),
             enable_hands=self.ctx.enable_hands(),
             extra={"build": build, "record_dir": str(self.ctx.record_dir())},
+            session_load=self._load,
+            missing_models=missing,
         )
 
     def start(self) -> None:
@@ -143,7 +178,12 @@ class BenchmarkController:
         self._token = None
         self.last_report_path = path
         self.view.set_running(False)
-        self.view.show_result(list(report.get("summary", [])), bool(report.get("ok")), path, error)
+        self.view.show_result(dict(report.get("conclusion") or {}), list(report.get("summary", [])), path, error)
+
+    def render_preview(self) -> None:
+        """Tk 主线程定时调用：把"按当前设置录像"一段的预览画到主窗口（没有在测这一段时只恢复布局）。"""
+        if self._load is not None:
+            self._load.render()
 
     def cancel(self) -> None:
         if self._token is not None:

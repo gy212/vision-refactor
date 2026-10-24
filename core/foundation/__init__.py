@@ -1,4 +1,4 @@
-"""基础层（L0）的公共 API：几何与信号、原子写、偏好、路径、任务与取消、epoch、诊断、JSON 序列化、非模板 npz 读取。"""
+"""基础层（L0）的公共 API：几何与信号、原子写、偏好、路径、任务与取消、epoch、诊断、JSON 序列化、非模板 npz 读取、本机环境与耗时汇总。"""
 from core.foundation import diag, prefs
 from core.foundation.atomic_io import (
     atomic_target,
@@ -12,6 +12,8 @@ from core.foundation.geometry import angle_deg, distance, landmark_xy, torso_len
 from core.foundation.jsonable import to_jsonable
 from core.foundation.npz import load_npz, npz_meta
 from core.foundation.host import cpu_percent, desktop_dir, host_summary, system_cpu_times
+from core.foundation.memory import PagingCounter, memory_snapshot
+from core.foundation.power import power_status
 from core.foundation.paths import models_dir, outputs_dir, repo_root, templates_dir
 from core.foundation.prefs import (
     CAMERA_SELECTION,
@@ -43,6 +45,8 @@ from core.foundation.signal import (
     smooth_1d,
     trimmed_mean,
 )
+from core.foundation.timing import ms_summary
+from core.foundation.volume import UnbufferedReader, volume_info
 from core.foundation.tasks import (
     Cancelled,
     CancelToken,
@@ -91,6 +95,7 @@ __all__ = [
     "load_template_pools",
     "longest_segment",
     "models_dir",
+    "ms_summary",
     "motion_energy",
     "npz_meta",
     "outputs_dir",
@@ -110,5 +115,10 @@ __all__ = [
     "cpu_percent",
     "desktop_dir",
     "host_summary",
+    "power_status",
+    "memory_snapshot",
+    "PagingCounter",
+    "volume_info",
+    "UnbufferedReader",
     "system_cpu_times",
 ]

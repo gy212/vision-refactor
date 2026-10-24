@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
-"""录制性能测试窗口的布局：说明与报告保存位置、开始/取消按钮、进度、结果摘要和报告路径（可复制、可打开所在文件夹）。
+"""录制性能测试窗口的布局：说明与报告保存位置、开始/取消按钮、进度、醒目的总结论、各段明细和报告路径（可复制、可打开所在文件夹）。
 
-窗口是模态的：测试期间主界面不能操作，避免开预览或录制去抢摄像头。流程与保存在 ``BenchmarkController``。
+窗口是模态的：测试期间主界面不能操作，避免开预览或录制去抢摄像头。流程与保存在 ``BenchmarkController``；
+窗口开着时每 ``PREVIEW_TICK_MS`` 让控制器把"按当前设置录像"一段的预览画到主窗口。
 """
 from __future__ import annotations
 
@@ -16,20 +17,23 @@ from typing import Any
 from apps.tk.controllers.benchmark import BenchmarkContext, BenchmarkController, report_directory, total_seconds
 
 INTRO = (
-    "这个测试检查本机能否同时稳定地采集并录制两路 1080p 画面，结果用来决定录制方案。\n\n"
-    "开始前：在主界面选好正面和侧面摄像头（就是平时录制用的两个），不用点「开始」。\n"
-    "测试分四段，共约 {minutes} 分钟：只采集 → 采集并录像 → 再加人体检测 → 再加骨架识别。\n"
-    "测试期间请不要拔摄像头，也不要运行其它占用电脑的程序；摄像头前有没有人都可以。\n"
+    "这个测试检查本机按现在的设置能否稳定地录制两路 1080p 画面，结果用来决定录制方案。\n\n"
+    "开始前：在主界面选好正面和侧面摄像头（就是平时录制用的两个），设好旋转和「开启骨架」，不用点「开始」。\n"
+    "先测内存和录像盘（录制目录所在的盘）读写，最多约半分钟；再分五段测录像。全程约 {minutes} 分钟，"
+    "最后一段和平时录像时电脑做的事完全一样，主窗口会显示画面。\n"
+    "测试期间请不要拔摄像头，也不要运行其它占用电脑的程序；笔记本请接上电源。摄像头前有没有人都可以。\n"
     "测试录下的视频会自动删除，不会留在录制目录里。"
 )
+PREVIEW_TICK_MS = 16
+_LEVEL_COLORS = {"ok": "#1a7f37", "tight": "#b35900", "fail": "#c62828", "incomplete": "#555555"}
 
 
 class BenchmarkDialog:
     def __init__(self, parent: Tk, post: Callable[[Callable[[], Any]], Any], ctx: BenchmarkContext) -> None:
         self._win = Toplevel(parent)
         self._win.title("录制性能测试")
-        self._win.geometry("620x620")
-        self._win.minsize(560, 560)
+        self._win.geometry("640x680")
+        self._win.minsize(580, 600)
         self._win.transient(parent)
 
         self.progress_var = StringVar(value="尚未开始")
@@ -46,6 +50,7 @@ class BenchmarkDialog:
         self._build_result(outer)
         self._win.protocol("WM_DELETE_WINDOW", self._on_close)
         self._win.grab_set()
+        self._tick()
 
     def is_open(self) -> bool:
         return bool(self._win.winfo_exists())
@@ -84,6 +89,10 @@ class BenchmarkDialog:
     def _build_result(self, outer: ttk.Frame) -> None:
         frame = ttk.Labelframe(outer, text="测试结果", padding=8)
         frame.pack(fill="both", expand=True, pady=(10, 0))
+        self.conclusion_var = StringVar(value="")
+        self.conclusion_label = ttk.Label(frame, textvariable=self.conclusion_var, wraplength=580, justify="left",
+                                          font=("Microsoft YaHei UI", 12, "bold"))
+        self.conclusion_label.pack(anchor="w", fill="x", pady=(0, 6))
         self.summary = Text(frame, height=10, wrap="word", state="disabled")
         self.summary.pack(fill="both", expand=True)
         row = ttk.Frame(frame)
@@ -106,6 +115,7 @@ class BenchmarkDialog:
         if running:
             self._report_path = None
             self.path_var.set("")
+            self.conclusion_var.set("")
             self._set_summary("测试进行中……")
             for button in (self.open_btn, self.copy_btn):
                 button.configure(state="disabled")
@@ -118,8 +128,12 @@ class BenchmarkDialog:
         self.progress_var.set(text)
         messagebox.showwarning("暂时不能测试", text, parent=self._win)
 
-    def show_result(self, summary: list[str], ok: bool, path: Path | None, error: str | None) -> None:
+    def show_result(self, conclusion: dict, summary: list[str], path: Path | None, error: str | None) -> None:
+        """``conclusion`` 是报告的总结论（level/ok/text），醒目地显示在明细之上。"""
         self._report_path = path
+        self.conclusion_var.set(conclusion.get("text") or "测试没有得出结论。")
+        color = _LEVEL_COLORS.get(conclusion.get("level"), _LEVEL_COLORS["incomplete"])
+        self.conclusion_label.configure(foreground=color)
         lines = list(summary)
         if path is not None:
             lines += ["", "报告已保存到：", str(path), "请把这个文件发给技术人员。"]
@@ -131,6 +145,15 @@ class BenchmarkDialog:
         self._set_summary("\n".join(lines))
         self.progress_var.set("测试完成，报告已保存。" if path is not None else "测试结束，但报告没有保存成功。")
         self.start_btn.configure(text="再测一次")
+
+    def _tick(self) -> None:
+        if not self._win.winfo_exists():
+            return
+        try:
+            self.controller.render_preview()
+        except Exception:
+            pass
+        self._win.after(PREVIEW_TICK_MS, self._tick)
 
     def _set_summary(self, text: str) -> None:
         self.summary.configure(state="normal")

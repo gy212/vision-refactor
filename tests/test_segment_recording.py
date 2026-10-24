@@ -43,7 +43,7 @@ class _Writer:
 
 
 def _factory(*, failing: frozenset[str] = frozenset(), on_write=None):
-    def factory(path, _fps, _size):
+    def factory(path, _fps, _size, _rotation=0):
         path = Path(path)
         if path.stem in failing:
             raise RuntimeError(f"{path.stem} writer unavailable")

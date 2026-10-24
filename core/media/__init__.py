@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""媒体层（L1）的公共 API：离线视频解码、帧契约、视频写出/转码、录像时间轴与采集记录、片段路径布局与摄像头子系统。"""
+"""媒体层（L1）的公共 API：离线视频解码、帧契约、视频写出/转码与摄像头录像的 MJPEG 写出、录像时间轴与采集记录、片段路径布局与摄像头子系统。"""
 from core.media.video_source import (
     DEFAULT_FPS,
     NO_END,
@@ -48,6 +48,8 @@ from core.media.frame_clock import BoundaryShift, FrameClock, FrameClockStats
 from core.media.pacing import Timeline, TimelineStats
 from core.media.transforms import apply_rotation, rotated_size
 from core.media.segment_layout import CAPTURE_FILE, VIDEO_SUFFIXES, SegmentLayout, role_for_view, view_for_role
+from core.media.ffmpeg import ffmpeg_executable
+from core.media.mjpeg_writer import MjpegPipeWriter, RecordingWriterError, open_recording_writer
 from core.media.writer import open_video_writer, transcode_to_h264
 from core.media.writer_opener import OpenedWriter, OpenWriter, WriterOpener
 
@@ -74,6 +76,7 @@ __all__ = [
     "DEFAULT_FPS",
     "DeviceCatalog",
     "enumerate_cameras",
+    "ffmpeg_executable",
     "first_frame_ok",
     "Frame",
     "FrameClock",
@@ -84,9 +87,11 @@ __all__ = [
     "LatestSlot",
     "list_device_names",
     "make_label",
+    "MjpegPipeWriter",
     "monotonic_of_capture",
     "NO_END",
     "open_video",
+    "open_recording_writer",
     "open_video_writer",
     "OpenedWriter",
     "OpenWriter",
@@ -96,6 +101,7 @@ __all__ = [
     "ProcessCamera",
     "read_capture_record",
     "read_frame_at",
+    "RecordingWriterError",
     "rotated_size",
     "ROLES",
     "RoleSpecs",

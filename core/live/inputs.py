@@ -5,9 +5,12 @@
 ``start``（摄像头接管租约，各路 reader 开始持续读帧）→ ``actual_sizes`` → ``read``（返回 ``InputFrames``；
 视频读完返回 None；摄像头断流抛 ``CameraReadError``）→ ``close``。阻塞调用只在 runner 线程里执行。
 ``capture_feed`` 是交给录制层的帧来源：摄像头会话是 ``CameraStream``（录像线程订阅每路的帧），视频为 None。
+``ClaimedCameraInput`` 是调用方已经接管的摄像头（录制性能测试在自己接管的摄像头上跑一个会话）：不等预热、不接管、
+结束时不关闭摄像头。
 """
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -104,6 +107,31 @@ class CameraInput:
 
     def close(self, *, keep_warm: bool) -> None:
         self._stream.close(keep_warm=keep_warm)
+
+
+class ClaimedCameraInput(CameraInput):
+    """已由调用方接管的 ``CameraStream``：``wait_ready`` 等各路 reader 出第一帧，``start``/``close`` 不做事，
+    摄像头的生命周期归调用方。只用于不需要加载期裸帧的会话（``loading_raw_preview=False``）。"""
+
+    READY_TIMEOUT_S = 5.0
+
+    def wait_ready(self, cancel: CancelToken) -> FrameSet:
+        deadline = time.monotonic() + self.READY_TIMEOUT_S
+        while True:
+            latest = {role: self._stream.latest(role) for role in self.roles}
+            if all(frame is not None for frame in latest.values()):
+                self._cursor = {role: frame.seq for role, frame in latest.items()}
+                return {role: frame.bgr for role, frame in latest.items()}
+            cancel.raise_if_cancelled()
+            if time.monotonic() >= deadline:
+                raise RuntimeError(f"摄像头 {self.READY_TIMEOUT_S:g} 秒内没有画面")
+            cancel.wait(0.05)
+
+    def start(self, cancel: CancelToken) -> None:
+        return None
+
+    def close(self, *, keep_warm: bool) -> None:
+        return None
 
 
 class VideoFileInput:

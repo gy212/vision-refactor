@@ -4,8 +4,8 @@
 UI 线程经 ``request_toggle()`` 切换状态；采集线程每帧调用 ``write_frame()``，由控制器按状态决定写或跳过；
 会话结束时 ``close_session()`` 释放 writer 并复位 idle。真实 I/O 经注入的 ``writer_factory`` 完成，
 内部以一把 ``threading.Lock`` 串行化所有状态与写盘操作。多路同边界录制由 ``SegmentRecorder`` 组合本类。
-writer 默认在首个 ``write_frame`` 里懒创建；摄像头录像线程改为用 ``open_writer`` 在别的线程预先打开，
-再经 ``attach_writer`` 交给控制器（打开 1080p H.264 要几百毫秒，不能占着取帧的线程，D-18）。
+writer 默认在首个 ``write_frame`` 里懒创建；摄像头录像线程改为在别的线程用自己的 writer 工厂预先打开，
+再经 ``attach_writer`` 交给控制器（打开不能占着取帧的线程，D-18），段末经 ``release_writer`` 释放并取回释放时的错误。
 P4 从 ``core/recording_controller.py`` 原样迁入。
 """
 
@@ -145,15 +145,6 @@ class RecordingController:
 
             return self._state
 
-    def open_writer(self, path: Path) -> Tuple[VideoWriterLike, Path, str]:
-        """用本控制器的 writer 工厂与会话参数（fps、尺寸）打开一个 writer，不改状态、打开期间不持锁。
-
-        供调用方在别的线程预先打开，再经 ``attach_writer`` 交回；返回 (writer, 实际落盘路径, codec 标签)。
-        """
-        with self._lock:
-            fps, size = self._fps, self._size
-        return self._writer_factory(path, fps, size)
-
     def attach_writer(self, writer: VideoWriterLike, actual_path: Path) -> bool:
         """接收一个已打开的 writer，之后的 ``write_frame`` 写入它（不再懒创建）。
 
@@ -203,6 +194,25 @@ class RecordingController:
                 self._writer = None
                 self._last_error = str(exc)
                 self._state = "idle"
+
+    def release_writer(self) -> Optional[str]:
+        """释放当前 writer 并回到 idle（之后的 ``write_frame`` 跳过，不再懒创建），返回释放时的错误文字；
+        没有错误或没有 writer 时为 None。
+
+        录像 writer 在释放时才写完文件（如 ffmpeg 封装进程写 AVI 索引），这一步失败说明文件不完整，
+        调用方据此判这一段失败；``stop_recording`` 的释放仍然吞掉错误。路径与帧数保留到 ``stop_recording``。
+        """
+        with self._lock:
+            writer, self._writer = self._writer, None
+            if self._session_active:
+                self._state = "idle"
+            if writer is None:
+                return None
+            try:
+                writer.release()
+            except Exception as exc:  # noqa: BLE001 - 释放失败交给调用方判定
+                return str(exc) or type(exc).__name__
+            return None
 
     def stop_recording(self) -> Optional[Path]:
         """结束当前录制片段：释放 writer 并将状态复位为 ``idle``，但**保持会话运行**。
