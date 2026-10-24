@@ -1,3 +1,63 @@
+## 2026-10-24: [fix] 摄像头录像改用 imencode + ffmpeg 管道的录像 writer，转正移进 writer；录制性能测试加"按当前设置录像"一段并先给总结论
+
+- 问题描述：
+  - 后台打开 writer 修好后，甲方 i7-1355U 笔记本仍报"正面录像失败：录像队列已满（8 帧），写盘跟不上采集"。两份甲方报告都是 MJPG（拿不到 `avc1`）。
+  - 正面旋转 90° 时，每帧先在录像线程里 `apply_rotation`，再由 `cv2.VideoWriter` 的 MJPEG 编码器编码，写一帧中位 28.9～34.5 ms，紧贴 33.3 ms 的帧间隔。
+  - 录制性能测试四段都只测分项负载，没有一段与正式双摄录制同时跑的负载相同；窗口也只列各段数据，甲方看不出"能不能录"。
+  - 测试缺模型时会去自动下载（甲方离线时卡住或报笼统错误）；正式循环里的站位检测缺 Lite 模型时静默不跑，结果偏乐观。
+- 修改内容：
+  - `core/media/mjpeg_writer.py`（新增，L1）：录像 writer。
+    - `cv2.imencode`（质量 85）编 JPEG，由送帧任务（`TaskGroup`，有界队列 30 帧）写进随包 ffmpeg 的标准输入；ffmpeg 以 `image2pipe -framerate 30` 读入、`-c:v copy` 封装成 MJPG AVI，后接的 H.264 转码不变。
+    - 接口同 `cv2.VideoWriter`；`open_recording_writer(path, fps, size, rotation)` 返回 `(writer, .avi, "MJPG")`。
+    - 转正在 writer 里；同一数组对象连写只编码一次。
+    - ffmpeg 启动失败是打开失败；中途退出、管道断开、1 s 不接收时下一次 `write` 抛 `RecordingWriterError`（带退出码与 stderr 末尾）。
+    - 关闭 2 s 内不退出就结束进程并报错，一帧没写时删文件。
+  - `core/media/ffmpeg.py`（新增）：随包 ffmpeg 的唯一查找处（冻结包内、PATH、imageio-ffmpeg，缓存）。`writer.py` 的转码改用它，源码运行时 PATH 上没有 ffmpeg 也能找到 imageio 的。
+  - `core/recording/`：
+    - `worker.py`：`ViewWriterFactory` 收 `(path, fps, 源帧尺寸, rotation)`，默认 `open_recording_writer`；删除 `_oriented`；写出源帧并记每帧耗时；`capture.json` 的 `writer` 合并 writer 信息（`backend`、`encoder`、`quality`、`rotation`、`feed_peak`）与 `write_ms`。
+    - `controller.py`：删除 `open_writer`，新增 `release_writer()`，关闭报的错使这一段失败。
+    - `recorder.py`：视频文件会话仍用 `open_video_writer`。
+    - CLI 摄像头导出同样改用录像 writer。
+  - `core/foundation/`：
+    - `timing.py`（新增）：`ms_summary`。
+    - `host.py`：`power_status()`（`GetSystemPowerStatus` 与电源模式），`host_summary()` 加 `power`。
+  - 录制性能测试：
+    - `core/services/benchmark_verdict.py`（新增，从 `recording_benchmark.py` 拆出）：每段判定、总结论（能 / 能但余量小 / 不能 / 测试不完整）、电源提示、缺模型提示、摘要。
+    - `recording_benchmark.py`：
+      - 新增第五段 `production`"按当前设置录像（与正式录制相同的负载）"，总结论只看它。
+      - writer 默认与生产相同，`schema` 升为 2。
+      - `missing_models`：缺模型的段跳过、不下载。
+    - `apps/tk/controllers/benchmark_load.py`（新增）：`BenchmarkSessionLoad` 用点「开始」时的会话配置，经 `core/live` 新增的 `ClaimedCameraInput` 在测试接管的摄像头上跑正式的 `LiveSessionManager` 循环，预览画到主窗口。双摄骨架关时开站位检测，缺 Lite 时不开并写明；缺骨架模型时不运行。
+    - `apps/tk/controllers/benchmark.py`：开始前查缺哪些模型，引擎 `download=False`。
+    - `views/benchmark_dialog.py`：最上面用大字、按等级着色显示总结论，明细在下。
+  - 打包：spec 的 hiddenimports 加 `core.media.ffmpeg`、`core.media.mjpeg_writer`；`imageio_ffmpeg` 包本身不进包（只用它的 ffmpeg 可执行文件）。
+  - 文档：
+    - 设计文档 §2 模块表、§5.2、§8.8 录像一行与"writer 的打开"、新增"录像 writer"一段（实测数据、决定）、§11 新增 D-31。
+    - `AGENTS.md` 代码地图。
+    - `docs/录制性能测试操作说明.md`（五段、先看结论、接电源、缺模型怎么办）。
+  - 测试：
+    - 新增 `tests/test_mjpeg_writer.py`（11 项，注入假 ffmpeg 进程；真 ffmpeg 一项在 CI 跳过）。
+    - 更新 `test_recording_worker.py`、`test_recording_controller.py`、`test_segment_recording.py`、`tk_app_doubles.py`、`test_video_writer_transcode.py`、`test_recording_benchmark.py`、`test_tk_benchmark.py`。
+    - `test_camera_service.py` 的 CLI 断连用例改为注入录像 writer（原来替换的是 `cv2.VideoWriter`），并在 `tmp_path` 下运行，不再在仓库根目录留下日期文件夹。
+- 验证方法：
+  - 开发机（Ultra 7 155H）限定 6 个 E 核、两路 full+手部推理模拟弱机，合成 1080p 两路 30 fps 30 s，每帧写出耗时 p50 / p95：
+
+    | 写法 | 正面（旋转 90°） | 侧面 |
+    |---|---|---|
+    | 原 MJPG | 29.43 / 33.82 ms，75 帧晚于帧间隔 | 23.66 / 27.37 ms |
+    | 录像 writer | 11.86 / 16.26 ms，0 帧晚于帧间隔 | 7.94 / 11.47 ms |
+
+    `avc1` 为 7.95 / 10.05 ms，但打开 0.66 s、甲方打不开，不作首选。
+  - 实机：**未完成**。本机唯一的 USB 摄像头（FHD Camera）设备状态正常、隐私设置允许桌面应用，但 DSHOW 与 MSMF 都打不开（直接 `cv2.VideoCapture(0)` 也失败），没法做 1080p 正面旋转 90°、30 s、带骨架推理的实机录像；待摄像头恢复后用 `device_check` 脚本补测（新旧写法各 30 s，另加限定 E 核一轮），以甲方回收的录制性能测试报告为最终依据。
+  - 门禁、架构、录制套件、`scripts/sim_exam_flow.py`、全量：
+    - 门禁 `tests/test_pose33_v3_golden.py tests/test_valid_mask_migration.py tests/test_tech_eval_contract.py tests/test_rule_availability.py`：44 passed；`tests/test_architecture.py`：18 passed。
+    - 录制相关 13 个文件（含 `test_mjpeg_writer.py`、`test_tk_benchmark.py`、`test_camera_service.py`）：264 passed。
+    - `scripts/sim_exam_flow.py`：37 passed，0 failed。
+    - 全量 `-m pytest tests -q`：1386 passed，无失败（`origin/main` 基线 1360 passed）。
+    - 另：worktree 起初没有 `models/`，`test_tk_preview_student_switch_with_process_cameras` 因学生练习预检"缺少 Lite 模型"失败（真实 Tk 弹出了提示框），复制模型后通过；与本改动无关。
+    - `git -c core.whitespace=cr-at-eol diff --check origin/main HEAD` 无输出。
+  - EXE：`PyInstaller app_ui_onefile.spec` 出包（clean 构建）；`vision_ui.exe --offline-self-check` ok，离线自检新增 `camera_recording_writer_rotate_transcode_decode`（冻结包内经内置 FFmpeg 管道录像、转正 90°、转 H.264 后 24 帧、方向正确），共 14 项通过。
+
 ## 2026-10-23: [fix] 开录时在后台打开录像 writer，打开慢不再排满录像队列；录制性能测试按生产方式打开 writer
 
 - 问题描述：甲方用 `main` 构建的新 EXE 开录即报"front_recording_failed：正面录像失败：录像队列已满（8 帧），写盘跟不上采集"。在开发机上复现：
