@@ -33,8 +33,14 @@ def _reach(lm: np.ndarray, mask: np.ndarray, torso: np.ndarray, wrist: int, shou
     return np.where(ok, reach, np.nan)
 
 
-def _excursions(signal: np.ndarray, times: np.ndarray, rise: float, fall: float) -> list[tuple[int, int, int]]:
-    """信号超过 ``rise`` 再回落到 ``fall`` 以下的各段 ``(起点, 峰值, 终点)``；缺失超过 ``MAX_GAP_SECONDS`` 作废这一段。"""
+def _excursions(
+    signal: np.ndarray,
+    times: np.ndarray,
+    rise: float,
+    fall: float,
+    cfg,
+) -> list[tuple[int, int, int]]:
+    """前伸再回落的各段 ``(起点, 峰值, 终点)``；逐段核对最少有效帧与时长，缺失过久则作废。"""
     found, start, last = [], None, None
     for i, value in enumerate(signal):
         if np.isnan(value):
@@ -44,9 +50,12 @@ def _excursions(signal: np.ndarray, times: np.ndarray, rise: float, fall: float)
         if start is None and value > rise:
             start = i
         elif start is not None and value < fall:
-            observed = np.arange(start, i)
+            observed = np.arange(start, i + 1)
             observed = observed[~np.isnan(signal[observed])]
-            found.append((start, int(observed[np.argmax(signal[observed])]), i))
+            # 先逐段过滤，不能把多个单帧跳点合起来凑够有效帧数。
+            if len(observed) >= cfg.min_valid and times[i] - times[start] >= cfg.min_motion_seconds:
+                peak = int(observed[np.argmax(signal[observed])])
+                found.append((start, peak, i))
             start = None
         last = i
     return found
@@ -85,7 +94,8 @@ def step_combo_windows(series: dict, stance: str, cfg, diagnostics: dict) -> dic
         return windows
     rear_base = float(np.nanmedian(rear[baseline]))
     front_base = float(np.nanmedian(front[baseline])) if not np.isnan(front[baseline]).all() else math.nan
-    punches = [p for p in _excursions(rear, times, rear_base + REACH_START, rear_base + REACH_RETURN) if p[0] > baseline[-1]]
+    excursions = _excursions(rear, times, rear_base + REACH_START, rear_base + REACH_RETURN, cfg)
+    punches = [p for p in excursions if p[0] > baseline[-1]]
     if not punches:
         diagnostics["reason"] = "未检测到后手直拳"
         return windows

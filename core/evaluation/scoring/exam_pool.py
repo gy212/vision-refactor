@@ -171,9 +171,22 @@ def side_repetitions(series, cfg: FeedbackConfig) -> list[tuple[float, float]]:
 
 
 def rep_windows(reps: list[tuple[float, float]], fps: float) -> list[tuple[int, int]]:
-    """每一次的时间（秒）→ 本路视频的帧范围，前后各放宽 ``REP_MARGIN_SECONDS``（正侧同步录制，共用时钟）。"""
-    return [(max(0, int(round((a - REP_MARGIN_SECONDS) * fps))), int(round((b + REP_MARGIN_SECONDS) * fps)))
-            for a, b in reps]
+    """各次时间 → 帧范围：前后最多放宽 0.5 s，在相邻两次之间的中点截断，避免重复匹配同一次动作。"""
+    windows = [
+        (
+            max(0, int(round((start - REP_MARGIN_SECONDS) * fps))),
+            int(round((end + REP_MARGIN_SECONDS) * fps)),
+        )
+        for start, end in reps
+    ]
+    for i in range(1, len(windows)):
+        # 帧范围含两端：中点帧只归后一次，两个窗口不能共用同一帧。
+        boundary = int(round((reps[i - 1][1] + reps[i][0]) * fps / 2))
+        previous_start, previous_end = windows[i - 1]
+        start, end = windows[i]
+        windows[i - 1] = (previous_start, min(previous_end, boundary - 1))
+        windows[i] = (max(start, boundary), end)
+    return windows
 
 
 def stepwise_detail(name: str, view: str, per_rep: list) -> dict:

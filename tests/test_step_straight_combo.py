@@ -27,6 +27,7 @@ from core.evaluation.rules.sanda_v5 import (
 )
 from core.evaluation.scoring import exam_pool
 from core.evaluation.step_reps import EXPECTED_REPETITIONS, step_combo_windows
+from core.reporting import build_report_model, render_html_report
 
 FPS = 30.0
 ACTION = "step_straight_combo"
@@ -94,6 +95,19 @@ def test_no_rear_punch_is_reported() -> None:
     assert diagnostics["repetitions"] == []
 
 
+def test_isolated_wrist_jumps_are_not_counted_as_repetitions() -> None:
+    still = _series(0)
+    landmarks = still["landmarks"].copy()
+    landmarks[[60, 120], REAR_WRIST, 0] += .2
+    series = rule_series(landmarks, still["frames"], FPS, 1.0)
+    diagnostics: dict = {}
+
+    windows = step_combo_windows(series, "left", FeedbackConfig(), diagnostics)
+
+    assert diagnostics["repetitions"] == []
+    assert ("rear_straight", "finish") not in windows
+
+
 def test_front_view_shares_side_timing_and_needs_side() -> None:
     side = _series(2)
     front = rule_series(np.repeat(_base_pose()[None], len(side["times"]), axis=0), side["frames"], FPS, 1.0)
@@ -148,6 +162,51 @@ def test_practice_reports_repetition_count() -> None:
     assert "repetitions" not in evaluate_series("straight_combo", "left", {"front": front, "side": side})
 
 
+def test_practice_count_warning_reaches_report_banner() -> None:
+    side = _series(1, seconds=5.0)
+    front = rule_series(
+        np.repeat(_base_pose()[None], len(side["times"]), axis=0),
+        side["frames"],
+        FPS,
+        1.0,
+    )
+    result = evaluate_series(ACTION, "left", {"front": front, "side": side})
+    record = {"action": ACTION, "stance": "left", "result": result}
+    warning = "检测到 1 次动作，应做 2 次"
+
+    model = build_report_model(record)
+
+    assert warning in model.headline.subtitle
+    assert warning in render_html_report(record)
+
+
+def test_adjacent_repetitions_cannot_reuse_the_same_match(monkeypatch) -> None:
+    query = np.random.default_rng(49).normal(size=(10, 22, 2)).astype(np.float32)
+    features = np.full((100, 22, 2), 20.0, np.float32)
+    features[30:40] = query
+    template = SimpleNamespace(
+        path=Path("step.npz"),
+        features=query,
+        layout="pose33_v3",
+    )
+    monkeypatch.setattr(
+        engine,
+        "template_features",
+        lambda *args, **kwargs: (features, FPS, None, "heavy", 1),
+    )
+    windows = exam_pool.rep_windows([(1.0, 1.3), (1.4, 1.7)], FPS)
+
+    first, second = engine.match_video_windows(
+        [template.path],
+        "synthetic.mp4",
+        windows,
+        load=lambda path: template,
+    )[0]
+
+    assert first.end_frame < second.start_frame
+    assert first.score > second.score
+
+
 def test_match_video_windows_matches_each_range_with_whole_video_frames(monkeypatch) -> None:
     seq = np.zeros((100, 3), np.float32)
     seen = []
@@ -200,7 +259,10 @@ def test_exam_scores_each_rep_and_averages(monkeypatch, pool) -> None:
     res = exam_pool.score_exam_pools(pool.tpls, pool.tpls, Path("f.mp4"), Path("s.mp4"), compare=pool.compare,
                                      raw_series=pool.raw_series, stop_evt=Event(),
                                      compare_windows=pool.compare_windows)
-    assert pool.calls["windows"] == [("f.mp4", [(15, 75), (75, 135)]), ("s.mp4", [(15, 75), (75, 135)])]
+    assert pool.calls["windows"] == [
+        ("f.mp4", [(15, 74), (75, 135)]),
+        ("s.mp4", [(15, 74), (75, 135)]),
+    ]
     assert pool.calls["plain"] == [["直拳"], ["直拳"]]
     step = [d for d in res.action_scores if d["name"] == "上步前后手直拳组合"]
     assert len(step) == 2

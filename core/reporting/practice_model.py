@@ -477,6 +477,15 @@ def build_report_model(record: dict) -> NormalizedReportModel:
     counts = buckets.counts(len(all_checks))
     assert counts.verify_conservation(), f"Conservation invariant violated: {counts}"
 
+    headline = get_headline_summary(counts, all_checks, needs_rerecord)
+    repetitions = _dict_field(result, "repetitions")
+    if repetitions and repetitions["detected"] != repetitions["expected"]:
+        # Tk 与 HTML 共用此横幅；只写原始 summary 不会进入结果页。
+        headline.subtitle += (
+            f" 检测到 {repetitions['detected']} 次动作，"
+            f"应做 {repetitions['expected']} 次。"
+        )
+
     evidence_catalog: dict[str, dict] = {}
     for ev in result.get("evidence", []):
         if isinstance(ev, dict) and "id" in ev:
@@ -484,7 +493,7 @@ def build_report_model(record: dict) -> NormalizedReportModel:
 
     return NormalizedReportModel(
         header=header,
-        headline=get_headline_summary(counts, all_checks, needs_rerecord),
+        headline=headline,
         counts=counts,
         phases=build_phase_timeline(header.action, all_checks, _dict_field(result, "phaseWindows")),
         candidate_groups=group_checks_by_reason(buckets.candidate),
