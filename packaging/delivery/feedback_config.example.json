@@ -24,6 +24,7 @@
   "stance_width_max": 1.2,
   "punch_elbow": 160.0,
   "guard_wrist_height": 0.5,
+  "guard_shoulder_drop": 0.08,
   "front_weights": {
     "stance": {
       "default": 0.5,

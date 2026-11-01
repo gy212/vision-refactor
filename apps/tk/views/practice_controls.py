@@ -35,7 +35,7 @@ class PracticeControls:
         self.history_window: HistoryWindow | None = None
         self.student_id = StringVar(root, value="")
         self.student_name = StringVar(root, value="")
-        self.action = StringVar(root, value=ACTIONS["straight_combo"])
+        self.action = StringVar(root, value=ACTIONS["step_straight_combo"])  # 第二批样本标定的动作（D-24）
         self.stance = StringVar(root, value=STANCES["left"])
         self.analysis_model = StringVar(root, value=DEFAULT_MODEL)
         self.fields: list[tuple[Any, str]] = []

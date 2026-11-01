@@ -27,6 +27,7 @@ from core.evaluation.matching.engine import (
     match_query,
     match_templates,
     match_video,
+    match_video_windows,
     template_features,
 )
 from core.evaluation.matching.online import (
@@ -215,6 +216,7 @@ __all__ = [
     "match_query",
     "match_templates",
     "match_video",
+    "match_video_windows",
     "match_window",
     "multi_subsequence_matches",
     "normalize_template_meta",

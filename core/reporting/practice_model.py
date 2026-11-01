@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
-from core.evaluation.rules.sanda_v5 import ACTIONS, PHASES, STANCES, build_checks
+from core.evaluation.rules.sanda_v5 import ACTION_SEGMENTS, ACTIONS, PHASES, STANCES, build_checks
 from core.reporting.text import format_fusion
 
 STATUS_LABELS = {
@@ -20,10 +20,6 @@ STATUS_LABELS = {
 }
 _REVIEW_LABELS = {"confirmed": "教师已确认", "revoked": "教师已撤销"}
 _RERECORD_HINT = " 请重新录制：全身及拳脚入画、光线充足、减少遮挡，保留开始和结束实战式。"
-_COMBO_SEGMENTS = {
-    "straight_combo": ["front_straight", "rear_straight"],
-    "hook_combo": ["front_hook", "rear_hook"],
-}
 
 
 @dataclass(frozen=True)
@@ -408,7 +404,7 @@ def _ordered_stages(action: str) -> list[tuple[str, str, str]]:
     if action == "stance":
         return [("stance", "start", "开始实战式"), ("stance", "end", "结束实战式")]
     stages = [("stance", "start", "开始实战式")]
-    for seg in _COMBO_SEGMENTS.get(action, [action]):
+    for seg in ACTION_SEGMENTS.get(action, (action,)):
         stages.append((seg, "segment", ACTIONS.get(seg, seg)))
     stages.append(("stance", "end", "结束实战式"))
     return stages

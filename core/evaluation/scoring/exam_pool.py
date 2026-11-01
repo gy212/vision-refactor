@@ -5,10 +5,13 @@
 模板按 ``EXAM_POOL`` 契约（heavy + pose33_v3）读取与过滤；比对函数与原始序列提取由调用方注入（录后处理的测试会替换它们）。
 模板名属于统一规则目录的动作，另按 ``sanda_v5`` 逐视角检查（固定左式，相位窗口取帧），结论只写进结果，不计入分数（D-3）；
 正侧两池同一动作的匹配成对判定，相位与练习一样跨机位共用动作时间段。
+上步组合（``SIDE_TIMED_ACTIONS``）的模板按侧面切出的每一次分别匹配、子分取各次均值（D-25）；逐范围比对
+``compare_windows`` 由调用方注入，未注入或切不出次数时按整段匹配，并在明细里写明；它们的规则检查取整段片段。
 """
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Event
@@ -17,8 +20,9 @@ from typing import Any
 import numpy as np
 
 from core.evaluation.rule_checks import ACTION_BY_NAME, judge_views, series_from_raw
-from core.evaluation.rules.sanda_v5 import DEFAULT_STANCE, FeedbackConfig, load_feedback_config
+from core.evaluation.rules.sanda_v5 import DEFAULT_STANCE, SIDE_TIMED_ACTIONS, FeedbackConfig, load_feedback_config
 from core.evaluation.scoring.kick_quality import score_kick_quality
+from core.evaluation.step_reps import EXPECTED_REPETITIONS, step_combo_windows
 from core.evaluation.templates import EXAM_POOL, TemplateError, TemplateStore, load_template
 from core.evaluation.view_weights import normalized_pair
 from core.pose.extract import pose_cache
@@ -56,8 +60,12 @@ VIEW_SIDE_SUFFIX = "_侧面"
 EXAM_STANCE = DEFAULT_STANCE  # 考试固定左式（D-3）
 # 规则检查取动作匹配窗口前后各放宽的时长：相位检测要看到动作前后的实战式。
 RULE_MARGIN_SECONDS = 1.0
+# 上步组合逐次匹配时每一次的范围前后各放宽的时长：让子序列 DTW 看到出拳前后的实战式。
+REP_MARGIN_SECONDS = 0.5
 
 PoolCompare = Callable[..., list]
+# 逐范围比对（``match_video_windows``）：外层按模板、内层按范围的比对结果。
+WindowCompare = Callable[..., list]
 RawSeriesFn = Callable[..., Any]
 
 
@@ -154,11 +162,43 @@ def rule_action_for(name: str) -> str | None:
     return ACTION_BY_NAME.get(name.removesuffix(VIEW_FRONT_SUFFIX).removesuffix(VIEW_SIDE_SUFFIX))
 
 
+def side_repetitions(series, cfg: FeedbackConfig) -> list[tuple[float, float]]:
+    """侧面整段原始序列上上步组合每一次的 ``(起, 止)``（秒）；切不出时为空列表。"""
+    landmarks, meta = slice_pose_raw_series(series)
+    diagnostics: dict = {}
+    step_combo_windows(series_from_raw(landmarks, meta), EXAM_STANCE, cfg, diagnostics)
+    return [(r["start"], r["end"]) for r in diagnostics.get("repetitions", [])]
+
+
+def rep_windows(reps: list[tuple[float, float]], fps: float) -> list[tuple[int, int]]:
+    """每一次的时间（秒）→ 本路视频的帧范围，前后各放宽 ``REP_MARGIN_SECONDS``（正侧同步录制，共用时钟）。"""
+    return [(max(0, int(round((a - REP_MARGIN_SECONDS) * fps))), int(round((b + REP_MARGIN_SECONDS) * fps)))
+            for a, b in reps]
+
+
+def stepwise_detail(name: str, view: str, per_rep: list) -> dict:
+    """一个上步组合模板的逐次匹配 → 动作明细：子分取各次均值，范围从第一次匹配起到最后一次匹配止。"""
+    score = float(np.mean([float(r.score) for r in per_rep]))
+    detail = {"name": name, "view": view, "score": score, "dtw_score": score, "geom_score": None, "geom_detail": "",
+              "start": int(per_rep[0].start_frame), "end": int(per_rep[-1].end_frame),
+              "repetitions": [{"start": int(r.start_frame), "end": int(r.end_frame), "score": float(r.score)}
+                              for r in per_rep]}
+    if len(per_rep) != EXPECTED_REPETITIONS:
+        detail["repetition_note"] = f"检测到 {len(per_rep)} 次动作（应为 {EXPECTED_REPETITIONS} 次），按检测到的次数取均值"
+    return detail
+
+
 def rule_target(series, detail: dict, action: str, view: str) -> dict:
-    """一个匹配到的规则目录动作的规则目标：匹配窗口前后各放宽 ``RULE_MARGIN_SECONDS`` 的规则输入序列与帧范围。"""
-    margin = int(round(RULE_MARGIN_SECONDS * float(series.meta.get("fps") or 30.0)))
-    landmarks, meta = slice_pose_raw_series(series, start_frame=max(0, int(detail["start"]) - margin),
-                                            end_frame=int(detail["end"]) + margin)
+    """一个匹配到的规则目录动作的规则目标：匹配窗口前后各放宽 ``RULE_MARGIN_SECONDS`` 的规则输入序列与帧范围。
+
+    上步组合取整段：逐次切分要从片段开头的实战式起算，与考试计次用的是同一段（匹配窗口可能从上步中途开始）。
+    """
+    if action in SIDE_TIMED_ACTIONS:
+        landmarks, meta = slice_pose_raw_series(series)
+    else:
+        margin = int(round(RULE_MARGIN_SECONDS * float(series.meta.get("fps") or 30.0)))
+        landmarks, meta = slice_pose_raw_series(series, start_frame=max(0, int(detail["start"]) - margin),
+                                                end_frame=int(detail["end"]) + margin)
     return {"name": detail["name"], "view": view, "action": action, "series": series_from_raw(landmarks, meta),
             "start": int(meta["start_frame"]), "end": int(meta["end_frame"])}
 
@@ -190,29 +230,58 @@ def rule_reports(front_targets: list[dict], side_targets: list[dict], cfg: Feedb
     return [_report(t, judged[id(t)]) for t in front_targets + side_targets]
 
 
+def _check_stop(stop_evt: Event) -> None:
+    if stop_evt.is_set():
+        raise InterruptedError("后台比对已取消")
+
+
+def _stepwise_matches(templates: list[Path], series, video: Path, reps: list[tuple[float, float]],
+                      compare_windows: WindowCompare, stop_evt: Event) -> dict[int, list]:
+    """上步组合模板（``templates`` 下标 → 逐次比对结果）；一次也没匹配上的模板不列入，回到整段匹配。"""
+    windows = rep_windows(reps, float(series.meta.get("fps") or 30.0))
+    per_template = compare_windows(templates, video, windows, pose_variant=POSE_VARIANT, workers=1, stop_evt=stop_evt)
+    return {i: per_rep for i, per_rep in enumerate(per_template) if per_rep}
+
+
 @pose_cache()
 def score_pool(templates: list[Path], video: Path, view: str, *, compare: PoolCompare, raw_series: RawSeriesFn,
-               stop_evt: Event, rule_cfg: FeedbackConfig | None = None) -> tuple[list[dict], float | None, list[dict]]:
+               stop_evt: Event, rule_cfg: FeedbackConfig | None = None, reps: list[tuple[float, float]] | None = None,
+               compare_windows: WindowCompare | None = None) -> tuple[list[dict], float | None, list[dict]]:
     """一个视角的池：视频姿态只提取一次复用给池内每个模板；含踢腿或规则目录动作时取原始序列算几何分与规则输入。
 
     在 ``pose_cache`` 作用域内执行：模板比对与原始序列的顺序提取共用同一次推理。返回 ``(逐动作明细, 池均分,
     规则目标)``；规则目标是规则目录动作的规则输入序列，由 ``rule_reports`` 与另一池成对判定。``rule_cfg=None`` 时不做规则检查。
+    ``reps``（侧面切出的每一次，秒）非空且注入了 ``compare_windows`` 时，上步组合的模板逐次匹配、子分取均值；
+    否则整段匹配，上步组合的明细写明原因。
     """
     if not templates:
         return [], None, []
-    if stop_evt.is_set():
-        raise InterruptedError("后台比对已取消")
-    results = compare(templates, video, pose_variant=POSE_VARIANT, workers=1, stop_evt=stop_evt)
+    _check_stop(stop_evt)
     names = [Path(t).stem for t in templates]
+    timed = [i for i, n in enumerate(names) if rule_action_for(n) in SIDE_TIMED_ACTIONS]
     rule_actions = [rule_action_for(n) if rule_cfg is not None else None for n in names]
     series = None
-    if any(n in KICK_KINDS for n in names) or any(rule_actions):
-        if stop_evt.is_set():
-            raise InterruptedError("后台比对已取消")
+    stepped: dict[int, list] = {}
+    if timed and reps and compare_windows is not None:
+        series = raw_series(video, pose_variant=POSE_VARIANT)
+        _check_stop(stop_evt)
+        found = _stepwise_matches([templates[i] for i in timed], series, video, reps, compare_windows, stop_evt)
+        stepped = {timed[i]: per_rep for i, per_rep in found.items()}
+    plain = [i for i in range(len(templates)) if i not in stepped]
+    _check_stop(stop_evt)
+    plain_results = compare([templates[i] for i in plain], video, pose_variant=POSE_VARIANT, workers=1,
+                            stop_evt=stop_evt) if plain else []
+    results = dict(zip(plain, plain_results))
+    if series is None and (any(n in KICK_KINDS for n in names) or any(rule_actions)):
+        _check_stop(stop_evt)
         series = raw_series(video, pose_variant=POSE_VARIANT)
 
     details: list[dict] = []
-    for name, res in zip(names, results):
+    for i, name in enumerate(names):
+        if i in stepped:
+            details.append(stepwise_detail(name, view, stepped[i]))
+            continue
+        res = results[i]
         dtw_score = float(res.score)
         start, end = int(res.start_frame), int(res.end_frame)
         geom_score: float | None = None
@@ -226,6 +295,9 @@ def score_pool(templates: list[Path], video: Path, view: str, *, compare: PoolCo
         details.append({"name": name, "view": view, "score": action_score(name, dtw_score, geom_score),
                         "dtw_score": dtw_score, "geom_score": geom_score, "geom_detail": geom_detail,
                         "start": start, "end": end})
+        if i in timed:
+            details[-1]["repetition_note"] = ("未接入逐次比对，按整段匹配一次" if compare_windows is None
+                                              else "未切出动作次数，按整段匹配一次")
     pool_mean = float(np.mean([d["score"] for d in details])) if details else None
     targets = [rule_target(series, d, action, view) for d, action in zip(details, rule_actions) if action]
     return details, pool_mean, targets
@@ -250,16 +322,28 @@ class ExamPoolResult:
 
 
 def score_exam_pools(front_tpls: list[Path], side_tpls: list[Path], front_video: Path, side_video: Path, *,
-                     compare: PoolCompare, raw_series: RawSeriesFn, stop_evt: Event) -> ExamPoolResult:
-    """正对正池、侧对侧池逐模板评分后合并（考试双机位视角固定，不做自动正侧切分）。"""
+                     compare: PoolCompare, raw_series: RawSeriesFn, stop_evt: Event,
+                     compare_windows: WindowCompare | None = None) -> ExamPoolResult:
+    """正对正池、侧对侧池逐模板评分后合并（考试双机位视角固定，不做自动正侧切分）。
+
+    池里有上步组合的模板且注入了 ``compare_windows`` 时，先在侧面视频上切出每一次，两池的上步组合模板都按这些时间
+    逐次匹配；这时两池在同一个 ``pose_cache`` 作用域内评分，切分与侧面池共用同一次推理。
+    """
     try:
         rule_cfg, rule_error = load_feedback_config(), ""
     except ValueError as exc:  # 规则只报告：配置无效不影响考试分数
         rule_cfg, rule_error = None, str(exc)
-    front_details, front_score, front_targets = score_pool(front_tpls, front_video, "front", compare=compare,
-                                                           raw_series=raw_series, stop_evt=stop_evt, rule_cfg=rule_cfg)
-    side_details, side_score, side_targets = score_pool(side_tpls, side_video, "side", compare=compare,
-                                                        raw_series=raw_series, stop_evt=stop_evt, rule_cfg=rule_cfg)
+    stepwise = compare_windows is not None and any(rule_action_for(Path(t).stem) in SIDE_TIMED_ACTIONS
+                                                   for t in [*front_tpls, *side_tpls])
+    with pose_cache() if stepwise else nullcontext():
+        reps = None
+        if stepwise:
+            _check_stop(stop_evt)
+            reps = side_repetitions(raw_series(side_video, pose_variant=POSE_VARIANT), rule_cfg or FeedbackConfig())
+        pool_args = {"compare": compare, "raw_series": raw_series, "stop_evt": stop_evt, "rule_cfg": rule_cfg,
+                     "reps": reps, "compare_windows": compare_windows}
+        front_details, front_score, front_targets = score_pool(front_tpls, front_video, "front", **pool_args)
+        side_details, side_score, side_targets = score_pool(side_tpls, side_video, "side", **pool_args)
     reports = rule_reports(front_targets, side_targets, rule_cfg) if rule_cfg is not None else []
     # 合并只影响 combined 与逐动作列，避免正+侧双模板动作被双重计数。
     action_scores = merge_view_weighted_actions(front_details + side_details)
