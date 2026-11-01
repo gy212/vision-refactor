@@ -1,0 +1,65 @@
+"""直拳起动前预摆与收回护位的逐帧测量，收拳路径不作为掉手错误。"""
+from __future__ import annotations
+
+import numpy as np
+
+from core.evaluation.body_sides import sides_for_stance
+from core.evaluation.measures.arms import distance_to, series_mouth
+from core.evaluation.measures.torso import chain_torso
+from core.evaluation.rules.spec import RuleContext
+
+
+def straight_landmarks(code: str, role: str, stance: str) -> tuple[int, ...]:
+    """新检查项的点位契约；与测量实际取点一致。"""
+    shoulder, elbow, wrist, hip, *_ = sides_for_stance(role, stance)
+    if code == "punch_preelbow":
+        return (shoulder, elbow)
+    if code == "punch_recover":
+        return (wrist, 9, 10)
+    if code == "punch_prepull":
+        return (shoulder, wrist, hip, 0)
+    return (shoulder, wrist)
+
+
+def measure_straight(
+    code: str,
+    role: str,
+    lm: np.ndarray,
+    mask: np.ndarray,
+    baseline: np.ndarray,
+    baseline_mask: np.ndarray,
+    ctx: RuleContext,
+) -> tuple[np.ndarray, np.ndarray, dict]:
+    """在专用阶段上返回问题帧、有效帧和可复核数值。"""
+    shoulder, elbow, wrist, hip, *_ = sides_for_stance(role, ctx.stance)
+    torso = chain_torso(lm, mask)
+    required = straight_landmarks(code, role, ctx.stance)
+    valid = mask[:, required].all(axis=1) & (torso > 1e-4)
+    scale = np.maximum(torso, 1e-4)
+    cfg = ctx.params
+
+    if code == "punch_preelbow":
+        values = (lm[:, shoulder, 1] - lm[:, elbow, 1]) / scale
+        label, threshold = "起动前肘高于肩", cfg.punch_elbow_raise
+    elif code == "punch_recover":
+        values = distance_to(lm, wrist, series_mouth(lm)) / scale
+        label, threshold = "收回后手腕距口部", cfg.punch_recovery
+    else:
+        base_torso = chain_torso(baseline, baseline_mask)
+        base_valid = baseline_mask[:, required].all(axis=1) & (base_torso > 1e-4)
+        if base_valid.sum() < cfg.min_valid:
+            return np.zeros(len(lm), bool), np.zeros(len(lm), bool), {}
+        base = baseline[base_valid]
+        base_scale = base_torso[base_valid]
+        if code == "punch_prepull":
+            facing = np.sign(np.median(base[:, 0, 0] - base[:, hip, 0]))
+            initial = np.median((base[:, wrist, 0] - base[:, shoulder, 0]) / base_scale)
+            values = (initial - (lm[:, wrist, 0] - lm[:, shoulder, 0]) / scale) * facing
+            valid &= facing != 0
+            label, threshold = "起动前向后预摆距离", cfg.punch_pull
+        else:
+            initial = np.median((base[:, wrist, 1] - base[:, shoulder, 1]) / base_scale)
+            values = (lm[:, wrist, 1] - lm[:, shoulder, 1]) / scale - initial
+            label, threshold = "起动前向下预摆距离", cfg.punch_drop
+
+    return values > threshold, valid, {label: (values, "躯干长度")}

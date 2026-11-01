@@ -26,7 +26,7 @@ STYLE_A = {
     "candidate": {"fg": "#92400E", "bg": "#FFF7ED", "border": "#FED7AA", "text": "发现疑似问题"},
     "not_observed": {"fg": "#166534", "bg": "#F0FDF4", "border": "#BBF7D0", "text": "已检查未发现问题"},
     "unable": {"fg": "#475569", "bg": "#F1F5F9", "border": "#E2E8F0", "text": "暂无法判断"},
-    "pending_rule": {"fg": "#1D4ED8", "bg": "#EFF6FF", "border": "#BFDBFE", "text": "需教师判断"},
+    "pending_rule": {"fg": "#1D4ED8", "bg": "#EFF6FF", "border": "#BFDBFE", "text": "未自动检查"},
     "revoked": {"fg": "#6B7280", "bg": "#F9FAFB", "border": "#E5E7EB", "text": "教师已撤销"},
 }
 

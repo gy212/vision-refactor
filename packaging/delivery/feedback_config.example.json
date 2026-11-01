@@ -25,6 +25,10 @@
   "punch_elbow": 160.0,
   "guard_wrist_height": 0.5,
   "guard_shoulder_drop": 0.08,
+  "punch_drop": 0.15,
+  "punch_pull": 0.22,
+  "punch_elbow_raise": -0.10,
+  "punch_recovery": 0.34,
   "front_weights": {
     "stance": {
       "default": 0.5,

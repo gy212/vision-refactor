@@ -16,7 +16,7 @@ STATUS_LABELS = {
     "candidate": "发现疑似问题",
     "not_observed": "已检查未发现问题",
     "unable": "暂无法判断",
-    "pending_rule": "需教师判断",
+    "pending_rule": "未自动检查",
 }
 _REVIEW_LABELS = {"confirmed": "教师已确认", "revoked": "教师已撤销"}
 _RERECORD_HINT = " 请重新录制：全身及拳脚入画、光线充足、减少遮挡，保留开始和结束实战式。"
@@ -32,7 +32,7 @@ class StatusCounts:
     revoked_count: int        # 教师已撤销数
     not_observed_count: int   # 已检查未发现问题数
     unable_count: int         # 暂无法判断数
-    pending_rule_count: int   # 需教师判断数
+    pending_rule_count: int   # 未自动检查数
 
     def verify_conservation(self) -> bool:
         """Verify strict item conservation."""
@@ -84,7 +84,7 @@ class NormalizedCheck:
     standard: str
     source: str
     status: str              # "candidate" | "not_observed" | "unable" | "pending_rule"
-    status_display: str      # "发现疑似问题" | "已检查未发现问题" | "暂无法判断" | "需教师判断"
+    status_display: str      # 判定状态；未启用项显示记录中保存的具体原因类别
     review: str              # "pending" | "confirmed" | "revoked"
     review_display: str      # "" | "教师已确认" | "教师已撤销"
     reason: str
@@ -225,13 +225,13 @@ def get_headline_summary(counts: StatusCounts, checks: list, needs_rerecord: boo
             needs_rerecord=True, status_tone="unable", level="error",
             reason="所有可自动检查项目均为证据不足或无法判定")
     if c.candidate_count == 0 and c.not_observed_count == 0 and c.pending_rule_count > 0 and c.unable_count == 0:
-        return _headline("本次需教师判断",
-                         "本次动作包含需要人工复核的标准（如拳峰朝向或含胸收腹），暂无自动判断项。",
+        return _headline("本次暂无自动检查结果",
+                         "本次项目尚未启用自动检查；具体是待开发、待验证还是模型受限，请查看逐项说明。",
                          needs_rerecord, "info", "info", "本次动作仅包含需人工复核项，无自动判断项")
     if c.candidate_count == 0 and c.pending_rule_count > 0:
         return _headline("已检查项目未发现问题，仍有待判断项目",
-                         f"已完成检查的项未见异常，但尚有 {c.pending_rule_count} 项需教师人工确认，请教师核对。",
-                         needs_rerecord, "notice", "info", "自动检查项目未见异常，尚有需教师复核项目")
+                         f"已完成检查的项未见异常，另有 {c.pending_rule_count} 项尚未启用自动检查，原因见逐项说明。",
+                         needs_rerecord, "notice", "info", "自动检查项目未见异常，部分项目尚未启用")
     if c.candidate_count == 0 and c.unable_count > 0 and c.not_observed_count > 0:
         return _headline("分析完成，部分项目暂无法判断",
                          f"已检查项目未见异常，另有 {c.unable_count} 项因缺少真实长度标定或有效帧不足无法判断。",
@@ -345,6 +345,10 @@ def _normalize_check(cid: str, c: dict, audit_logs: list[dict]) -> NormalizedChe
     fusion = c.get("fusion")
     if not isinstance(fusion, dict):
         fusion = None
+    availability = c.get("availability")
+    status_display = STATUS_LABELS[status]
+    if status == "pending_rule" and isinstance(availability, dict):
+        status_display = availability.get("label") or status_display
     return NormalizedCheck(
         id=cid,
         code=str(c.get("code") or ""),
@@ -357,7 +361,7 @@ def _normalize_check(cid: str, c: dict, audit_logs: list[dict]) -> NormalizedChe
         standard=str(c.get("standard") or ""),
         source=str(c.get("source") or ""),
         status=status,
-        status_display=STATUS_LABELS[status],
+        status_display=status_display,
         review=review,
         review_display=_REVIEW_LABELS.get(review, ""),
         reason=reason,
@@ -428,8 +432,12 @@ def build_phase_timeline(action: str, all_checks: list[NormalizedCheck], phase_w
     items: list[PhaseTimelineItem] = []
     for seg, p_kind, stage_title in _ordered_stages(action):
         if p_kind == "segment":
-            stage_checks = [c for c in all_checks if c.segment == seg and c.phase in {"motion", "finish"}]
-            times_list = phase_times.get((seg, "motion"), []) + phase_times.get((seg, "finish"), [])
+            stage_checks = [c for c in all_checks if c.segment == seg and c.phase not in {"start", "end"}]
+            times_list = [
+                stamp for (segment, phase), stamps in phase_times.items()
+                if segment == seg and phase not in {"start", "end"}
+                for stamp in stamps
+            ]
         else:
             stage_checks = [c for c in all_checks if c.segment == seg and c.phase == p_kind]
             times_list = phase_times.get((seg, p_kind), [])

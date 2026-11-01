@@ -11,7 +11,6 @@
 """
 from __future__ import annotations
 
-from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field, replace
 import json
 import math
@@ -19,11 +18,17 @@ from typing import Any
 
 import numpy as np
 
-from core.evaluation.body_sides import sides_for_stance
+from core.evaluation.body_sides import side_label, sides_for_stance
 from core.evaluation.measures import arms, legs
 from core.evaluation.measures import feet
 from core.evaluation.measures import torso as torso_measures
 from core.evaluation.rules.spec import PhaseCheck, PhaseVerdict, RuleContext, RuleProfile, RuleSpec
+from core.evaluation.rules.straight_measures import measure_straight, straight_landmarks
+from core.evaluation.rules.straight_policy import (
+    PARAMS as STRAIGHT_PARAMS,
+    STRAIGHT_RULES,
+    apply_straight_availability,
+)
 from core.evaluation.view_weights import check_front_weights, practice_view_weights
 from core.foundation.paths import repo_root
 from core.pose.landmarks import (
@@ -44,7 +49,7 @@ from core.pose.landmarks import (
     R_SHOULDER,
 )
 
-RULE_VERSION = "sanda-rules-mediapipe-2026-11-01-v5.1"
+RULE_VERSION = "sanda-rules-mediapipe-2026-11-01-v5.2"
 PROFILE_NAME = "sanda_v5"
 DEFAULT_STANCE = "left"  # 考试与 batch 的左右式：左手、左脚在前，右手护脸（D-3，配置值，以后可改）
 ACTIONS = {
@@ -65,8 +70,15 @@ ACTION_SEGMENTS = {
 # 上步组合按侧面近侧手（后手）出拳逐次切分，正面共用侧面的动作时间段（D-25 部分，见 ``evaluation/step_reps.py``）。
 SIDE_TIMED_ACTIONS = frozenset({"step_straight_combo"})
 STANCES = {"left": "左式（左手、左脚在前）", "right": "右式（右手、右脚在前）"}
-PHASES = {"start": "开始实战式", "motion": "动作过程", "finish": "动作结束瞬间", "end": "结束实战式"}
-STATE_LABELS = {"candidate": "待教师确认", "not_observed": "已检查帧中未发现", "unable": "证据不足", "pending_rule": "待规则/测量确认"}
+PHASES = {
+    "start": "开始实战式",
+    "prepare": "出拳前",
+    "motion": "动作过程",
+    "finish": "动作结束瞬间",
+    "recovered": "收回后护位",
+    "end": "结束实战式",
+}
+STATE_LABELS = {"candidate": "待教师确认", "not_observed": "已检查帧中未发现", "unable": "证据不足", "pending_rule": "未自动检查"}
 DOC = "武术散打得分点.docx 表1"
 SUMMARY = "扣分点说明功能需求汇总.md"
 # code -> 问题、身体部位（相对于前后侧）、标准、不能自动判定的原因。
@@ -90,6 +102,7 @@ RULES = {
     "foot_flexed": ("脚背未绷直（勾脚尖）", "foot", "低鞭腿脚背绷直", ""),
     "hip_turn": ("未翻胯", "hip", "低鞭腿翻胯", ""),
     "arm_swing": ("未顺势向下甩手", "arm", "踢腿同侧手顺势向下甩手", ""),
+    **STRAIGHT_RULES,
 }
 STANCE_RULES = tuple(code for code in RULES if code.startswith("stance_"))
 PARTS = {"arm": "臂肘", "hand": "手", "foot": "脚背", "hip": "髋", "knees": "双膝", "feet": "双脚", "torso": "躯干", "head_torso": "头部与胸腹"}
@@ -98,46 +111,14 @@ PRIMARY_VIEW = {"guard_back": "side", "stance_toes": "front", "stance_torso": "f
 FORMAL = "原正式规则 formal_v1（D-3 并入）"
 
 
-@dataclass(frozen=True)
-class ActionCalibration:
-    """一个动作按教师样本标定的结果（D-22）：阈值覆盖、各检查项只用的视角、通过标定可以判定的检查项。
-
-    ``live`` 以 ``(动作段, 角色, 检查项)`` 列出；不在其中的检查项登记为 ``pending_rule``（原因 ``UNCALIBRATED``）。
-    阈值覆盖叠加在 ``FeedbackConfig``（含 ``feedback_config.json``）之上，只作用于该动作的检查项测量。
-    """
-
-    params: Mapping[str, float]
-    views: Mapping[str, str]
-    live: frozenset[tuple[str, str, str]]
-    guard_codes: tuple[str, ...]  # 该动作在出拳段对护手另加的检查项
-    report: str
-
-
-UNCALIBRATED = "第二批样本标定未通过（正确样本误报过多或错误样本检出不足），暂不自动判定，请教师查看"
-# 第二批样本（2026-10-29～31）的标定，数据与取舍见 docs/上步直拳组合标定报告.md。
-CALIBRATED = {
-    "step_straight_combo": ActionCalibration(
-        params={"elbow_raise": -.18, "shoulder_height": .17},
-        views={"guard_shoulder": "front", "guard_elbow": "front", "shoulder_level": "side"},
-        live=frozenset({
-            ("rear_straight", "front", "guard_shoulder"),
-            ("rear_straight", "front", "guard_elbow"), ("rear_straight", "rear", "shoulder_level"),
-        }),
-        guard_codes=("guard_shoulder",),
-        report="docs/上步直拳组合标定报告.md",
-    ),
-}
-
-
 def action_segments(action: str) -> tuple[str, ...]:
     """动作的动作段：组合取 ``ACTION_SEGMENTS``，实战式没有动作段，其余动作只有自身一段。"""
     return ACTION_SEGMENTS.get(action, () if action == "stance" else (action,))
 
 
 def action_config(cfg: FeedbackConfig, action: str) -> FeedbackConfig:
-    """该动作检查项测量用的阈值：标定过的动作叠加 ``CALIBRATED`` 的阈值覆盖，其余动作原样返回。"""
-    calibration = CALIBRATED.get(action)
-    return replace(cfg, **calibration.params) if calibration else cfg
+    """上步直拳叠加已标定阈值；其他动作保持原参数。"""
+    return replace(cfg, **STRAIGHT_PARAMS) if action in SIDE_TIMED_ACTIONS else cfg
 
 
 def build_checks(action: str, stance: str) -> list[dict[str, Any]]:
@@ -145,24 +126,28 @@ def build_checks(action: str, stance: str) -> list[dict[str, Any]]:
     if not isinstance(action, str) or not isinstance(stance, str) or action not in ACTIONS or stance not in STANCES:
         raise ValueError("请选择支持的动作和左式/右式")
     checks: list[dict[str, Any]] = []
-    calibration = CALIBRATED.get(action)
+    step_straight = action in SIDE_TIMED_ACTIONS
 
     def add(code: str, segment: str, phase: str, role: str = "", blocked: str = "", source: str = SUMMARY):
         name, part, standard, reason = RULES[code]
         if part.startswith(("front_", "rear_")):
             role, part = part.split("_", 1)
-        side = ("左" if stance == "left" else "右") if role == "front" else ("右" if stance == "left" else "左") if role == "rear" else ""
+        side = side_label(role, stance)
         prefix = "前侧" if role == "front" else "后侧" if role == "rear" else ""
-        check = {"id": f"{segment}:{phase}:{role}:{code}", "code": code,
-                 "name": name, "bodyPart": f"{prefix}{PARTS[part]}" + (f"（{side}）" if side else ""),
-                 "segment": segment, "segmentLabel": ACTIONS[segment], "phase": phase,
-                 "phaseLabel": PHASES[phase], "standard": standard,
-                 "source": source, "blockedReason": blocked or reason, "role": role}
-        if calibration is not None:
-            if (segment, role, code) not in calibration.live:
-                check["blockedReason"] = check["blockedReason"] or UNCALIBRATED
-            elif code in calibration.views:
-                check["primaryView"] = calibration.views[code]
+        check = {
+            "id": f"{segment}:{phase}:{role}:{code}",
+            "code": code,
+            "name": name,
+            "bodyPart": f"{prefix}{PARTS[part]}" + (f"（{side}）" if side else ""),
+            "segment": segment,
+            "segmentLabel": ACTIONS[segment],
+            "phase": phase,
+            "phaseLabel": PHASES[phase],
+            "standard": standard,
+            "source": source,
+            "blockedReason": blocked or reason,
+            "role": role,
+        }
         checks.append(check)
 
     for code in STANCE_RULES:
@@ -180,7 +165,10 @@ def build_checks(action: str, stance: str) -> list[dict[str, Any]]:
         source = f"{DOC} 第{10 if front else 11}行" if straight else SUMMARY
         for phase in ("motion", "finish"):
             if not kick or front:
-                for code in ("guard_low", "guard_back", "guard_elbow") + (calibration.guard_codes if calibration else ()):
+                guard_codes = ("guard_shoulder", "guard_back", "guard_elbow") if step_straight else (
+                    "guard_low", "guard_back", "guard_elbow"
+                )
+                for code in guard_codes:
                     # 后手摆拳前手回收未包含向后拉手，不扩展问卷清单。
                     if segment == "rear_hook" and code == "guard_back":
                         continue
@@ -188,9 +176,9 @@ def build_checks(action: str, stance: str) -> list[dict[str, Any]]:
                     if hook and code == "guard_elbow":
                         blocked = "摆拳要求抬肘与错误抬肘的幅度/阶段需区分"
                     add(code, segment, phase, guard, blocked, source)
-            if segment in {"rear_straight", "rear_hook"}:
+            if segment in {"rear_straight", "rear_hook"} and not step_straight:
                 for code in ("guard_low", "guard_back", "guard_elbow"):
-                    add(code, segment, phase, "rear", "需确认出拳侧掉手/拉手/抬肘的阶段边界", SUMMARY)
+                    add(code, segment, phase, "rear", "教师已确认阶段标准；该动作仍需实现并验证出拳侧的分阶段测量", SUMMARY)
             if segment == "rear_hook" or segment == "rear_low_kick":
                 add("guard_recover", segment, phase, "front")
             if kick:
@@ -203,8 +191,14 @@ def build_checks(action: str, stance: str) -> list[dict[str, Any]]:
                 add("punch_extension", segment, phase, role, source=FORMAL)
             if segment == "front_straight" and phase == "finish":
                 add("vertical_fist", segment, phase, "front", source=source)
+    if step_straight:
+        for code in ("punch_predrop", "punch_prepull", "punch_preelbow"):
+            add(code, "rear_straight", "prepare", "rear")
+        add("punch_recover", "rear_straight", "recovered", "rear")
     for code in STANCE_RULES:
         add(code, "stance", "end", source=f"{DOC} 第12～18行")
+    if step_straight:
+        apply_straight_availability(checks)
     # 保持开始→前手→后手→结束，再按各阶段身体部位排列；不统计重复次数。
     order = {name: i + 1 for i, name in enumerate(segments)}
     checks.sort(key=lambda c: (0 if c["phase"] == "start" else 99 if c["phase"] == "end" else order[c["segment"]],
@@ -237,7 +231,7 @@ class FeedbackConfig:
     guard_drop: float = .25
     guard_back: float = .18
     shoulder_height: float = .20
-    elbow_raise: float = .10        # 肘高于肩超过该值（躯干长度）即算抬肘；可为负，见 ``CALIBRATED``
+    elbow_raise: float = .10        # 肘高于肩超过该值（躯干长度）即算抬肘；可为负，见 straight_policy
     torso_front_ratio: float = .75
     foot_angle: float = 145.0
     hip_rotation: float = 20.0
@@ -254,14 +248,20 @@ class FeedbackConfig:
     punch_elbow: float = 160.0      # 直拳出拳结束时肘角下限（度，原正式规则）
     guard_wrist_height: float = .5  # 实战式护位：手腕不低于肩下 0.5 倍躯干长，排除直立垂手的帧
     guard_shoulder_drop: float = .08  # 护手手腕低于同侧肩超过该值（躯干长度）算掉到肩膀以下（第二批样本标定）
+    punch_drop: float = .15         # 出拳前手腕相对起始护位向下偏移（待独立错误样本验证）
+    punch_pull: float = .22         # 出拳前手腕相对同侧肩向后偏移（躯干长度）
+    punch_elbow_raise: float = -.10 # 出拳前肘高于肩下0.1倍躯干长（侧面）
+    punch_recovery: float = .34     # 收回后手腕距口部上限（正面，躯干长度）
     front_weights: dict = field(default_factory=default_front_weights)
 
     def __post_init__(self):
         if any(not math.isfinite(v) or v <= 0 for k, v in asdict(self).items()
-               if k not in {"front_weights", "pose_variant", "sample_fps", "elbow_raise"}):
+               if k not in {"front_weights", "pose_variant", "sample_fps", "elbow_raise", "punch_elbow_raise"}):
             raise ValueError("规则参数必须是有限正数")
         if not math.isfinite(self.elbow_raise) or not -1 < self.elbow_raise < 1:
             raise ValueError("抬肘阈值必须在-1～1倍躯干长之间（负值表示肘低于肩不足该距离即算抬肘）")
+        if not math.isfinite(self.punch_elbow_raise) or not -1 < self.punch_elbow_raise < 1:
+            raise ValueError("出拳前抬肘阈值必须在-1～1倍躯干长之间")
         if not math.isfinite(self.sample_fps) or not 0 <= self.sample_fps <= 60 or self.max_edge < 64 or self.min_valid < 2 or not isinstance(self.min_valid, int):
             raise ValueError("采样频率为0（逐帧）或不超过60，分辨率至少64，有效帧数至少2")
         if self.pose_variant not in {"lite", "full", "heavy"}:
@@ -327,6 +327,8 @@ WIDTH = (L_ANKLE, R_ANKLE, L_SHOULDER, R_SHOULDER)
 
 def required_landmarks(code: str, role: str, stance: str) -> tuple[int, ...]:
     """一个检查项在左右式下所需的关键点（BlazePose33）：声明能力契约，也是测量时的有效帧条件。"""
+    if code in STRAIGHT_RULES:
+        return straight_landmarks(code, role, stance)
     sh, el, wr, hip, knee, ankle, _heel, toe = sides_for_stance(role, stance)
     return {
         "stance_knee": LEGS, "stance_toes": FEET, "stance_width": WIDTH,
@@ -452,6 +454,8 @@ ABSENCE_RULES = frozenset({"hip_turn", "arm_swing"})
 
 def _phase_check(code: str, role: str, action: str) -> PhaseCheck:
     def check(lm: np.ndarray, mask: np.ndarray, baseline: np.ndarray, baseline_mask: np.ndarray, ctx: RuleContext):
+        if code in STRAIGHT_RULES:
+            return measure_straight(code, role, lm, mask, baseline, baseline_mask, ctx)
         details: dict = {}
         bad, valid = _measure(code, role, lm, mask, baseline, baseline_mask, ctx.stance,
                               action_config(ctx.params, action), details)
@@ -463,8 +467,8 @@ def _phase_check(code: str, role: str, action: str) -> PhaseCheck:
 def rule_profile(action: str, stance: str, cfg: FeedbackConfig) -> RuleProfile:
     """所选动作与左右式的检查清单登记为规则目录：规则编码即检查项 id，范围即 ``segment:phase`` 相位窗口。
 
-    只适用单视角公式的项（``PRIMARY_VIEW``）与标定为只用一个视角的项只登记该视角；原文缺失、需教师核对或未通过标定的项
-    登记为 ``blocked``。标定过的动作按 ``action_config`` 的阈值测量。
+    单视角公式只登记对应视角。上步直拳由 ``straight_policy`` 逐项记录启用与停用依据，
+    未启用项登记为 ``blocked``，不把缺少验证结果写成标定失败。
     """
     return RuleProfile(name=PROFILE_NAME, rules=tuple(
         RuleSpec(

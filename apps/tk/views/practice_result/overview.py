@@ -15,7 +15,7 @@ _CARDS = [
     ("candidate", "发现疑似问题"),
     ("not_observed", "已检查未发现"),
     ("unable", "暂无法判断"),
-    ("pending_rule", "需教师判断"),
+    ("pending_rule", "未自动检查"),
 ]
 
 
