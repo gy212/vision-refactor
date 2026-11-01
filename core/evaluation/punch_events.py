@@ -66,12 +66,14 @@ def reach_events(
 
     # shortcut: 保持容错只补尾部未闭合事件；连续多次不收回时再扩展逐峰分割。
     if start is not None and last is not None:
-        peak = start + int(np.nanargmax(reach[start:last + 1]))
-        for end in range(peak + 1, last + 1):
-            if times[end] - times[peak] < HOLD_SECONDS:
-                continue
-            window = reach[peak:end + 1]
-            if np.isfinite(window).all() and np.ptp(window) <= cfg.return_distance / 2:
+        # 按局部稳定窗确认保持，末帧的小抖动不能重置整次出拳。
+        for hold_start in range(start, last):
+            end = int(np.searchsorted(times, times[hold_start] + HOLD_SECONDS))
+            if end > last:
+                break
+            window = reach[hold_start:end + 1]
+            if (np.isfinite(window).all() and np.min(window) > rise
+                    and np.ptp(window) <= cfg.return_distance / 2):
                 finish(end, "held")
-            break
+                break
     return events
