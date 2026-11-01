@@ -227,6 +227,24 @@ def test_paired_torso_requires_synchronized_evidence_and_a_validated_model() -> 
     judged = judge_views(views, ACTION, "left", FeedbackConfig())
     assert next(c for c in judged["front"][0] if c.code == "stance_torso").state == "violation"
 
+    targets = {
+        view: {
+            "name": view,
+            "view": view,
+            "action": ACTION,
+            "series": series,
+            "start": 0,
+            "end": len(series["times"]) - 1,
+        }
+        for view, series in views.items()
+    }
+    exam_reports = exam_pool.rule_reports([targets["front"]], [targets["side"]], FeedbackConfig())
+    assert all(
+        c.state == "pending_rule"
+        for report in exam_reports for c in report["checks"]
+        if c.code == "stance_torso"
+    )
+
     heavy = torso_check(evaluate_series(ACTION, "left", views, FeedbackConfig(pose_variant="heavy")))
     assert heavy["availability"]["state"] == "calibration_failed"
     assert heavy["status"] == "pending_rule"

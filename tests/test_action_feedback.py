@@ -493,7 +493,7 @@ def test_small_front_motion_gets_side_timing_in_practice_exam_and_paired_batch(t
         return lambda start, end: (raws[view].landmarks, dict(raws[view].meta))
 
     batch_front, _batch_side = dual._synchronized_rules(lazy("front"), lazy("side"), action="straight_combo",
-                                                        stance="left", stop_evt=threading.Event())
+                                                        stance="left", pose_variant="full", stop_evt=threading.Event())
     for check in (exam_front_check(), next(c for c in batch_front if c.check_id == check_id)):
         assert check.skip_reason != "phase_not_found"
         assert (check.valid_frames, check.total_frames) == (practice_front["validFrames"], practice_front["totalFrames"])

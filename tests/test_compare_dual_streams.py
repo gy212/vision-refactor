@@ -26,7 +26,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from core.evaluation import LEGACY_DEFAULT_FEATURE_LAYOUT, compare_dual_streams  # noqa: E402
+from core.evaluation import FeedbackConfig, LEGACY_DEFAULT_FEATURE_LAYOUT, compare_dual_streams  # noqa: E402
 from core.pose import POSE33_V3  # noqa: E402
 from core.pose.features import extract_features as _extract_pose_features  # noqa: E402
 from core.evaluation import subsequence_dtw, subsequence_dtw_with_path  # noqa: E402
@@ -307,9 +307,19 @@ def registered_videos():
     H.clear_registry()
 
 
-def test_no_split_and_high_score_for_matching_streams(registered_videos):
+@pytest.mark.parametrize("pose_variant", ["full", "heavy"])
+def test_no_split_and_high_score_for_matching_streams(registered_videos, monkeypatch, pose_variant):
     front_n = int(_load_raw("front_src_raw.npz").shape[0])
     side_n = int(_load_raw("side_src_raw.npz").shape[0])
+    configured = "heavy" if pose_variant == "full" else "full"
+    monkeypatch.setattr(dual_mod, "load_feedback_config", lambda: FeedbackConfig(pose_variant=configured))
+    judge_views = dual_mod.judge_views
+
+    def judge_with_actual_model(views, action, stance, cfg):
+        assert cfg.pose_variant == pose_variant
+        return judge_views(views, action, stance, cfg)
+
+    monkeypatch.setattr(dual_mod, "judge_views", judge_with_actual_model)
 
     with H.replay_context():
         res = compare_dual_streams(
@@ -317,7 +327,7 @@ def test_no_split_and_high_score_for_matching_streams(registered_videos):
             SIDE_TPL,
             FRONT_SRC,
             SIDE_SRC,
-            pose_variant="full",
+            pose_variant=pose_variant,
             enable_rules=True,
             enable_error_analysis=True,
         )

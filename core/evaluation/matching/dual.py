@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from threading import Event
 
@@ -87,22 +87,24 @@ def _lazy_raw(video: Path, pose_variant: str) -> RawSlice:
 
 
 def _rules(raw_slice: RawSlice, seg: tuple[int, int] | None, *, view: str, action: str,
-           stance: str) -> tuple[RuleCheck, ...]:
+           stance: str, pose_variant: str) -> tuple[RuleCheck, ...]:
     """一段（``seg=None`` 为整段）在 ``view`` 视角上按统一规则目录的逐项结论。"""
     s, e = (None, None) if seg is None else (int(seg[0]), int(seg[1]))
     raw, raw_meta = raw_slice(s, e)
-    checks, _diagnostics = judge_view(series_from_raw(raw, raw_meta), view, action, stance, load_feedback_config())
+    cfg = replace(load_feedback_config(), pose_variant=pose_variant)
+    checks, _diagnostics = judge_view(series_from_raw(raw, raw_meta), view, action, stance, cfg)
     return checks
 
 
 def _synchronized_rules(raw_front: RawSlice, raw_side: RawSlice, *, action: str, stance: str,
-                        stop_evt: Event) -> tuple[tuple[RuleCheck, ...], tuple[RuleCheck, ...]]:
+                        pose_variant: str, stop_evt: Event) -> tuple[tuple[RuleCheck, ...], tuple[RuleCheck, ...]]:
     """同步录制的正、侧两路整段按统一规则目录的逐项结论；相位经 ``judge_views`` 与练习同样跨机位准备。"""
     views = {}
     for view, raw_slice in (("front", raw_front), ("side", raw_side)):
         views[view] = series_from_raw(*raw_slice(None, None))
         raise_if_cancelled(stop_evt)
-    judged = judge_views(views, action, stance, load_feedback_config())
+    cfg = replace(load_feedback_config(), pose_variant=pose_variant)
+    judged = judge_views(views, action, stance, cfg)
     return judged["front"][0], judged["side"][0]
 
 
@@ -182,8 +184,12 @@ def compare_dual_templates(
         front_seg, side_seg, _mode = split_front_side(view_scores, fps, mode="median_always")
     rules = (None, None)
     if enable_rules:  # 同一路视频切出的先后两段不同步，各段独立判定相位
-        rules = (_rules(raw_slice, front_seg, view="front", action=rule_action, stance=rule_stance),
-                 _rules(raw_slice, side_seg, view="side", action=rule_action, stance=rule_stance))
+        rules = (
+            _rules(raw_slice, front_seg, view="front", action=rule_action,
+                   stance=rule_stance, pose_variant=pair.pose_variant),
+            _rules(raw_slice, side_seg, view="side", action=rule_action,
+                   stance=rule_stance, pose_variant=pair.pose_variant),
+        )
 
     def view(template: Template, seg):  # 现状：单视频双模板的打分不响应取消
         return score_view(seq, raw_slice, template.features, template.meta, seg, fps=fps, baseline=baseline,
@@ -236,7 +242,10 @@ def compare_dual_streams(
     raise_if_cancelled(stop_evt)
     rules = (None, None)
     if enable_rules:
-        rules = _synchronized_rules(raw_f, raw_s, action=rule_action, stance=rule_stance, stop_evt=stop_evt)
+        rules = _synchronized_rules(
+            raw_f, raw_s, action=rule_action, stance=rule_stance,
+            pose_variant=pair.pose_variant, stop_evt=stop_evt,
+        )
 
     raise_if_cancelled(stop_evt)
     front = score_view(seq_f, raw_f, pair.front.features, pair.front.meta, None, fps=fps_f, baseline=baseline,
