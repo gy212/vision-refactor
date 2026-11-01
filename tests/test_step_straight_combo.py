@@ -15,6 +15,7 @@ import pytest
 from core.evaluation.matching import engine
 from core.evaluation.phases import project_windows
 from core.evaluation.practice import evaluate_series
+from core.evaluation.punch_events import reach_events
 from core.evaluation.rule_checks import NEEDS_SIDE, judge_views, rule_series, view_outcomes
 from core.evaluation.rules.sanda_v5 import (
     ACTIONS,
@@ -26,6 +27,7 @@ from core.evaluation.rules.sanda_v5 import (
 )
 from core.evaluation.rules.spec import RuleContext
 from core.evaluation.rules.straight_measures import measure_straight
+from core.evaluation.rules.straight_motion import measure_guard_back
 from core.evaluation.rules.straight_policy import ENABLED
 from core.evaluation.scoring import exam_pool
 from core.evaluation.step_reps import EXPECTED_REPETITIONS, step_combo_windows
@@ -95,6 +97,69 @@ def test_no_rear_punch_is_reported() -> None:
     step_combo_windows(_series(0), "left", FeedbackConfig(), diagnostics)
     assert diagnostics["reason"] == "未检测到后手直拳"
     assert diagnostics["repetitions"] == []
+
+
+def test_downward_release_is_not_an_extra_punch() -> None:
+    series = _series(1)
+    times = np.asarray(series["times"])
+    lm = series["landmarks"].copy()
+    released = (times >= 4.0) & (times < 4.3)
+    lm[released, REAR_WRIST, 0] += .12
+    lm[released, REAR_WRIST, 1] += .18
+    diagnostics = {}
+
+    step_combo_windows(rule_series(lm, series["frames"], FPS, 1.0), "left", FeedbackConfig(), diagnostics)
+
+    assert len(diagnostics["repetitions"]) == 1
+
+
+def test_held_punch_keeps_quality_window_without_claiming_recovery() -> None:
+    series = _series(1)
+    times = np.asarray(series["times"])
+    lm = series["landmarks"].copy()
+    lm[times >= 2.05, REAR_WRIST, 0] = .75
+    diagnostics = {}
+    held = rule_series(lm, series["frames"], FPS, 1.0)
+
+    windows = step_combo_windows(held, "left", FeedbackConfig(), diagnostics)
+
+    assert diagnostics["repetitions"][0]["ending"] == "held"
+    assert ("rear_straight", "finish") in windows
+    assert ("rear_straight", "recovered") not in windows
+    result = evaluate_series(ACTION, "left", {"front": held, "side": held})
+    model = build_report_model({"action": ACTION, "stance": "left", "result": result})
+    assert "尚未观察到收回" in model.headline.subtitle
+
+
+def test_missing_points_cannot_bridge_into_a_held_punch() -> None:
+    times = np.arange(30) / FPS
+    reach = np.zeros(30)
+    reach[5:10] = .5
+    reach[10:25] = np.nan
+    reach[25:] = .5
+
+    found = reach_events(
+        reach, np.zeros(30), times, np.arange(3), FeedbackConfig(), rise=.3, fall=.12
+    )
+
+    assert found == []
+
+
+def test_guard_back_uses_mouth_reference_and_preserves_missing_points() -> None:
+    baseline = np.repeat(_base_pose()[None], 6, axis=0)
+    lm = baseline.copy()
+    # 肩部后转不代表护手后撤；随后腕相对口部后移才是目标。
+    lm[:, 12, 0] -= .1
+    lm[3:, REAR_WRIST, 0] -= .1
+    mask = np.ones(lm.shape[:2], bool)
+    context = RuleContext(view="side", action=ACTION, stance="left", params=FeedbackConfig())
+
+    bad, valid, _ = measure_guard_back("rear", lm, mask, baseline, mask, context)
+
+    assert bad.tolist() == [False] * 3 + [True] * 3
+    assert valid.all()
+    mask[:, 9] = False
+    assert not measure_guard_back("rear", lm, mask, baseline, mask, context)[1].any()
 
 
 def test_isolated_wrist_jumps_are_not_counted_as_repetitions() -> None:
@@ -183,6 +248,7 @@ def test_prepull_uses_original_guard_and_excludes_recovery() -> None:
         ("punch_prepull", 16, 0, .40, .75),
         ("punch_preelbow", 14, 1, .28, .42),
         ("punch_recover", 16, 1, .70, .45),
+        ("guard_jaw", 16, 1, .70, .45),
     ],
 )
 def test_straight_measurements_keep_validity_and_direction(code, joint, axis, wrong, normal) -> None:

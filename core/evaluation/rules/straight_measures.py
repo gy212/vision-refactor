@@ -14,7 +14,7 @@ def straight_landmarks(code: str, role: str, stance: str) -> tuple[int, ...]:
     shoulder, elbow, wrist, hip, *_ = sides_for_stance(role, stance)
     if code == "punch_preelbow":
         return (shoulder, elbow)
-    if code == "punch_recover":
+    if code in {"punch_recover", "guard_jaw"}:
         return (wrist, 9, 10)
     if code == "punch_prepull":
         return (shoulder, wrist, hip, 0)
@@ -41,9 +41,10 @@ def measure_straight(
     if code == "punch_preelbow":
         values = (lm[:, shoulder, 1] - lm[:, elbow, 1]) / scale
         label, threshold = "起动前肘高于肩", cfg.punch_elbow_raise
-    elif code == "punch_recover":
+    elif code in {"punch_recover", "guard_jaw"}:
         values = distance_to(lm, wrist, series_mouth(lm)) / scale
-        label, threshold = "收回后手腕距口部", cfg.punch_recovery
+        label = "实战式后手手腕距口部" if code == "guard_jaw" else "收回后手腕距口部"
+        threshold = cfg.punch_recovery
     else:
         base_torso = chain_torso(baseline, baseline_mask)
         base_valid = baseline_mask[:, required].all(axis=1) & (base_torso > 1e-4)

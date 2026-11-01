@@ -8,6 +8,12 @@ TEACHER_SOURCE = "教师确认 #33 issuecomment-6235417498；卷三第7题更正
 PARAMS = {"elbow_raise": -.18, "shoulder_height": .17}
 
 STRAIGHT_RULES = {
+    "guard_jaw": (
+        "后手未护住下颚",
+        "hand",
+        "实战式后手靠近下颚；此项不判断夹臂和贴肋",
+        "",
+    ),
     "punch_predrop": (
         "出拳前先下沉",
         "hand",
@@ -36,6 +42,8 @@ STRAIGHT_RULES = {
 
 # 阶段是标定身份的一部分：护手公式不能直接套在正在出拳的手上。
 ENABLED = {
+    ("stance", "start", "rear", "guard_jaw"): "front",
+    ("stance", "end", "rear", "guard_jaw"): "front",
     ("rear_straight", "motion", "front", "guard_shoulder"): "front",
     ("rear_straight", "finish", "front", "guard_shoulder"): "front",
     ("rear_straight", "motion", "front", "guard_elbow"): "front",
@@ -47,7 +55,7 @@ ENABLED = {
 }
 
 FAILED = {
-    "guard_back": "现有护手后拉测量在参考样本中误报19%，C32两段均未检出。",
+    "guard_back": "已改为口部参照；初步回放仍有正确样本误报及C32遮挡，未达到启用标准。",
     "punch_extension": "现有肘角测量受直拳投影和遮挡影响，C51错误样本与正确样本重叠。",
     "guard_elbow": "前手出拳时的后手抬肘测量与教师确认正确的D11、D13、D14重叠。",
     "guard_shoulder": "前手出拳时，heavy模型曾错认教师示范的后手腕，产生误报。",

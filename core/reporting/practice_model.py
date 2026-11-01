@@ -493,6 +493,8 @@ def build_report_model(record: dict) -> NormalizedReportModel:
             f" 检测到 {repetitions['detected']} 次动作，"
             f"应做 {repetitions['expected']} 次。"
         )
+    if repetitions.get("incompleteRecovery"):
+        headline.subtitle += " 存在打出后保持的动作，尚未观察到收回。"
 
     evidence_catalog: dict[str, dict] = {}
     for ev in result.get("evidence", []):

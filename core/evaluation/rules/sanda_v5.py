@@ -24,6 +24,7 @@ from core.evaluation.measures import feet
 from core.evaluation.measures import torso as torso_measures
 from core.evaluation.rules.spec import PhaseCheck, PhaseVerdict, RuleContext, RuleProfile, RuleSpec
 from core.evaluation.rules.straight_measures import measure_straight, straight_landmarks
+from core.evaluation.rules.straight_motion import guard_back_landmarks, measure_guard_back
 from core.evaluation.rules.straight_policy import (
     PARAMS as STRAIGHT_PARAMS,
     STRAIGHT_RULES,
@@ -49,7 +50,7 @@ from core.pose.landmarks import (
     R_SHOULDER,
 )
 
-RULE_VERSION = "sanda-rules-mediapipe-2026-11-01-v5.2"
+RULE_VERSION = "sanda-rules-mediapipe-2026-11-01-v5.3"
 PROFILE_NAME = "sanda_v5"
 DEFAULT_STANCE = "left"  # 考试与 batch 的左右式：左手、左脚在前，右手护脸（D-3，配置值，以后可改）
 ACTIONS = {
@@ -192,6 +193,8 @@ def build_checks(action: str, stance: str) -> list[dict[str, Any]]:
             if segment == "front_straight" and phase == "finish":
                 add("vertical_fist", segment, phase, "front", source=source)
     if step_straight:
+        for phase in ("start", "end"):
+            add("guard_jaw", "stance", phase, "rear")
         for code in ("punch_predrop", "punch_prepull", "punch_preelbow"):
             add(code, "rear_straight", "prepare", "rear")
         add("punch_recover", "rear_straight", "recovered", "rear")
@@ -454,6 +457,8 @@ ABSENCE_RULES = frozenset({"hip_turn", "arm_swing"})
 
 def _phase_check(code: str, role: str, action: str) -> PhaseCheck:
     def check(lm: np.ndarray, mask: np.ndarray, baseline: np.ndarray, baseline_mask: np.ndarray, ctx: RuleContext):
+        if action in SIDE_TIMED_ACTIONS and code == "guard_back":
+            return measure_guard_back(role, lm, mask, baseline, baseline_mask, ctx)
         if code in STRAIGHT_RULES:
             return measure_straight(code, role, lm, mask, baseline, baseline_mask, ctx)
         details: dict = {}
@@ -473,10 +478,16 @@ def rule_profile(action: str, stance: str, cfg: FeedbackConfig) -> RuleProfile:
     return RuleProfile(name=PROFILE_NAME, rules=tuple(
         RuleSpec(
             code=c["id"], title=c["name"], check=_phase_check(c["code"], c["role"], action),
-            required=required_landmarks(c["code"], c["role"], stance),
+            required=(
+                guard_back_landmarks(c["role"], stance)
+                if action in SIDE_TIMED_ACTIONS and c["code"] == "guard_back"
+                else required_landmarks(c["code"], c["role"], stance)
+            ),
             view=c.get("primaryView") or PRIMARY_VIEW.get(c["code"], "any"), scope=f"{c['segment']}:{c['phase']}",
-            aggregation=PhaseVerdict(cfg.min_valid, cfg.valid_ratio, cfg.trigger_ratio,
-                                     absence=c["code"] in ABSENCE_RULES),
+            aggregation=PhaseVerdict(
+                cfg.min_valid, cfg.valid_ratio, cfg.trigger_ratio,
+                absence=c["code"] in ABSENCE_RULES,
+            ),
             authorization="blocked" if c["blockedReason"] else "candidate",
             blocked_reason=c["blockedReason"], source=c["source"],
         )
