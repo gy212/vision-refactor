@@ -1,3 +1,31 @@
+## 2026-11-01: [feat] 新增"上步前后手直拳组合"：侧面逐次切分、按第二批样本标定上线 3 项检查、考试逐次评分
+
+- 问题描述：
+  - 甲方第二批样本（297 段）是最终样本，不再重拍；要求明天先交付直拳，其它动作暂缓。
+  - 原来的切分在上步组合上找不全动作：正面看直拳朝向镜头，手腕在图像里几乎不动；侧面机位在考生右侧，左式前手在远侧常被挡住。
+  - 规则阈值从未在真实样本上标定（D-22），考试分数按整段匹配一次，不计次数（D-25）。
+- 修改内容：
+  - `core/evaluation/rules/sanda_v5.py`：
+    - 新动作 `step_straight_combo`（D-24），段与"前后手直拳组合"相同（`ACTION_SEGMENTS`、`action_segments`）；旧动作不变。
+    - `CALIBRATED`：动作专用参数（`elbow_raise=-0.18`、`shoulder_height=0.17`）、上线项、各项主视角；未上线项显示 `UNCALIBRATED`。上线 3 项：后手出拳时前手 `guard_shoulder`（新增，手腕低于肩 0.08 倍躯干长，正面）、后手出拳时前手 `guard_elbow`（正面）、后手出拳 `shoulder_level`（侧面）。
+    - `FeedbackConfig` 新增 `guard_shoulder_drop`，`elbow_raise` 允许为负（-1～1）；`check_view_weights` 认检查项的 `primaryView`。
+    - `RULE_VERSION` 升为 `sanda-rules-mediapipe-2026-11-01-v5.1`。
+  - `core/evaluation/step_reps.py`（新增）：侧面以后手前伸为锚逐次切分，前手峰值只在后手出拳之前找（后手伸出后远侧前手常被认错），起点回溯到前手离开护位。
+  - `core/evaluation/phases.py`：`stable_guard_windows` 公开，抽出 `project_windows`（行为不变）。
+  - `core/evaluation/rule_checks.py`：上步组合的相位只由侧面切分，正面按同一时钟投影；缺侧面时不判定并写明。
+  - `core/evaluation/practice.py`：结果新增可选字段 `repetitions`，次数不对时总结写明；`config` 记录动作专用参数。
+  - `core/evaluation/matching/engine.py`：新增 `match_video_windows`（一次提取特征，在多个帧范围内各做子序列 DTW）。
+  - `core/evaluation/scoring/exam_pool.py`：上步组合模板按侧面切出的每一次（前后各放宽 0.5 s）分别匹配、取均值，明细带 `repetitions`，次数不是 2 时写 `repetition_note`；规则检查取整段片段。`core/recording/steps.py`、`core/services/analyze.py` 注入 `match_video_windows`。
+  - `apps/tk/views/practice_controls.py`：练习默认动作改为上步前后手直拳组合。
+  - `core/reporting/practice_model.py` 改用 `ACTION_SEGMENTS`；`packaging/delivery/feedback_config.example.json` 加 `guard_shoulder_drop`。
+  - 考试模板由教师示范第 1 次（第 396～483 帧）生成正侧各一个，随 EXE 交付，不入库。
+  - 文档：`docs/上步直拳组合标定报告.md`（新增）；设计文档 D-22、D-24、D-25 记部分实施；`docs/规则检出修复计划.md` 记进展与上线标准已确认；AGENTS.md 代码地图加 `step_reps.py`。
+- 验证方法：
+  - 新测试 `tests/test_step_straight_combo.py`（13 项）：合成序列切出 1/2/3 次、无后手直拳、正面共用侧面时间与缺侧面、`project_windows`、检查清单上线与待定、动作专用参数、练习次数、`match_video_windows`、考试逐次均值与三种回退、考试规则取整段。
+  - 差分基准 `tests/fixtures/p3_eval_baseline.json.gz` 重录：先核对差异只有新动作的用例、配置新字段与规则版本字符串，其余 560 项逐位一致。
+  - 第二批样本：练习（full）与考试（heavy）两条路径上，3 项在教师确认的 11 段正确样本上各误报 ≤ 1 段（D12 P1）；检出 C31 3/3（考试 2/3）、C33 2/2（考试 1/2，另一段报无法判断）、C52/C53 4/4。考试分数：示范 94，B 学员 73～77；数据见标定报告。
+  - `pytest tests -q`：1415 通过；golden 与契约、架构测试通过；`scripts/sim_exam_flow.py` 37 通过；`git diff --check` 无空白错误。
+
 ## 2026-10-24: [feat] 录制性能测试加内存、录像盘读写与电源计划，结论按实测数据写出可能的原因
 
 - 问题描述：
