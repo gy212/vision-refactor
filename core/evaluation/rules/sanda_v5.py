@@ -22,6 +22,7 @@ from core.evaluation.body_sides import side_label, sides_for_stance
 from core.evaluation.measures import arms, legs
 from core.evaluation.measures import feet
 from core.evaluation.measures import torso as torso_measures
+from core.evaluation.paired_torso import paired_torso_check
 from core.evaluation.rules.spec import PhaseCheck, PhaseVerdict, RuleContext, RuleProfile, RuleSpec
 from core.evaluation.rules.straight_measures import measure_straight, straight_landmarks
 from core.evaluation.rules.straight_motion import guard_back_landmarks, measure_guard_back
@@ -50,7 +51,7 @@ from core.pose.landmarks import (
     R_SHOULDER,
 )
 
-RULE_VERSION = "sanda-rules-mediapipe-2026-11-01-v5.3"
+RULE_VERSION = "sanda-rules-mediapipe-2026-11-02-v5.4"
 PROFILE_NAME = "sanda_v5"
 DEFAULT_STANCE = "left"  # 考试与 batch 的左右式：左手、左脚在前，右手护脸（D-3，配置值，以后可改）
 ACTIONS = {
@@ -122,7 +123,7 @@ def action_config(cfg: FeedbackConfig, action: str) -> FeedbackConfig:
     return replace(cfg, **STRAIGHT_PARAMS) if action in SIDE_TIMED_ACTIONS else cfg
 
 
-def build_checks(action: str, stance: str) -> list[dict[str, Any]]:
+def build_checks(action: str, stance: str, *, pose_variant: str = "full") -> list[dict[str, Any]]:
     """所选动作与左右式的检查清单（开始实战式 → 各动作段 → 结束实战式）；多次动作合并在同一检查项里判定。"""
     if not isinstance(action, str) or not isinstance(stance, str) or action not in ACTIONS or stance not in STANCES:
         raise ValueError("请选择支持的动作和左式/右式")
@@ -201,7 +202,7 @@ def build_checks(action: str, stance: str) -> list[dict[str, Any]]:
     for code in STANCE_RULES:
         add(code, "stance", "end", source=f"{DOC} 第12～18行")
     if step_straight:
-        apply_straight_availability(checks)
+        apply_straight_availability(checks, pose_variant)
     # 保持开始→前手→后手→结束，再按各阶段身体部位排列；不统计重复次数。
     order = {name: i + 1 for i, name in enumerate(segments)}
     checks.sort(key=lambda c: (0 if c["phase"] == "start" else 99 if c["phase"] == "end" else order[c["segment"]],
@@ -477,7 +478,12 @@ def rule_profile(action: str, stance: str, cfg: FeedbackConfig) -> RuleProfile:
     """
     return RuleProfile(name=PROFILE_NAME, rules=tuple(
         RuleSpec(
-            code=c["id"], title=c["name"], check=_phase_check(c["code"], c["role"], action),
+            code=c["id"], title=c["name"],
+            check=(
+                paired_torso_check(f"{c['segment']}:{c['phase']}")
+                if action in SIDE_TIMED_ACTIONS and c["code"] == "stance_torso"
+                else _phase_check(c["code"], c["role"], action)
+            ),
             required=(
                 guard_back_landmarks(c["role"], stance)
                 if action in SIDE_TIMED_ACTIONS and c["code"] == "guard_back"
@@ -491,5 +497,5 @@ def rule_profile(action: str, stance: str, cfg: FeedbackConfig) -> RuleProfile:
             authorization="blocked" if c["blockedReason"] else "candidate",
             blocked_reason=c["blockedReason"], source=c["source"],
         )
-        for c in build_checks(action, stance)
+        for c in build_checks(action, stance, pose_variant=cfg.pose_variant)
     ))

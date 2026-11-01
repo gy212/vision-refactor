@@ -211,6 +211,37 @@ def test_calibrated_checks_are_live_and_the_rest_pending() -> None:
     assert ACTIONS[ACTION] == "上步前后手直拳组合"
 
 
+def test_paired_torso_requires_synchronized_evidence_and_a_validated_model() -> None:
+    views = {}
+    for view, width in (("front", .2), ("side", .05)):
+        series = _series(0)
+        lm = series["landmarks"].copy()
+        lm[:, 11, 0], lm[:, 12, 0] = .5 - width / 2, .5 + width / 2
+        views[view] = rule_series(lm, series["frames"], FPS, 1.0)
+
+    def torso_check(result):
+        return next(c for c in result["checks"] if c["id"] == "stance:start::stance_torso")
+
+    full = torso_check(evaluate_series(ACTION, "left", views))
+    assert full["status"] == "candidate"
+    judged = judge_views(views, ACTION, "left", FeedbackConfig())
+    assert next(c for c in judged["front"][0] if c.code == "stance_torso").state == "violation"
+
+    heavy = torso_check(evaluate_series(ACTION, "left", views, FeedbackConfig(pose_variant="heavy")))
+    assert heavy["availability"]["state"] == "calibration_failed"
+    assert heavy["status"] == "pending_rule"
+
+    views["side"]["landmarks"][:, [11, 12], 0] = (.4, .6)
+    assert torso_check(evaluate_series(ACTION, "left", views))["status"] == "not_observed"
+    views["side"]["times"] = [time + .001 for time in views["side"]["times"]]
+    assert torso_check(evaluate_series(ACTION, "left", views))["status"] == "unable"
+
+    views["side"]["times"] = views["front"]["times"]
+    views["side"]["valid_mask"][:, 11] = False
+    assert torso_check(evaluate_series(ACTION, "left", views))["status"] == "unable"
+    assert torso_check(evaluate_series(ACTION, "left", {"front": views["front"]}))["status"] == "unable"
+
+
 def test_action_config_applies_calibrated_params_only_to_its_action() -> None:
     cfg = FeedbackConfig()
     tuned = action_config(cfg, ACTION)

@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 from typing import Callable
 
+from core.evaluation.paired_torso import paired_torso_measurements
 from core.evaluation.rule_checks import rule_series, synchronized_windows, view_outcomes
 from core.evaluation.rules.adapters import to_practice_check
 from core.evaluation.rules.sanda_v5 import (
@@ -181,10 +182,12 @@ def _phase_ranges(views: dict, windows: dict) -> dict:
 def evaluate_series(action: str, stance: str, views: dict, cfg: FeedbackConfig | None = None) -> dict:
     """``views``（``{"front"/"side": extract_series 的结果}``）上的练习结果字典（``schemaVersion=1``）。"""
     cfg = cfg or FeedbackConfig()
-    checks = build_checks(action, stance)
+    checks = build_checks(action, stance, pose_variant=cfg.pose_variant)
     windows, diagnostics, alignment, phase_sources = synchronized_windows(views, action, stance, cfg)
     profile = rule_profile(action, stance, cfg)
-    outcomes_by_view = {view: view_outcomes(view, s, windows[view], profile, action, stance, cfg)
+    paired = paired_torso_measurements(views) if action in SIDE_TIMED_ACTIONS else {}
+    outcomes_by_view = {view: view_outcomes(view, s, windows[view], profile, action, stance, cfg,
+                                          paired_torso=paired.get(view))
                         for view, s in views.items()}
     evidence = {}
     for c in checks:

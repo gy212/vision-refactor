@@ -310,7 +310,7 @@ def _raw_checks(result: dict, action: str, stance: str) -> list[dict]:
     if isinstance(raw_checks, list) and raw_checks:
         return raw_checks
     placeholders = []
-    for bc in build_checks(action, stance):
+    for bc in build_checks(action, stance, pose_variant=result.get("poseVariant", "full")):
         item = dict(bc)
         item["status"] = "unable"
         item["reason"] = item.get("blockedReason") or "旧版记录未包含详细规则检查清单"

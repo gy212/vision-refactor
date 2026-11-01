@@ -42,6 +42,8 @@ STRAIGHT_RULES = {
 
 # 阶段是标定身份的一部分：护手公式不能直接套在正在出拳的手上。
 ENABLED = {
+    ("stance", "start", "", "stance_torso"): "front",
+    ("stance", "end", "", "stance_torso"): "front",
     ("stance", "start", "rear", "guard_jaw"): "front",
     ("stance", "end", "rear", "guard_jaw"): "front",
     ("rear_straight", "motion", "front", "guard_shoulder"): "front",
@@ -54,25 +56,37 @@ ENABLED = {
     ("rear_straight", "recovered", "rear", "punch_recover"): "front",
 }
 
+ENABLED_MODELS = {"stance_torso": frozenset({"full"})}
+
 FAILED = {
     "guard_back": "已改为口部参照；初步回放仍有正确样本误报及C32遮挡，未达到启用标准。",
     "punch_extension": "现有肘角测量受直拳投影和遮挡影响，C51错误样本与正确样本重叠。",
     "guard_elbow": "前手出拳时的后手抬肘测量与教师确认正确的D11、D13、D14重叠。",
     "guard_shoulder": "前手出拳时，heavy模型曾错认教师示范的后手腕，产生误报。",
     "stance_knee": "现有双膝二维角度公式在11段正确对照上全部误报，尚不能用于上步直拳。",
+    "stance_elbow": "已核对真实护位；90°～135°二维肘角在正确样本上大量误报，不能直接作为实际肘角。",
+    "stance_height": "手腕不是拳峰；手端代理虽减少误报，full与heavy正确样本误报仍超标。",
+    "stance_width": "踝距/投影肩宽受朝向压缩影响；正确样本误报，且宽站目标会被反向判成过窄。",
+    "stance_toes": "二维脚尖方向受透视和短线段抖动影响；正确样本误报与内八目标漏检并存。",
+    "stance_rear_guard": "完整夹臂、贴肋和护下颚公式对C5检出不足；下颚距离子项不能证明整个复合要领。",
+    "stance_torso": "heavy双视角投影比未通过C11目标验证；仅full路径启用，不沿用其他模型的结论。",
+    "shoulder_level": "前手高度的阶段与投影测量仍有正确误报；首次伸展平台候选也漏检低拳，未达到启用标准。",
 }
 
 
-def apply_straight_availability(checks: list[dict]) -> None:
+def apply_straight_availability(checks: list[dict], pose_variant: str = "full") -> None:
     """给每个检查项登记真实启用依据；已有能力限制优先保留。"""
     for check in checks:
         identity = (
             check["segment"], check["phase"], check["role"], check["code"]
         )
         code = check["code"]
-        if identity in ENABLED:
+        allowed = code not in ENABLED_MODELS or pose_variant in ENABLED_MODELS[code]
+        if identity in ENABLED and allowed:
             availability = RuleAvailability("enabled", evidence=REPORT)
             check["primaryView"] = ENABLED[identity]
+            if code == "stance_torso":
+                check["standard"] = "同步双视角归一肩宽比超过√3；正交机位近似检查，不表示真实三维角度"
         elif check["blockedReason"]:
             availability = RuleAvailability("unsupported", check["blockedReason"], REPORT)
         elif code in FAILED:
