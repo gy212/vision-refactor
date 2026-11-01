@@ -192,7 +192,7 @@ def check_camera_recording_writer(report: dict) -> None:
 
 
 def check_practice_history(report: dict, video: Path) -> tuple[object, dict]:
-    """双视角录像走 MediaPipe 练习分析写入历史，结果字段齐全，文字报告能导出；返回历史库与记录。"""
+    """双视角录像走 MediaPipe 练习分析写入历史，结果字段齐全，图文报告能导出；返回历史库与记录。"""
     from core import foundation
     from core.evaluation import ACTIONS, RULE_VERSION, STANCES
     from core.reporting import practice_report_renderers
@@ -214,8 +214,8 @@ def check_practice_history(report: dict, video: Path) -> tuple[object, dict]:
     report["feedbackVersion"] = result["ruleVersion"]
     report["feedbackCapture"] = result["capture"]
     assert history.get(record["id"])["id"] == record["id"]
-    history.export(record["id"], foundation.outputs_dir() / "问题说明.txt")
-    assert (foundation.outputs_dir() / "问题说明.txt").stat().st_size > 0
+    history.export(record["id"], foundation.outputs_dir() / "问题说明.html")
+    assert (foundation.outputs_dir() / "问题说明.html").stat().st_size > 0
     assert not any("qwen" in name or name == "torch" for name in sys.modules)
     report["checks"].append("mediapipe_feedback_history_export")
     return history, record

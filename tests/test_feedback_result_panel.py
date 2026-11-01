@@ -19,6 +19,10 @@ from unittest.mock import Mock, call
 import pytest
 
 from apps.tk.controllers import practice as practice_mod
+from apps.tk.views import practice_controls as controls_mod
+from core.evaluation import ACTIONS
+from core.reporting import practice_report_renderers
+from core.services import HistoryStore
 from tests.tk_app_doubles import practice_app
 from tests.tk_app_doubles import root  # noqa: F401
 from core.live import LiveControls
@@ -528,22 +532,119 @@ def test_result_panel_bottom_actions_trigger_callbacks():
         root.destroy()
 
 
-def test_export_report_from_result_page_writes_html(root, monkeypatch, tmp_path):
-    """结果页「导出图文报告」：默认文件名用动作中文名，写出 HTML（修复前 ACTIONS 未导入，点击即 NameError）。"""
+@pytest.mark.parametrize("entry", ["toolbar", "history", "result"])
+def test_practice_export_entries_write_html_only(root, monkeypatch, tmp_path, entry):
+    """三个入口均输出离线图文报告，只提供 HTML，且导出用户选中的记录。"""
     app = make_test_app(root)
-    history = SimpleNamespace(root=tmp_path / "history")
-    app.window.practice.controls.history = lambda: history
+    controls = app.window.practice.controls
+    history = HistoryStore(
+        tmp_path / "history",
+        renderers=practice_report_renderers(),
+    )
+    controls.analysis.store = history
+
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"inference is injected; this record has no evidence images")
+    result = make_dummy_record()["result"]
+    result["summary"] = "测试记录"
+    identity = {
+        "studentId": "001",
+        "studentName": "选中学员",
+        "action": "straight_combo",
+        "stance": "left",
+    }
+    record = history.add(
+        identity,
+        source,
+        None,
+        analyzer=lambda *args, **kwargs: result,
+    )
+
+    # 当前记录故意与待导出记录不同，防止结果页或历史选择导错对象。
+    other_record = history.add(
+        {**identity, "studentName": "另一条记录"},
+        source,
+        None,
+        analyzer=lambda *args, **kwargs: result,
+    )
+    controls.set_current(other_record)
+
     asked = {}
     target = tmp_path / "report.html"
 
-    def _ask(**kwargs):
+    def choose_destination(**kwargs):
         asked.update(kwargs)
         return str(target)
 
-    monkeypatch.setattr(practice_mod.filedialog, "asksaveasfilename", _ask)
-    monkeypatch.setattr(practice_mod.messagebox, "showinfo", Mock())
-    record = make_dummy_record()
-    app.practice.export_report(record)
-    assert asked["initialfile"] == f"{record['studentId']}_{practice_mod.ACTIONS[record['action']]}_练习分析报告"
-    assert "散打学生练习分析图文报告" in target.read_text(encoding="utf-8")
-    assert app.window.practice.status_var.get() == "报告已成功导出至：report.html"
+    show_info = Mock()
+    show_error = Mock()
+    monkeypatch.setattr(
+        controls_mod.filedialog,
+        "asksaveasfilename",
+        choose_destination,
+    )
+    monkeypatch.setattr(controls_mod.messagebox, "showinfo", show_info)
+    monkeypatch.setattr(controls_mod.messagebox, "showerror", show_error)
+
+    if entry == "result":
+        app.practice.export_report(record)
+    elif entry == "history":
+        controls.open_history()
+        controls.history_window.history_tree.selection_set(record["id"])
+        controls.history_window.select_record()
+        controls.export()
+    else:
+        controls.set_current(record)
+        controls.export_button.invoke()
+
+    expected_filename = (
+        f"{record['studentId']}_{ACTIONS[record['action']]}_练习分析报告"
+    )
+    assert asked["initialfile"] == expected_filename
+    assert asked["defaultextension"] == ".html"
+    assert asked["filetypes"] == [("HTML 图文报告", "*.html")]
+    assert controls.export_button.cget("text") == "导出图文报告"
+
+    html = target.read_text(encoding="utf-8")
+    assert "散打学生练习分析图文报告" in html
+    assert "选中学员" in html
+    assert "另一条记录" not in html
+
+    status = app.window.practice.status_var.get()
+    assert status == "报告已成功导出至：report.html"
+    show_info.assert_called_once()
+    show_error.assert_not_called()
+
+
+def test_practice_export_cancel_and_failure(root, monkeypatch, tmp_path):
+    """取消不写文件；导出失败留在界面提示，不报告成功。"""
+    app = make_test_app(root)
+    controls = app.window.practice.controls
+    controls.set_current(make_dummy_record())
+
+    history = Mock()
+    controls.history = lambda: history
+    show_info = Mock()
+    show_error = Mock()
+    choose_destination = Mock(return_value="")
+    monkeypatch.setattr(controls_mod.messagebox, "showinfo", show_info)
+    monkeypatch.setattr(controls_mod.messagebox, "showerror", show_error)
+    monkeypatch.setattr(
+        controls_mod.filedialog,
+        "asksaveasfilename",
+        choose_destination,
+    )
+
+    controls.export()
+
+    history.export.assert_not_called()
+    show_info.assert_not_called()
+    show_error.assert_not_called()
+
+    choose_destination.return_value = str(tmp_path / "r.html")
+    history.export.side_effect = OSError("磁盘空间不足")
+
+    controls.export()
+
+    assert show_error.call_args.args == ("导出失败", "磁盘空间不足")
+    show_info.assert_not_called()
