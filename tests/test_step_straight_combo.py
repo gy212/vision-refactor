@@ -113,11 +113,13 @@ def test_downward_release_is_not_an_extra_punch() -> None:
     assert len(diagnostics["repetitions"]) == 1
 
 
-def test_held_punch_keeps_quality_window_without_claiming_recovery() -> None:
+@pytest.mark.parametrize("last_frame_jitter", [0.0, .001])
+def test_held_punch_keeps_quality_window_without_claiming_recovery(last_frame_jitter) -> None:
     series = _series(1)
     times = np.asarray(series["times"])
     lm = series["landmarks"].copy()
     lm[times >= 2.05, REAR_WRIST, 0] = .75
+    lm[-1, REAR_WRIST, 0] += last_frame_jitter
     diagnostics = {}
     held = rule_series(lm, series["frames"], FPS, 1.0)
 
