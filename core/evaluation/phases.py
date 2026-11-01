@@ -10,11 +10,12 @@ import math
 import numpy as np
 
 from core.evaluation.body_sides import sides_for_stance
+from core.evaluation.rules.sanda_v5 import action_segments
 from core.foundation.geometry import torso_length
 from core.foundation.signal import contiguous_runs
 
 
-def _stable_guard_windows(lm: np.ndarray, mask: np.ndarray, torso: np.ndarray, edge: int, cfg) -> list[np.ndarray]:
+def stable_guard_windows(lm: np.ndarray, mask: np.ndarray, torso: np.ndarray, edge: int, cfg) -> list[np.ndarray]:
     """长度为 ``edge`` 的滑窗中，护位链保持稳定且手已抬到护位的窗口（按起点升序）。"""
     n = len(lm)
     wrists = (lm[:, [15, 16], :2] - lm[:, [11, 12], :2]) / np.maximum(torso[:, None, None], 1e-4)
@@ -101,14 +102,13 @@ def phase_windows(series: dict, action: str, stance: str, cfg, diagnostics=None)
         return {}
     edge = max(cfg.min_valid, int(math.ceil(cfg.stance_window_seconds / dt)))
     torso = torso_length(lm, mask, "visible_side_chain")
-    stable = _stable_guard_windows(lm, mask, torso, edge, cfg)
+    stable = stable_guard_windows(lm, mask, torso, edge, cfg)
     if not stable:
         return {}
     baseline = stable[0]
     diagnostics["reason"] = "未检测到完整离开并回收的动作"
     windows = {("stance", "start"): baseline, ("stance", "end"): stable[-1]}
-    segments = {"straight_combo": ["front_straight", "rear_straight"],
-                "hook_combo": ["front_hook", "rear_hook"]}.get(action, [] if action == "stance" else [action])
+    segments = list(action_segments(action))
     events = _segment_events(lm, mask, times, torso, baseline, segments, stance, cfg)
     diagnostics["events"] = [e[0] for e in events]
     if not events:
@@ -189,16 +189,22 @@ def share_phase_timing(views, windows, alignment, diagnostics, cfg):
                  for v in (target, source)}
         if abs(np.median(times[target][windows[target][start]]) - np.median(times[source][windows[source][start]])) > cfg.phase_tolerance_seconds:
             continue
-        projected = {}
-        for key, indices in windows[source].items():
-            runs = []
-            for run in contiguous_runs(indices):
-                lo, hi = times[source][run[[0, -1]]]
-                if lo < times[target][0] - 1e-6 or hi > times[target][-1] + 1e-6:
-                    continue
-                runs.append(np.flatnonzero((times[target] >= lo - 1e-6) & (times[target] <= hi + 1e-6)))
-            if runs:
-                projected[key] = np.unique(np.concatenate(runs))
-        windows[target] = projected
+        windows[target] = project_windows(windows[source], times[source], times[target])
         sources[target] = source + "_synchronized_timing"
     return sources
+
+
+def project_windows(windows: dict, source_times, target_times) -> dict:
+    """把一路的相位窗口按时间投到同步录制的另一路：每段连续帧取另一路同一时间范围内的帧，超出另一路时长的段丢弃。"""
+    source_times, target_times = np.asarray(source_times), np.asarray(target_times)
+    projected = {}
+    for key, indices in windows.items():
+        runs = []
+        for run in contiguous_runs(indices):
+            lo, hi = source_times[run[[0, -1]]]
+            if lo < target_times[0] - 1e-6 or hi > target_times[-1] + 1e-6:
+                continue
+            runs.append(np.flatnonzero((target_times >= lo - 1e-6) & (target_times <= hi + 1e-6)))
+        if runs:
+            projected[key] = np.unique(np.concatenate(runs))
+    return projected

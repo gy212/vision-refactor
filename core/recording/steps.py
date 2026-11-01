@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
-from core.evaluation.matching.engine import match_video
+from core.evaluation.matching.engine import match_video, match_video_windows
 from core.evaluation.scoring import exam_pool
 from core.evaluation.templates import TemplateError
 from core.foundation.jsonable import to_jsonable
@@ -285,6 +285,7 @@ class ScoreExamPool:
     front_templates: tuple[Path, ...]
     side_templates: tuple[Path, ...]
     compare: PoolCompare = match_video
+    compare_windows: PoolCompare = match_video_windows
     model_available: ModelAvailable = default_model_available
     lane: Lane = "analysis"
 
@@ -307,6 +308,7 @@ class ScoreExamPool:
         result = exam_pool.score_exam_pools(
             front_tpls, side_tpls, ctx.video("front"), ctx.video("side"),
             compare=self.compare, raw_series=extract_pose_raw_series, stop_evt=ctx.stop_evt,
+            compare_windows=self.compare_windows,
         )
         _raise_if_cancelled(ctx, cancel)
         message = "后台多模板比对完成" if front_tpls and side_tpls else "后台单侧多模板比对完成"
@@ -350,6 +352,7 @@ class StepDeps:
     transcode: TranscodeFn = default_transcode
     video_validator: VideoValidator = default_video_validator
     compare: PoolCompare = match_video
+    compare_windows: PoolCompare = match_video_windows
     model_available: ModelAvailable = default_model_available
 
 
@@ -373,7 +376,7 @@ def dual_segment_steps(
         CompareGate(record_skeleton=record_skeleton, auto_compare=auto_compare),
         ScoreExamPool(
             tuple(front_templates), tuple(side_templates),
-            compare=deps.compare, model_available=deps.model_available,
+            compare=deps.compare, compare_windows=deps.compare_windows, model_available=deps.model_available,
         ),
     )
 

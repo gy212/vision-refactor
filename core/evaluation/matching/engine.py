@@ -183,11 +183,46 @@ def match_video(
     )
     matches = match_templates(seq, templates, layout=first.layout, baseline=baseline, stop_evt=stop_evt,
                               video_label=f"video {video_path}")
-    return [
-        CompareResult(
-            template_path=m.template.path, video_path=Path(video_path), pose_variant=pv, fps=float(fps),
-            start_frame=m.start_frame, end_frame=m.end_frame, cost=m.cost, avg_cost=m.avg_cost, score=m.score,
-            preview_path=None, workers_used=workers_eff,
-        )
-        for m in matches
-    ]
+    return [_compare_result(m, Path(video_path), pv, fps, workers_eff) for m in matches]
+
+
+def match_video_windows(
+    template_paths: Sequence[str | Path],
+    video_path: str | Path,
+    windows: Sequence[tuple[int, int]],
+    *,
+    pose_variant: str | None = None,
+    workers: int = 1,
+    baseline: float = POSE33_BASELINE,
+    stop_evt: Event | None = None,
+    load: Callable[[Path], Template] = lambda p: load_template(p, COMPARE),
+) -> list[list[CompareResult]]:
+    """一条视频对多个模板，在每个帧范围 ``[起, 止]`` 内各做一次子序列 DTW（上步组合逐次评分，D-25）。
+
+    视频特征与 ``match_video`` 一样只提取一次；返回外层按模板、内层按范围，帧号是整段视频的帧号。
+    空范围（止 < 起或超出视频）跳过；模板列表为空时返回空列表。
+    """
+    stop_evt = stop_evt or Event()
+    templates = [load(Path(p)) for p in template_paths]
+    if not templates:
+        return []
+    first = templates[0]
+    seq, fps, _views, pv, workers_eff = template_features(first, Path(video_path), pose_variant=pose_variant,
+                                                          workers=workers, stop_evt=stop_evt)
+    per_window = []
+    for start, end in windows:
+        start, end = max(0, int(start)), min(len(seq) - 1, int(end))
+        if end <= start:
+            continue
+        matches = match_templates(seq[start:end + 1], templates, layout=first.layout, baseline=baseline,
+                                  stop_evt=stop_evt, video_label=f"video {video_path}[{start}:{end}]")
+        per_window.append([_compare_result(m, Path(video_path), pv, fps, workers_eff, offset=start) for m in matches])
+    return [[window[i] for window in per_window] for i in range(len(templates))]
+
+
+def _compare_result(m: TemplateMatch, video_path: Path, pv: str, fps: float, workers: int, offset: int = 0) -> CompareResult:
+    return CompareResult(
+        template_path=m.template.path, video_path=video_path, pose_variant=pv, fps=float(fps),
+        start_frame=m.start_frame + offset, end_frame=m.end_frame + offset, cost=m.cost, avg_cost=m.avg_cost,
+        score=m.score, preview_path=None, workers_used=workers,
+    )

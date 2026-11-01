@@ -15,7 +15,9 @@ from core.evaluation.rule_checks import rule_series, synchronized_windows, view_
 from core.evaluation.rules.adapters import to_practice_check
 from core.evaluation.rules.sanda_v5 import (
     RULE_VERSION,
+    SIDE_TIMED_ACTIONS,
     FeedbackConfig,
+    action_config,
     build_checks,
     check_view_weights,
     load_feedback_config,
@@ -189,16 +191,31 @@ def evaluate_series(action: str, stance: str, views: dict, cfg: FeedbackConfig |
         _evaluate_check(c, views, windows, diagnostics, alignment, outcomes_by_view, cfg, evidence)
     unable = any(c["status"] == "unable" for c in checks)
     issues = any(c["status"] == "candidate" for c in checks)
-    return {"schemaVersion": 1, "ruleVersion": RULE_VERSION, "action": action, "stance": stance,
-            "backend": "mediapipe", "poseVariant": cfg.pose_variant, "delegate": "cpu", "actionSource": "user_selected",
-            "fusionMethod": "action_rule_quality_weighted_v1", "inputViews": sorted(views),
-            "capture": {view: series.get("capture", {}) for view, series in views.items()}, "alignment": alignment,
-            "diagnostics": _view_diagnostics(views, diagnostics, phase_sources),
-            "phaseWindows": _phase_ranges(views, windows),
-            "config": asdict(cfg), "status": "partial" if any(c["status"] in {"unable", "pending_rule"} for c in checks) else "completed",
-            "needsRerecord": unable, "scoreAuthorized": False, "calibrationStatus": "unvalidated",
-            "summary": "规则检查发现待教师确认的问题" if issues else "证据不足，请重新录制" if unable else "已检查项目未发现明显问题，不代表全部项目合格",
-            "checks": checks, "evidence": list(evidence.values()), "reviewHistory": []}
+    summary = ("规则检查发现待教师确认的问题" if issues else "证据不足，请重新录制" if unable
+               else "已检查项目未发现明显问题，不代表全部项目合格")
+    repetitions = _repetitions(action, diagnostics)
+    if repetitions is not None and repetitions["detected"] != repetitions["expected"]:
+        summary += f"；检测到 {repetitions['detected']} 次动作，应做 {repetitions['expected']} 次"
+    result = {"schemaVersion": 1, "ruleVersion": RULE_VERSION, "action": action, "stance": stance,
+              "backend": "mediapipe", "poseVariant": cfg.pose_variant, "delegate": "cpu", "actionSource": "user_selected",
+              "fusionMethod": "action_rule_quality_weighted_v1", "inputViews": sorted(views),
+              "capture": {view: series.get("capture", {}) for view, series in views.items()}, "alignment": alignment,
+              "diagnostics": _view_diagnostics(views, diagnostics, phase_sources),
+              "phaseWindows": _phase_ranges(views, windows),
+              "config": asdict(action_config(cfg, action)), "status": "partial" if any(c["status"] in {"unable", "pending_rule"} for c in checks) else "completed",
+              "needsRerecord": unable, "scoreAuthorized": False, "calibrationStatus": "unvalidated",
+              "summary": summary, "checks": checks, "evidence": list(evidence.values()), "reviewHistory": []}
+    if repetitions is not None:
+        result["repetitions"] = repetitions
+    return result
+
+
+def _repetitions(action: str, diagnostics: dict) -> dict | None:
+    """上步组合（``SIDE_TIMED_ACTIONS``）按侧面切出的次数与每次的时间；其余动作不统计次数，为 None。"""
+    side = diagnostics.get("side", {})
+    if action not in SIDE_TIMED_ACTIONS or "repetitions" not in side:
+        return None
+    return {"expected": side["expectedRepetitions"], "detected": len(side["repetitions"]), "times": side["repetitions"]}
 
 
 def analyze_practice(action, stance, front, side, *, stopped=lambda: False, config=None, pipeline_factory=None) -> dict:

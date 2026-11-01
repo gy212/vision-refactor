@@ -15,6 +15,7 @@ from core.evaluation.matching.engine import (
     assert_feature_layout_match,
     match_templates,
     match_video,
+    match_video_windows,
     template_features,
 )
 from core.evaluation.scoring.cost import POSE33_BASELINE
@@ -87,7 +88,8 @@ def score_segment(front_video: str | Path, side_video: str | Path, front_templat
     """离线复算一个双摄片段的考试分（``EXAM_POOL``，与 Tk 考试同一算法，D-4）；模板池按考试契约过滤。"""
     front_ok, side_ok = usable_pools(front_templates, side_templates)
     return score_exam_pools(front_ok, side_ok, Path(front_video), Path(side_video), compare=match_video,
-                            raw_series=extract_pose_raw_series, stop_evt=stop_evt or Event())
+                            raw_series=extract_pose_raw_series, stop_evt=stop_evt or Event(),
+                            compare_windows=match_video_windows)
 
 
 def tech_eval_video(video_path: str | Path, *, pose_variant: str = "full", stance: str = "left",
