@@ -15,7 +15,7 @@ import pytest
 from core.evaluation.matching import engine
 from core.evaluation.phases import project_windows
 from core.evaluation.practice import evaluate_series
-from core.evaluation.punch_events import reach_events
+from core.evaluation.punch_events import PunchEvent, reach_events, settled_returns
 from core.evaluation.rule_checks import NEEDS_SIDE, judge_views, rule_series, view_outcomes
 from core.evaluation.rules.sanda_v5 import (
     ACTIONS,
@@ -113,6 +113,23 @@ def test_downward_release_is_not_an_extra_punch() -> None:
     assert len(diagnostics["repetitions"]) == 1
 
 
+def test_stable_withdrawal_ends_before_exit_without_faking_a_held_return() -> None:
+    reach = np.array([0, .4, .9, .5, .5, np.nan, .2, .2, .2, 0])
+    stable = [np.arange(3, 5), np.arange(5, 7), np.arange(6, 9)]
+    events = [PunchEvent(1, 2, 9, "returned"), PunchEvent(1, 2, 9, "held")]
+    times, cfg = np.arange(len(reach)) / FPS, FeedbackConfig()
+
+    result = settled_returns(events, reach, times, stable, cfg, rise=.3)
+
+    assert result[0] == PunchEvent(1, 2, 6, "returned")
+    assert result[1] == events[1]
+    assert settled_returns(events, reach, times, stable[:2], cfg, rise=.3) == events
+    assert settled_returns(events, reach, times, stable, FeedbackConfig(min_valid=8), rise=.3) == events
+    assert settled_returns(events, reach, times / 10, stable, cfg, rise=.3) == events
+    reach[8] = .5
+    assert settled_returns(events, reach, times, [np.arange(6, 8)], cfg, rise=.3) == events
+
+
 @pytest.mark.parametrize("last_frame_jitter", [0.0, .001])
 def test_held_punch_keeps_quality_window_without_claiming_recovery(last_frame_jitter) -> None:
     series = _series(1)
@@ -206,6 +223,16 @@ def test_calibrated_checks_are_live_and_the_rest_pending() -> None:
     }
     assert {c["primaryView"] for c in live if c["code"] in ("guard_shoulder", "guard_elbow")} == {"front"}
     assert {c["primaryView"] for c in live if c["code"] == "shoulder_level"} == {"side"}
+    # heavy失败不能封锁full，也不能将full通过的资格授予heavy。
+    for phase in ("motion", "finish"):
+        check_id = f"front_straight:{phase}:rear:guard_shoulder"
+        assert next(c for c in live if c["id"] == check_id)["primaryView"] == "front"
+        heavy = next(c for c in build_checks(ACTION, "left", pose_variant="heavy") if c["id"] == check_id)
+        expected = "enabled" if phase == "motion" else "calibration_failed"
+        assert heavy["availability"]["state"] == expected
+        rear = next(c for c in build_checks(ACTION, "left", pose_variant="heavy")
+                    if c["id"] == f"rear_straight:{phase}:front:guard_shoulder")
+        assert rear["availability"]["state"] == "enabled"
     # 旧动作不受标定影响。
     assert all("availability" not in c for c in build_checks("straight_combo", "left"))
     assert "guard_shoulder" not in {c["code"] for c in build_checks("straight_combo", "left")}

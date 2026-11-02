@@ -77,3 +77,35 @@ def reach_events(
                 finish(end, "held")
                 break
     return events
+
+
+def settled_returns(
+    events: list[PunchEvent],
+    reach: np.ndarray,
+    times: np.ndarray,
+    stable: list[np.ndarray],
+    cfg,
+    *,
+    rise: float,
+) -> list[PunchEvent]:
+    """已回撤并稳定时提前结束事件，不等待旧护位阈值在退场时才被越过。"""
+    result = []
+    for event in events:
+        end = event.end
+        if event.ending == "returned":
+            for window in stable:
+                if window[0] <= event.peak or window[-1] >= event.end:
+                    continue
+                candidate = int(window[0])
+                observed = np.isfinite(reach[event.start:candidate + 1])
+                if (observed.sum() < cfg.min_valid
+                        or times[candidate] - times[event.start] < cfg.min_motion_seconds
+                        or (reach[window[-1] + 1:event.end + 1] > rise).any()):
+                    continue
+                values = reach[window]
+                if (np.isfinite(values).all() and (values < rise).all()
+                        and reach[event.peak] - values.max() > cfg.return_distance):
+                    end = candidate
+                    break
+        result.append(PunchEvent(event.start, event.peak, end, event.ending))
+    return result

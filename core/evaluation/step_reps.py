@@ -16,7 +16,7 @@ import numpy as np
 
 from core.evaluation.body_sides import sides_for_stance
 from core.evaluation.phases import stable_guard_windows
-from core.evaluation.punch_events import reach_events
+from core.evaluation.punch_events import reach_events, settled_returns
 from core.evaluation.punch_phases import punch_detail_windows
 from core.foundation.geometry import torso_length
 
@@ -74,6 +74,7 @@ def step_combo_windows(series: dict, stance: str, cfg, diagnostics: dict) -> dic
         rear, downward, times, baseline, cfg,
         rise=rear_base + REACH_START, fall=rear_base + REACH_RETURN,
     )
+    events = settled_returns(events, rear, times, stable, cfg, rise=rear_base + REACH_START)
     punches = [p for p in events if p.start > baseline[-1]]
     if not punches:
         diagnostics["reason"] = "未检测到后手直拳"

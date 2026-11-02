@@ -51,7 +51,7 @@ from core.pose.landmarks import (
     R_SHOULDER,
 )
 
-RULE_VERSION = "sanda-rules-mediapipe-2026-11-02-v5.4"
+RULE_VERSION = "sanda-rules-mediapipe-2026-11-02-v5.5"
 PROFILE_NAME = "sanda_v5"
 DEFAULT_STANCE = "left"  # 考试与 batch 的左右式：左手、左脚在前，右手护脸（D-3，配置值，以后可改）
 ACTIONS = {
