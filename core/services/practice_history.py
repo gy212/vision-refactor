@@ -184,8 +184,8 @@ class HistoryStore:
             record = self.get(record_id)
             destination = Path(destination).resolve()
             ext = destination.suffix.lower()
-            if ext not in {".txt", ".html", ".htm"}:
-                raise ValueError("请选择 .html 图文报告或 .txt 文字报告文件")
+            if ext not in {".html", ".htm"}:
+                raise ValueError("请选择 .html 图文报告文件")
             if destination == self.root or self.root in destination.parents:
                 raise ValueError("请将导出报告保存在受管历史目录之外")
             if str(destination) in record["sourcePaths"].values():
@@ -193,8 +193,5 @@ class HistoryStore:
             if ext not in self.renderers:
                 raise ValueError(f"未配置 {ext} 报告的生成方式")
             text = self.renderers[ext](record, self.root)
-            if ext == ".txt":
-                atomic_write_text(destination, text, encoding="utf-8-sig")
-            else:
-                atomic_write_text(destination, text)
+            atomic_write_text(destination, text)
             return destination
