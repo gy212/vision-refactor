@@ -1,17 +1,12 @@
-"""学生练习历史导出的渲染器表：按扩展名选文字报告或图文报告，由调用方注入 ``FeedbackHistory``。"""
+"""学生练习历史导出的 HTML 图文报告渲染器表，由调用方注入 ``HistoryStore``。"""
 from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
 
 from core.reporting.html import render_html_report
-from core.reporting.text import format_report
 
 ReportRenderer = Callable[[dict, Path], str]  # (历史记录, 历史根目录) -> 报告全文
-
-
-def _text(record: dict, history_root: Path) -> str:
-    return format_report(record)
 
 
 def _html(record: dict, history_root: Path) -> str:
@@ -19,5 +14,5 @@ def _html(record: dict, history_root: Path) -> str:
 
 
 def practice_report_renderers() -> dict[str, ReportRenderer]:
-    """``.txt`` → 文字报告，``.html``/``.htm`` → 图文报告。"""
-    return {".txt": _text, ".html": _html, ".htm": _html}
+    """``.html``/``.htm`` → 自包含的离线图文报告。"""
+    return {".html": _html, ".htm": _html}
