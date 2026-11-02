@@ -290,8 +290,8 @@ def test_personal_history_review_export_reanalysis_and_retention(tmp_path):
     issue = next(c for c in saved["result"]["checks"] if c["status"] == "candidate")
     changed = store.review(saved["id"], issue["id"], "confirmed", "李老师", "已核对")
     assert changed["result"]["reviewHistory"][-1]["before"] == "pending"
-    out = store.export(saved["id"], tmp_path / "报告.txt")
-    assert "教师已确认" in out.read_text(encoding="utf-8-sig")
+    out = store.export(saved["id"], tmp_path / "报告.html")
+    assert "教师已确认" in out.read_text(encoding="utf-8")
     store.review(saved["id"], issue["id"], "revoked", "李老师", "误报")
     assert "教师已确认" not in format_report(store.get(saved["id"]))
     now[0] += timedelta(days=1)
@@ -318,7 +318,7 @@ def test_cancel_failure_and_invalid_path_never_publish_history(tmp_path):
         validate_identity("../other", "", "stance", "left")
     saved = store.add(identity, source, None, analyzer=fake_analyzer)
     with pytest.raises(ValueError):
-        store.export(saved["id"], store.root / "report.txt")
+        store.export(saved["id"], store.root / "report.html")
     (store.root / saved["id"] / saved["videos"]["front"]).unlink()
     with pytest.raises(ValueError, match="原视频"):
         store.reanalyze(saved["id"], analyzer=fake_analyzer)
@@ -645,13 +645,24 @@ def test_real_tk_evidence_frames_and_model_choice(tmp_path, monkeypatch):
 
 
 def test_history_export_uses_injected_renderers_only(tmp_path):
-    store = FeedbackHistory(tmp_path / "history", renderers={".txt": lambda record, root: f"{record['studentId']}|{root.name}"})
+    renderers = {
+        ".html": lambda record, root: f"{record['studentId']}|{root.name}",
+    }
+    store = FeedbackHistory(tmp_path / "history", renderers=renderers)
     source = tmp_path / "source.avi"
     source.write_bytes(b"mock video, inference is injected")
-    saved = store.add(validate_identity("001", "张同学", "front_straight", "left"), source, None, analyzer=fake_analyzer)
-    assert store.export(saved["id"], tmp_path / "r.txt").read_text(encoding="utf-8-sig") == "001|history"
-    with pytest.raises(ValueError, match="未配置 .html 报告的生成方式"):
-        store.export(saved["id"], tmp_path / "r.html")
+    saved = store.add(
+        validate_identity("001", "张同学", "front_straight", "left"),
+        source,
+        None,
+        analyzer=fake_analyzer,
+    )
+
+    report = store.export(saved["id"], tmp_path / "r.html")
+    assert report.read_text(encoding="utf-8") == "001|history"
+
+    with pytest.raises(ValueError, match="未配置 .htm 报告的生成方式"):
+        store.export(saved["id"], tmp_path / "r.htm")
 
 
 def test_upright_frames_before_the_stance_are_not_the_start_stance():

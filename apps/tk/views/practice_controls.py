@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""学生练习的身份与分析控件：学号、姓名、动作、实战式、分析模型，以及个人历史、导入旧视频、导出文字与取消分析按钮。
+"""学生练习的身份与分析控件：学号、姓名、动作、实战式、分析模型，以及个人历史、导入旧视频、导出图文报告与取消分析按钮。
 
 分析任务与历史存储在 ``PracticeAnalysis``；本视图负责输入校验、弹框与按钮状态，历史窗口见 ``practice_history``。
 """
@@ -60,7 +60,12 @@ class PracticeControls:
         self.history_button.pack(side="left")
         self.import_button = ttk.Button(row, text="导入旧视频", command=self.import_video)
         self.import_button.pack(side="left", padx=4)
-        self.export_button = ttk.Button(row, text="导出文字", command=self.export, state="disabled")
+        self.export_button = ttk.Button(
+            row,
+            text="导出图文报告",
+            command=self.export,
+            state="disabled",
+        )
         self.export_button.pack(side="left")
         self.cancel_button = ttk.Button(frame, text="取消分析", command=self.cancel, state="disabled")
         self.cancel_button.pack(fill="x")
@@ -170,18 +175,34 @@ class PracticeControls:
         if front or side:
             self.analyze_recording(identity, Path(front) if front else None, Path(side) if side else None)
 
-    def export(self) -> None:
-        current = self.current
+    def export(self, record: dict | None = None) -> None:
+        """工具栏、历史窗口与结果页共用 HTML 导出及历史库的安全写入。"""
+        current = record if record is not None else self.current
         if not current:
             return
-        destination = filedialog.asksaveasfilename(parent=self.root, title="导出动作问题说明", defaultextension=".txt",
-            initialfile=f"{current['studentId']}_动作问题说明.txt", filetypes=[("文字报告", "*.txt")])
+
+        action = current.get("action", "action")
+        action_name = ACTIONS.get(action, action)
+        destination = filedialog.asksaveasfilename(
+            parent=self.root,
+            title="导出练习图文报告",
+            defaultextension=".html",
+            initialfile=f"{current['studentId']}_{action_name}_练习分析报告",
+            filetypes=[("HTML 图文报告", "*.html")],
+        )
         if not destination:
             return
+
         try:
-            self.analysis.export_text(current["id"], Path(destination))
-            self.set_status(f"已导出：{destination}")
-        except (OSError, ValueError) as exc:
+            path = self.history().export(current["id"], Path(destination))
+            self.set_status(f"报告已成功导出至：{path.name}")
+            messagebox.showinfo(
+                "导出成功",
+                f"报告已导出至：\n{path}\n\n"
+                "双击文件即可用浏览器查看；可通过浏览器打印或另存为 PDF。",
+                parent=self.root,
+            )
+        except Exception as exc:
             messagebox.showerror("导出失败", str(exc), parent=self.root)
 
     def open_history(self) -> None:

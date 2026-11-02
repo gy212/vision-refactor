@@ -8,11 +8,9 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
-from pathlib import Path
-from tkinter import filedialog, messagebox
+from tkinter import messagebox
 from typing import Any
 
-from core.evaluation import ACTIONS
 from core.foundation import EXAM_ROI, PreferenceStore
 from core.live import LiveControls
 from core.workflows import PRACTICE, Announcer, CommandExecutor, ModeManager, PracticeSession, WorkflowHost, WorkflowPorts
@@ -25,7 +23,7 @@ INTRO_TEXT = (
     "动作问题说明由MediaPipe关键点与几何规则计算，候选问题待教师确认，不打分。\n"
     "流程：填学号、选择动作与左/右式 → 开始 → 进入黄框站稳，播报开始并录制 → 离开2秒，播报结束 → 动作评判。\n"
     "黄框沿用考试模式保存的站位区域；可在考试模式中调整。也可手动点「结束」。\n"
-    "也可导入仍保留的旧视频；个人历史支持文字导出和教师确认/撤销。"
+    "也可导入仍保留的旧视频；个人历史支持图文报告导出和教师确认/撤销。"
 )
 PRACTICE_STATUS = "学生练习模式"
 
@@ -249,29 +247,8 @@ class PracticeController:
         self._main_status(PRACTICE_STATUS)
 
     def export_report(self, record: dict) -> None:
-        """从结果页导出 HTML 图文报告或 TXT 文字报告。"""
-        from core.reporting import render_html_report
-
-        action = record.get("action", "action")
-        default_name = f"{record.get('studentId', 'student')}_{ACTIONS.get(action, action)}_练习分析报告"
-        root = self.window.root
-        dest = filedialog.asksaveasfilename(
-            parent=root, title="导出动作问题说明报告", initialfile=default_name, defaultextension=".html",
-            filetypes=[("图文报告网页 (*.html)", "*.html"), ("详细文字报告 (*.txt)", "*.txt")],
-        )
-        if not dest:
-            return
-        path = Path(dest)
-        history = self.analysis_controls.history()
-        try:
-            if path.suffix.lower() == ".txt":
-                history.export(record["id"], path)
-            else:
-                path.write_text(render_html_report(record, history_root=history.root), encoding="utf-8")
-            self.block.status_var.set(f"报告已成功导出至：{path.name}")
-            messagebox.showinfo("导出成功", f"报告已导出至：\n{path}", parent=root)
-        except Exception as exc:
-            messagebox.showerror("导出失败", f"无法写入报告文件：{exc}", parent=root)
+        """结果页与工具栏共用图文报告导出。"""
+        self.analysis_controls.export(record)
 
     def view_history(self) -> None:
         self.analysis_controls.open_history()
