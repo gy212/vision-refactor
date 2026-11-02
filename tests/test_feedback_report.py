@@ -256,7 +256,7 @@ def test_status_counts_conservation_law():
         (
             [make_synthetic_check(code="c1", status="pending_rule"), make_synthetic_check(code="c2", status="pending_rule")],
             False,
-            "本次需教师判断",
+            "本次暂无自动检查结果",
             "info"
         ),
         # Level 3: Zero candidates, pending_rule > 0, not_observed > 0

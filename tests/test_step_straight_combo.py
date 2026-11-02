@@ -15,16 +15,18 @@ import pytest
 from core.evaluation.matching import engine
 from core.evaluation.phases import project_windows
 from core.evaluation.practice import evaluate_series
-from core.evaluation.rule_checks import NEEDS_SIDE, judge_views, rule_series
+from core.evaluation.rule_checks import NEEDS_SIDE, judge_views, rule_series, view_outcomes
 from core.evaluation.rules.sanda_v5 import (
     ACTIONS,
-    CALIBRATED,
-    UNCALIBRATED,
     FeedbackConfig,
     action_config,
     action_segments,
     build_checks,
+    rule_profile,
 )
+from core.evaluation.rules.spec import RuleContext
+from core.evaluation.rules.straight_measures import measure_straight
+from core.evaluation.rules.straight_policy import ENABLED
 from core.evaluation.scoring import exam_pool
 from core.evaluation.step_reps import EXPECTED_REPETITIONS, step_combo_windows
 from core.reporting import build_report_model, render_html_report
@@ -127,17 +129,18 @@ def test_project_windows_maps_runs_by_time() -> None:
 
 
 def test_calibrated_checks_are_live_and_the_rest_pending() -> None:
-    calibration = CALIBRATED[ACTION]
     checks = build_checks(ACTION, "left")
-    live = [c for c in checks if (c["segment"], c["role"], c["code"]) in calibration.live]
-    assert {(c["segment"], c["role"], c["code"]) for c in live} == set(calibration.live)
+    live = [c for c in checks if c["availability"]["state"] == "enabled"]
+    assert {(c["segment"], c["phase"], c["role"], c["code"]) for c in live} == set(ENABLED)
     assert all(not c["blockedReason"] for c in live)
     assert all(c["blockedReason"] for c in checks if c not in live)
-    assert any(c["blockedReason"] == UNCALIBRATED for c in checks)
+    assert {c["availability"]["state"] for c in checks} == {
+        "enabled", "unsupported", "calibration_failed", "validation_pending"
+    }
     assert {c["primaryView"] for c in live if c["code"] in ("guard_shoulder", "guard_elbow")} == {"front"}
     assert {c["primaryView"] for c in live if c["code"] == "shoulder_level"} == {"side"}
     # 旧动作不受标定影响。
-    assert all(c["blockedReason"] != UNCALIBRATED for c in build_checks("straight_combo", "left"))
+    assert all("availability" not in c for c in build_checks("straight_combo", "left"))
     assert "guard_shoulder" not in {c["code"] for c in build_checks("straight_combo", "left")}
     assert action_segments(ACTION) == action_segments("straight_combo")
     assert ACTIONS[ACTION] == "上步前后手直拳组合"
@@ -150,6 +153,70 @@ def test_action_config_applies_calibrated_params_only_to_its_action() -> None:
     assert action_config(cfg, "straight_combo") is cfg
     with pytest.raises(ValueError):
         FeedbackConfig(elbow_raise=1.5)
+
+
+def test_prepull_uses_original_guard_and_excludes_recovery() -> None:
+    series = _series(1)
+    times = np.asarray(series["times"])
+    lm = series["landmarks"].copy()
+    lm[(times >= 1.6) & (times <= 1.9), REAR_WRIST, 0] -= .1
+    # 教师允许从下方绕回，不能放进预摆或收回后的检查窗口。
+    lm[(times >= 2.1) & (times < 2.2), REAR_WRIST, 1] += .1
+    series = rule_series(lm, series["frames"], FPS, 1.0)
+    cfg = FeedbackConfig()
+
+    windows = step_combo_windows(series, "left", cfg, {})
+    outcomes = view_outcomes(
+        "side", series, windows, rule_profile(ACTION, "left", cfg), ACTION, "left", cfg
+    )
+
+    assert times[windows[("stance", "start")][-1]] < 1.0
+    assert outcomes["rear_straight:prepare:rear:punch_prepull"].state == "violation"
+    recovered = windows[("rear_straight", "recovered")]
+    assert times[recovered[0]] >= 2.2
+
+
+@pytest.mark.parametrize(
+    "code,joint,axis,wrong,normal",
+    [
+        ("punch_predrop", 16, 1, .40, .30),
+        ("punch_prepull", 16, 0, .40, .75),
+        ("punch_preelbow", 14, 1, .28, .42),
+        ("punch_recover", 16, 1, .70, .45),
+    ],
+)
+def test_straight_measurements_keep_validity_and_direction(code, joint, axis, wrong, normal) -> None:
+    baseline = np.repeat(_base_pose()[None], 6, axis=0)
+    lm = baseline.copy()
+    lm[:3, joint, axis] = wrong
+    lm[3:, joint, axis] = normal
+    mask = np.ones(lm.shape[:2], bool)
+    context = RuleContext(
+        view="side", action=ACTION, stance="left", params=FeedbackConfig()
+    )
+
+    bad, valid, _ = measure_straight(code, "rear", lm, mask, baseline, mask, context)
+
+    assert bad.tolist() == [True] * 3 + [False] * 3
+    assert valid.all()
+    mask[:, joint] = False
+    _, valid, _ = measure_straight(
+        code, "rear", lm, mask, baseline, np.ones_like(mask), context
+    )
+    assert not valid.any()
+
+
+def test_pending_reason_and_label_keep_the_recorded_availability() -> None:
+    check = next(c for c in build_checks(ACTION, "left") if c["code"] == "punch_predrop")
+    check.update(status="pending_rule", reason=check["blockedReason"])
+    record = {"action": ACTION, "stance": "left", "result": {"checks": [check]}}
+
+    model = build_report_model(record)
+
+    assert model.pending_rule_checks[0].status_display == "待样本验证"
+    assert "教师已确认" in model.pending_rule_checks[0].reason
+    assert any(check["id"] in {c.id for c in stage.checks} for stage in model.phases)
+    assert "标定未通过" not in render_html_report(record)
 
 
 def test_practice_reports_repetition_count() -> None:

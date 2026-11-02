@@ -16,6 +16,7 @@ import numpy as np
 
 from core.evaluation.body_sides import sides_for_stance
 from core.evaluation.phases import stable_guard_windows
+from core.evaluation.punch_phases import punch_detail_windows
 from core.foundation.geometry import torso_length
 
 EXPECTED_REPETITIONS = 2  # 考试每个动作做 2 次（#32 汇总一）
@@ -82,6 +83,7 @@ def step_combo_windows(series: dict, stance: str, cfg, diagnostics: dict) -> dic
     if not stable:
         return {}
     baseline = stable[0]
+    # 预摆停住后也可能形成稳定窗；整段固定用最初护位，不能把错误姿势重置为基线。
     windows = {("stance", "start"): baseline, ("stance", "end"): stable[-1]}
     hips = (lm[baseline, 23, 0] + lm[baseline, 24, 0]) / 2
     facing = float(np.sign(np.nanmedian(lm[baseline, 0, 0] - hips)))
@@ -130,15 +132,12 @@ def step_combo_windows(series: dict, stance: str, cfg, diagnostics: dict) -> dic
         indices = _concat(chunks)
         if indices is not None and len(indices) >= cfg.min_valid:
             windows[key] = indices
-    first_start = int(np.searchsorted(times, diagnostics["repetitions"][0]["start"]))
-    before = [ix for ix in stable if ix[-1] < first_start]
     after = [ix for ix in stable if ix[0] >= punches[-1][2]]
-    if before:
-        windows[("stance", "start")] = before[-1]
     if after:
         windows[("stance", "end")] = after[0]
     else:
         windows.pop(("stance", "end"), None)
+    windows.update(punch_detail_windows(times, punches, stable))
     count = len(punches)
     diagnostics["reason"] = ("已检测到完整动作" if count == EXPECTED_REPETITIONS
                              else f"检测到 {count} 次动作（应为 {EXPECTED_REPETITIONS} 次），按检测到的次数判定")

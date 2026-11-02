@@ -85,7 +85,7 @@ def _count_pills(model: NormalizedReportModel) -> str:
         ("count-pill pill-candidate", f'{status_icon("candidate", 16)} 发现疑似问题：<strong>{counts.candidate_count}</strong>项'),
         ("count-pill pill-not-observed", f'{status_icon("not_observed", 16)} 已检查未发现：<strong>{counts.not_observed_count}</strong>项'),
         ("count-pill pill-unable", f'{status_icon("unable", 16)} 暂无法判断：<strong>{counts.unable_count}</strong>项'),
-        ("count-pill pill-pending", f'{status_icon("pending_rule", 16)} 需教师判断：<strong>{counts.pending_rule_count}</strong>项'),
+        ("count-pill pill-pending", f'{status_icon("pending_rule", 16)} 未自动检查：<strong>{counts.pending_rule_count}</strong>项'),
     ]
     lines = [_fill("count_pill", css_class=cls, content=content) for cls, content in pills]
     # 没有撤销项时保留一个空行，与旧版逐行拼接的输出逐字节一致

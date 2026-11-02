@@ -37,7 +37,7 @@ _ICON_BODIES = {
         f'<circle cx="12" cy="16.5" r="1" fill="{COLOR_UNABLE}"/>',
     ),
     "pending_rule": (
-        "需教师判断",
+        "未自动检查",
         f'<rect x="4.5" y="5.5" width="15" height="15" rx="2" stroke="{COLOR_PENDING}" stroke-width="2" fill="{COLOR_PENDING_BG}"/>'
         f'<path d="M8.5 3.5H15.5V6.5H8.5V3.5Z" stroke="{COLOR_PENDING}" stroke-width="1.8" fill="#FFFFFF"/>'
         f'<path d="M7.5 12.5L10.5 15.5L16.5 9.5" stroke="{COLOR_PENDING}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',

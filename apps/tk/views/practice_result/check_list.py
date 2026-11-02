@@ -15,7 +15,7 @@ STATUS_FILTERS = [
     ("candidate", "疑似问题"),
     ("not_observed", "未见异常"),
     ("unable", "无法判断"),
-    ("pending_rule", "待教师"),
+    ("pending_rule", "未检查"),
     ("revoked", "已撤销"),
 ]
 
