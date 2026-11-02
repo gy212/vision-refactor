@@ -6,6 +6,7 @@
 按相位窗口取帧、按左右式取手。同步的正侧两路先经 ``synchronized_windows`` 共用可见机位的动作时间段，
 练习、考试与 batch paired 同一份证据得到同一阶段；练习另做正侧融合（``evaluation/practice.py``），考试与 batch 逐视角报告。
 上步组合（``SIDE_TIMED_ACTIONS``）的阶段只由侧面逐次切分（``step_reps``）确定，正面按同一时钟共用；没有侧面视频时不判定。
+上步组合的躯干朝向另用 ``paired_torso`` 同步双机位投影，不将单路肩宽冒充身体朝向。
 """
 from __future__ import annotations
 
@@ -14,6 +15,7 @@ from collections.abc import Sequence
 import numpy as np
 
 from core.evaluation.phases import align_views, phase_windows, project_windows, share_phase_timing
+from core.evaluation.paired_torso import paired_torso_measurements
 from core.evaluation.rules.adapters import RuleCheck, to_rule_check
 from core.evaluation.rules.engine import evaluate_rules
 from core.evaluation.rules.sanda_v5 import ACTIONS, SIDE_TIMED_ACTIONS, FeedbackConfig, build_checks, rule_profile
@@ -54,12 +56,12 @@ def series_from_raw(landmarks: np.ndarray, meta: dict) -> dict:
 
 
 def view_outcomes(view: str, series: dict, view_windows: dict, profile: RuleProfile, action: str, stance: str,
-                  cfg: FeedbackConfig, supported_capabilities=None) -> dict[str, RuleOutcome]:
+                  cfg: FeedbackConfig, supported_capabilities=None, *, paired_torso=None) -> dict[str, RuleOutcome]:
     """一路视角上全部检查项经 ``evaluate_rules`` 的结论（以检查项 id 为键）；基线取起始实战式窗口，缺失时取开头几帧。"""
     baseline = view_windows.get(("stance", "start"), np.arange(min(cfg.min_valid, len(series["times"]))))
     ctx = RuleContext(view=view, action=action, stance=stance,
                       phase_windows={f"{segment}:{phase}": idx for (segment, phase), idx in view_windows.items()},
-                      baseline=baseline, params=cfg)
+                      baseline=baseline, params=cfg, paired_torso=paired_torso)
     outcomes = evaluate_rules(series["landmarks"], series["valid_mask"], profile, context=ctx,
                               supported_capabilities=supported_capabilities)
     return {o.spec.code: o for o in outcomes}
@@ -99,12 +101,12 @@ def _side_timed_windows(views: dict, stance: str, cfg: FeedbackConfig) -> tuple[
 
 
 def _view_checks(view: str, series: dict, view_windows: dict, phase_reason: str, action: str, stance: str,
-                 cfg: FeedbackConfig, supported_capabilities=None) -> tuple[RuleCheck, ...]:
+                 cfg: FeedbackConfig, supported_capabilities=None, *, paired_torso=None) -> tuple[RuleCheck, ...]:
     """一路视角在给定相位窗口上的逐项结论（只列适用本视角的项）。"""
     outcomes = view_outcomes(view, series, view_windows, rule_profile(action, stance, cfg), action, stance, cfg,
-                             supported_capabilities)
+                             supported_capabilities, paired_torso=paired_torso)
     return tuple(to_rule_check(c, view, outcomes[c["id"]], series["frames"], phase_reason)
-                 for c in build_checks(action, stance) if c["id"] in outcomes)
+                 for c in build_checks(action, stance, pose_variant=cfg.pose_variant) if c["id"] in outcomes)
 
 
 def judge_view(series: dict, view: str, action: str, stance: str, cfg: FeedbackConfig,
@@ -127,10 +129,12 @@ def judge_views(views: dict, action: str, stance: str, cfg: FeedbackConfig,
                 supported_capabilities=None) -> dict[str, tuple[tuple[RuleCheck, ...], dict]]:
     """同步录制的各路视角（``{"front"/"side": 规则输入序列}``）的逐项结论与相位诊断；考试与 batch paired 用。
 
-    相位与练习一样经 ``synchronized_windows`` 准备，诊断另带 ``phaseSource``；每路仍独立测量、逐视角报告，不做融合。
+    相位与练习一样经 ``synchronized_windows`` 准备，诊断另带 ``phaseSource``；逐视角报告。
+    躯干朝向在正面项中引用双机位共同证据，其余项仍按各路独立测量。
     """
     windows, diagnostics, _alignment, sources = synchronized_windows(views, action, stance, cfg)
+    paired = paired_torso_measurements(views) if action in SIDE_TIMED_ACTIONS else {}
     return {view: (_view_checks(view, series, windows[view], diagnostics[view].get("reason", ""), action, stance,
-                                cfg, supported_capabilities),
+                                cfg, supported_capabilities, paired_torso=paired.get(view)),
                    {**diagnostics[view], "phaseSource": sources[view]})
             for view, series in views.items()}

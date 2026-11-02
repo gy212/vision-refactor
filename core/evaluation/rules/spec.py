@@ -33,7 +33,8 @@ class RuleContext:
     """一次判定的上下文：视角、动作、左右式、相位窗口与基线。
 
     ``phase_windows`` 以 ``"segment:phase"`` 为键给出序列帧下标；``baseline`` 是起始护位的帧下标；
-    ``params`` 是阈值配置（``FeedbackConfig``）。
+    ``params`` 是阈值配置（``FeedbackConfig``）；``paired_torso`` 是本视角时间轴上
+    同步双机位的肩线投影比与有效掩码，单路入口不提供。
     """
 
     view: str
@@ -42,6 +43,7 @@ class RuleContext:
     phase_windows: Mapping[str, np.ndarray] = field(default_factory=dict)
     baseline: np.ndarray | None = None
     params: Any = None
+    paired_torso: tuple[np.ndarray, np.ndarray] | None = None
 
 
 # 相位判定：输入窗口内关键点与掩码、基线关键点与掩码、上下文，返回 (问题帧, 有效帧, {测量名: (逐帧值, 单位)})。

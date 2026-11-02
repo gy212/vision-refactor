@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 from contextlib import nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from threading import Event
 from typing import Any
@@ -228,6 +228,8 @@ def rule_reports(front_targets: list[dict], side_targets: list[dict], cfg: Feedb
 
     结论按正面池、侧面池的匹配顺序排列；没有同动作另一路的匹配单独判定。
     """
+    # 考试始终提取 heavy；练习配置不能改变考试规则的模型资格。
+    cfg = replace(cfg, pose_variant=POSE_VARIANT)
     judged: dict[int, tuple] = {}
     unpaired = list(side_targets)
     for front in front_targets:
