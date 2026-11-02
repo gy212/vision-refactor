@@ -3,13 +3,15 @@ from __future__ import annotations
 
 import numpy as np
 
+from core.evaluation.punch_events import PunchEvent
+
 PREPARE_SECONDS = .4
 RECOVERY_SETTLE_SECONDS = .6
 
 
 def punch_detail_windows(
     times: np.ndarray,
-    punches: list[tuple[int, int, int]],
+    punches: list[PunchEvent],
     stable: list[np.ndarray],
 ) -> dict[tuple[str, str], np.ndarray]:
     """每次后手出拳前0.4秒查预摆，收回后0.6秒内取首个稳定护位。
@@ -19,13 +21,17 @@ def punch_detail_windows(
     """
     prepare, recovered = [], []
     previous_end = -1
-    for index, (start, _peak, end) in enumerate(punches):
+    for index, punch in enumerate(punches):
+        start, end = punch.start, punch.end
         floor = max(previous_end + 1, int(np.searchsorted(times, times[start] - PREPARE_SECONDS)))
         prepare.append(np.arange(floor, start))
 
+        if punch.ending != "returned":
+            previous_end = end
+            continue
         deadline = times[end] + RECOVERY_SETTLE_SECONDS
         if index + 1 < len(punches):
-            deadline = min(deadline, times[punches[index + 1][0]] - PREPARE_SECONDS)
+            deadline = min(deadline, times[punches[index + 1].start] - PREPARE_SECONDS)
         candidates = [
             window for window in stable
             if window[0] >= end and times[window[-1]] <= deadline

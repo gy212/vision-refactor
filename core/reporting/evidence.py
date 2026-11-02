@@ -32,6 +32,7 @@ RULE_JOINTS: dict[str, set[int]] = {
     "punch_prepull": {0, 11, 12, 15, 16, 23, 24},
     "punch_preelbow": {11, 12, 13, 14},
     "punch_recover": {9, 10, 15, 16},
+    "guard_jaw": {9, 10, 15, 16},
     "stance_knee": {23, 24, 25, 26, 27, 28},
     "stance_toes": {27, 28, 29, 30, 31, 32},
     "stance_torso": {11, 12, 23, 24},

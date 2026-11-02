@@ -196,6 +196,8 @@ def evaluate_series(action: str, stance: str, views: dict, cfg: FeedbackConfig |
     repetitions = _repetitions(action, diagnostics)
     if repetitions is not None and repetitions["detected"] != repetitions["expected"]:
         summary += f"；检测到 {repetitions['detected']} 次动作，应做 {repetitions['expected']} 次"
+    if repetitions is not None and repetitions.get("incompleteRecovery"):
+        summary += "；存在打出后保持的动作，尚未观察到收回"
     result = {"schemaVersion": 1, "ruleVersion": RULE_VERSION, "action": action, "stance": stance,
               "backend": "mediapipe", "poseVariant": cfg.pose_variant, "delegate": "cpu", "actionSource": "user_selected",
               "fusionMethod": "action_rule_quality_weighted_v1", "inputViews": sorted(views),
@@ -215,7 +217,10 @@ def _repetitions(action: str, diagnostics: dict) -> dict | None:
     side = diagnostics.get("side", {})
     if action not in SIDE_TIMED_ACTIONS or "repetitions" not in side:
         return None
-    return {"expected": side["expectedRepetitions"], "detected": len(side["repetitions"]), "times": side["repetitions"]}
+    result = {"expected": side["expectedRepetitions"], "detected": len(side["repetitions"]), "times": side["repetitions"]}
+    if side.get("incompleteRecovery"):
+        result["incompleteRecovery"] = side["incompleteRecovery"]
+    return result
 
 
 def analyze_practice(action, stance, front, side, *, stopped=lambda: False, config=None, pipeline_factory=None) -> dict:
