@@ -126,9 +126,6 @@ class PracticeAnalysis:
         self.epoch.advance()
         self.stop_event.set()
 
-    def export_text(self, record_id: str, destination: Path) -> None:
-        self.history().export(record_id, destination)
-
     def _finish(self, record: dict | None, error: str | None, *, stale: bool,
                 on_saved: Callable[[dict], None] | None) -> None:
         """Tk 线程：应用分析结果；面板已关、代次过期或已取消时只恢复控件。"""

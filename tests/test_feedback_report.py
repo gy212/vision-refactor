@@ -530,7 +530,7 @@ def test_html_escaping_and_path_desensitization():
 # ---------------------------------------------------------------------------
 
 def test_feedback_history_export_html(tmp_path):
-    """Test FeedbackHistory.export() supporting .html alongside .txt with atomic safety."""
+    """HTML 报告原子导出；不再接受 TXT，保留历史目录保护。"""
     history_root = tmp_path / "history"
     store = FeedbackHistory(history_root, renderers=practice_report_renderers())
 
@@ -555,15 +555,13 @@ def test_feedback_history_export_html(tmp_path):
     assert "散打学生练习分析图文报告" in html_content
     assert "张同学" in html_content
 
-    # 2. Export as .txt still works
-    out_txt = tmp_path / "export_report.txt"
-    res_txt = store.export(record_id, out_txt)
-    assert res_txt == out_txt
-    assert "散打动作问题说明" in out_txt.read_text(encoding="utf-8-sig")
-
-    # 3. Invalid extension raises ValueError
-    with pytest.raises(ValueError, match="请选择 .html 图文报告或 .txt 文字报告文件"):
-        store.export(record_id, tmp_path / "report.pdf")
+    # 即使手工填写扩展名，也不能再导出 TXT；失败不覆盖已有文件。
+    for suffix in (".txt", ".pdf"):
+        target = tmp_path / f"report{suffix}"
+        target.write_text("原有内容", encoding="utf-8")
+        with pytest.raises(ValueError, match="请选择 .html 图文报告文件"):
+            store.export(record_id, target)
+        assert target.read_text(encoding="utf-8") == "原有内容"
 
     # 4. Confinement: cannot export inside history root
     with pytest.raises(ValueError, match="受管历史目录之外"):
