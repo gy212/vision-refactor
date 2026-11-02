@@ -215,7 +215,8 @@ def test_project_windows_maps_runs_by_time() -> None:
 def test_calibrated_checks_are_live_and_the_rest_pending() -> None:
     checks = build_checks(ACTION, "left")
     live = [c for c in checks if c["availability"]["state"] == "enabled"]
-    assert {(c["segment"], c["phase"], c["role"], c["code"]) for c in live} == set(ENABLED)
+    heavy_only = ("front_straight", "motion", "rear", "guard_back")
+    assert {(c["segment"], c["phase"], c["role"], c["code"]) for c in live} == set(ENABLED) - {heavy_only}
     assert all(not c["blockedReason"] for c in live)
     assert all(c["blockedReason"] for c in checks if c not in live)
     assert {c["availability"]["state"] for c in checks} == {
@@ -223,16 +224,16 @@ def test_calibrated_checks_are_live_and_the_rest_pending() -> None:
     }
     assert {c["primaryView"] for c in live if c["code"] in ("guard_shoulder", "guard_elbow")} == {"front"}
     assert {c["primaryView"] for c in live if c["code"] == "shoulder_level"} == {"side"}
-    # heavy失败不能封锁full，也不能将full通过的资格授予heavy。
+    # 阶段和模型独立登记，不能沿用其他模型或阶段的资格。
     for phase in ("motion", "finish"):
-        check_id = f"front_straight:{phase}:rear:guard_shoulder"
-        assert next(c for c in live if c["id"] == check_id)["primaryView"] == "front"
-        heavy = next(c for c in build_checks(ACTION, "left", pose_variant="heavy") if c["id"] == check_id)
-        expected = "enabled" if phase == "motion" else "calibration_failed"
-        assert heavy["availability"]["state"] == expected
-        rear = next(c for c in build_checks(ACTION, "left", pose_variant="heavy")
-                    if c["id"] == f"rear_straight:{phase}:front:guard_shoulder")
-        assert rear["availability"]["state"] == "enabled"
+        for model in ("full", "heavy"):
+            by_id = {c["id"]: c for c in build_checks(ACTION, "left", pose_variant=model)}
+            guard = by_id[f"front_straight:{phase}:rear:guard_back"]
+            expected = "enabled" if model == "heavy" and phase == "motion" else "calibration_failed"
+            assert guard["availability"]["state"] == expected
+            shoulder = by_id[f"front_straight:{phase}:rear:guard_shoulder"]
+            assert shoulder["availability"]["state"] == "calibration_failed"
+            assert by_id[f"rear_straight:{phase}:front:guard_shoulder"]["availability"]["state"] == "enabled"
     # 旧动作不受标定影响。
     assert all("availability" not in c for c in build_checks("straight_combo", "left"))
     assert "guard_shoulder" not in {c["code"] for c in build_checks("straight_combo", "left")}

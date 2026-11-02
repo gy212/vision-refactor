@@ -46,8 +46,7 @@ ENABLED = {
     ("stance", "end", "", "stance_torso"): "front",
     ("stance", "start", "rear", "guard_jaw"): "front",
     ("stance", "end", "rear", "guard_jaw"): "front",
-    ("front_straight", "motion", "rear", "guard_shoulder"): "front",
-    ("front_straight", "finish", "rear", "guard_shoulder"): "front",
+    ("front_straight", "motion", "rear", "guard_back"): "side",
     ("rear_straight", "motion", "front", "guard_shoulder"): "front",
     ("rear_straight", "finish", "front", "guard_shoulder"): "front",
     ("rear_straight", "motion", "front", "guard_elbow"): "front",
@@ -60,15 +59,14 @@ ENABLED = {
 
 ENABLED_MODELS = {"stance_torso": frozenset({"full"})}
 INSTANCE_MODELS = {
-    ("front_straight", "motion", "rear", "guard_shoulder"): frozenset({"full", "heavy"}),
-    ("front_straight", "finish", "rear", "guard_shoulder"): frozenset({"full"}),
+    ("front_straight", "motion", "rear", "guard_back"): frozenset({"heavy"}),
 }
 
 FAILED = {
-    "guard_back": "已改为口部参照；初步回放仍有正确样本误报及C32遮挡，未达到启用标准。",
+    "guard_back": "仅heavy前手出拳过程通过独立验证；full正确池误报2/10、目标仅1/2检出，其他阶段仍有遮挡或误报。",
     "punch_extension": "现有肘角测量受直拳投影和遮挡影响，C51错误样本与正确样本重叠。",
     "guard_elbow": "前手出拳时的后手抬肘测量与教师确认正确的D11、D13、D14重叠。",
-    "guard_shoulder": "该模型或阶段未通过掉肩验证；heavy出拳结束窗正确对照1/9误报、C31仅1/3检出，过程窗资格单独登记。",
+    "guard_shoulder": "前手出拳时的后手掉肩仅检出C31的2/3（66.7%），未达到70%上线标准；heavy结束窗另有误报与缺失。",
     "stance_knee": "现有双膝二维角度公式在11段正确对照上全部误报，尚不能用于上步直拳。",
     "stance_elbow": "已核对真实护位；90°～135°二维肘角在正确样本上大量误报，不能直接作为实际肘角。",
     "stance_height": "手腕不是拳峰；手端代理虽减少误报，full与heavy正确样本误报仍超标。",
