@@ -2746,3 +2746,9 @@ PR #71 存在五项场地前阻塞：在线直拳模板未交付、`mp4v` 回退
 - 首轮全量 `pytest tests -q` 为 **403 passed / 10 failed**。后续 PR 审查确认：其中 5 条 `ui_backend` session 与 1 条 YOLO preview routing 由 PR 第 4 个在制品提交引入，其余为落后最新文档/接口的旧测试；最终验证结果见本文件置顶记录。
 - `py_compile apps/app_ui.py core/vision_pipeline.py core/video_writer.py core/parallel_pose_engine.py` → OK。
 - 待场地人员按实际机位人工确认左右手命中、平滑观感、录制全链路，并现场标定 `MatcherConfig` 阈值。
+# 2026-11-03：直拳 v5.6 边界修复收尾
+
+- 配对唯一闭合前手事件，修复慢速示范停顿超过 1 秒时漏峰；过程不包含回收后等待，缺失不伪造完整事件。
+- 保留稳定回撤终点；撤回新窗口下不达标的 heavy 后撤资格。full 12/40、heavy 10/40，没有新增覆盖。
+- P3 560 例基准单独同步；规则版本外的 7 个用例仅更新后撤停用理由，未改变数值基准。
+- 证据：`outputs/straight-front-events-next/qualification.json`、标定报告 v5.6 更正。确认性复跑，非独立验证；本阶段不构建 EXE。

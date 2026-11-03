@@ -1,11 +1,12 @@
 """第二批上步直拳的逐项启用依据，不把未验证项目冒充标定失败。"""
+
 from __future__ import annotations
 
 from core.evaluation.rules.availability import RuleAvailability
 
 REPORT = "docs/上步直拳组合标定报告.md"
 TEACHER_SOURCE = "教师确认 #33 issuecomment-6235417498；卷三第7题更正：后手必须收回下颚"
-PARAMS = {"elbow_raise": -.18, "shoulder_height": .17}
+PARAMS = {"elbow_raise": -0.18, "shoulder_height": 0.17}
 
 STRAIGHT_RULES = {
     "guard_jaw": (
@@ -46,7 +47,6 @@ ENABLED = {
     ("stance", "end", "", "stance_torso"): "front",
     ("stance", "start", "rear", "guard_jaw"): "front",
     ("stance", "end", "rear", "guard_jaw"): "front",
-    ("front_straight", "motion", "rear", "guard_back"): "side",
     ("rear_straight", "motion", "front", "guard_shoulder"): "front",
     ("rear_straight", "finish", "front", "guard_shoulder"): "front",
     ("rear_straight", "motion", "front", "guard_elbow"): "front",
@@ -58,12 +58,8 @@ ENABLED = {
 }
 
 ENABLED_MODELS = {"stance_torso": frozenset({"full"})}
-INSTANCE_MODELS = {
-    ("front_straight", "motion", "rear", "guard_back"): frozenset({"heavy"}),
-}
-
 FAILED = {
-    "guard_back": "仅heavy前手出拳过程通过独立验证；full正确池误报2/10、目标仅1/2检出，其他阶段仍有遮挡或误报。",
+    "guard_back": "完整前手事件窗口复核后，full与heavy过程均误报2/10；C32虽各2/2检出，仍不满足10%误报上限。",
     "punch_extension": "现有肘角测量受直拳投影和遮挡影响，C51错误样本与正确样本重叠。",
     "guard_elbow": "前手出拳时的后手抬肘测量与教师确认正确的D11、D13、D14重叠。",
     "guard_shoulder": "前手出拳时的后手掉肩仅检出C31的2/3（66.7%），未达到70%上线标准；heavy结束窗另有误报与缺失。",
@@ -81,17 +77,17 @@ FAILED = {
 def apply_straight_availability(checks: list[dict], pose_variant: str = "full") -> None:
     """给每个检查项登记真实启用依据；已有能力限制优先保留。"""
     for check in checks:
-        identity = (
-            check["segment"], check["phase"], check["role"], check["code"]
-        )
+        identity = (check["segment"], check["phase"], check["role"], check["code"])
         code = check["code"]
-        models = INSTANCE_MODELS.get(identity, ENABLED_MODELS.get(code))
+        models = ENABLED_MODELS.get(code)
         allowed = models is None or pose_variant in models
         if identity in ENABLED and allowed:
             availability = RuleAvailability("enabled", evidence=REPORT)
             check["primaryView"] = ENABLED[identity]
             if code == "stance_torso":
-                check["standard"] = "同步双视角归一肩宽比超过√3；正交机位近似检查，不表示真实三维角度"
+                check["standard"] = (
+                    "同步双视角归一肩宽比超过√3；正交机位近似检查，不表示真实三维角度"
+                )
         elif check["blockedReason"]:
             availability = RuleAvailability("unsupported", check["blockedReason"], REPORT)
         elif code in FAILED:

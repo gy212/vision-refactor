@@ -4,10 +4,12 @@
 正面看直拳朝向镜头，二维图像里手腕几乎不动；侧面机位在考生右侧（D-19），左式的前手在远侧、出拳时常被身体挡住，
 后手在近侧、相对更可见。所以每一次以后手出拳为锚：后手前伸（手腕相对同侧肩、沿面向方向、按躯干长归一）超过起始
 护位 ``REACH_START``，再回落到 ``REACH_RETURN`` 或在末尾持续停住时保留事件；向下放手不算。前手直拳取这次后手出拳之前 ``FRONT_LOOKBACK_SECONDS``
-内前手前伸（超过 ``FRONT_REACH``）的峰值，这一次从前手离开护位算起；前手看不清时这一次只有前手动作过程、
+内前手前伸（超过 ``FRONT_REACH``）的峰值；若此前存在唯一完整闭合前手事件，优先配对，避免慢速示范停顿超出回看范围。
+这一次从前手离开护位算起；前手看不清时这一次只有前手动作过程、
 没有前手出拳瞬间。阈值取自第二批样本（标定报告
 ``docs/上步直拳组合标定报告.md``）：A、B 类 6 段都切出 2 次。正面共用侧面的时间段（同步录制，D-18）。
 """
+
 from __future__ import annotations
 
 import math
@@ -16,18 +18,20 @@ import numpy as np
 
 from core.evaluation.body_sides import sides_for_stance
 from core.evaluation.phases import stable_guard_windows
-from core.evaluation.punch_events import reach_events, settled_returns
+from core.evaluation.punch_events import preceding_punch, reach_events, settled_returns
 from core.evaluation.punch_phases import punch_detail_windows
 from core.foundation.geometry import torso_length
 
 EXPECTED_REPETITIONS = 2  # 考试每个动作做 2 次（#32 汇总一）
-REACH_START = .30  # 后手前伸超过起始护位这么多（躯干长度）算出拳
-REACH_RETURN = .12  # 回落到起始护位这么多以内算收回
-FRONT_REACH = .25  # 前手（远侧、护位时已靠前）前伸超过起始护位这么多算出拳
+REACH_START = 0.30  # 后手前伸超过起始护位这么多（躯干长度）算出拳
+REACH_RETURN = 0.12  # 回落到起始护位这么多以内算收回
+FRONT_REACH = 0.25  # 前手（远侧、护位时已靠前）前伸超过起始护位这么多算出拳
 FRONT_LOOKBACK_SECONDS = 1.0  # 前手直拳在后手出拳前这段时间内找
 
 
-def _reach(lm: np.ndarray, mask: np.ndarray, torso: np.ndarray, wrist: int, shoulder: int, facing: float) -> np.ndarray:
+def _reach(
+    lm: np.ndarray, mask: np.ndarray, torso: np.ndarray, wrist: int, shoulder: int, facing: float
+) -> np.ndarray:
     """手腕相对同侧肩沿面向方向的前伸（躯干长度）；点无效的帧为 NaN。"""
     ok = mask[:, wrist] & mask[:, shoulder] & (torso > 1e-4)
     reach = (lm[:, wrist, 0] - lm[:, shoulder, 0]) * facing / np.maximum(torso, 1e-4)
@@ -41,8 +45,12 @@ def _concat(parts: list[np.ndarray]) -> np.ndarray | None:
 
 def step_combo_windows(series: dict, stance: str, cfg, diagnostics: dict) -> dict:
     """侧面一路的相位窗口 ``{(段, 相位): 帧下标}``；``diagnostics`` 写入结论、事件与每一次的时间（``repetitions``）。"""
-    diagnostics.update(reason="没有找到持续稳定的起始护位", events=[], repetitions=[],
-                       expectedRepetitions=EXPECTED_REPETITIONS)
+    diagnostics.update(
+        reason="没有找到持续稳定的起始护位",
+        events=[],
+        repetitions=[],
+        expectedRepetitions=EXPECTED_REPETITIONS,
+    )
     lm, mask = series["landmarks"], series["valid_mask"]
     times = np.asarray(series["times"], dtype=float)
     if len(lm) < cfg.min_valid * 2 + 1:
@@ -51,7 +59,9 @@ def step_combo_windows(series: dict, stance: str, cfg, diagnostics: dict) -> dic
     if not math.isfinite(dt) or dt <= 0:
         return {}
     torso = torso_length(lm, mask, "visible_side_chain")
-    stable = stable_guard_windows(lm, mask, torso, max(cfg.min_valid, int(math.ceil(cfg.stance_window_seconds / dt))), cfg)
+    stable = stable_guard_windows(
+        lm, mask, torso, max(cfg.min_valid, int(math.ceil(cfg.stance_window_seconds / dt))), cfg
+    )
     if not stable:
         return {}
     baseline = stable[0]
@@ -67,14 +77,36 @@ def step_combo_windows(series: dict, stance: str, cfg, diagnostics: dict) -> dic
         diagnostics["reason"] = "起始护位看不清后手，无法确定出拳方向"
         return windows
     rear_base = float(np.nanmedian(rear[baseline]))
-    front_base = float(np.nanmedian(front[baseline])) if not np.isnan(front[baseline]).all() else math.nan
+    front_base = (
+        float(np.nanmedian(front[baseline])) if not np.isnan(front[baseline]).all() else math.nan
+    )
     downward = (lm[:, rear_wr, 1] - lm[:, rear_sh, 1]) / np.maximum(torso, 1e-4)
     downward[~(mask[:, rear_wr] & mask[:, rear_sh])] = np.nan
     events = reach_events(
-        rear, downward, times, baseline, cfg,
-        rise=rear_base + REACH_START, fall=rear_base + REACH_RETURN,
+        rear,
+        downward,
+        times,
+        baseline,
+        cfg,
+        rise=rear_base + REACH_START,
+        fall=rear_base + REACH_RETURN,
     )
     events = settled_returns(events, rear, times, stable, cfg, rise=rear_base + REACH_START)
+    front_downward = (lm[:, front_wr, 1] - lm[:, front_sh, 1]) / np.maximum(torso, 1e-4)
+    front_downward[~(mask[:, front_wr] & mask[:, front_sh])] = np.nan
+    front_events = (
+        []
+        if math.isnan(front_base)
+        else reach_events(
+            front,
+            front_downward,
+            times,
+            baseline,
+            cfg,
+            rise=front_base + FRONT_REACH,
+            fall=front_base + REACH_RETURN,
+        )
+    )
     punches = [p for p in events if p.start > baseline[-1]]
     if not punches:
         diagnostics["reason"] = "未检测到后手直拳"
@@ -89,23 +121,45 @@ def step_combo_windows(series: dict, stance: str, cfg, diagnostics: dict) -> dic
         # 前手峰值只在后手出拳之前找：后手伸出后远侧的前手常被认成后手，会冒出假峰值。
         lookback = np.arange(rep_start, start + 1)
         lookback = lookback[~np.isnan(front[lookback])]
-        front_peak = None
-        if len(lookback) and not math.isnan(front_base) and front[lookback].max() - front_base > FRONT_REACH:
+        paired = preceding_punch(front_events, floor, start)
+        front_end = paired.end if paired is not None else start
+        front_peak = paired.peak if paired is not None else None
+        if (
+            paired is None
+            and len(lookback)
+            and not math.isnan(front_base)
+            and front[lookback].max() - front_base > FRONT_REACH
+        ):
             front_peak = int(lookback[np.argmax(front[lookback])])
+        if front_peak is not None:
             # 起点往回找到前手离开护位的时刻；示范放慢、前手停留较久时可以早于回看范围。
             rep_start = front_peak
-            while rep_start > floor and front[rep_start - 1] >= front_base + REACH_RETURN:  # 前手看不清（NaN）即停
+            while (
+                rep_start > floor and front[rep_start - 1] >= front_base + REACH_RETURN
+            ):  # 前手看不清（NaN）即停
                 rep_start -= 1
             parts.setdefault(("front_straight", "finish"), []).append(
-                np.arange(max(rep_start, front_peak - radius), min(start, front_peak + radius) + 1))
-        parts.setdefault(("front_straight", "motion"), []).append(np.arange(rep_start, start + 1))
+                np.arange(
+                    max(rep_start, front_peak - radius), min(front_end, front_peak + radius) + 1
+                )
+            )
+        parts.setdefault(("front_straight", "motion"), []).append(
+            np.arange(rep_start, front_end + 1)
+        )
         parts.setdefault(("rear_straight", "motion"), []).append(np.arange(start, end + 1))
-        parts.setdefault(("rear_straight", "finish"), []).append(np.arange(max(start, peak - radius), min(end, peak + radius) + 1))
-        diagnostics["repetitions"].append({
-            "index": len(diagnostics["repetitions"]) + 1, "start": float(times[rep_start]),
-            "frontPeak": None if front_peak is None else float(times[front_peak]),
-            "rearPeak": float(times[peak]), "end": float(times[end]),
-            "ending": punch.ending})
+        parts.setdefault(("rear_straight", "finish"), []).append(
+            np.arange(max(start, peak - radius), min(end, peak + radius) + 1)
+        )
+        diagnostics["repetitions"].append(
+            {
+                "index": len(diagnostics["repetitions"]) + 1,
+                "start": float(times[rep_start]),
+                "frontPeak": None if front_peak is None else float(times[front_peak]),
+                "rearPeak": float(times[peak]),
+                "end": float(times[end]),
+                "ending": punch.ending,
+            }
+        )
         diagnostics["events"] += ["front_straight", "rear_straight"]
         previous_end = end
     for key, chunks in parts.items():
@@ -122,8 +176,11 @@ def step_combo_windows(series: dict, stance: str, cfg, diagnostics: dict) -> dic
     if held:
         diagnostics["incompleteRecovery"] = len(held)
     count = len(punches)
-    diagnostics["reason"] = ("已检测到完整动作" if count == EXPECTED_REPETITIONS
-                             else f"检测到 {count} 次动作（应为 {EXPECTED_REPETITIONS} 次），按检测到的次数判定")
+    diagnostics["reason"] = (
+        "已检测到完整动作"
+        if count == EXPECTED_REPETITIONS
+        else f"检测到 {count} 次动作（应为 {EXPECTED_REPETITIONS} 次），按检测到的次数判定"
+    )
     if held:
         diagnostics["reason"] = f"检测到 {count} 次出拳；存在打出后保持、未观察到收回的动作"
     return windows

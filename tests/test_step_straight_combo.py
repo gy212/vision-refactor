@@ -3,6 +3,7 @@
 
 合成序列是一个侧面左式考生（面向 +x）：起始护位 → 前手直拳 → 后手直拳 → 护位，按参数重复若干次。
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -59,11 +60,11 @@ def _series(reps: int, *, seconds: float = 6.0) -> dict:
     punches = []
     for k in range(reps):
         t0 = 1.5 + 2.0 * k
-        punches += [(FRONT_WRIST, t0, t0 + .3), (REAR_WRIST, t0 + .4, t0 + .7)]
+        punches += [(FRONT_WRIST, t0, t0 + 0.3), (REAR_WRIST, t0 + 0.4, t0 + 0.7)]
     frames = np.repeat(_base_pose()[None], len(times), axis=0)
     for wrist, t0, t1 in punches:
         inside = (times >= t0) & (times <= t1)
-        reach = .2 * (1 - np.abs(2 * (times[inside] - t0) / (t1 - t0) - 1))
+        reach = 0.2 * (1 - np.abs(2 * (times[inside] - t0) / (t1 - t0) - 1))
         frames[inside, wrist, 0] += reach
         frames[inside, wrist - 2, 0] += reach / 2
     return rule_series(frames, range(len(times)), FPS, 1.0)
@@ -75,12 +76,43 @@ def test_two_reps_are_split_with_both_punches() -> None:
     assert diagnostics["reason"] == "已检测到完整动作"
     assert [r["index"] for r in diagnostics["repetitions"]] == [1, 2]
     for rep, t0 in zip(diagnostics["repetitions"], (1.5, 3.5)):
-        assert rep["frontPeak"] == pytest.approx(t0 + .15, abs=.05)
-        assert rep["rearPeak"] == pytest.approx(t0 + .55, abs=.05)
+        assert rep["frontPeak"] == pytest.approx(t0 + 0.15, abs=0.05)
+        assert rep["rearPeak"] == pytest.approx(t0 + 0.55, abs=0.05)
         assert rep["start"] < rep["frontPeak"] < rep["rearPeak"] < rep["end"]
-    for key in (("front_straight", "finish"), ("front_straight", "motion"), ("rear_straight", "finish"),
-                ("rear_straight", "motion"), ("stance", "start"), ("stance", "end")):
+    for key in (
+        ("front_straight", "finish"),
+        ("front_straight", "motion"),
+        ("rear_straight", "finish"),
+        ("rear_straight", "motion"),
+        ("stance", "start"),
+        ("stance", "end"),
+    ):
         assert key in windows
+
+
+@pytest.mark.parametrize("lost_return", [False, True])
+def test_completed_front_punch_survives_a_long_pause_without_bridging_missing_points(
+    lost_return,
+) -> None:
+    series = _series(1)
+    times = np.asarray(series["times"])
+    lm = series["landmarks"].copy()
+    lm[:, [FRONT_WRIST, 13], 0] = _base_pose()[[FRONT_WRIST, 13], 0]
+    moving = (times >= 0.7) & (times <= 1.0)
+    lm[moving, FRONT_WRIST, 0] += 0.2 * (1 - np.abs(2 * (times[moving] - 0.7) / 0.3 - 1))
+    if lost_return:
+        lm[(times >= 0.9) & (times <= 1.3), FRONT_WRIST, 3] = 0
+    diagnostics = {}
+
+    windows = step_combo_windows(
+        rule_series(lm, series["frames"], FPS, 1.0), "left", FeedbackConfig(), diagnostics
+    )
+
+    rep = diagnostics["repetitions"][0]
+    assert rep["frontPeak"] == (None if lost_return else pytest.approx(0.85, abs=0.02))
+    assert (("front_straight", "finish") in windows) is not lost_return
+    if not lost_return:
+        assert times[windows[("front_straight", "motion")][-1]] <= 1.0
 
 
 @pytest.mark.parametrize("reps", [1, 3])
@@ -88,7 +120,10 @@ def test_wrong_rep_count_is_judged_on_what_was_found(reps: int) -> None:
     diagnostics: dict = {}
     windows = step_combo_windows(_series(reps, seconds=8.0), "left", FeedbackConfig(), diagnostics)
     assert len(diagnostics["repetitions"]) == reps
-    assert diagnostics["reason"] == f"检测到 {reps} 次动作（应为 {EXPECTED_REPETITIONS} 次），按检测到的次数判定"
+    assert (
+        diagnostics["reason"]
+        == f"检测到 {reps} 次动作（应为 {EXPECTED_REPETITIONS} 次），按检测到的次数判定"
+    )
     assert ("rear_straight", "finish") in windows
 
 
@@ -104,38 +139,43 @@ def test_downward_release_is_not_an_extra_punch() -> None:
     times = np.asarray(series["times"])
     lm = series["landmarks"].copy()
     released = (times >= 4.0) & (times < 4.3)
-    lm[released, REAR_WRIST, 0] += .12
-    lm[released, REAR_WRIST, 1] += .18
+    lm[released, REAR_WRIST, 0] += 0.12
+    lm[released, REAR_WRIST, 1] += 0.18
     diagnostics = {}
 
-    step_combo_windows(rule_series(lm, series["frames"], FPS, 1.0), "left", FeedbackConfig(), diagnostics)
+    step_combo_windows(
+        rule_series(lm, series["frames"], FPS, 1.0), "left", FeedbackConfig(), diagnostics
+    )
 
     assert len(diagnostics["repetitions"]) == 1
 
 
 def test_stable_withdrawal_ends_before_exit_without_faking_a_held_return() -> None:
-    reach = np.array([0, .4, .9, .5, .5, np.nan, .2, .2, .2, 0])
+    reach = np.array([0, 0.4, 0.9, 0.5, 0.5, np.nan, 0.2, 0.2, 0.2, 0])
     stable = [np.arange(3, 5), np.arange(5, 7), np.arange(6, 9)]
     events = [PunchEvent(1, 2, 9, "returned"), PunchEvent(1, 2, 9, "held")]
     times, cfg = np.arange(len(reach)) / FPS, FeedbackConfig()
 
-    result = settled_returns(events, reach, times, stable, cfg, rise=.3)
+    result = settled_returns(events, reach, times, stable, cfg, rise=0.3)
 
     assert result[0] == PunchEvent(1, 2, 6, "returned")
     assert result[1] == events[1]
-    assert settled_returns(events, reach, times, stable[:2], cfg, rise=.3) == events
-    assert settled_returns(events, reach, times, stable, FeedbackConfig(min_valid=8), rise=.3) == events
-    assert settled_returns(events, reach, times / 10, stable, cfg, rise=.3) == events
-    reach[8] = .5
-    assert settled_returns(events, reach, times, [np.arange(6, 8)], cfg, rise=.3) == events
+    assert settled_returns(events, reach, times, stable[:2], cfg, rise=0.3) == events
+    assert (
+        settled_returns(events, reach, times, stable, FeedbackConfig(min_valid=8), rise=0.3)
+        == events
+    )
+    assert settled_returns(events, reach, times / 10, stable, cfg, rise=0.3) == events
+    reach[8] = 0.5
+    assert settled_returns(events, reach, times, [np.arange(6, 8)], cfg, rise=0.3) == events
 
 
-@pytest.mark.parametrize("last_frame_jitter", [0.0, .001])
+@pytest.mark.parametrize("last_frame_jitter", [0.0, 0.001])
 def test_held_punch_keeps_quality_window_without_claiming_recovery(last_frame_jitter) -> None:
     series = _series(1)
     times = np.asarray(series["times"])
     lm = series["landmarks"].copy()
-    lm[times >= 2.05, REAR_WRIST, 0] = .75
+    lm[times >= 2.05, REAR_WRIST, 0] = 0.75
     lm[-1, REAR_WRIST, 0] += last_frame_jitter
     diagnostics = {}
     held = rule_series(lm, series["frames"], FPS, 1.0)
@@ -153,12 +193,12 @@ def test_held_punch_keeps_quality_window_without_claiming_recovery(last_frame_ji
 def test_missing_points_cannot_bridge_into_a_held_punch() -> None:
     times = np.arange(30) / FPS
     reach = np.zeros(30)
-    reach[5:10] = .5
+    reach[5:10] = 0.5
     reach[10:25] = np.nan
-    reach[25:] = .5
+    reach[25:] = 0.5
 
     found = reach_events(
-        reach, np.zeros(30), times, np.arange(3), FeedbackConfig(), rise=.3, fall=.12
+        reach, np.zeros(30), times, np.arange(3), FeedbackConfig(), rise=0.3, fall=0.12
     )
 
     assert found == []
@@ -168,8 +208,8 @@ def test_guard_back_uses_mouth_reference_and_preserves_missing_points() -> None:
     baseline = np.repeat(_base_pose()[None], 6, axis=0)
     lm = baseline.copy()
     # 肩部后转不代表护手后撤；随后腕相对口部后移才是目标。
-    lm[:, 12, 0] -= .1
-    lm[3:, REAR_WRIST, 0] -= .1
+    lm[:, 12, 0] -= 0.1
+    lm[3:, REAR_WRIST, 0] -= 0.1
     mask = np.ones(lm.shape[:2], bool)
     context = RuleContext(view="side", action=ACTION, stance="left", params=FeedbackConfig())
 
@@ -184,7 +224,7 @@ def test_guard_back_uses_mouth_reference_and_preserves_missing_points() -> None:
 def test_isolated_wrist_jumps_are_not_counted_as_repetitions() -> None:
     still = _series(0)
     landmarks = still["landmarks"].copy()
-    landmarks[[60, 120], REAR_WRIST, 0] += .2
+    landmarks[[60, 120], REAR_WRIST, 0] += 0.2
     series = rule_series(landmarks, still["frames"], FPS, 1.0)
     diagnostics: dict = {}
 
@@ -196,7 +236,9 @@ def test_isolated_wrist_jumps_are_not_counted_as_repetitions() -> None:
 
 def test_front_view_shares_side_timing_and_needs_side() -> None:
     side = _series(2)
-    front = rule_series(np.repeat(_base_pose()[None], len(side["times"]), axis=0), side["frames"], FPS, 1.0)
+    front = rule_series(
+        np.repeat(_base_pose()[None], len(side["times"]), axis=0), side["frames"], FPS, 1.0
+    )
     judged = judge_views({"front": front, "side": side}, ACTION, "left", FeedbackConfig())
     assert judged["front"][1]["phaseSource"] == "side_synchronized_timing"
     assert len(judged["front"][1]["repetitions"]) == 2
@@ -215,25 +257,31 @@ def test_project_windows_maps_runs_by_time() -> None:
 def test_calibrated_checks_are_live_and_the_rest_pending() -> None:
     checks = build_checks(ACTION, "left")
     live = [c for c in checks if c["availability"]["state"] == "enabled"]
-    heavy_only = ("front_straight", "motion", "rear", "guard_back")
-    assert {(c["segment"], c["phase"], c["role"], c["code"]) for c in live} == set(ENABLED) - {heavy_only}
+    assert {(c["segment"], c["phase"], c["role"], c["code"]) for c in live} == set(ENABLED)
     assert all(not c["blockedReason"] for c in live)
     assert all(c["blockedReason"] for c in checks if c not in live)
     assert {c["availability"]["state"] for c in checks} == {
-        "enabled", "unsupported", "calibration_failed", "validation_pending"
+        "enabled",
+        "unsupported",
+        "calibration_failed",
+        "validation_pending",
     }
-    assert {c["primaryView"] for c in live if c["code"] in ("guard_shoulder", "guard_elbow")} == {"front"}
+    assert {c["primaryView"] for c in live if c["code"] in ("guard_shoulder", "guard_elbow")} == {
+        "front"
+    }
     assert {c["primaryView"] for c in live if c["code"] == "shoulder_level"} == {"side"}
     # 阶段和模型独立登记，不能沿用其他模型或阶段的资格。
     for phase in ("motion", "finish"):
         for model in ("full", "heavy"):
             by_id = {c["id"]: c for c in build_checks(ACTION, "left", pose_variant=model)}
             guard = by_id[f"front_straight:{phase}:rear:guard_back"]
-            expected = "enabled" if model == "heavy" and phase == "motion" else "calibration_failed"
-            assert guard["availability"]["state"] == expected
+            assert guard["availability"]["state"] == "calibration_failed"
             shoulder = by_id[f"front_straight:{phase}:rear:guard_shoulder"]
             assert shoulder["availability"]["state"] == "calibration_failed"
-            assert by_id[f"rear_straight:{phase}:front:guard_shoulder"]["availability"]["state"] == "enabled"
+            assert (
+                by_id[f"rear_straight:{phase}:front:guard_shoulder"]["availability"]["state"]
+                == "enabled"
+            )
     # 旧动作不受标定影响。
     assert all("availability" not in c for c in build_checks("straight_combo", "left"))
     assert "guard_shoulder" not in {c["code"] for c in build_checks("straight_combo", "left")}
@@ -243,10 +291,10 @@ def test_calibrated_checks_are_live_and_the_rest_pending() -> None:
 
 def test_paired_torso_requires_synchronized_evidence_and_a_validated_model() -> None:
     views = {}
-    for view, width in (("front", .2), ("side", .05)):
+    for view, width in (("front", 0.2), ("side", 0.05)):
         series = _series(0)
         lm = series["landmarks"].copy()
-        lm[:, 11, 0], lm[:, 12, 0] = .5 - width / 2, .5 + width / 2
+        lm[:, 11, 0], lm[:, 12, 0] = 0.5 - width / 2, 0.5 + width / 2
         views[view] = rule_series(lm, series["frames"], FPS, 1.0)
 
     def torso_check(result):
@@ -271,29 +319,37 @@ def test_paired_torso_requires_synchronized_evidence_and_a_validated_model() -> 
     exam_reports = exam_pool.rule_reports([targets["front"]], [targets["side"]], FeedbackConfig())
     assert all(
         c.state == "pending_rule"
-        for report in exam_reports for c in report["checks"]
+        for report in exam_reports
+        for c in report["checks"]
         if c.code == "stance_torso"
     )
 
-    heavy = torso_check(evaluate_series(ACTION, "left", views, FeedbackConfig(pose_variant="heavy")))
+    heavy = torso_check(
+        evaluate_series(ACTION, "left", views, FeedbackConfig(pose_variant="heavy"))
+    )
     assert heavy["availability"]["state"] == "calibration_failed"
     assert heavy["status"] == "pending_rule"
 
-    views["side"]["landmarks"][:, [11, 12], 0] = (.4, .6)
+    views["side"]["landmarks"][:, [11, 12], 0] = (0.4, 0.6)
     assert torso_check(evaluate_series(ACTION, "left", views))["status"] == "not_observed"
-    views["side"]["times"] = [time + .001 for time in views["side"]["times"]]
+    views["side"]["times"] = [time + 0.001 for time in views["side"]["times"]]
     assert torso_check(evaluate_series(ACTION, "left", views))["status"] == "unable"
 
     views["side"]["times"] = views["front"]["times"]
     views["side"]["valid_mask"][:, 11] = False
     assert torso_check(evaluate_series(ACTION, "left", views))["status"] == "unable"
-    assert torso_check(evaluate_series(ACTION, "left", {"front": views["front"]}))["status"] == "unable"
+    assert (
+        torso_check(evaluate_series(ACTION, "left", {"front": views["front"]}))["status"]
+        == "unable"
+    )
 
 
 def test_action_config_applies_calibrated_params_only_to_its_action() -> None:
     cfg = FeedbackConfig()
     tuned = action_config(cfg, ACTION)
-    assert tuned.elbow_raise == pytest.approx(-.18) and tuned.shoulder_height == pytest.approx(.17)
+    assert tuned.elbow_raise == pytest.approx(-0.18) and tuned.shoulder_height == pytest.approx(
+        0.17
+    )
     assert action_config(cfg, "straight_combo") is cfg
     with pytest.raises(ValueError):
         FeedbackConfig(elbow_raise=1.5)
@@ -303,9 +359,9 @@ def test_prepull_uses_original_guard_and_excludes_recovery() -> None:
     series = _series(1)
     times = np.asarray(series["times"])
     lm = series["landmarks"].copy()
-    lm[(times >= 1.6) & (times <= 1.9), REAR_WRIST, 0] -= .1
+    lm[(times >= 1.6) & (times <= 1.9), REAR_WRIST, 0] -= 0.1
     # 教师允许从下方绕回，不能放进预摆或收回后的检查窗口。
-    lm[(times >= 2.1) & (times < 2.2), REAR_WRIST, 1] += .1
+    lm[(times >= 2.1) & (times < 2.2), REAR_WRIST, 1] += 0.1
     series = rule_series(lm, series["frames"], FPS, 1.0)
     cfg = FeedbackConfig()
 
@@ -323,31 +379,29 @@ def test_prepull_uses_original_guard_and_excludes_recovery() -> None:
 @pytest.mark.parametrize(
     "code,joint,axis,wrong,normal",
     [
-        ("punch_predrop", 16, 1, .40, .30),
-        ("punch_prepull", 16, 0, .40, .75),
-        ("punch_preelbow", 14, 1, .28, .42),
-        ("punch_recover", 16, 1, .70, .45),
-        ("guard_jaw", 16, 1, .70, .45),
+        ("punch_predrop", 16, 1, 0.40, 0.30),
+        ("punch_prepull", 16, 0, 0.40, 0.75),
+        ("punch_preelbow", 14, 1, 0.28, 0.42),
+        ("punch_recover", 16, 1, 0.70, 0.45),
+        ("guard_jaw", 16, 1, 0.70, 0.45),
     ],
 )
-def test_straight_measurements_keep_validity_and_direction(code, joint, axis, wrong, normal) -> None:
+def test_straight_measurements_keep_validity_and_direction(
+    code, joint, axis, wrong, normal
+) -> None:
     baseline = np.repeat(_base_pose()[None], 6, axis=0)
     lm = baseline.copy()
     lm[:3, joint, axis] = wrong
     lm[3:, joint, axis] = normal
     mask = np.ones(lm.shape[:2], bool)
-    context = RuleContext(
-        view="side", action=ACTION, stance="left", params=FeedbackConfig()
-    )
+    context = RuleContext(view="side", action=ACTION, stance="left", params=FeedbackConfig())
 
     bad, valid, _ = measure_straight(code, "rear", lm, mask, baseline, mask, context)
 
     assert bad.tolist() == [True] * 3 + [False] * 3
     assert valid.all()
     mask[:, joint] = False
-    _, valid, _ = measure_straight(
-        code, "rear", lm, mask, baseline, np.ones_like(mask), context
-    )
+    _, valid, _ = measure_straight(code, "rear", lm, mask, baseline, np.ones_like(mask), context)
     assert not valid.any()
 
 
@@ -366,12 +420,16 @@ def test_pending_reason_and_label_keep_the_recorded_availability() -> None:
 
 def test_practice_reports_repetition_count() -> None:
     side = _series(1, seconds=5.0)
-    front = rule_series(np.repeat(_base_pose()[None], len(side["times"]), axis=0), side["frames"], FPS, 1.0)
+    front = rule_series(
+        np.repeat(_base_pose()[None], len(side["times"]), axis=0), side["frames"], FPS, 1.0
+    )
     result = evaluate_series(ACTION, "left", {"front": front, "side": side})
     assert result["repetitions"]["expected"] == 2 and result["repetitions"]["detected"] == 1
     assert "检测到 1 次动作，应做 2 次" in result["summary"]
-    assert result["config"]["elbow_raise"] == pytest.approx(-.18)
-    assert "repetitions" not in evaluate_series("straight_combo", "left", {"front": front, "side": side})
+    assert result["config"]["elbow_raise"] == pytest.approx(-0.18)
+    assert "repetitions" not in evaluate_series(
+        "straight_combo", "left", {"front": front, "side": side}
+    )
 
 
 def test_practice_count_warning_reaches_report_banner() -> None:
@@ -426,16 +484,29 @@ def test_match_video_windows_matches_each_range_with_whole_video_frames(monkeypa
 
     def match(window, templates, **_kw):
         seen.append(len(window))
-        return [SimpleNamespace(template=SimpleNamespace(path=Path(f"t{i}.npz")), start_frame=1, end_frame=5,
-                                cost=1.0, avg_cost=.1, score=.5 + i / 10) for i in range(len(templates))]
+        return [
+            SimpleNamespace(
+                template=SimpleNamespace(path=Path(f"t{i}.npz")),
+                start_frame=1,
+                end_frame=5,
+                cost=1.0,
+                avg_cost=0.1,
+                score=0.5 + i / 10,
+            )
+            for i in range(len(templates))
+        ]
 
     monkeypatch.setattr(engine, "match_templates", match)
-    out = engine.match_video_windows(["a", "b"], "v.mp4", [(10, 40), (60, 200), (120, 130)],
-                                     load=lambda p: SimpleNamespace(layout="pose33_v3", path=p))
+    out = engine.match_video_windows(
+        ["a", "b"],
+        "v.mp4",
+        [(10, 40), (60, 200), (120, 130)],
+        load=lambda p: SimpleNamespace(layout="pose33_v3", path=p),
+    )
     assert seen == [31, 40]  # 第二个范围截到视频末尾，第三个超出视频被跳过
     assert len(out) == 2 and [len(per) for per in out] == [2, 2]
     assert [(r.start_frame, r.end_frame) for r in out[0]] == [(11, 15), (61, 65)]
-    assert [r.score for r in out[1]] == [.6, .6]
+    assert [r.score for r in out[1]] == [0.6, 0.6]
 
 
 def _result(score: float, start: int, end: int) -> SimpleNamespace:
@@ -452,25 +523,40 @@ def pool(monkeypatch, tmp_path):
 
     def compare(templates, video, **_kw):
         calls["plain"].append([Path(t).stem for t in templates])
-        return [_result(.4, 0, 30) for _ in templates]
+        return [_result(0.4, 0, 30) for _ in templates]
 
     def compare_windows(templates, video, windows, **_kw):
         calls["windows"].append((Path(video).name, list(windows)))
-        return [[_result(.6 + .2 * i, a + 1, b - 1) for i, (a, b) in enumerate(windows)] for _ in templates]
+        return [
+            [_result(0.6 + 0.2 * i, a + 1, b - 1) for i, (a, b) in enumerate(windows)]
+            for _ in templates
+        ]
 
     def raw_series(video, **_kw):
         return SimpleNamespace(meta={"fps": FPS})
 
     tpls = [tmp_path / "上步前后手直拳组合.npz", tmp_path / "直拳.npz"]
-    return SimpleNamespace(calls=calls, compare=compare, compare_windows=compare_windows, raw_series=raw_series,
-                           tpls=tpls)
+    return SimpleNamespace(
+        calls=calls,
+        compare=compare,
+        compare_windows=compare_windows,
+        raw_series=raw_series,
+        tpls=tpls,
+    )
 
 
 def test_exam_scores_each_rep_and_averages(monkeypatch, pool) -> None:
     monkeypatch.setattr(exam_pool, "side_repetitions", lambda series, cfg: [(1.0, 2.0), (3.0, 4.0)])
-    res = exam_pool.score_exam_pools(pool.tpls, pool.tpls, Path("f.mp4"), Path("s.mp4"), compare=pool.compare,
-                                     raw_series=pool.raw_series, stop_evt=Event(),
-                                     compare_windows=pool.compare_windows)
+    res = exam_pool.score_exam_pools(
+        pool.tpls,
+        pool.tpls,
+        Path("f.mp4"),
+        Path("s.mp4"),
+        compare=pool.compare,
+        raw_series=pool.raw_series,
+        stop_evt=Event(),
+        compare_windows=pool.compare_windows,
+    )
     assert pool.calls["windows"] == [
         ("f.mp4", [(15, 74), (75, 135)]),
         ("s.mp4", [(15, 74), (75, 135)]),
@@ -479,30 +565,51 @@ def test_exam_scores_each_rep_and_averages(monkeypatch, pool) -> None:
     step = [d for d in res.action_scores if d["name"] == "上步前后手直拳组合"]
     assert len(step) == 2
     for detail in step:
-        assert detail["score"] == pytest.approx(.7)
-        assert [r["score"] for r in detail["repetitions"]] == pytest.approx([.6, .8])
+        assert detail["score"] == pytest.approx(0.7)
+        assert [r["score"] for r in detail["repetitions"]] == pytest.approx([0.6, 0.8])
         assert (detail["start"], detail["end"]) == (16, 134)
         assert "repetition_note" not in detail
-    assert res.front_score == pytest.approx((.7 + .4) / 2)
+    assert res.front_score == pytest.approx((0.7 + 0.4) / 2)
 
 
 def test_exam_notes_incomplete_reps_and_missing_window_compare(monkeypatch, pool) -> None:
     monkeypatch.setattr(exam_pool, "side_repetitions", lambda series, cfg: [(1.0, 2.0)])
-    res = exam_pool.score_exam_pools(pool.tpls[:1], [], Path("f.mp4"), Path("s.mp4"), compare=pool.compare,
-                                     raw_series=pool.raw_series, stop_evt=Event(),
-                                     compare_windows=pool.compare_windows)
-    assert res.action_scores[0]["score"] == pytest.approx(.6)
+    res = exam_pool.score_exam_pools(
+        pool.tpls[:1],
+        [],
+        Path("f.mp4"),
+        Path("s.mp4"),
+        compare=pool.compare,
+        raw_series=pool.raw_series,
+        stop_evt=Event(),
+        compare_windows=pool.compare_windows,
+    )
+    assert res.action_scores[0]["score"] == pytest.approx(0.6)
     assert res.action_scores[0]["repetition_note"].startswith("检测到 1 次动作")
 
     monkeypatch.setattr(exam_pool, "side_repetitions", lambda series, cfg: [])
-    res = exam_pool.score_exam_pools(pool.tpls[:1], [], Path("f.mp4"), Path("s.mp4"), compare=pool.compare,
-                                     raw_series=pool.raw_series, stop_evt=Event(),
-                                     compare_windows=pool.compare_windows)
-    assert res.action_scores[0]["score"] == pytest.approx(.4)
+    res = exam_pool.score_exam_pools(
+        pool.tpls[:1],
+        [],
+        Path("f.mp4"),
+        Path("s.mp4"),
+        compare=pool.compare,
+        raw_series=pool.raw_series,
+        stop_evt=Event(),
+        compare_windows=pool.compare_windows,
+    )
+    assert res.action_scores[0]["score"] == pytest.approx(0.4)
     assert res.action_scores[0]["repetition_note"] == "未切出动作次数，按整段匹配一次"
 
-    res = exam_pool.score_exam_pools(pool.tpls[:1], [], Path("f.mp4"), Path("s.mp4"), compare=pool.compare,
-                                     raw_series=pool.raw_series, stop_evt=Event())
+    res = exam_pool.score_exam_pools(
+        pool.tpls[:1],
+        [],
+        Path("f.mp4"),
+        Path("s.mp4"),
+        compare=pool.compare,
+        raw_series=pool.raw_series,
+        stop_evt=Event(),
+    )
     assert res.action_scores[0]["repetition_note"] == "未接入逐次比对，按整段匹配一次"
 
 
@@ -511,7 +618,10 @@ def test_exam_rule_target_is_whole_clip_for_step_combo(monkeypatch) -> None:
 
     def fake_slice(series, **kw):
         calls.append(kw)
-        return np.zeros((1, 33, 4)), {"start_frame": kw.get("start_frame", 0), "end_frame": kw.get("end_frame", 99)}
+        return np.zeros((1, 33, 4)), {
+            "start_frame": kw.get("start_frame", 0),
+            "end_frame": kw.get("end_frame", 99),
+        }
 
     monkeypatch.setattr(exam_pool, "slice_pose_raw_series", fake_slice)
     monkeypatch.setattr(exam_pool, "series_from_raw", lambda lm, meta: {})
@@ -519,5 +629,11 @@ def test_exam_rule_target_is_whole_clip_for_step_combo(monkeypatch) -> None:
     detail = {"name": "x", "start": 200, "end": 260}
     whole = exam_pool.rule_target(series, detail, ACTION, "front")
     windowed = exam_pool.rule_target(series, detail, "straight_combo", "front")
-    assert calls == [{}, {"start_frame": 170, "end_frame": 290}]  # 上步组合取整段；其它动作按匹配窗口放宽 1 s
-    assert (whole["start"], whole["end"]) == (0, 99) and (windowed["start"], windowed["end"]) == (170, 290)
+    assert calls == [
+        {},
+        {"start_frame": 170, "end_frame": 290},
+    ]  # 上步组合取整段；其它动作按匹配窗口放宽 1 s
+    assert (whole["start"], whole["end"]) == (0, 99) and (windowed["start"], windowed["end"]) == (
+        170,
+        290,
+    )

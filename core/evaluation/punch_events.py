@@ -1,12 +1,13 @@
 """从侧面前伸信号定位出拳事件，区分回收、保持与向下放手。"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
 
 import numpy as np
 
-MAX_GAP_SECONDS = .25
-HOLD_SECONDS = .3
+MAX_GAP_SECONDS = 0.25
+HOLD_SECONDS = 0.3
 
 
 @dataclass(frozen=True)
@@ -17,6 +18,16 @@ class PunchEvent:
     peak: int
     end: int
     ending: str
+
+
+def preceding_punch(events: list[PunchEvent], floor: int, before: int) -> PunchEvent | None:
+    """只配对本次后手起动之前唯一闭合的前手事件，不跨上一次后手。"""
+    candidates = [
+        event
+        for event in events
+        if event.ending == "returned" and floor <= event.start <= event.peak < event.end <= before
+    ]
+    return candidates[0] if len(candidates) == 1 else None
 
 
 def reach_events(
@@ -54,7 +65,11 @@ def reach_events(
 
     for index, value in enumerate(reach):
         if not np.isfinite(value):
-            if start is not None and last is not None and times[index] - times[last] > MAX_GAP_SECONDS:
+            if (
+                start is not None
+                and last is not None
+                and times[index] - times[last] > MAX_GAP_SECONDS
+            ):
                 start = None
             continue
         if start is None and value > rise:
@@ -71,9 +86,12 @@ def reach_events(
             end = int(np.searchsorted(times, times[hold_start] + HOLD_SECONDS))
             if end > last:
                 break
-            window = reach[hold_start:end + 1]
-            if (np.isfinite(window).all() and np.min(window) > rise
-                    and np.ptp(window) <= cfg.return_distance / 2):
+            window = reach[hold_start : end + 1]
+            if (
+                np.isfinite(window).all()
+                and np.min(window) > rise
+                and np.ptp(window) <= cfg.return_distance / 2
+            ):
                 finish(end, "held")
                 break
     return events
@@ -97,14 +115,19 @@ def settled_returns(
                 if window[0] <= event.peak or window[-1] >= event.end:
                     continue
                 candidate = int(window[0])
-                observed = np.isfinite(reach[event.start:candidate + 1])
-                if (observed.sum() < cfg.min_valid
-                        or times[candidate] - times[event.start] < cfg.min_motion_seconds
-                        or (reach[window[-1] + 1:event.end + 1] > rise).any()):
+                observed = np.isfinite(reach[event.start : candidate + 1])
+                if (
+                    observed.sum() < cfg.min_valid
+                    or times[candidate] - times[event.start] < cfg.min_motion_seconds
+                    or (reach[window[-1] + 1 : event.end + 1] > rise).any()
+                ):
                     continue
                 values = reach[window]
-                if (np.isfinite(values).all() and (values < rise).all()
-                        and reach[event.peak] - values.max() > cfg.return_distance):
+                if (
+                    np.isfinite(values).all()
+                    and (values < rise).all()
+                    and reach[event.peak] - values.max() > cfg.return_distance
+                ):
                     end = candidate
                     break
         result.append(PunchEvent(event.start, event.peak, end, event.ending))
