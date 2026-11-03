@@ -17,9 +17,9 @@ import math
 import numpy as np
 
 from core.evaluation.body_sides import sides_for_stance
-from core.evaluation.phases import stable_guard_windows
 from core.evaluation.punch_events import preceding_punch, reach_events, settled_returns
 from core.evaluation.punch_phases import punch_detail_windows
+from core.evaluation.step_guard import end_guard, guard_windows, start_guard
 from core.foundation.geometry import torso_length
 
 EXPECTED_REPETITIONS = 2  # 考试每个动作做 2 次（#32 汇总一）
@@ -43,30 +43,11 @@ def _concat(parts: list[np.ndarray]) -> np.ndarray | None:
     return np.unique(np.concatenate(parts)) if parts else None
 
 
-def step_combo_windows(series: dict, stance: str, cfg, diagnostics: dict) -> dict:
-    """侧面一路的相位窗口 ``{(段, 相位): 帧下标}``；``diagnostics`` 写入结论、事件与每一次的时间（``repetitions``）。"""
-    diagnostics.update(
-        reason="没有找到持续稳定的起始护位",
-        events=[],
-        repetitions=[],
-        expectedRepetitions=EXPECTED_REPETITIONS,
-    )
+def _punch_signals(series: dict, baseline: np.ndarray, stance: str, cfg, stable: list) -> tuple:
+    """按同一护位基线提取前后手的前伸事件，不在质量检查中另造事件。"""
     lm, mask = series["landmarks"], series["valid_mask"]
     times = np.asarray(series["times"], dtype=float)
-    if len(lm) < cfg.min_valid * 2 + 1:
-        return {}
-    dt = float(np.median(np.diff(times)))
-    if not math.isfinite(dt) or dt <= 0:
-        return {}
     torso = torso_length(lm, mask, "visible_side_chain")
-    stable = stable_guard_windows(
-        lm, mask, torso, max(cfg.min_valid, int(math.ceil(cfg.stance_window_seconds / dt))), cfg
-    )
-    if not stable:
-        return {}
-    baseline = stable[0]
-    # 预摆停住后也可能形成稳定窗；整段固定用最初护位，不能把错误姿势重置为基线。
-    windows = {("stance", "start"): baseline, ("stance", "end"): stable[-1]}
     hips = (lm[baseline, 23, 0] + lm[baseline, 24, 0]) / 2
     facing = float(np.sign(np.nanmedian(lm[baseline, 0, 0] - hips)))
     front_sh, _, front_wr, *_ = sides_for_stance("front", stance)
@@ -74,8 +55,7 @@ def step_combo_windows(series: dict, stance: str, cfg, diagnostics: dict) -> dic
     rear = _reach(lm, mask, torso, rear_wr, rear_sh, facing)
     front = _reach(lm, mask, torso, front_wr, front_sh, facing)
     if facing == 0 or np.isnan(rear[baseline]).all():
-        diagnostics["reason"] = "起始护位看不清后手，无法确定出拳方向"
-        return windows
+        return np.full_like(rear, np.nan), front, math.nan, [], []
     rear_base = float(np.nanmedian(rear[baseline]))
     front_base = (
         float(np.nanmedian(front[baseline])) if not np.isnan(front[baseline]).all() else math.nan
@@ -108,9 +88,15 @@ def step_combo_windows(series: dict, stance: str, cfg, diagnostics: dict) -> dic
         )
     )
     punches = [p for p in events if p.start > baseline[-1]]
-    if not punches:
-        diagnostics["reason"] = "未检测到后手直拳"
-        return windows
+    return rear, front, front_base, punches, front_events
+
+
+def _repetition_windows(
+    times, baseline, front, front_base, punches, front_events, cfg, diagnostics
+) -> dict:
+    """逐次配对前手峰与后手事件，生成过程和结束窗口。"""
+    dt = float(np.median(np.diff(times)))
+    windows = {}
     radius = max(1, int(round(cfg.finish_window_seconds / dt)))
     parts: dict[tuple[str, str], list[np.ndarray]] = {}
     previous_end = int(baseline[-1])
@@ -166,11 +152,55 @@ def step_combo_windows(series: dict, stance: str, cfg, diagnostics: dict) -> dic
         indices = _concat(chunks)
         if indices is not None and len(indices) >= cfg.min_valid:
             windows[key] = indices
-    after = [ix for ix in stable if ix[0] >= punches[-1].end]
-    if after:
-        windows[("stance", "end")] = after[0]
-    else:
-        windows.pop(("stance", "end"), None)
+    return windows
+
+
+def step_combo_windows(
+    series: dict, stance: str, cfg, diagnostics: dict, *, front_series: dict | None = None
+) -> dict:
+    """按同步稳定护位确定基线，再给出逐次直拳窗口与回退诊断。"""
+    diagnostics.update(
+        reason="没有找到持续稳定的起始护位",
+        events=[],
+        repetitions=[],
+        expectedRepetitions=EXPECTED_REPETITIONS,
+    )
+    times = np.asarray(series["times"], dtype=float)
+    if len(times) < cfg.min_valid * 2 + 1:
+        return {}
+    dt = float(np.median(np.diff(times)))
+    if not math.isfinite(dt) or dt <= 0:
+        return {}
+    stable, runs = guard_windows(series, cfg, front_series)
+    if not stable:
+        return {}
+    initial = _punch_signals(series, stable[0], stance, cfg, stable)
+    before = initial[3][0].start if initial[3] else len(times)
+    baseline, source = start_guard(runs, times, before, stable[0])
+    rear, front, front_base, punches, front_events = _punch_signals(
+        series, baseline, stance, cfg, stable
+    )
+    diagnostics["guardWindows"] = {
+        "start": source,
+        "end": "fallback",
+        "dualView": front_series is not None,
+    }
+    windows = {("stance", "start"): baseline, ("stance", "end"): stable[-1]}
+    if not punches:
+        diagnostics["reason"] = (
+            "起始护位看不清后手，无法确定出拳方向"
+            if np.isnan(rear[baseline]).all()
+            else "未检测到后手直拳"
+        )
+        return windows
+    windows.update(
+        _repetition_windows(
+            times, baseline, front, front_base, punches, front_events, cfg, diagnostics
+        )
+    )
+    windows[("stance", "end")], diagnostics["guardWindows"]["end"] = end_guard(
+        runs, times, punches[-1].end, stable[-1]
+    )
     windows.update(punch_detail_windows(times, punches, stable))
     held = [p for p in punches if p.ending == "held"]
     if held:

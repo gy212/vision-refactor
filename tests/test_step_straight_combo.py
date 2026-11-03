@@ -90,6 +90,43 @@ def test_two_reps_are_split_with_both_punches() -> None:
         assert key in windows
 
 
+@pytest.mark.parametrize("moving_view", ["side", "front"])
+def test_guard_ignores_early_transition_and_later_prepull_pause(moving_view):
+    side = _series(1)
+    front = _series(1)
+    times = np.asarray(side["times"])
+    moving = side if moving_view == "side" else front
+    lm = moving["landmarks"].copy()
+    transition = (times >= 7 / FPS) & (times < 0.7)
+    lm[transition, FRONT_WRIST, 0] += np.where(np.arange(transition.sum()) % 2, 0.08, -0.08)
+    moving.update(rule_series(lm, moving["frames"], FPS, 1.0))
+    lm = side["landmarks"].copy()
+    lm[(times >= 1.6) & (times < 1.9), REAR_WRIST, 0] -= 0.1
+    side = rule_series(lm, side["frames"], FPS, 1.0)
+    diagnostics = {}
+
+    windows = step_combo_windows(side, "left", FeedbackConfig(), diagnostics, front_series=front)
+
+    baseline = times[windows[("stance", "start")]]
+    assert baseline[0] >= 0.7
+    assert baseline[-1] < 1.6
+    assert len(diagnostics["repetitions"]) == 1
+    assert diagnostics["guardWindows"]["start"] == "stable_run"
+
+
+@pytest.mark.parametrize("front_frames", [0, 1])
+def test_short_front_sequence_keeps_the_side_window_fallback(front_frames):
+    front = {key: values[:front_frames] for key, values in _series(1).items()}
+    diagnostics = {}
+
+    windows = step_combo_windows(
+        _series(1), "left", FeedbackConfig(), diagnostics, front_series=front
+    )
+
+    assert ("stance", "start") in windows
+    assert diagnostics["guardWindows"]["start"] == "fallback"
+
+
 @pytest.mark.parametrize("lost_return", [False, True])
 def test_completed_front_punch_survives_a_long_pause_without_bridging_missing_points(
     lost_return,
@@ -246,6 +283,16 @@ def test_front_view_shares_side_timing_and_needs_side() -> None:
     assert alone["front"][1]["reason"] == NEEDS_SIDE
 
 
+def test_pending_reasons_follow_the_hand_and_phase_without_enabling_checks():
+    checks = {c["id"]: c for c in build_checks(ACTION, "left")}
+    front = checks["front_straight:motion:rear:guard_back"]
+    rear = checks["rear_straight:motion:front:guard_back"]
+    assert "教师确认" in front["blockedReason"]
+    assert "遮挡" in rear["blockedReason"]
+    assert front["availability"]["state"] != "enabled"
+    assert rear["availability"]["state"] != "enabled"
+
+
 def test_project_windows_maps_runs_by_time() -> None:
     source = np.arange(10) / 10.0
     target = np.arange(20) / 20.0
@@ -370,7 +417,7 @@ def test_prepull_uses_original_guard_and_excludes_recovery() -> None:
         "side", series, windows, rule_profile(ACTION, "left", cfg), ACTION, "left", cfg
     )
 
-    assert times[windows[("stance", "start")][-1]] < 1.0
+    assert times[windows[("stance", "start")][-1]] < 1.6
     assert outcomes["rear_straight:prepare:rear:punch_prepull"].state == "violation"
     recovered = windows[("rear_straight", "recovered")]
     assert times[recovered[0]] >= 2.2
