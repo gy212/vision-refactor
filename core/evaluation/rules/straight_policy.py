@@ -60,17 +60,50 @@ ENABLED = {
 ENABLED_MODELS = {"stance_torso": frozenset({"full"})}
 FAILED = {
     "guard_back": "完整前手事件窗口复核后，full与heavy过程均误报2/10；C32虽各2/2检出，仍不满足10%误报上限。",
-    "punch_extension": "现有肘角测量受直拳投影和遮挡影响，C51错误样本与正确样本重叠。",
-    "guard_elbow": "前手出拳时的后手抬肘测量与教师确认正确的D11、D13、D14重叠。",
-    "guard_shoulder": "前手出拳时的后手掉肩仅检出C31的2/3（66.7%），未达到70%上线标准；heavy结束窗另有误报与缺失。",
-    "stance_knee": "现有双膝二维角度公式在11段正确对照上全部误报，尚不能用于上步直拳。",
-    "stance_elbow": "已核对真实护位；90°～135°二维肘角在正确样本上大量误报，不能直接作为实际肘角。",
-    "stance_height": "手腕不是拳峰；手端代理虽减少误报，full与heavy正确样本误报仍超标。",
-    "stance_width": "踝距/投影肩宽受朝向压缩影响；正确样本误报，且宽站目标会被反向判成过窄。",
-    "stance_toes": "二维脚尖方向受透视和短线段抖动影响；正确样本误报与内八目标漏检并存。",
-    "stance_rear_guard": "完整夹臂、贴肋和护下颚公式对C5检出不足；下颚距离子项不能证明整个复合要领。",
+    "punch_extension": "现有错误示范中，每只出拳手各只有一位执行者展示未伸直，尚不足以验证。",
+    "guard_elbow": "侧面抬肘候选仍有短窗口波动，须先通过稳定窗口验收和稳健性复核。",
+    "guard_shoulder": "现有示范尚未确认有两位执行者在前手出拳时掉下后手，需教师按手确认。",
+    "stance_knee": "现有画面中的膝部投影不能可靠区分正确微屈和腿伸直。",
+    "stance_elbow": "前手位于侧面远侧，遮挡和投影使当前肘角不能可靠代表实际角度。",
+    "stance_height": "不同机位造成的拳肩头部高度偏差与错误幅度相近，缺同机位多人正确样本。",
+    "stance_width": "站距目标与清单方向存在冲突，当前测量也不能可靠区分宽窄。",
+    "stance_toes": "鞋尖点位和透视不能可靠区分内八外八，现有验证仍有误报。",
+    "stance_rear_guard": "现有示范同时改变手腕和肘的位置，尚不能独立验证夹臂贴肋；下颚另有检查。",
     "stance_torso": "heavy双视角投影比未通过C11目标验证；仅full路径启用，不沿用其他模型的结论。",
-    "shoulder_level": "前手高度的阶段与投影测量仍有正确误报；首次伸展平台候选也漏检低拳，未达到启用标准。",
+    "shoulder_level": "前手高拳与正确示范仍有重叠，低拳子项须先完成窗口验收与稳健性复核。",
+}
+
+FAILED_INSTANCES = {
+    (
+        "front_straight",
+        "motion",
+        "rear",
+        "guard_back",
+    ): "护手移到下颚侧是否属于后拉尚待教师确认，短窗口判定也容易波动。",
+    (
+        "front_straight",
+        "finish",
+        "rear",
+        "guard_back",
+    ): "结束时护手后撤的测量与教师示范重叠，暂不能可靠判断。",
+    (
+        "rear_straight",
+        "motion",
+        "front",
+        "guard_back",
+    ): "侧面前手位于远侧、常被遮挡，正面又看不到前后深度变化。",
+    (
+        "rear_straight",
+        "finish",
+        "front",
+        "guard_back",
+    ): "侧面前手位于远侧、常被遮挡，正面又看不到前后深度变化。",
+    (
+        "front_straight",
+        "motion",
+        "front",
+        "shoulder_level",
+    ): "出拳过程高度会自然变化，现有资料尚未明确独立于打到瞬间的高度判定标准。",
 }
 
 
@@ -90,8 +123,9 @@ def apply_straight_availability(checks: list[dict], pose_variant: str = "full") 
                 )
         elif check["blockedReason"]:
             availability = RuleAvailability("unsupported", check["blockedReason"], REPORT)
-        elif code in FAILED:
-            availability = RuleAvailability("calibration_failed", FAILED[code], REPORT)
+        elif identity in FAILED_INSTANCES or code in FAILED:
+            reason = FAILED_INSTANCES.get(identity, FAILED.get(code, ""))
+            availability = RuleAvailability("calibration_failed", reason, REPORT)
         elif code == "punch_predrop":
             availability = RuleAvailability(
                 "validation_pending",
