@@ -27,6 +27,12 @@ from core.evaluation.paired_torso import paired_torso_check
 from core.evaluation.rules.spec import PhaseCheck, PhaseVerdict, RuleContext, RuleProfile, RuleSpec
 from core.evaluation.rules.straight_measures import measure_straight, straight_landmarks
 from core.evaluation.rules.straight_motion import guard_back_landmarks, measure_guard_back
+from core.evaluation.rules.straight_feet import measure_toe_spread, stance_width_check
+from core.evaluation.rules.straight_posture import (
+    measure_extension_at_peak,
+    measure_posture,
+    posture_landmarks,
+)
 from core.evaluation.rules.straight_policy import (
     PARAMS as STRAIGHT_PARAMS,
     STRAIGHT_RULES,
@@ -52,7 +58,7 @@ from core.pose.landmarks import (
     R_SHOULDER,
 )
 
-RULE_VERSION = "sanda-rules-mediapipe-2026-11-02-v5.6"
+RULE_VERSION = "sanda-rules-mediapipe-2026-11-06-v5.10"
 PROFILE_NAME = "sanda_v5"
 DEFAULT_STANCE = "left"  # 考试与 batch 的左右式：左手、左脚在前，右手护脸（D-3，配置值，以后可改）
 ACTIONS = {
@@ -357,6 +363,9 @@ class FeedbackConfig:
     punch_elbow_raise: float = -0.10  # 出拳前肘高于肩下0.1倍躯干长（侧面）
     punch_recovery: float = 0.34  # 收回后手腕距口部上限（正面，躯干长度）
     front_weights: dict = field(default_factory=default_front_weights)
+    stance_elbow_min: float = 90.0  # 上步直拳容错由 straight_policy 单独覆盖
+    stance_knee_max: float = 170.0
+    punch_level_deviation: float = 5.0
 
     def __post_init__(self):
         if any(
@@ -392,6 +401,12 @@ class FeedbackConfig:
             raise ValueError("回收阈值必须小于动作起动阈值")
         if self.stance_width_min >= self.stance_width_max:
             raise ValueError("站距下限必须小于上限")
+        if (
+            self.stance_elbow_min >= 135
+            or self.stance_knee_max >= 180
+            or self.punch_level_deviation >= 90
+        ):
+            raise ValueError("站姿肘角下限须小于135°，膝角上限须小于180°，齐肩余量须小于90°")
         if self.valid_ratio > 1 or self.trigger_ratio > 1:
             raise ValueError("比例参数不能大于1")
         if not 0.5 < self.fusion_support <= 1:
@@ -493,10 +508,10 @@ def _per_frame(lm: np.ndarray, valid: np.ndarray, fn) -> np.ndarray:
     return bad
 
 
-def _knee_straight(row: np.ndarray) -> bool:
-    """任一膝角 > 170° 视为腿伸直（"两膝微屈"）。"""
+def _knee_straight(row: np.ndarray, limit: float = 170.0) -> bool:
+    """任一膝角超过本动作的容许上限，视为腿伸得过直。"""
     ang_l, ang_r = legs.knee_angles(row)
-    return (ang_l > 170.0) or (ang_r > 170.0)
+    return (ang_l > limit) or (ang_r > limit)
 
 
 def _toes_not_parallel(row: np.ndarray) -> bool:
@@ -525,7 +540,7 @@ def _measure(
     required = list(required_landmarks(code, role, stance))
     if code == "stance_knee":
         valid = _frames_with(mask, LEGS)
-        bad = _per_frame(lm, valid, _knee_straight)
+        bad = _per_frame(lm, valid, lambda row: _knee_straight(row, cfg.stance_knee_max))
         for label, joints in (("左膝角", (23, 25, 27)), ("右膝角", (24, 26, 28))):
             details[label] = (arms.series_angles(lm, *joints), "度")
         for a, b in ((23, 25), (25, 27), (24, 26), (26, 28)):
@@ -541,7 +556,7 @@ def _measure(
         angles = arms.series_angles(lm, sh, el, wr)
         if code == "stance_elbow":
             details["前手肘角"] = (angles, "度")
-            bad = (angles < 90) | (angles > 135)
+            bad = (angles < cfg.stance_elbow_min) | (angles > 135)
         else:
             details["出拳手肘角"] = (angles, "度")
             bad = angles < cfg.punch_elbow
@@ -628,8 +643,19 @@ def _phase_check(code: str, role: str, action: str) -> PhaseCheck:
         baseline_mask: np.ndarray,
         ctx: RuleContext,
     ):
+        if action in SIDE_TIMED_ACTIONS:
+            ctx = replace(ctx, params=action_config(ctx.params, action))
+        if action in SIDE_TIMED_ACTIONS and code == "punch_extension":
+            return measure_extension_at_peak(role, lm, mask, ctx)
+        if action in SIDE_TIMED_ACTIONS and code == "stance_toes":
+            return measure_toe_spread(lm, mask)
         if action in SIDE_TIMED_ACTIONS and code == "guard_back":
             return measure_guard_back(role, lm, mask, baseline, baseline_mask, ctx)
+        if action in SIDE_TIMED_ACTIONS and (
+            code in {"stance_height", "stance_rear_guard", "punch_extension"}
+            or (code == "shoulder_level" and role == "front")
+        ):
+            return measure_posture(code, role, lm, mask, ctx)
         if code in STRAIGHT_RULES:
             return measure_straight(code, role, lm, mask, baseline, baseline_mask, ctx)
         details: dict = {}
@@ -649,6 +675,30 @@ def _phase_check(code: str, role: str, action: str) -> PhaseCheck:
     return check
 
 
+def _check_for_action(c: dict, action: str) -> PhaseCheck:
+    if action in SIDE_TIMED_ACTIONS:
+        scope = f"{c['segment']}:{c['phase']}"
+        if c["code"] == "stance_torso":
+            return paired_torso_check(scope)
+        if c["code"] == "stance_width":
+            return stance_width_check(scope)
+    return _phase_check(c["code"], c["role"], action)
+
+
+def _required_for_action(c: dict, action: str, stance: str) -> tuple[int, ...]:
+    code, role = c["code"], c["role"]
+    if action in SIDE_TIMED_ACTIONS:
+        if code == "guard_back":
+            return guard_back_landmarks(role, stance, c["primaryView"])
+        if code == "stance_width":
+            return (*FEET, L_SHOULDER, R_SHOULDER)
+        if code in {"stance_height", "stance_rear_guard", "punch_extension"} or (
+            code == "shoulder_level" and role == "front"
+        ):
+            return posture_landmarks(code, role, stance)
+    return required_landmarks(code, role, stance)
+
+
 def rule_profile(action: str, stance: str, cfg: FeedbackConfig) -> RuleProfile:
     """所选动作与左右式的检查清单登记为规则目录：规则编码即检查项 id，范围即 ``segment:phase`` 相位窗口。
 
@@ -661,16 +711,8 @@ def rule_profile(action: str, stance: str, cfg: FeedbackConfig) -> RuleProfile:
             RuleSpec(
                 code=c["id"],
                 title=c["name"],
-                check=(
-                    paired_torso_check(f"{c['segment']}:{c['phase']}")
-                    if action in SIDE_TIMED_ACTIONS and c["code"] == "stance_torso"
-                    else _phase_check(c["code"], c["role"], action)
-                ),
-                required=(
-                    guard_back_landmarks(c["role"], stance)
-                    if action in SIDE_TIMED_ACTIONS and c["code"] == "guard_back"
-                    else required_landmarks(c["code"], c["role"], stance)
-                ),
+                check=_check_for_action(c, action),
+                required=_required_for_action(c, action, stance),
                 view=c.get("primaryView") or PRIMARY_VIEW.get(c["code"], "any"),
                 scope=f"{c['segment']}:{c['phase']}",
                 aggregation=PhaseVerdict(
