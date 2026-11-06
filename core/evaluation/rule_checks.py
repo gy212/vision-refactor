@@ -210,6 +210,8 @@ def _view_checks(
     *,
     paired_torso=None,
     phase_instances=(),
+    evidence_views: dict,
+    evidence_diagnostics: dict,
 ) -> tuple[RuleCheck, ...]:
     """一路视角在给定相位窗口上的逐项结论（只列适用本视角的项）。"""
     outcomes = view_outcomes(
@@ -225,7 +227,9 @@ def _view_checks(
         phase_instances=phase_instances,
     )
     return tuple(
-        to_rule_check(c, view, outcomes[c["id"]], series["frames"], phase_reason)
+        to_rule_check(
+            c, view, outcomes[c["id"]], evidence_views, evidence_diagnostics, phase_reason
+        )
         for c in build_checks(action, stance, pose_variant=cfg.pose_variant)
         if c["id"] in outcomes
     )
@@ -259,6 +263,8 @@ def judge_view(
         cfg,
         supported_capabilities,
         phase_instances=diagnostics.get("phaseInstances", ()),
+        evidence_views={view: series},
+        evidence_diagnostics={view: diagnostics},
     )
     return checks, diagnostics
 
@@ -290,6 +296,8 @@ def judge_views(
                 cfg,
                 supported_capabilities,
                 paired_torso=paired.get(view),
+                evidence_views=views,
+                evidence_diagnostics=diagnostics,
                 phase_instances=(
                     diagnostics[view].get("phaseInstances")
                     or diagnostics[view].get("projectedPhaseInstances", ())

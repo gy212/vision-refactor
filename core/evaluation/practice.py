@@ -15,7 +15,7 @@ from typing import Callable
 from core.evaluation.paired_torso import paired_torso_measurements
 from core.evaluation.action_catalog import action_definition
 from core.evaluation.rule_checks import rule_series, synchronized_windows, view_outcomes
-from core.evaluation.rules.adapters import register_paired_evidence, to_practice_check
+from core.evaluation.rules.adapters import to_practice_check
 from core.evaluation.rules.sanda_v5 import (
     RULE_VERSION,
     FeedbackConfig,
@@ -102,6 +102,8 @@ def _observe_view(
     cfg: FeedbackConfig,
     evidence: dict,
     outcome: RuleOutcome,
+    views: dict,
+    diagnostics: dict,
 ):
     """一路视角对一个检查项的观测：``(该阶段时间段或 None, (是否有问题, 证据权重) 或 None)``。
 
@@ -127,23 +129,7 @@ def _observe_view(
         ]
     else:
         c["viewProblems"][view] = f"该阶段可见肩髋链不足（{body_valid.sum()}/{len(indices)}帧）"
-    return ranges, to_practice_check(
-        c,
-        view,
-        outcome,
-        weights[view],
-        series,
-        evidence,
-        event_details=(
-            view_diagnostics.get("eventDetails")
-            or view_diagnostics.get("projectedEventDetails", ())
-        ),
-        timing_source=view_diagnostics.get("timingSource", "own_view"),
-        phase_instances=(
-            view_diagnostics.get("phaseInstances")
-            or view_diagnostics.get("projectedPhaseInstances")
-        ),
-    )
+    return ranges, to_practice_check(c, view, outcome, weights[view], views, diagnostics, evidence)
 
 
 def _fuse(
@@ -256,13 +242,14 @@ def _evaluate_check(
             cfg,
             evidence,
             outcomes_by_view[view][c["id"]],
+            views,
+            diagnostics,
         )
         if view_ranges is not None:
             ranges[view] = view_ranges
         if outcome is not None:
             outcomes[view] = outcome
     _fuse(c, views, ranges, outcomes, weights, alignment, cfg)
-    register_paired_evidence(c, views, evidence)
 
 
 def _view_diagnostics(views: dict, diagnostics: dict, phase_sources: dict) -> dict:

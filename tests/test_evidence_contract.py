@@ -287,32 +287,46 @@ def test_tk_uses_shared_selection_and_never_borrows_unrelated_frames(monkeypatch
 
 
 def test_paired_measurement_keeps_reference_view_from_same_sample_time():
-    from core.evaluation.rules.adapters import register_paired_evidence
+    from core.evaluation.rules.evidence import build_rule_evidence
+    from core.evaluation.rules.spec import RuleEvidence, RuleOutcome
+    from core.evaluation import FeedbackConfig, rule_profile
 
-    record = _record_with_evidence()
-    check = record["result"]["checks"][0]
-    check.update(
-        evidence=["front:10"],
-        evidenceDetails=[check["evidenceDetails"][0]],
-        requiredViews=["front", "side"],
-        highlightJoints=[11, 12, 29, 30, 31, 32],
-        evidenceJointsByView={"front": [11, 12, 29, 30, 31, 32], "side": [11, 12]},
+    front, side = _series(1), _series(1)
+    side["frames"] = [index + 100 for index in side["frames"]]
+    side["valid_mask"][:, [29, 30, 31, 32]] = False
+    spec = next(
+        spec
+        for spec in rule_profile("step_straight_combo", "left", FeedbackConfig()).rules
+        if spec.code == "stance:start::stance_width"
     )
-    catalog = {ev["id"]: ev for ev in record["result"]["evidence"]}
-    side = {
-        "times": [10 / 30, 11 / 30],
-        "frames": [100, 101],
-        "landmarks": np.zeros((2, 33, 4)),
-        "valid_mask": np.zeros((2, 33), bool),
-    }
-    side["valid_mask"][:, [11, 12]] = True
+    check = {"id": spec.code, "segment": "stance", "phase": "start"}
+    outcome = RuleOutcome(
+        spec,
+        "violation",
+        None,
+        1.0,
+        3,
+        3,
+        evidence_frames=(10,),
+        evidence_instances=(RuleEvidence(10, purpose="violation"),),
+    )
 
-    register_paired_evidence(check, {"side": side}, catalog)
+    bundle = build_rule_evidence(
+        check,
+        "front",
+        outcome,
+        {"front": front, "side": side},
+        {"front": {"timingSource": "side"}, "side": {"timingSource": "own_view"}},
+    )
 
-    assert check["evidence"] == ["front:10", "side:100"]
-    assert check["evidenceDetails"][-1]["purpose"] == "reference"
-    assert check["evidenceDetails"][-1]["highlightJoints"] == [11, 12]
-    assert "purpose" not in catalog["side:100"]
+    assert list(bundle.frames) == ["front:10", "side:110"]
+    primary, reference = bundle.details
+    assert reference["purpose"] == "reference"
+    assert reference["referenceFor"] == primary["ref"]
+    assert reference["timeSeconds"] == primary["timeSeconds"]
+    assert reference["highlightJoints"] == [11, 12]
+    assert reference["timingSource"] == "own_view"
+    assert "purpose" not in bundle.frames["side:110"]
 
 
 def test_public_evaluation_to_html_keeps_side_judgment_and_correct_arm(monkeypatch):
