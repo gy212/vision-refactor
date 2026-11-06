@@ -10,7 +10,8 @@ from typing import Literal
 class ActionDefinition:
     label: str
     segments: tuple[str, ...]
-    timing: Literal["independent_views", "side_combo"] = "independent_views"
+    timing: Literal["shared_events", "side_combo"] = "shared_events"
+    timing_views: tuple[str, ...] = ("side", "front")
     scoring: Literal["whole_clip", "per_repetition"] = "whole_clip"
     rule_input: Literal["matched_window", "whole_clip"] = "matched_window"
     rule_standard: Literal["catalog", "teacher_straight"] = "catalog"
@@ -20,11 +21,14 @@ class ActionDefinition:
 
 
 ACTION_DEFINITIONS = {
-    "stance": ActionDefinition("实战式", (), qualification="legacy_catalog"),
+    "stance": ActionDefinition(
+        "实战式", (), timing_views=("front", "side"), qualification="legacy_catalog"
+    ),
     "step_straight_combo": ActionDefinition(
         "上步前后手直拳组合",
         ("front_straight", "rear_straight"),
         timing="side_combo",
+        timing_views=("side",),
         scoring="per_repetition",
         rule_input="whole_clip",
         rule_standard="teacher_straight",
@@ -34,7 +38,10 @@ ACTION_DEFINITIONS = {
         "前后手直拳组合", ("front_straight", "rear_straight"), qualification="legacy_catalog"
     ),
     "hook_combo": ActionDefinition(
-        "前后手摆拳组合", ("front_hook", "rear_hook"), qualification="legacy_catalog"
+        "前后手摆拳组合",
+        ("front_hook", "rear_hook"),
+        timing_views=("front", "side"),
+        qualification="legacy_catalog",
     ),
     "front_straight": ActionDefinition(
         "前手直拳", ("front_straight",), qualification="legacy_catalog"
@@ -42,8 +49,12 @@ ACTION_DEFINITIONS = {
     "rear_straight": ActionDefinition(
         "后手直拳", ("rear_straight",), qualification="legacy_catalog"
     ),
-    "front_hook": ActionDefinition("前手摆拳", ("front_hook",), qualification="legacy_catalog"),
-    "rear_hook": ActionDefinition("后手摆拳", ("rear_hook",), qualification="legacy_catalog"),
+    "front_hook": ActionDefinition(
+        "前手摆拳", ("front_hook",), timing_views=("front", "side"), qualification="legacy_catalog"
+    ),
+    "rear_hook": ActionDefinition(
+        "后手摆拳", ("rear_hook",), timing_views=("front", "side"), qualification="legacy_catalog"
+    ),
     "front_low_kick": ActionDefinition(
         "前低鞭腿", ("front_low_kick",), qualification="legacy_catalog"
     ),

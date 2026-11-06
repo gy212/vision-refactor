@@ -157,19 +157,13 @@ def _fuse(
             if v not in ranges
         )
         return
-    # 同步窗口已负责借用动作时间；仅合并两路判断时才核对两路可见范围。
+    # 动作阶段来自同一份识别；这里只核对两路是否覆盖该时间。
     # 本身需要双路数据的测量（如肩线朝向）仍由其规则检查数据完整性。
     if len(required_views) > 1:
         scope = f"{c['segment']}:{c['phase']}"
         correspondence = alignment["phases"][scope]
         if not correspondence["reliable"]:
             c["reason"] = correspondence["reason"]
-            return
-        if len(ranges["front"]) != len(ranges["side"]) or any(
-            max(abs(a - b) for a, b in zip(front, side)) > cfg.phase_tolerance_seconds
-            for front, side in zip(ranges["front"], ranges["side"])
-        ):
-            c["reason"] = "正侧面动作阶段时间不对应，请使用同一次同步录制的视频"
             return
     if any(weight > 0 and view not in outcomes for view, weight in weights.items()):
         c["reason"] = "；".join(
