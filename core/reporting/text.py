@@ -97,6 +97,16 @@ def _diagnostic_lines(result: dict) -> list[str]:
     return lines
 
 
+def _check_description(check: dict) -> str:
+    """按保存时的启用状态显示检查名称与试用说明，兼容没有该字段的旧记录。"""
+    availability = check.get("availability")
+    if not isinstance(availability, dict) or availability.get("state") != "trial":
+        return check["name"]
+    name = check["name"] + "（试用）"
+    note = availability.get("reason", "")
+    return f"{name}；试用说明：{note}" if note else name
+
+
 def format_report(record: dict) -> str:
     result = record["result"]
     method = (
@@ -131,7 +141,7 @@ def format_report(record: dict) -> str:
     for i, c in enumerate(issues, 1):
         state = "教师已确认" if c["review"] == "confirmed" else "待教师确认"
         lines.append(
-            f"{i}. {c['segmentLabel']} / {c['phaseLabel']} / {c['bodyPart']}：{c['name']}（{state}）"
+            f"{i}. {c['segmentLabel']} / {c['phaseLabel']} / {c['bodyPart']}：{_check_description(c)}（{state}）"
         )
         if c.get("fusion"):
             lines.append(format_fusion(c))
@@ -142,7 +152,7 @@ def format_report(record: dict) -> str:
         lines += ["", "未完成判断的项目："]
         for c in incomplete:
             lines.append(
-                f"- {c['segmentLabel']} / {c['phaseLabel']} / {c['bodyPart']}：{c['name']}；{c['reason']}"
+                f"- {c['segmentLabel']} / {c['phaseLabel']} / {c['bodyPart']}：{_check_description(c)}；{c['reason']}"
             )
             if c.get("measurements"):
                 lines.append(format_fusion(c))
@@ -153,7 +163,7 @@ def format_report(record: dict) -> str:
         for c in result["checks"]:
             if c["status"] == "not_observed":
                 lines += [
-                    f"- {c['segmentLabel']} / {c['phaseLabel']}：{c['name']}",
+                    f"- {c['segmentLabel']} / {c['phaseLabel']}：{_check_description(c)}",
                     format_fusion(c),
                 ]
     return "\n".join(lines) + "\n"

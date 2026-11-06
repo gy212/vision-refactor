@@ -9,7 +9,12 @@ from core.evaluation.rules.sanda_v5 import FeedbackConfig, action_config
 from core.evaluation.rules.spec import RuleContext
 from core.evaluation.rules.straight_posture import measure_posture
 from core.evaluation.stance_windows import settled_stance_windows
-from core.reporting import build_report_model, group_action_issues, render_html_report
+from core.reporting import (
+    build_report_model,
+    format_report,
+    group_action_issues,
+    render_html_report,
+)
 from tests.test_feedback_html_export import make_html_test_record
 from tests.test_step_straight_combo import ACTION, _base_pose, _series
 
@@ -234,6 +239,24 @@ def test_trial_checks_retain_visible_trial_label_in_saved_reports() -> None:
     assert trial.status_display.startswith("试用")
     assert trial.reason.startswith("试用检查。")
     assert "试用检查" in render_html_report(record)
+
+
+@pytest.mark.parametrize("status", ["candidate", "unable", "not_observed"])
+def test_text_report_preserves_trial_label_and_reason_for_each_result(status) -> None:
+    record = make_html_test_record(action=ACTION)
+    check = record["result"]["checks"][0]
+    check["status"] = status
+    check["availability"] = {"state": "trial", "label": "试用中", "reason": "可能报错或漏查。"}
+    record["result"].update(
+        summary="分析完成", fusionMethod="action_rule_quality_weighted_v1", diagnostics={}
+    )
+    original = deepcopy(record)
+
+    text = format_report(record)
+
+    assert check["name"] + "（试用）" in text
+    assert check["availability"]["reason"] in text
+    assert record == original
 
 
 @pytest.mark.parametrize(
