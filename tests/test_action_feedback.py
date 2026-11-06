@@ -27,7 +27,7 @@ from core.evaluation.rules.sanda_v5 import (
 from core.foundation import contiguous_runs
 from core.evaluation import practice as practice_mod
 from core.evaluation import rule_checks as rule_checks_mod
-from core.evaluation.rules import sanda_v5
+from core.evaluation.rules import sanda_v5, feedback_config
 from core.reporting import practice_report_renderers
 from core.services import HistoryStore as FeedbackHistory, validate_identity
 
@@ -223,7 +223,7 @@ def test_action_profiles_and_primary_view_limit_are_explicit():
 
 
 def test_weight_configuration_validation_and_report(tmp_path, monkeypatch):
-    monkeypatch.setattr(sanda_v5, "repo_root", lambda: tmp_path)
+    monkeypatch.setattr(feedback_config, "repo_root", lambda: tmp_path)
     weights = _default_front_weights()
     weights["stance"]["stance_elbow"] = 0.25
     path = tmp_path / "feedback_config.json"
