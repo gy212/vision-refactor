@@ -6,6 +6,7 @@
 由 ``evaluation/practice.py`` 写入检查项。``unable`` 带结构化原因 ``skip_reason``（后端缺点、有效帧不足、未找到阶段），
 下游判断只读结构化字段（YOLO 迁移 S4 / Issue #11）。
 """
+
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
@@ -27,6 +28,7 @@ RULE_STATE_PENDING_RULE: RuleState = "pending_rule"
 SKIP_MISSING_LANDMARKS: SkipReason = "missing_landmarks"
 SKIP_INSUFFICIENT_VALID_FRAMES: SkipReason = "insufficient_valid_frames"
 SKIP_PHASE_NOT_FOUND: SkipReason = "phase_not_found"
+
 
 @dataclass(frozen=True)
 class RuleContext:
@@ -73,13 +75,19 @@ class RuleSpec:
     code: str
     title: str
     check: PhaseCheck
-    required: tuple[int, ...]  # 所需关键点（BlazePose33），声明能力契约与缺点判定；须与 check 内的取点一致
+    required: tuple[
+        int, ...
+    ]  # 所需关键点（BlazePose33），声明能力契约与缺点判定；须与 check 内的取点一致
     view: Literal["front", "side", "any"]
     scope: str  # 相位窗口 "segment:phase"
     aggregation: PhaseVerdict
     authorization: Literal["scored", "candidate", "blocked"] = "scored"
     blocked_reason: str = ""
     source: str = ""  # 依据：文档与行号
+    strategy: str = ""  # 实际测量与判法的命名策略，随保存结果留存
+    highlight_joints: tuple[int, ...] = ()  # 本检查的被测部位和必要参照点
+    required_views: tuple[str, ...] = ()  # 公式的原始数据依赖；空元组表示当前观察面
+    evidence_joints_by_view: Mapping[str, tuple[int, ...]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

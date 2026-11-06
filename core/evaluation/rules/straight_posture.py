@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 
 from core.evaluation.body_sides import sides_for_stance
-from core.evaluation.measures.arms import distance_to, segment_lengths, series_angles
+from core.evaluation.measures.posture import elbow_body_distance, joint_angle, relative_height
 from core.evaluation.measures.torso import chain_torso
 from core.evaluation.rules.spec import RuleContext
 
@@ -35,24 +35,19 @@ def measure_posture(
     required = posture_landmarks(code, role, ctx.stance)
     valid = mask[:, required].all(axis=1) & (torso > 1e-4)
     if code == "stance_height":
-        values = (lm[:, wrist, 1] - lm[:, shoulder, 1]) / np.maximum(torso, 1e-4)
+        values, valid = relative_height(lm, mask, wrist, shoulder, torso)
         return values > 0, valid, {"手腕低于肩": (values, "躯干长度")}
     if code == "stance_rear_guard":
-        center = (lm[:, shoulder, :2] + lm[:, hip, :2]) / 2
-        values = distance_to(lm, elbow, center) / np.maximum(torso, 1e-4)
+        values, valid = elbow_body_distance(lm, mask, shoulder, elbow, hip, torso)
         return values > 0.5, valid, {"肘离身体中部的距离": (values, "躯干长度")}
     if code == "shoulder_level":
-        values = series_angles(lm, hip, shoulder, wrist)
-        valid &= segment_lengths(lm, hip, shoulder) > 1e-4
-        valid &= segment_lengths(lm, wrist, shoulder) > 1e-4
+        values, valid = joint_angle(lm, mask, (hip, shoulder, wrist), torso)
         return (
             np.abs(values - 90) > ctx.params.punch_level_deviation,
             valid,
             {"出拳手臂与身体的夹角": (values, "度")},
         )
-    values = series_angles(lm, shoulder, elbow, wrist)
-    valid &= segment_lengths(lm, shoulder, elbow) > 1e-4
-    valid &= segment_lengths(lm, wrist, elbow) > 1e-4
+    values, valid = joint_angle(lm, mask, (shoulder, elbow, wrist), torso)
     return values < ctx.params.punch_elbow, valid, {"出拳手肘的夹角": (values, "度")}
 
 

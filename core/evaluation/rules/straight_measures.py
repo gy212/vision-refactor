@@ -1,10 +1,13 @@
 """直拳起动前预摆与收回护位的逐帧测量，收拳路径不作为掉手错误。"""
+
 from __future__ import annotations
 
 import numpy as np
 
 from core.evaluation.body_sides import sides_for_stance
 from core.evaluation.measures.arms import distance_to, series_mouth
+from core.evaluation.measures.motion import relative_position
+from core.evaluation.measures.posture import relative_height
 from core.evaluation.measures.torso import chain_torso
 from core.evaluation.rules.spec import RuleContext
 
@@ -39,7 +42,7 @@ def measure_straight(
     cfg = ctx.params
 
     if code == "punch_preelbow":
-        values = (lm[:, shoulder, 1] - lm[:, elbow, 1]) / scale
+        values, _ = relative_height(lm, mask, shoulder, elbow, torso)
         label, threshold = "起动前肘高于肩", cfg.punch_elbow_raise
     elif code in {"punch_recover", "guard_jaw"}:
         values = distance_to(lm, wrist, series_mouth(lm)) / scale
@@ -51,16 +54,19 @@ def measure_straight(
         if base_valid.sum() < cfg.min_valid:
             return np.zeros(len(lm), bool), np.zeros(len(lm), bool), {}
         base = baseline[base_valid]
-        base_scale = base_torso[base_valid]
+        position, _ = relative_position(lm, mask, torso, shoulder, wrist)
+        base_position, _ = relative_position(
+            base, baseline_mask[base_valid], base_torso[base_valid], shoulder, wrist
+        )
         if code == "punch_prepull":
             facing = np.sign(np.median(base[:, 0, 0] - base[:, hip, 0]))
-            initial = np.median((base[:, wrist, 0] - base[:, shoulder, 0]) / base_scale)
-            values = (initial - (lm[:, wrist, 0] - lm[:, shoulder, 0]) / scale) * facing
+            initial = np.median(base_position[:, 0])
+            values = (initial - position[:, 0]) * facing
             valid &= facing != 0
             label, threshold = "起动前向后预摆距离", cfg.punch_pull
         else:
-            initial = np.median((base[:, wrist, 1] - base[:, shoulder, 1]) / base_scale)
-            values = (lm[:, wrist, 1] - lm[:, shoulder, 1]) / scale - initial
+            initial = np.median(base_position[:, 1])
+            values = position[:, 1] - initial
             label, threshold = "起动前向下预摆距离", cfg.punch_drop
 
     return values > threshold, valid, {label: (values, "躯干长度")}
