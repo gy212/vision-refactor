@@ -1,11 +1,12 @@
 """第二批上步直拳的逐项启用依据，不把未验证项目冒充标定失败。"""
+
 from __future__ import annotations
 
 from core.evaluation.rules.availability import RuleAvailability
 
 REPORT = "docs/上步直拳组合标定报告.md"
 TEACHER_SOURCE = "教师确认 #33 issuecomment-6235417498；卷三第7题更正：后手必须收回下颚"
-PARAMS = {"elbow_raise": -.18, "shoulder_height": .17}
+PARAMS = {"elbow_raise": -0.18, "shoulder_height": 0.17}
 
 STRAIGHT_RULES = {
     "guard_jaw": (
@@ -57,12 +58,11 @@ ENABLED = {
 }
 
 ENABLED_MODELS = {"stance_torso": frozenset({"full"})}
-
 FAILED = {
-    "guard_back": "已改为口部参照；初步回放仍有正确样本误报及C32遮挡，未达到启用标准。",
+    "guard_back": "完整前手事件窗口复核后，full与heavy过程均误报2/10；C32虽各2/2检出，仍不满足10%误报上限。",
     "punch_extension": "现有肘角测量受直拳投影和遮挡影响，C51错误样本与正确样本重叠。",
     "guard_elbow": "前手出拳时的后手抬肘测量与教师确认正确的D11、D13、D14重叠。",
-    "guard_shoulder": "前手出拳时，heavy模型曾错认教师示范的后手腕，产生误报。",
+    "guard_shoulder": "前手出拳时的后手掉肩仅检出C31的2/3（66.7%），未达到70%上线标准；heavy结束窗另有误报与缺失。",
     "stance_knee": "现有双膝二维角度公式在11段正确对照上全部误报，尚不能用于上步直拳。",
     "stance_elbow": "已核对真实护位；90°～135°二维肘角在正确样本上大量误报，不能直接作为实际肘角。",
     "stance_height": "手腕不是拳峰；手端代理虽减少误报，full与heavy正确样本误报仍超标。",
@@ -77,16 +77,17 @@ FAILED = {
 def apply_straight_availability(checks: list[dict], pose_variant: str = "full") -> None:
     """给每个检查项登记真实启用依据；已有能力限制优先保留。"""
     for check in checks:
-        identity = (
-            check["segment"], check["phase"], check["role"], check["code"]
-        )
+        identity = (check["segment"], check["phase"], check["role"], check["code"])
         code = check["code"]
-        allowed = code not in ENABLED_MODELS or pose_variant in ENABLED_MODELS[code]
+        models = ENABLED_MODELS.get(code)
+        allowed = models is None or pose_variant in models
         if identity in ENABLED and allowed:
             availability = RuleAvailability("enabled", evidence=REPORT)
             check["primaryView"] = ENABLED[identity]
             if code == "stance_torso":
-                check["standard"] = "同步双视角归一肩宽比超过√3；正交机位近似检查，不表示真实三维角度"
+                check["standard"] = (
+                    "同步双视角归一肩宽比超过√3；正交机位近似检查，不表示真实三维角度"
+                )
         elif check["blockedReason"]:
             availability = RuleAvailability("unsupported", check["blockedReason"], REPORT)
         elif code in FAILED:

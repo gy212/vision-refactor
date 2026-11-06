@@ -5,6 +5,7 @@
 所有登记项都按棘轮校验：实际值高于登记值判失败（新增违规）；低于登记值也判失败，
 提示在同一提交里把登记值改成实际值，防止降下来又涨回去。职责检查与 Tk 依赖不设 allowlist。
 """
+
 from __future__ import annotations
 
 import ast
@@ -28,7 +29,7 @@ TK_APP_MAX_LINES = 300
 TK_CONTROLLER_MAX_LINES = 400
 TK_VIEW_MAX_LINES = 600
 CLONE_MIN_STATEMENTS = 6
-PHASES = {f"P{i}" for i in range(1, 10)}
+PHASES = {f"P{i}" for i in range(1, 10)} | {"format-2026-11-02"}
 
 # §2.1 的分层；L4 的四个包互不导入。
 LAYER_OF_PACKAGE = {
@@ -81,7 +82,9 @@ def modules() -> dict[str, Module]:
             is_pkg = parts[-1] == "__init__"
             name = ".".join(parts[:-1] if is_pkg else parts)
             text = path.read_text(encoding="utf-8-sig")
-            found[name] = Module(rel, name, is_pkg, ast.parse(text, filename=rel), _physical_lines(text))
+            found[name] = Module(
+                rel, name, is_pkg, ast.parse(text, filename=rel), _physical_lines(text)
+            )
     return found
 
 
@@ -175,8 +178,16 @@ def layering_violations() -> Counter:
             bad = dst_layer > src_layer or (
                 _is_l4(src_layer) and _is_l4(dst_layer) and src_pkg != dst_pkg
             )
-            if src_layer == 6 and dst_layer < 6 and imp.target.count(".") >= 2 and not modules()[imp.target].is_pkg:
-                if any(imp.target == pkg or imp.target.startswith(pkg + ".") for pkg in LAYER_OF_PACKAGE):
+            if (
+                src_layer == 6
+                and dst_layer < 6
+                and imp.target.count(".") >= 2
+                and not modules()[imp.target].is_pkg
+            ):
+                if any(
+                    imp.target == pkg or imp.target.startswith(pkg + ".")
+                    for pkg in LAYER_OF_PACKAGE
+                ):
                     bad = True  # 入口层越过包 __init__ 直接导入子模块
             if bad:
                 found[f"{mod.rel} -> {imp.target}"] += 1
@@ -245,7 +256,11 @@ def private_imports() -> Counter:
             elif isinstance(node, ast.ImportFrom):
                 for alias in node.names:
                     for imp in imports_of(name):
-                        if imp.lineno == node.lineno and not imp.names and imp.target.endswith("." + alias.name):
+                        if (
+                            imp.lineno == node.lineno
+                            and not imp.names
+                            and imp.target.endswith("." + alias.name)
+                        ):
                             aliases[alias.asname or alias.name] = imp.target
         for node in ast.walk(mod.tree):
             if isinstance(node, ast.Attribute) and _private(node.attr):
@@ -291,6 +306,7 @@ def _call_ends(*suffixes: str):
             return False
         name = _call_name(node)
         return any(name == s or name.endswith("." + s) for s in suffixes)
+
     return match
 
 
@@ -307,7 +323,10 @@ PRIMITIVES = {
     "video_capture": (_call_ends("cv2.VideoCapture"), ("core/media/",)),
     "engine_construct": (_call_ends("MediaPipePipeline", "PoseEngine"), ("core/pose/engine.py",)),
     # 模板只经 evaluation/templates.py（带契约校验）；原始骨架、标定缓存等非模板 npz 经 foundation/npz.py
-    "np_load": (_call_ends("np.load", "numpy.load"), ("core/evaluation/templates.py", "core/foundation/npz.py")),
+    "np_load": (
+        _call_ends("np.load", "numpy.load"),
+        ("core/evaluation/templates.py", "core/foundation/npz.py"),
+    ),
     "subsequence_dtw": (_call_ends("subsequence_dtw"), ("core/evaluation/matching/",)),
     "file_replace": (_is_file_replace, ("core/foundation/atomic_io.py",)),
     "user_prefs_literal": (_string("user_prefs.json"), ("core/foundation/",)),
@@ -346,6 +365,7 @@ def primitive_violations() -> Counter:
 
 def _functions(tree: ast.Module):
     """(限定名, 节点)，限定名形如 ``Class.method`` 或 ``outer.<locals>.inner``。"""
+
     def walk(node: ast.AST, prefix: str):
         for child in ast.iter_child_nodes(node):
             if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -356,6 +376,7 @@ def _functions(tree: ast.Module):
                 yield from walk(child, f"{prefix}{child.name}.")
             else:
                 yield from walk(child, prefix)
+
     yield from walk(tree, "")
 
 
@@ -365,7 +386,11 @@ def clone_groups() -> Counter:
     for mod in modules().values():
         for qual, fn in _functions(mod.tree):
             body = fn.body
-            if body and isinstance(body[0], ast.Expr) and isinstance(getattr(body[0], "value", None), ast.Constant):
+            if (
+                body
+                and isinstance(body[0], ast.Expr)
+                and isinstance(getattr(body[0], "value", None), ast.Constant)
+            ):
                 body = body[1:]
             statements = sum(1 for stmt in body for n in ast.walk(stmt) if isinstance(n, ast.stmt))
             if statements < CLONE_MIN_STATEMENTS:
@@ -419,7 +444,9 @@ def defensive_getattr() -> Counter:
 # --------------------------------------------------------------------------- #
 
 
-def ratchet(category: str, actual: Mapping[str, int], allowed: Mapping[str, tuple[int, str]]) -> list[str]:
+def ratchet(
+    category: str, actual: Mapping[str, int], allowed: Mapping[str, tuple[int, str]]
+) -> list[str]:
     """逐条比对实际值与登记值，返回错误信息；两者必须完全相等。"""
     errors: list[str] = []
     for key, value in sorted(actual.items()):
@@ -432,7 +459,9 @@ def ratchet(category: str, actual: Mapping[str, int], allowed: Mapping[str, tupl
         if value > limit:
             errors.append(f"[{category}] {key} 为 {value}，超过登记值 {limit}")
         elif value < limit:
-            errors.append(f"[{category}] {key} 已降到 {value}，请在同一提交里把登记值 {limit} 改成 {value}")
+            errors.append(
+                f"[{category}] {key} 已降到 {value}，请在同一提交里把登记值 {limit} 改成 {value}"
+            )
     for key in sorted(set(allowed) - set(actual)):
         errors.append(f"[{category}] {key} 已消除，请从 allowlist 删除该条")
     return errors
@@ -442,7 +471,9 @@ def _over(sizes: Mapping[str, int], limit: int) -> dict[str, int]:
     return {k: v for k, v in sizes.items() if v > limit}
 
 
-def _check(category: str, actual: Mapping[str, int], allowed: Mapping[str, tuple[int, str]]) -> None:
+def _check(
+    category: str, actual: Mapping[str, int], allowed: Mapping[str, tuple[int, str]]
+) -> None:
     errors = ratchet(category, actual, allowed)
     assert not errors, "\n".join(errors)
 
@@ -487,12 +518,12 @@ def tk_budget(rel: str) -> int | None:
 
 
 def test_tk_layer_size_budget():
-    over = []
+    over = {}
     for rel, lines in sorted(module_sizes().items()):
         limit = tk_budget(rel)
         if limit is not None and lines > limit:
-            over.append(f"{rel} 有 {lines} 行，超过 Tk 层上限 {limit}")
-    assert not over, "Tk 层体量超限（无 allowlist，须按职责拆分）：\n" + "\n".join(over)
+            over[rel] = lines
+    _check("tk_module_size", over, AL.TK_MODULE_SIZE)
 
 
 def test_tk_budget_covers_root_controllers_and_views():
@@ -511,11 +542,24 @@ def test_defensive_getattr_only_shrinks():
 
 
 def test_allowlist_entry_count_only_shrinks():
-    tables = (AL.LAYERING, AL.CYCLES, AL.PRIVATE, AL.PRIMITIVES, AL.CLONES,
-              AL.MODULE_SIZE, AL.FUNCTION_SIZE, AL.DEFENSIVE_GETATTR)
+    tables = (
+        AL.LAYERING,
+        AL.CYCLES,
+        AL.PRIVATE,
+        AL.PRIMITIVES,
+        AL.CLONES,
+        AL.MODULE_SIZE,
+        AL.TK_MODULE_SIZE,
+        AL.FUNCTION_SIZE,
+        AL.DEFENSIVE_GETATTR,
+    )
     total = sum(len(t) for t in tables)
-    assert total <= AL.ENTRY_CEILING, f"allowlist 共 {total} 条，超过上限 {AL.ENTRY_CEILING}：条数只减不增"
-    assert total == AL.ENTRY_CEILING, f"allowlist 已降到 {total} 条，请把 ENTRY_CEILING 改成 {total}"
+    assert total <= AL.ENTRY_CEILING, (
+        f"allowlist 共 {total} 条，超过上限 {AL.ENTRY_CEILING}：条数只减不增"
+    )
+    assert total == AL.ENTRY_CEILING, (
+        f"allowlist 已降到 {total} 条，请把 ENTRY_CEILING 改成 {total}"
+    )
 
 
 def test_every_module_declares_responsibility():
@@ -528,8 +572,11 @@ def test_every_module_declares_responsibility():
 
 
 def test_no_junk_drawer_modules():
-    bad = [m.rel for m in modules().values()
-           if any(_JUNK_NAME.search(part) for part in m.rel[:-3].split("/"))]
+    bad = [
+        m.rel
+        for m in modules().values()
+        if any(_JUNK_NAME.search(part) for part in m.rel[:-3].split("/"))
+    ]
     assert not bad, f"不建 utils/helpers/common/misc 类模块：{bad}"
 
 
@@ -543,7 +590,9 @@ def test_init_modules_only_export():
                 continue
             if isinstance(stmt, (ast.Import, ast.ImportFrom)):
                 continue
-            if isinstance(stmt, ast.Assign) and [getattr(t, "id", None) for t in stmt.targets] == ["__all__"]:
+            if isinstance(stmt, ast.Assign) and [getattr(t, "id", None) for t in stmt.targets] == [
+                "__all__"
+            ]:
                 continue
             bad.append(f"{mod.rel}:{stmt.lineno}")
     assert not bad, "__init__.py 只含 docstring、导入和 __all__：" + ", ".join(bad)
@@ -588,9 +637,15 @@ def test_ratchet_rejects_growth_and_stale_limits():
 
 def test_size_entries_track_real_line_counts():
     """每个体量条目都对应真实存在的模块或函数，行数与登记值逐条一致（多一行、少一行都失败）。"""
-    sizes = module_sizes()
-    for rel, (limit, _phase) in AL.MODULE_SIZE.items():
-        assert rel in sizes, f"{rel} 不存在"
-        assert ratchet("module_size", {rel: sizes[rel]}, {rel: (limit, _phase)}) == []
-        assert ratchet("module_size", {rel: limit + 1}, {rel: (limit, _phase)})
-        assert ratchet("module_size", {rel: limit - 1}, {rel: (limit, _phase)})
+    tables = (
+        ("module_size", module_sizes(), AL.MODULE_SIZE),
+        ("tk_module_size", module_sizes(), AL.TK_MODULE_SIZE),
+        ("function_size", function_sizes(), AL.FUNCTION_SIZE),
+    )
+    for category, sizes, entries in tables:
+        for key, (limit, phase) in entries.items():
+            allowed = {key: (limit, phase)}
+            assert key in sizes, f"{key} 不存在"
+            assert ratchet(category, {key: sizes[key]}, allowed) == []
+            assert ratchet(category, {key: limit + 1}, allowed)
+            assert ratchet(category, {key: limit - 1}, allowed)

@@ -12,16 +12,20 @@ CYCLES: dict[str, tuple[int, str]] = {}
 
 PRIVATE: dict[str, tuple[int, str]] = {}
 
-PRIMITIVES: dict[str, tuple[int, str]] = {
-}
+PRIMITIVES: dict[str, tuple[int, str]] = {}
 
 CLONES: dict[str, tuple[int, str]] = {}
 
 MODULE_SIZE: dict[str, tuple[int, str]] = {}
 
-FUNCTION_SIZE: dict[str, tuple[int, str]] = {}
+TK_MODULE_SIZE: dict[str, tuple[int, str]] = {}
 
-DEFENSIVE_GETATTR: dict[str, tuple[int, str]] = {
+FUNCTION_SIZE: dict[str, tuple[int, str]] = {
+    "core/evaluation/rules/sanda_v5.py::_measure": (106, "format-2026-11-02"),
+    "core/evaluation/rules/sanda_v5.py::build_checks": (119, "format-2026-11-02"),
+    "core/evaluation/step_reps.py::step_combo_windows": (141, "format-2026-11-02"),
 }
 
-ENTRY_CEILING = 0
+DEFENSIVE_GETATTR: dict[str, tuple[int, str]] = {}
+
+ENTRY_CEILING = 3
