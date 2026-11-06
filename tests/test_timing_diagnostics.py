@@ -98,6 +98,32 @@ def test_legacy_missing_event_data_is_not_fabricated():
     assert lines == ["正面独立检测：0次。"]
 
 
+def test_shared_timeline_is_reported_once_in_text_html_and_tk_model():
+    diagnostic, _ = _diagnostics()
+    events = diagnostic["side"]["eventDetails"]
+    diagnostic["front"].update(eventDetails=[], projectedEventDetails=events, timingSource="side")
+    diagnostic["side"]["timingSource"] = "own_view"
+    alignment = {
+        "method": "shared_clock",
+        "timingSource": "side",
+        "sourceSelection": {"reason": "按动作机位优先级及所需点可见性选择"},
+        "eventCounts": {"side": {"rear_straight": 1}},
+        "phases": {},
+        "reliable": True,
+    }
+    record = _record(diagnostic, alignment)
+    original = deepcopy(record)
+    lines = format_timing_diagnostics(diagnostic, alignment)
+    for output in (format_report(record), render_html_report(record)):
+        assert all(line in output for line in lines)
+        assert "动作次数和阶段时间统一来自侧面" in output
+        assert "共用动作记录：后手直拳1次" in output
+        assert "独立检测" not in output and "未独立对应" not in output
+    model = build_report_model(record)
+    assert format_timing_diagnostics(model.diagnostics, model.alignment) == lines
+    assert record == original
+
+
 def test_final_html_escapes_recorded_event_names_and_reasons():
     diagnostic, alignment = _diagnostics()
     injected = '<script>alert("event")</script>'

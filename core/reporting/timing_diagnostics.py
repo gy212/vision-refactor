@@ -83,6 +83,26 @@ def _correspondence_lines(diagnostics: dict, alignment: dict) -> list[str]:
     return lines
 
 
+def _shared_timeline_lines(diagnostics: dict, alignment: dict) -> list[str]:
+    """新结果只显示来源机位的一份动作记录，各检查共用它的时间。"""
+    source = alignment["timingSource"]
+    label = _VIEWS[source]
+    data = diagnostics.get(source, {})
+    events = data.get("eventDetails")
+    lines = [f"动作次数和阶段时间统一来自{label}，各机位共用同一份识别结果。"]
+    selection = alignment.get("sourceSelection", {})
+    if selection.get("reason"):
+        lines.append(f"来源选择：{selection['reason']}。")
+    counts = alignment.get("eventCounts", {}).get(source)
+    if counts is not None:
+        lines.append(f"共用动作记录：{_count_text(counts) or '0次'}。")
+    for number, event in enumerate(events or [], 1):
+        lines.append(f"共用事件{number}：{_event_text(event)}")
+    if events is None:
+        lines.append("未保存逐次动作时间。")
+    return lines
+
+
 def format_timing_diagnostics(diagnostics: dict, alignment: dict) -> list[str]:
     """只解释保存的数据；未记录事件的旧结果不会被补写为零次。"""
     lines = []
@@ -101,8 +121,12 @@ def format_timing_diagnostics(diagnostics: dict, alignment: dict) -> list[str]:
         if alignment.get("reason"):
             parts.append(str(alignment["reason"]))
         lines.append("；".join(parts) + "。")
-    counts = alignment.get("eventCounts", {})
-    for view in _VIEWS:
-        lines.extend(_view_lines(view, diagnostics.get(view, {}), counts))
+    if alignment.get("timingSource") in _VIEWS and "sourceSelection" in alignment:
+        lines.extend(_shared_timeline_lines(diagnostics, alignment))
+    else:
+        # 历史记录仍按当时保存的独立观测解释，不用当前识别策略改写它。
+        counts = alignment.get("eventCounts", {})
+        for view in _VIEWS:
+            lines.extend(_view_lines(view, diagnostics.get(view, {}), counts))
     lines.extend(_correspondence_lines(diagnostics, alignment))
     return lines
