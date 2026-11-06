@@ -46,6 +46,8 @@ class RuleContext:
     baseline: np.ndarray | None = None
     params: Any = None
     paired_torso: tuple[np.ndarray, np.ndarray] | None = None
+    # 真实阶段实例：scope -> ((已检测次数, 序列帧下标), ...)，仅用于保留证据来源。
+    phase_instances: Mapping[str, tuple[tuple[int, np.ndarray], ...]] = field(default_factory=dict)
 
 
 # 相位判定：输入窗口内关键点与掩码、基线关键点与掩码、上下文，返回 (问题帧, 有效帧, {测量名: (逐帧值, 单位)})。
@@ -97,6 +99,15 @@ class RuleProfile:
 
 
 @dataclass(frozen=True)
+class RuleEvidence:
+    """一张证据在阶段实例内的来源；同帧可以分别属于相邻两次动作。"""
+
+    frame: int
+    repetition: int | None = None
+    purpose: Literal["violation", "observation"] = "observation"
+
+
+@dataclass(frozen=True)
 class RuleOutcome:
     """一条规则在一路视角上的结论；``detail`` 只在 ``pending_rule`` 时写拦截原因。"""
 
@@ -111,3 +122,4 @@ class RuleOutcome:
     # 证据帧（序列帧下标，首/中/末代表帧）与测量值摘要（名称、单位、中位数、最小、最大）。
     evidence_frames: tuple[int, ...] = ()
     measurements: tuple[dict, ...] = ()
+    evidence_instances: tuple[RuleEvidence, ...] = ()

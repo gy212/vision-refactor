@@ -15,7 +15,7 @@ from typing import Callable
 from core.evaluation.paired_torso import paired_torso_measurements
 from core.evaluation.action_catalog import action_definition
 from core.evaluation.rule_checks import rule_series, synchronized_windows, view_outcomes
-from core.evaluation.rules.adapters import to_practice_check
+from core.evaluation.rules.adapters import register_paired_evidence, to_practice_check
 from core.evaluation.rules.sanda_v5 import (
     RULE_VERSION,
     FeedbackConfig,
@@ -127,7 +127,23 @@ def _observe_view(
         ]
     else:
         c["viewProblems"][view] = f"该阶段可见肩髋链不足（{body_valid.sum()}/{len(indices)}帧）"
-    return ranges, to_practice_check(c, view, outcome, weights[view], series, evidence)
+    return ranges, to_practice_check(
+        c,
+        view,
+        outcome,
+        weights[view],
+        series,
+        evidence,
+        event_details=(
+            view_diagnostics.get("eventDetails")
+            or view_diagnostics.get("projectedEventDetails", ())
+        ),
+        timing_source=view_diagnostics.get("timingSource", "own_view"),
+        phase_instances=(
+            view_diagnostics.get("phaseInstances")
+            or view_diagnostics.get("projectedPhaseInstances")
+        ),
+    )
 
 
 def _fuse(
@@ -246,6 +262,7 @@ def _evaluate_check(
         if outcome is not None:
             outcomes[view] = outcome
     _fuse(c, views, ranges, outcomes, weights, alignment, cfg)
+    register_paired_evidence(c, views, evidence)
 
 
 def _view_diagnostics(views: dict, diagnostics: dict, phase_sources: dict) -> dict:
@@ -297,7 +314,18 @@ def evaluate_series(
     )
     outcomes_by_view = {
         view: view_outcomes(
-            view, s, windows[view], profile, action, stance, cfg, paired_torso=paired.get(view)
+            view,
+            s,
+            windows[view],
+            profile,
+            action,
+            stance,
+            cfg,
+            paired_torso=paired.get(view),
+            phase_instances=(
+                diagnostics[view].get("phaseInstances")
+                or diagnostics[view].get("projectedPhaseInstances", ())
+            ),
         )
         for view, s in views.items()
     }

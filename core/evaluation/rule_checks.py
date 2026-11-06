@@ -90,6 +90,7 @@ def view_outcomes(
     supported_capabilities=None,
     *,
     paired_torso=None,
+    phase_instances=(),
 ) -> dict[str, RuleOutcome]:
     """一路视角上全部检查项经 ``evaluate_rules`` 的结论（以检查项 id 为键）；基线取起始实战式窗口，缺失时取开头几帧。"""
     baseline = view_windows.get(
@@ -103,6 +104,7 @@ def view_outcomes(
         baseline=baseline,
         params=cfg,
         paired_torso=paired_torso,
+        phase_instances=_phase_instance_frames(series["times"], phase_instances),
     )
     outcomes = evaluate_rules(
         series["landmarks"],
@@ -112,6 +114,17 @@ def view_outcomes(
         supported_capabilities=supported_capabilities,
     )
     return {o.spec.code: o for o in outcomes}
+
+
+def _phase_instance_frames(times, instances) -> dict:
+    """把已检测阶段的原始时间转换为本路帧下标，保留明确的次数身份。"""
+    times = np.asarray(times)
+    grouped = {}
+    for instance in instances:
+        scope = f"{instance['segment']}:{instance['phase']}"
+        frames = np.flatnonzero((times >= instance["start"]) & (times <= instance["end"]))
+        grouped.setdefault(scope, []).append((instance["repetition"], frames))
+    return {scope: tuple(values) for scope, values in grouped.items()}
 
 
 def synchronized_windows(
@@ -196,6 +209,7 @@ def _view_checks(
     supported_capabilities=None,
     *,
     paired_torso=None,
+    phase_instances=(),
 ) -> tuple[RuleCheck, ...]:
     """一路视角在给定相位窗口上的逐项结论（只列适用本视角的项）。"""
     outcomes = view_outcomes(
@@ -208,6 +222,7 @@ def _view_checks(
         cfg,
         supported_capabilities,
         paired_torso=paired_torso,
+        phase_instances=phase_instances,
     )
     return tuple(
         to_rule_check(c, view, outcomes[c["id"]], series["frames"], phase_reason)
@@ -243,6 +258,7 @@ def judge_view(
         stance,
         cfg,
         supported_capabilities,
+        phase_instances=diagnostics.get("phaseInstances", ()),
     )
     return checks, diagnostics
 
@@ -274,6 +290,10 @@ def judge_views(
                 cfg,
                 supported_capabilities,
                 paired_torso=paired.get(view),
+                phase_instances=(
+                    diagnostics[view].get("phaseInstances")
+                    or diagnostics[view].get("projectedPhaseInstances", ())
+                ),
             ),
             {**diagnostics[view], "phaseSource": sources[view]},
         )

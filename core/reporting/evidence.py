@@ -3,6 +3,7 @@
 
 解码只经 ``media.video_source.read_frame_at``；录像路径只经 ``SegmentLayout.resolve_contained`` 定位。
 """
+
 from __future__ import annotations
 
 import base64
@@ -19,34 +20,28 @@ from PIL import Image
 from core.media.segment_layout import SegmentLayout
 from core.media.video_source import read_frame_at
 
-# 规则代码 → 证据帧上高亮的关节
-RULE_JOINTS: dict[str, set[int]] = {
-    "stance_elbow": {11, 13, 15, 12, 14, 16},
-    "stance_rear_guard": {11, 12, 13, 14, 15, 16, 9, 10, 23, 24},
-    "guard_low": {11, 12, 13, 14, 15, 16, 9, 10},
-    "guard_back": {11, 12, 13, 14, 15, 16, 23, 24, 0},
-    "guard_elbow": {11, 12, 13, 14},
-    "shoulder_level": {11, 12, 13, 14, 15, 16},
-    "guard_recover": {11, 12, 13, 14, 15, 16, 9, 10},
-    "punch_predrop": {11, 12, 15, 16},
-    "punch_prepull": {0, 11, 12, 15, 16, 23, 24},
-    "punch_preelbow": {11, 12, 13, 14},
-    "punch_recover": {9, 10, 15, 16},
-    "guard_jaw": {9, 10, 15, 16},
-    "stance_knee": {23, 24, 25, 26, 27, 28},
-    "stance_toes": {27, 28, 29, 30, 31, 32},
-    "stance_torso": {11, 12, 23, 24},
-    "foot_flexed": {25, 26, 27, 28, 29, 30, 31, 32},
-    "hip_turn": {11, 12, 23, 24, 25, 26},
-    "arm_swing": {11, 12, 13, 14, 15, 16},
-}
-
 SKELETON_BONES = [
-    (11, 13), (13, 15), (12, 14), (14, 16), (11, 12),
-    (11, 23), (12, 24), (23, 24),
-    (23, 25), (25, 27), (27, 29), (29, 31), (27, 31),
-    (24, 26), (26, 28), (28, 30), (30, 32), (28, 32),
-    (9, 10), (0, 9), (0, 10)
+    (11, 13),
+    (13, 15),
+    (12, 14),
+    (14, 16),
+    (11, 12),
+    (11, 23),
+    (12, 24),
+    (23, 24),
+    (23, 25),
+    (25, 27),
+    (27, 29),
+    (29, 31),
+    (27, 31),
+    (24, 26),
+    (26, 28),
+    (28, 30),
+    (30, 32),
+    (28, 32),
+    (9, 10),
+    (0, 9),
+    (0, 10),
 ]
 
 
@@ -64,7 +59,9 @@ def is_valid_point(pt: Any) -> bool:
         return False
 
 
-def resolve_record_video_path(history_root: Path, record_id: str, view: str, videos: dict) -> Path | None:
+def resolve_record_video_path(
+    history_root: Path, record_id: str, view: str, videos: dict
+) -> Path | None:
     """历史记录里某一视角的受管视频：记录 id 合法，且逐级不越出历史目录、不经符号链接。"""
     if not isinstance(record_id, str) or not re.fullmatch(r"[0-9a-f]{32}", record_id):
         return None
@@ -79,12 +76,21 @@ def _pixel(pt: Any, h: int) -> tuple[int, int]:
     return int(round(float(pt[0]) * h)), int(round(float(pt[1]) * h))
 
 
-def _draw_bones(frame: np.ndarray, pts: np.ndarray, vmask: list, highlight_joints: set[int]) -> None:
+def _draw_bones(
+    frame: np.ndarray, pts: np.ndarray, vmask: list, highlight_joints: set[int]
+) -> None:
     h, w = frame.shape[:2]
     for j1, j2 in SKELETON_BONES:
-        if (j1 in highlight_joints and j2 in highlight_joints and
-                j1 < len(vmask) and j2 < len(vmask) and vmask[j1] and vmask[j2] and
-                j1 < len(pts) and j2 < len(pts)):
+        if (
+            j1 in highlight_joints
+            and j2 in highlight_joints
+            and j1 < len(vmask)
+            and j2 < len(vmask)
+            and vmask[j1]
+            and vmask[j2]
+            and j1 < len(pts)
+            and j2 < len(pts)
+        ):
             p1 = pts[j1]
             p2 = pts[j2]
             if is_valid_point(p1) and is_valid_point(p2):
@@ -94,7 +100,9 @@ def _draw_bones(frame: np.ndarray, pts: np.ndarray, vmask: list, highlight_joint
                     cv2.line(frame, (x1, y1), (x2, y2), (235, 99, 37), max(2, h // 250))
 
 
-def _draw_joints(frame: np.ndarray, pts: np.ndarray, vmask: list, highlight_joints: set[int] | None) -> None:
+def _draw_joints(
+    frame: np.ndarray, pts: np.ndarray, vmask: list, highlight_joints: set[int] | None
+) -> None:
     h, w = frame.shape[:2]
     for idx in range(min(len(pts), len(vmask))):
         if not vmask[idx] or not is_valid_point(pts[idx]):
@@ -116,7 +124,7 @@ def extract_evidence_frame(
     frame_idx: int,
     landmarks: list | None = None,
     valid_mask: list | None = None,
-    highlight_joints: set[int] | None = None
+    highlight_joints: set[int] | None = None,
 ) -> np.ndarray | None:
     """Extract single frame from OpenCV video, paint height-normalized landmarks and skeleton.
 

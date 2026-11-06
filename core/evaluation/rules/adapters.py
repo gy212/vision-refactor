@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 import numpy as np
@@ -11,6 +11,7 @@ import numpy as np
 from core.evaluation.rules.spec import (
     RULE_STATE_UNABLE,
     RULE_STATE_VIOLATION,
+    RuleEvidence,
     RuleOutcome,
     RuleState,
     SkipReason,
@@ -43,6 +44,76 @@ class RuleCheck:
     missing_landmarks: tuple[str, ...] = ()
     evidence_frames: tuple[int, ...] = ()
     measurements: tuple[dict, ...] = ()
+    evidence_details: tuple[dict, ...] = ()
+
+
+def _evidence_detail(
+    check: dict,
+    view: str,
+    outcome: RuleOutcome,
+    ref: str,
+    weight: float,
+    instance: RuleEvidence,
+) -> dict:
+    """将规则自己的依据声明保存到检查项，不让展示端重新推断。"""
+    spec = outcome.spec
+    return {
+        "ref": ref,
+        "checkId": check["id"],
+        "segment": check["segment"],
+        "phase": check["phase"],
+        "phaseLabel": check.get("phaseLabel", check["phase"]),
+        "role": check.get("role", ""),
+        "view": view,
+        "highlightJoints": list(spec.evidence_joints_by_view.get(view, spec.highlight_joints)),
+        "purpose": instance.purpose,
+        "repetition": instance.repetition,
+        "weight": weight,
+        "strategy": spec.strategy,
+        "requiredViews": list(spec.required_views),
+    }
+
+
+def _outcome_evidence(outcome: RuleOutcome) -> tuple[RuleEvidence, ...]:
+    """兼容未提供实例的新旧规则调用；已提供的来源不再按时间反推。"""
+    if outcome.evidence_instances:
+        return outcome.evidence_instances
+    purpose = "violation" if outcome.state == RULE_STATE_VIOLATION else "observation"
+    return tuple(RuleEvidence(frame, purpose=purpose) for frame in outcome.evidence_frames)
+
+
+def _register_frame(view: str, series: Mapping, index: int, evidence: dict) -> str:
+    """画面按机位与原视频帧号共享，检查含义留在各项自己的引用中。"""
+    ref = f"{view}:{series['frames'][index]}"
+    evidence[ref] = {
+        "id": ref,
+        "view": view,
+        "frame": series["frames"][index],
+        "timeSeconds": series["times"][index],
+        "landmarks": np.round(series["landmarks"][index], 5).tolist(),
+        "validMask": series["valid_mask"][index].tolist(),
+    }
+    return ref
+
+
+def _event_reference(
+    check: dict, time: float, events: Sequence[dict], phase_instances: Sequence[dict] | None
+) -> int | None:
+    """只在明确的同动作事件范围内关联次数，不能由断帧猜测动作身份。"""
+    if phase_instances is not None:
+        matches = {
+            phase["repetition"]
+            for phase in phase_instances
+            if phase["segment"] == check["segment"]
+            and phase["phase"] == check["phase"]
+            and phase["start"] <= time <= phase["end"]
+        }
+        return next(iter(matches)) if len(matches) == 1 else None
+    selected = [event for event in events if event["segment"] == check["segment"]]
+    for number, event in enumerate(selected, 1):
+        if event["start"] <= time <= event["end"]:
+            return number
+    return None
 
 
 def to_rule_check(
@@ -78,6 +149,10 @@ def to_rule_check(
         missing_landmarks=outcome.missing_landmarks,
         evidence_frames=tuple(int(frames[i]) for i in outcome.evidence_frames),
         measurements=outcome.measurements,
+        evidence_details=tuple(
+            _evidence_detail(check, view, outcome, f"{view}:{int(frames[item.frame])}", 1.0, item)
+            for item in _outcome_evidence(outcome)
+        ),
     )
 
 
@@ -88,6 +163,10 @@ def to_practice_check(
     base_weight: float,
     series: Mapping,
     evidence: dict,
+    *,
+    event_details: Sequence[dict] = (),
+    phase_instances: Sequence[dict] | None = None,
+    timing_source: str = "own_view",
 ) -> tuple[bool, float] | None:
     """把一路视角的练习结论写进现有 ``checks`` 字典（测量记录、视角问题、证据引用），返回融合输入。
 
@@ -111,15 +190,55 @@ def to_practice_check(
         return None
     issue = outcome.state == RULE_STATE_VIOLATION
     measurement["issueObserved"] = issue
-    for index in outcome.evidence_frames:
-        ref = f"{view}:{series['frames'][index]}"
-        evidence[ref] = {
-            "id": ref,
-            "view": view,
-            "frame": series["frames"][index],
-            "timeSeconds": series["times"][index],
-            "landmarks": np.round(series["landmarks"][index], 5).tolist(),
-            "validMask": series["valid_mask"][index].tolist(),
-        }
-        check["evidence"].append(ref)
+    for instance in _outcome_evidence(outcome):
+        index = instance.frame
+        ref = _register_frame(view, series, index, evidence)
+        if ref not in check["evidence"]:
+            check["evidence"].append(ref)
+        detail = _evidence_detail(check, view, outcome, ref, base_weight * quality, instance)
+        if not outcome.evidence_instances:
+            detail["repetition"] = _event_reference(
+                check, series["times"][index], event_details, phase_instances
+            )
+        detail["timingSource"] = timing_source
+        check.setdefault("evidenceDetails", []).append(detail)
     return issue, base_weight * quality
+
+
+def register_paired_evidence(check: dict, views: dict, evidence: dict) -> None:
+    """为双面原始数据测量保留同采集时刻的参照面，不伪造该面的独立判断。"""
+    required = check.get("requiredViews", [])
+    if len(required) < 2:
+        return
+    originals = tuple(check.get("evidenceDetails", []))
+    saved = {(detail["ref"], detail.get("repetition")) for detail in originals}
+    for detail in originals:
+        source = evidence[detail["ref"]]
+        for view in required:
+            if view == detail["view"] or view not in views:
+                continue
+            series = views[view]
+            indices = np.flatnonzero(np.asarray(series["times"]) == source["timeSeconds"])
+            if not len(indices):
+                continue
+            index = int(indices[0])
+            joints = check["evidenceJointsByView"].get(view, check["highlightJoints"])
+            if not series["valid_mask"][index, joints].all():
+                continue
+            ref = f"{view}:{series['frames'][index]}"
+            identity = (ref, detail.get("repetition"))
+            if identity in saved:
+                continue
+            _register_frame(view, series, index, evidence)
+            if ref not in check["evidence"]:
+                check["evidence"].append(ref)
+            check["evidenceDetails"].append(
+                {
+                    **detail,
+                    "ref": ref,
+                    "view": view,
+                    "purpose": "reference",
+                    "highlightJoints": list(joints),
+                }
+            )
+            saved.add(identity)

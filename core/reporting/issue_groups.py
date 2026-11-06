@@ -38,6 +38,8 @@ def group_action_issues(checks: list[NormalizedCheck], action: str) -> list[Norm
                     f"{c.phase_label}\n{c.measurements_summary}" for c in group
                 ),
                 audit_logs=[entry for c in group for entry in c.audit_logs],
+                evidence_details=[entry for c in group for entry in c.evidence_details],
+                members=tuple(group),
                 review="confirmed" if confirmed else "pending",
                 review_display="教师已确认" if confirmed else "",
             )

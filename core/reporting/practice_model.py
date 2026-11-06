@@ -10,7 +10,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
-from core.evaluation.rules.sanda_v5 import ACTION_SEGMENTS, ACTIONS, PHASES, STANCES, build_checks
+from core.evaluation.rules.sanda_v5 import ACTION_SEGMENTS, ACTIONS, PHASES, STANCES
+from core.reporting.saved_results import MISSING_CHECKS_NOTE, saved_checks
 from core.reporting.text import format_fusion
 
 STATUS_LABELS = {
@@ -104,6 +105,8 @@ class NormalizedCheck:
     measurements: list[dict] = field(default_factory=list)
     fusion: dict | None = None
     audit_logs: list[dict] = field(default_factory=list)
+    evidence_details: list[dict] = field(default_factory=list)
+    members: tuple[NormalizedCheck, ...] = ()
 
 
 @dataclass
@@ -258,7 +261,7 @@ def get_headline_summary(
     if c.total_checks == 0:
         return _headline(
             "暂无检查记录",
-            "当前练习记录中未包含动作检查项数据。",
+            MISSING_CHECKS_NOTE,
             needs_rerecord,
             "info",
             "info",
@@ -411,21 +414,6 @@ def _build_header(record: dict, result: dict) -> ReportHeader:
     )
 
 
-def _raw_checks(result: dict, action: str, stance: str) -> list[dict]:
-    """记录里的检查项；旧记录没有时按动作目录生成全部"无法判断"的占位项。"""
-    raw_checks = result.get("checks")
-    if isinstance(raw_checks, list) and raw_checks:
-        return raw_checks
-    placeholders = []
-    for bc in build_checks(action, stance, pose_variant=result.get("poseVariant", "full")):
-        item = dict(bc)
-        item["status"] = "unable"
-        item["reason"] = item.get("blockedReason") or "旧版记录未包含详细规则检查清单"
-        item["review"] = "pending"
-        placeholders.append(item)
-    return placeholders
-
-
 def _review_map(result: dict) -> dict[str, list[dict]]:
     review_map: dict[str, list[dict]] = {}
     review_history = result.get("reviewHistory", [])
@@ -480,6 +468,9 @@ def _normalize_check(cid: str, c: dict, audit_logs: list[dict]) -> NormalizedChe
         reason=reason,
         blocked_reason=blocked_reason,
         evidence_refs=c.get("evidence", []) if isinstance(c.get("evidence"), list) else [],
+        evidence_details=(
+            c.get("evidenceDetails", []) if isinstance(c.get("evidenceDetails"), list) else []
+        ),
         measurements_summary=format_fusion(c) if fusion or measurements else "",
         measurements=measurements,
         fusion=fusion,
@@ -600,7 +591,7 @@ def build_report_model(record: dict) -> NormalizedReportModel:
     needs_rerecord = bool(result.get("needsRerecord", False))
 
     dedup: dict[str, dict] = {}
-    for c in _raw_checks(result, header.action, header.stance):  # 按 id 去重，后出现者覆盖
+    for c in saved_checks(result):  # 按 id 去重，后出现者覆盖
         cid = c.get("id")
         if cid:
             dedup[cid] = c
@@ -613,6 +604,8 @@ def build_report_model(record: dict) -> NormalizedReportModel:
     assert counts.verify_conservation(), f"Conservation invariant violated: {counts}"
 
     headline = get_headline_summary(counts, all_checks, needs_rerecord)
+    if not all_checks and result.get("summary"):
+        headline.subtitle = f"保存的摘要：{result['summary']} {headline.subtitle}"
     repetitions = _dict_field(result, "repetitions")
     if repetitions and repetitions["detected"] != repetitions["expected"]:
         # Tk 与 HTML 共用此横幅；只写原始 summary 不会进入结果页。

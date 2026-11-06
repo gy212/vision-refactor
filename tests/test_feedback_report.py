@@ -1,4 +1,5 @@
 """Unit tests for core.feedback_report and HTML export integration."""
+
 from datetime import datetime, timezone
 import html
 from pathlib import Path
@@ -40,7 +41,7 @@ def make_synthetic_check(
     status: str = "candidate",
     review: str = "pending",
     reason: str = "前手大小臂夹角不足90°",
-    evidence: list[str] | None = None
+    evidence: list[str] | None = None,
 ) -> dict:
     return {
         "id": f"{segment}:{phase}:{role}:{code}",
@@ -58,21 +59,23 @@ def make_synthetic_check(
         "reason": reason,
         "blockedReason": "",
         "evidence": evidence or ["front:0"],
-        "measurements": [{
-            "view": "front",
-            "validFrames": 20,
-            "totalFrames": 24,
-            "violationRatio": 0.8,
-            "values": [{"name": "肘角", "median": 82.5, "min": 78.0, "max": 88.0, "unit": "°"}]
-        }],
+        "measurements": [
+            {
+                "view": "front",
+                "validFrames": 20,
+                "totalFrames": 24,
+                "violationRatio": 0.8,
+                "values": [{"name": "肘角", "median": 82.5, "min": 78.0, "max": 88.0, "unit": "°"}],
+            }
+        ],
         "fusion": {
             "method": "action_rule_quality_weighted_v1",
             "baseWeights": {"front": 0.5, "side": 0.5},
             "effectiveWeights": {"front": 0.5, "side": 0.5},
             "support": 0.8,
             "threshold": 0.5,
-            "calibrationStatus": "unvalidated"
-        }
+            "calibrationStatus": "unvalidated",
+        },
     }
 
 
@@ -84,14 +87,30 @@ def make_synthetic_record(
     checks: list[dict] | None = None,
     needs_rerecord: bool = False,
     evidence: list[dict] | None = None,
-    videos: dict[str, str] | None = None
+    videos: dict[str, str] | None = None,
 ) -> dict:
     if checks is None:
         checks = [
-            make_synthetic_check(code="stance_elbow", phase="start", status="candidate", review="pending"),
-            make_synthetic_check(code="guard_low", segment="front_straight", phase="motion", status="not_observed"),
-            make_synthetic_check(code="guard_back", segment="rear_straight", phase="motion", status="unable", reason="侧面视角被遮挡"),
-            make_synthetic_check(code="vertical_fist", segment="front_straight", phase="finish", status="pending_rule", reason="需教师人工查看立拳"),
+            make_synthetic_check(
+                code="stance_elbow", phase="start", status="candidate", review="pending"
+            ),
+            make_synthetic_check(
+                code="guard_low", segment="front_straight", phase="motion", status="not_observed"
+            ),
+            make_synthetic_check(
+                code="guard_back",
+                segment="rear_straight",
+                phase="motion",
+                status="unable",
+                reason="侧面视角被遮挡",
+            ),
+            make_synthetic_check(
+                code="vertical_fist",
+                segment="front_straight",
+                phase="finish",
+                status="pending_rule",
+                reason="需教师人工查看立拳",
+            ),
         ]
 
     if evidence is None:
@@ -101,14 +120,16 @@ def make_synthetic_record(
         lms[11] = [0.4, 0.3, 0.0, 1.0]
         lms[13] = [0.35, 0.45, 0.0, 1.0]
         lms[15] = [0.3, 0.4, 0.0, 1.0]
-        evidence = [{
-            "id": "front:0",
-            "view": "front",
-            "frame": 0,
-            "timeSeconds": 0.125,
-            "landmarks": lms,
-            "validMask": [True] * 33
-        }]
+        evidence = [
+            {
+                "id": "front:0",
+                "view": "front",
+                "frame": 0,
+                "timeSeconds": 0.125,
+                "landmarks": lms,
+                "validMask": [True] * 33,
+            }
+        ]
 
     return {
         "schemaVersion": 1,
@@ -123,7 +144,7 @@ def make_synthetic_record(
         "status": "ready",
         "sourcePaths": {
             "front": "D:/CodeProject/vision/outputs/front.mp4",
-            "side": "D:/CodeProject/vision/outputs/side.mp4"
+            "side": "D:/CodeProject/vision/outputs/side.mp4",
         },
         "videos": videos or {"front": "front.mp4", "side": "side.mp4"},
         "result": {
@@ -152,7 +173,7 @@ def make_synthetic_record(
                     "bodyValidFrames": 45,
                     "totalFrames": 48,
                     "jointValidRatios": [1.0] * 33,
-                    "reason": "正常"
+                    "reason": "正常",
                 }
             },
             "capture": {
@@ -164,16 +185,12 @@ def make_synthetic_record(
                     "analyzedFrames": 48,
                     "inferenceWidth": 256,
                     "inferenceHeight": 256,
-                    "analysisSeconds": 0.5
+                    "analysisSeconds": 0.5,
                 }
             },
-            "alignment": {
-                "method": "action_peaks",
-                "sideOffsetSeconds": 0.02,
-                "reliable": True
-            },
-            "reviewHistory": []
-        }
+            "alignment": {"method": "action_peaks", "sideOffsetSeconds": 0.02, "reliable": True},
+            "reviewHistory": [],
+        },
     }
 
 
@@ -192,6 +209,7 @@ def make_dummy_video(path: Path, width: int = 120, height: int = 120, frames: in
 # ---------------------------------------------------------------------------
 # Test 1: Item Conservation Law and Review States
 # ---------------------------------------------------------------------------
+
 
 def test_status_counts_conservation_law():
     """Verify strict conservation invariant across all categories and teacher review transitions."""
@@ -242,59 +260,81 @@ def test_status_counts_conservation_law():
 # Test 2: 7-Level Priority Headline Hierarchy
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.parametrize(
     "checks,needs_rerecord,expected_title,expected_level",
     [
         # Level 1: All unable
         (
-            [make_synthetic_check(code="c1", status="unable"), make_synthetic_check(code="c2", status="unable")],
+            [
+                make_synthetic_check(code="c1", status="unable"),
+                make_synthetic_check(code="c2", status="unable"),
+            ],
             True,
             "本次未能完成有效判断",
-            "error"
+            "error",
         ),
         # Level 2: Zero candidates, zero not_observed, only pending_rule
         (
-            [make_synthetic_check(code="c1", status="pending_rule"), make_synthetic_check(code="c2", status="pending_rule")],
+            [
+                make_synthetic_check(code="c1", status="pending_rule"),
+                make_synthetic_check(code="c2", status="pending_rule"),
+            ],
             False,
             "本次暂无自动检查结果",
-            "info"
+            "info",
         ),
         # Level 3: Zero candidates, pending_rule > 0, not_observed > 0
         (
-            [make_synthetic_check(code="c1", status="not_observed"), make_synthetic_check(code="c2", status="pending_rule")],
+            [
+                make_synthetic_check(code="c1", status="not_observed"),
+                make_synthetic_check(code="c2", status="pending_rule"),
+            ],
             False,
             "已检查项目未发现问题，仍有待判断项目",
-            "info"
+            "info",
         ),
         # Level 4: Zero candidates, unable > 0, not_observed > 0
         (
-            [make_synthetic_check(code="c1", status="not_observed"), make_synthetic_check(code="c2", status="unable")],
+            [
+                make_synthetic_check(code="c1", status="not_observed"),
+                make_synthetic_check(code="c2", status="unable"),
+            ],
             False,
             "分析完成，部分项目暂无法判断",
-            "warning"
+            "warning",
         ),
         # Level 5: Candidate > 0, unable > 0
         (
-            [make_synthetic_check(code="c1", status="candidate"), make_synthetic_check(code="c2", status="unable")],
+            [
+                make_synthetic_check(code="c1", status="candidate"),
+                make_synthetic_check(code="c2", status="unable"),
+            ],
             False,
             "分析完成，部分项目暂无法判断",
-            "warning"
+            "warning",
         ),
         # Level 6: Candidate > 0, unable == 0
         (
-            [make_synthetic_check(code="c1", status="candidate"), make_synthetic_check(code="c2", status="not_observed")],
+            [
+                make_synthetic_check(code="c1", status="candidate"),
+                make_synthetic_check(code="c2", status="not_observed"),
+            ],
             False,
             "发现疑似动作问题，请核对依据",
-            "warning"
+            "warning",
         ),
         # Level 7: Candidate == 0, unable == 0, pending == 0
         (
-            [make_synthetic_check(code="c1", status="not_observed"), make_synthetic_check(code="c2", status="not_observed")],
+            [
+                make_synthetic_check(code="c1", status="not_observed"),
+                make_synthetic_check(code="c2", status="not_observed"),
+            ],
             False,
             "已检查项目未发现问题",
-            "success"
+            "success",
         ),
-    ]
+    ],
 )
 def test_headline_priority_hierarchy(checks, needs_rerecord, expected_title, expected_level):
     rec = make_synthetic_record(checks=checks, needs_rerecord=needs_rerecord)
@@ -308,6 +348,7 @@ def test_headline_priority_hierarchy(checks, needs_rerecord, expected_title, exp
 # ---------------------------------------------------------------------------
 # Test 3: Prohibit Grading Artifacts
 # ---------------------------------------------------------------------------
+
 
 def test_prohibit_grading_artifacts():
     """Ensure no scores, penalty points, or pass rates exist in models or HTML report."""
@@ -334,6 +375,7 @@ def test_prohibit_grading_artifacts():
 # Test 4: Same-Reason Grouping
 # ---------------------------------------------------------------------------
 
+
 def test_same_reason_grouping():
     """Group checks with identical reason within same phase/view into collapsible clusters."""
     checks = [
@@ -358,6 +400,7 @@ def test_same_reason_grouping():
 # Test 5: Legacy Record Compatibility
 # ---------------------------------------------------------------------------
 
+
 def test_legacy_record_compatibility():
     """Ensure legacy or degraded records missing fields normalize gracefully without error."""
     legacy_rec = {
@@ -367,18 +410,16 @@ def test_legacy_record_compatibility():
         "action": "stance",
         "stance": "right",
         "createdAt": "2026-09-20T10:00:00",  # Naive UTC string
-        "result": {
-            "backend": "unknown_legacy",
-            "needsRerecord": False
-        }
+        "result": {"backend": "unknown_legacy", "needsRerecord": False},
     }
     model = build_report_model(legacy_rec)
     assert model.header.student_id == "002"
     assert model.header.student_name == ""
     assert "旧版规则检查记录" in model.header.backend_description
-    assert model.counts.total_checks > 0
+    assert model.counts.total_checks == 0
     assert model.counts.verify_conservation()
-    assert all(c.status == "unable" for c in model.all_checks)
+    assert model.all_checks == []
+    assert "未保存详细检查清单" in model.headline.subtitle
     assert len(model.phases) == 2
     assert model.phases[0].title == "开始实战式"
     assert model.phases[1].title == "结束实战式"
@@ -391,6 +432,7 @@ def test_legacy_record_compatibility():
 # ---------------------------------------------------------------------------
 # Test 6: Diagram-Design Compliant SVG Timeline
 # ---------------------------------------------------------------------------
+
 
 def test_phase_timeline_svg_conformance():
     """Verify inline SVG timeline complies strictly with diagram-design Process/Timeline rules."""
@@ -424,6 +466,7 @@ def test_phase_timeline_svg_conformance():
 # Test 7: Safe Evidence Frame Extraction
 # ---------------------------------------------------------------------------
 
+
 def test_safe_evidence_frame_extraction(tmp_path):
     """Verify OpenCV frame reading, height-normalized landmark coordinates, and boundary safety."""
     video_file = make_dummy_video(tmp_path / "test_video.avi", width=160, height=120, frames=10)
@@ -438,7 +481,7 @@ def test_safe_evidence_frame_extraction(tmp_path):
         frame_idx=2,
         landmarks=landmarks,
         valid_mask=vmask,
-        highlight_joints={11, 13, 15}
+        highlight_joints={11, 13, 15},
     )
     assert frame is not None
     assert frame.shape == (120, 160, 3)
@@ -461,6 +504,7 @@ def test_safe_evidence_frame_extraction(tmp_path):
 # ---------------------------------------------------------------------------
 # Test 8: Self-Contained Offline HTML Report & Image Embedding
 # ---------------------------------------------------------------------------
+
 
 def test_render_html_report_self_contained(tmp_path):
     """Verify HTML report is 100% offline, contains Base64 images, and embeds SVG."""
@@ -497,6 +541,7 @@ def test_render_html_report_self_contained(tmp_path):
 # Test 9: HTML Escaping and Path Desensitization
 # ---------------------------------------------------------------------------
 
+
 def test_html_escaping_and_path_desensitization():
     """Verify strict HTML escaping against XSS and stripping of local machine paths."""
     malicious_name = '<script>alert("xss")</script>'
@@ -506,9 +551,7 @@ def test_html_escaping_and_path_desensitization():
     rec = make_synthetic_record(
         student_id="<img/onerror=1>",
         student_name=malicious_name,
-        checks=[
-            make_synthetic_check(code="stance_elbow", reason=malicious_reason)
-        ]
+        checks=[make_synthetic_check(code="stance_elbow", reason=malicious_reason)],
     )
     rec["result"]["diagnostics"]["front"]["reason"] = f"文件位于 {secret_path}"
 
@@ -529,6 +572,7 @@ def test_html_escaping_and_path_desensitization():
 # Test 10: FeedbackHistory Export Integration
 # ---------------------------------------------------------------------------
 
+
 def test_feedback_history_export_html(tmp_path):
     """HTML 报告原子导出；不再接受 TXT，保留历史目录保护。"""
     history_root = tmp_path / "history"
@@ -541,7 +585,12 @@ def test_feedback_history_export_html(tmp_path):
         res = make_synthetic_record()["result"]
         return res
 
-    identity = {"studentId": "001", "studentName": "张同学", "action": "straight_combo", "stance": "left"}
+    identity = {
+        "studentId": "001",
+        "studentName": "张同学",
+        "action": "straight_combo",
+        "stance": "left",
+    }
     saved = store.add(identity, source_path, None, analyzer=dummy_analyzer)
     record_id = saved["id"]
 
