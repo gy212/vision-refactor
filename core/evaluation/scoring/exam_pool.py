@@ -265,6 +265,8 @@ def rule_reports(
     """两池的规则目录动作按左式判定；同一动作的正侧匹配按出现顺序成对，经 ``judge_views`` 共用同步相位。
 
     结论按正面池、侧面池的匹配顺序排列；没有同动作另一路的匹配单独判定。
+    每次识别的首条报告保存 ``sharedActionRecord``；同次报告的
+    ``sharedActionRecordReport`` 指向该首条在返回列表中的下标（从 0 开始）。
     """
     # 考试始终提取 heavy；练习配置不能改变考试规则的模型资格。
     cfg = replace(cfg, pose_variant=POSE_VARIANT)
@@ -286,7 +288,18 @@ def rule_reports(
         judged[id(side)] = judge_views({"side": side["series"]}, side["action"], EXAM_STANCE, cfg)[
             "side"
         ]
-    return [_report(t, judged[id(t)]) for t in front_targets + side_targets]
+    reports, record_reports = [], {}
+    for target in front_targets + side_targets:
+        item = judged[id(target)]
+        report = _report(target, item)
+        record = item[1]["sharedActionRecord"]
+        # 一对正侧报告属于同一次动作识别；只在第一条保存完整记录。
+        if id(record) not in record_reports:
+            record_reports[id(record)] = len(reports)
+            report["sharedActionRecord"] = record
+        report["sharedActionRecordReport"] = record_reports[id(record)]
+        reports.append(report)
+    return reports
 
 
 def _check_stop(stop_evt: Event) -> None:

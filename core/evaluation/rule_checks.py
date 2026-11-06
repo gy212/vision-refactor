@@ -16,6 +16,7 @@ from collections.abc import Sequence
 import numpy as np
 
 from core.evaluation.action_timing import shared_timeline
+from core.evaluation.action_record import shared_action_record
 from core.evaluation.paired_torso import paired_torso_measurements
 from core.evaluation.rules.adapters import RuleCheck, to_rule_check
 from core.evaluation.rules.engine import evaluate_rules
@@ -168,22 +169,7 @@ def judge_view(
     supported_capabilities=None,
 ) -> tuple[tuple[RuleCheck, ...], dict]:
     """一路视角的逐项结论与相位诊断；没有同步的另一路时用它，不做正侧融合。"""
-    all_windows, all_diagnostics, _, _ = synchronized_windows({view: series}, action, stance, cfg)
-    windows, diagnostics = all_windows[view], all_diagnostics[view]
-    checks = _view_checks(
-        view,
-        series,
-        windows,
-        diagnostics.get("reason", ""),
-        action,
-        stance,
-        cfg,
-        supported_capabilities,
-        phase_instances=diagnostics.get("phaseInstances", ()),
-        evidence_views={view: series},
-        evidence_diagnostics={view: diagnostics},
-    )
-    return checks, diagnostics
+    return judge_views({view: series}, action, stance, cfg, supported_capabilities)[view]
 
 
 def judge_views(
@@ -194,7 +180,8 @@ def judge_views(
     相位与练习一样经 ``synchronized_windows`` 准备，诊断另带 ``phaseSource``；逐视角报告。
     躯干朝向在正面项中引用双机位共同证据，其余项仍按各路独立测量。
     """
-    windows, diagnostics, _alignment, sources = synchronized_windows(views, action, stance, cfg)
+    windows, diagnostics, alignment, sources = synchronized_windows(views, action, stance, cfg)
+    record = shared_action_record(action, stance, diagnostics, alignment, sources)
     profile = rule_profile(action, stance, cfg)
     paired = (
         paired_torso_measurements(views)
@@ -220,7 +207,7 @@ def judge_views(
                     or diagnostics[view].get("projectedPhaseInstances", ())
                 ),
             ),
-            {**diagnostics[view], "phaseSource": sources[view]},
+            {**diagnostics[view], "phaseSource": sources[view], "sharedActionRecord": record},
         )
         for view, series in views.items()
     }

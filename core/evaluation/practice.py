@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Callable
 
 from core.evaluation.paired_torso import paired_torso_measurements
+from core.evaluation.action_record import shared_action_record
 from core.evaluation.action_catalog import action_definition
 from core.evaluation.rule_checks import rule_series, synchronized_windows, view_outcomes
 from core.evaluation.rules.adapters import to_practice_check
@@ -340,6 +341,9 @@ def evaluate_series(
         "inputViews": sorted(views),
         "capture": {view: series.get("capture", {}) for view, series in views.items()},
         "alignment": alignment,
+        "sharedActionRecord": shared_action_record(
+            action, stance, diagnostics, alignment, phase_sources
+        ),
         "diagnostics": _view_diagnostics(views, diagnostics, phase_sources),
         "phaseWindows": _phase_ranges(views, windows),
         "config": asdict(action_config(cfg, action)),
