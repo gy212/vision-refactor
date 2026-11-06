@@ -184,9 +184,12 @@ def test_quality_reduces_weight_and_equal_conflict_stays_undecided(monkeypatch):
     front, side = pose_series(), pose_series()
     side["landmarks"][:, 15, :2] = (0.4, 0.6)
     side["valid_mask"][[1, 3, 5, 7], 13] = False
-    monkeypatch.setattr(
-        rule_checks_mod, "phase_windows", lambda *args: {("stance", "start"): np.arange(10)}
-    )
+
+    def stance_window(series, action, stance, cfg, diagnostics):
+        diagnostics["phaseInstances"] = []
+        return {("stance", "start"): np.arange(10)}
+
+    monkeypatch.setattr("core.evaluation.action_timing.phase_windows", stance_window)
     weights = _default_front_weights()
     weights["stance"]["stance_elbow"] = 0.3
     cfg = FeedbackConfig(front_weights=weights)
@@ -206,7 +209,7 @@ def test_different_action_stages_are_not_fused():
     front, side = pose_series(), pose_series()
     side["times"] = [t + 2 for t in side["times"]]
     check = _check(evaluate_series("stance", "left", {"front": front, "side": side}))
-    assert check["status"] == "unable" and "时间不对应" in check["reason"]
+    assert check["status"] == "unable" and "侧面录像未完整覆盖" in check["reason"]
 
 
 def test_action_profiles_and_primary_view_limit_are_explicit():
@@ -656,38 +659,33 @@ def test_phase_search_ignores_lost_entry_and_exit_and_keeps_repeated_combos():
     assert len(contiguous_runs(windows[("rear_straight", "finish")])) == 2
 
 
-def test_pair_alignment_uses_multiple_peaks_and_rejects_count_disagreement():
+def test_shared_timestamps_are_not_guessed_from_separate_peak_detections():
     front, side = combo_series(), combo_series()
     side["times"] = [t + 0.2 for t in side["times"]]
     data = evaluate_series("straight_combo", "left", {"front": front, "side": side})
-    assert data["alignment"]["sideOffsetSeconds"] == pytest.approx(-0.2)
-    assert data["alignment"]["anchors"] == 2 and data["alignment"]["reliable"]
+    assert data["alignment"]["sideOffsetSeconds"] == 0
+    assert data["alignment"]["timingSource"] == "side"
+    assert (
+        data["diagnostics"]["front"]["projectedPhaseInstances"]
+        == data["diagnostics"]["side"]["phaseInstances"]
+    )
     for start, wrist in ((50, 15), (67, 16)):
         front["landmarks"][start : start + 5, wrist, 0] += [0.10, 0.20, 0.28, 0.20, 0.10]
-    data = evaluate_series("straight_combo", "left", {"front": front, "side": side})
-    assert not data["alignment"]["reliable"]
-    assert all(
-        c["status"] in {"unable", "pending_rule"}
-        for c in data["checks"]
-        if c.get("fusion", {}).get("method") != "primary_view"
-    )
-    assert _check(data, "stance_width")["status"] == "candidate"
+    revised = evaluate_series("straight_combo", "left", {"front": front, "side": side})
+    assert revised["phaseWindows"] == data["phaseWindows"]
+    assert revised["diagnostics"]["front"]["eventDetails"] == []
 
 
-def test_incomplete_combo_is_not_overwritten_by_other_view():
+def test_target_view_motion_does_not_replace_shared_source_result():
     front, side = combo_series(), combo_series()
     front["landmarks"][30:35, 16, 0] = 0.75
     data = evaluate_series("straight_combo", "left", {"front": front, "side": side})
-    assert data["diagnostics"]["front"]["phaseSource"] == "own_view"
-    assert "次数或顺序" in data["diagnostics"]["front"]["reason"]
-    for check in data["checks"]:
-        if check["phase"] != "motion":
-            continue
-        if check["code"] == "guard_back" and not check["blockedReason"]:
-            assert check["status"] == "not_observed"
-            assert {m["view"] for m in check["measurements"]} == {"side"}
-        else:
-            assert check["status"] in {"unable", "pending_rule"}
+    assert data["diagnostics"]["front"]["phaseSource"] == "side_synchronized_timing"
+    assert (
+        data["diagnostics"]["front"]["projectedPhaseInstances"]
+        == data["diagnostics"]["side"]["phaseInstances"]
+    )
+    assert data["phaseWindows"]["front"] == data["phaseWindows"]["side"]
 
 
 def test_1080p_30fps_analysis_keeps_every_frame(tmp_path):

@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """评估层（L3）的公共 API：模板、匹配、计分、侧别、时间轴切分、学生练习、技术指标（入口层只从这里导入）。"""
+
 from core.evaluation.body_sides import (
     center_x,
     facing_direction,
@@ -18,7 +19,11 @@ from core.evaluation.matching.body_core import (
     match_body_core_template,
 )
 from core.evaluation.matching.dtw import subsequence_dtw, subsequence_dtw_with_path
-from core.evaluation.matching.dual import DualCompareResult, compare_dual_streams, compare_dual_templates
+from core.evaluation.matching.dual import (
+    DualCompareResult,
+    compare_dual_streams,
+    compare_dual_templates,
+)
 from core.evaluation.matching.engine import (
     CompareResult,
     QueryMatch,
@@ -45,8 +50,13 @@ from core.evaluation.matching.repetition import (
     score_view,
     valid_mask_from_raw,
 )
-from core.evaluation.phases import align_views, phase_windows, share_phase_timing
-from core.evaluation.practice import analyze_practice, create_practice_engine, evaluate_series, extract_series
+from core.evaluation.phases import phase_windows
+from core.evaluation.practice import (
+    analyze_practice,
+    create_practice_engine,
+    evaluate_series,
+    extract_series,
+)
 from core.evaluation.rule_checks import (
     ACTION_BY_NAME,
     judge_view,
@@ -69,9 +79,21 @@ from core.evaluation.rules.sanda_v5 import (
     rule_profile,
 )
 from core.evaluation.scoring import exam_pool, schemes
-from core.evaluation.scoring.cost import POSE33_BASELINE, avg_cost_of, baseline_for, score_from_avg_cost
+from core.evaluation.scoring.cost import (
+    POSE33_BASELINE,
+    avg_cost_of,
+    baseline_for,
+    score_from_avg_cost,
+)
 from core.evaluation.scoring.kick_quality import score_kick_quality
-from core.evaluation.scoring.schemes import DUAL_STREAM, DUAL_TEMPLATE, EXAM_POOL, SCHEMES, Scheme, scheme
+from core.evaluation.scoring.schemes import (
+    DUAL_STREAM,
+    DUAL_TEMPLATE,
+    EXAM_POOL,
+    SCHEMES,
+    Scheme,
+    scheme,
+)
 from core.evaluation.segmentation import (
     active_window,
     classify_single_view,
@@ -168,7 +190,6 @@ __all__ = [
     "TemplateStore",
     "WRIST_REQUIRED_INDICES",
     "active_window",
-    "align_views",
     "analyze_practice",
     "assert_feature_layout_match",
     "attach_contract",
@@ -230,7 +251,6 @@ __all__ = [
     "score_kick_quality",
     "score_view",
     "select_representative_cycle",
-    "share_phase_timing",
     "side_label",
     "sides_for_stance",
     "split_front_side",

@@ -1,97 +1,29 @@
 # -*- coding: utf-8 -*-
-"""规则判定的相位窗口（start/motion/finish/end）、正侧双视角对齐与同步相位时间共享（原 ``feedback_phases``）。
+"""从选定机位识别一次动作及其相位窗口（start/motion/finish/end）。
 
 考试、学生练习与离线处理的规则都按这里的窗口取帧（D-3）；保留原始点及无效帧，不影响模板评分链路。
 """
+
 from __future__ import annotations
 
 import math
 
 import numpy as np
 
-from core.evaluation.body_sides import sides_for_stance
-from core.evaluation.rules.sanda_v5 import action_segments
+from core.evaluation.action_events import action_events
+from core.evaluation.action_catalog import action_segments
+from core.evaluation.stance_windows import stable_guard_windows
+from core.evaluation.phase_instances import phase_instance
 from core.foundation.geometry import torso_length
 from core.foundation.signal import contiguous_runs
-
-
-def stable_guard_windows(lm: np.ndarray, mask: np.ndarray, torso: np.ndarray, edge: int, cfg) -> list[np.ndarray]:
-    """长度为 ``edge`` 的滑窗中，护位链保持稳定且手已抬到护位的窗口（按起点升序）。"""
-    n = len(lm)
-    wrists = (lm[:, [15, 16], :2] - lm[:, [11, 12], :2]) / np.maximum(torso[:, None, None], 1e-4)
-    stable = []
-    for start in range(n - edge + 1):
-        ix = np.arange(start, start + edge)
-        if not (torso[ix] > 1e-4).all():
-            continue
-        # 每窗至少一条完整可见的护位链。远侧遮挡不否定近侧，但可见的移动手仍否定稳定。
-        visible = 0
-        raised = False
-        for arm, (sh, wr, hip) in enumerate(((11, 15, 23), (12, 16, 24))):
-            if not mask[ix][:, [sh, wr, hip]].all():
-                continue
-            visible += 1
-            relative = wrists[ix, arm]
-            if (np.max(np.linalg.norm(relative - np.median(relative, axis=0), axis=1)) > cfg.return_distance / 2
-                    or np.max(np.linalg.norm(lm[ix, hip, :2] - np.median(lm[ix, hip, :2], axis=0), axis=1)) > .15 * np.median(torso[ix])
-                    or not (lm[ix, wr, 1] < lm[ix, hip, 1] + .1 * torso[ix]).all()):
-                visible = 0
-                break
-            raised |= bool((lm[ix, wr, 1] <= lm[ix, sh, 1] + cfg.guard_wrist_height * torso[ix]).all())
-        # 至少一只手抬到护位：直立双手下垂不算实战式（D-3，考生先直立再摆实战式）；单手掉低仍算，交给检查项判定。
-        if visible and raised:
-            stable.append(ix)
-    return stable
-
-
-def _segment_events(lm: np.ndarray, mask: np.ndarray, times: np.ndarray, torso: np.ndarray, baseline: np.ndarray,
-                    segments: list[str], stance: str, cfg) -> list[tuple[str, int, int, int]]:
-    """各动作段从护位离开再回收的完整事件 ``(段, 起点, 峰值, 终点)``，按峰值时间排序。"""
-    n = len(lm)
-    events = []
-    for segment in segments:
-        role = "front" if segment.startswith("front_") else "rear"
-        sh, _, wr, hip_index, _, ankle, _, _ = sides_for_stance(role, stance)
-        anchor, moving = (hip_index, ankle) if "kick" in segment else (sh, wr)
-        valid = mask[:, [anchor, moving]].all(axis=1) & (torso > 1e-4)
-        if not valid[baseline].all():
-            continue
-        relative = (lm[:, moving, :2] - lm[:, anchor, :2]) / np.maximum(torso[:, None], 1e-4)
-        distance = np.linalg.norm(relative - np.median(relative[baseline], axis=0), axis=1)
-        active_start = None
-        last_valid = int(baseline[-1])
-        rest_index = last_valid
-        armed = True
-        for i in range(last_valid + 1, n):
-            if not valid[i]:
-                if times[i] - times[last_valid] > cfg.max_gap_seconds:
-                    active_start = None
-                    armed = False
-                continue
-            if active_start is None:
-                # 间断后必须先观察到护位，再观察到离开；不从伸到一半的位置虚构起手。
-                if distance[i] <= cfg.return_distance:
-                    armed, rest_index = True, i
-                elif distance[i] > cfg.motion_distance and armed:
-                    active_start = rest_index
-                    armed = False
-            elif distance[i] <= cfg.return_distance:
-                ix = np.arange(active_start, i + 1)
-                observed = ix[valid[ix]]
-                if len(observed) >= cfg.min_valid and times[i] - times[active_start] >= cfg.min_motion_seconds:
-                    peak = int(observed[np.argmax(distance[observed])])
-                    events.append((segment, active_start, peak, i))
-                active_start = None
-                armed, rest_index = True, i
-            last_valid = i
-    events.sort(key=lambda event: event[2])
-    return events
 
 
 def phase_windows(series: dict, action: str, stance: str, cfg, diagnostics=None) -> dict:
     """单路序列的相位窗口 ``{(段, 相位): 帧下标}``；``diagnostics`` 写入检测结论与事件序列。"""
     diagnostics = diagnostics if diagnostics is not None else {}
-    diagnostics.update(reason="没有找到持续稳定的起始护位", events=[])
+    diagnostics.update(
+        reason="没有找到持续稳定的起始护位", events=[], eventDetails=[], phaseInstances=[]
+    )
     lm, mask = series["landmarks"], series["valid_mask"]
     times = np.asarray(series["times"], dtype=float)
     n = len(lm)
@@ -109,8 +41,11 @@ def phase_windows(series: dict, action: str, stance: str, cfg, diagnostics=None)
     diagnostics["reason"] = "未检测到完整离开并回收的动作"
     windows = {("stance", "start"): baseline, ("stance", "end"): stable[-1]}
     segments = list(action_segments(action))
-    events = _segment_events(lm, mask, times, torso, baseline, segments, stance, cfg)
+    observed = action_events(lm, mask, times, torso, baseline, tuple(segments), stance, cfg)
+    diagnostics["eventDetails"] = [event.to_record(times) for event in observed]
+    events = [(e.segment, e.motion.start, e.motion.peak, e.motion.end) for e in observed]
     diagnostics["events"] = [e[0] for e in events]
+    diagnostics["incompleteRecovery"] = sum(e.motion.ending == "held" for e in observed)
     if not events:
         return windows
     # 多次完整前后组合逐轮保留；错序/缺失不强行拼成一个动作。
@@ -124,87 +59,31 @@ def phase_windows(series: dict, action: str, stance: str, cfg, diagnostics=None)
         selected = [e for e in events if e[0] == segment]
         if not selected:
             continue
-        windows[(segment, "motion")] = np.unique(np.concatenate([np.arange(s, e + 1) for _, s, _, e in selected]))
+        windows[(segment, "motion")] = np.unique(
+            np.concatenate([np.arange(s, e + 1) for _, s, _, e in selected])
+        )
         peaks = []
-        for _, start, peak, end in selected:
+        for index, (_, start, peak, end) in enumerate(selected, 1):
+            diagnostics["phaseInstances"].append(
+                phase_instance(segment, "motion", index, np.arange(start, end + 1), times)
+            )
             radius = max(1, int(round(cfg.finish_window_seconds / dt)))
             indices = np.arange(max(start, peak - radius), min(end, peak + radius) + 1)
             if len(indices) >= cfg.min_valid:
                 peaks.append(indices)
+                diagnostics["phaseInstances"].append(
+                    phase_instance(segment, "finish", index, indices, times)
+                )
         if peaks:
             windows[(segment, "finish")] = np.unique(np.concatenate(peaks))
     before = [ix for ix in stable if ix[-1] <= events[0][1]]
     after = [ix for ix in stable if ix[0] >= events[-1][3]]
     if before:
         windows[("stance", "start")] = before[-1]
-    if after:
+    if after and observed[-1].motion.ending == "returned":
         windows[("stance", "end")] = after[0]
     else:
         windows.pop(("stance", "end"), None)
+    if diagnostics["incompleteRecovery"]:
+        diagnostics["reason"] = "已检测到出拳；存在打出后保持、尚未观察到收回的动作"
     return windows
-
-
-def align_views(views: dict, windows: dict, cfg) -> dict:
-    """由至少两个对应峰值估计一个小的固定时间偏移，拒绝漂移/错配。"""
-    alignment = {"method": "video_timestamps", "sideOffsetSeconds": 0.0, "anchors": 0, "reliable": True}
-    if set(views) != {"front", "side"}:
-        alignment["reliable"] = False
-        return alignment
-    offsets = []
-    for key in windows["front"].keys() & windows["side"].keys():
-        if key[1] != "finish":
-            continue
-        front = contiguous_runs(windows["front"][key])
-        side = contiguous_runs(windows["side"][key])
-        if len(front) != len(side):
-            alignment.update(reliable=False, reason="正侧面检测到的动作次数不一致")
-            return alignment
-        for f, s in zip(front, side):
-            offsets.append(float(np.median(np.asarray(views["front"]["times"])[f]) - np.median(np.asarray(views["side"]["times"])[s])))
-    alignment["anchors"] = len(offsets)
-    if len(offsets) >= 2:
-        offset = float(np.median(offsets))
-        residual = float(np.max(np.abs(np.asarray(offsets) - offset)))
-        if abs(offset) > cfg.phase_tolerance_seconds or residual > .1:
-            alignment.update(reliable=False, reason="正侧面峰值时间无法稳定对应")
-        else:
-            alignment.update(method="action_peaks", sideOffsetSeconds=offset, residualSeconds=residual)
-    return alignment
-
-
-def share_phase_timing(views, windows, alignment, diagnostics, cfg):
-    """同步录像可共用可见机位的时间段；不借用它的关键点或测量结果。"""
-    sources = {view: "own_view" for view in views}
-    if set(views) != {"front", "side"} or not alignment["reliable"]:
-        return sources
-    for target, source in (("front", "side"), ("side", "front")):
-        if any(key[1] == "motion" for key in windows[target]) or diagnostics[target].get("events"):
-            continue  # 已有相反的次数/顺序证据时不能覆盖它。
-        if not any(key[1] == "motion" for key in windows[source]):
-            continue
-        start = ("stance", "start")
-        if start not in windows[target] or start not in windows[source]:
-            continue
-        times = {v: np.asarray(views[v]["times"]) + (alignment["sideOffsetSeconds"] if v == "side" else 0)
-                 for v in (target, source)}
-        if abs(np.median(times[target][windows[target][start]]) - np.median(times[source][windows[source][start]])) > cfg.phase_tolerance_seconds:
-            continue
-        windows[target] = project_windows(windows[source], times[source], times[target])
-        sources[target] = source + "_synchronized_timing"
-    return sources
-
-
-def project_windows(windows: dict, source_times, target_times) -> dict:
-    """把一路的相位窗口按时间投到同步录制的另一路：每段连续帧取另一路同一时间范围内的帧，超出另一路时长的段丢弃。"""
-    source_times, target_times = np.asarray(source_times), np.asarray(target_times)
-    projected = {}
-    for key, indices in windows.items():
-        runs = []
-        for run in contiguous_runs(indices):
-            lo, hi = source_times[run[[0, -1]]]
-            if lo < target_times[0] - 1e-6 or hi > target_times[-1] + 1e-6:
-                continue
-            runs.append(np.flatnonzero((target_times >= lo - 1e-6) & (target_times <= hi + 1e-6)))
-        if runs:
-            projected[key] = np.unique(np.concatenate(runs))
-    return projected

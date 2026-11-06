@@ -13,11 +13,11 @@ from pathlib import Path
 from typing import Callable
 
 from core.evaluation.paired_torso import paired_torso_measurements
+from core.evaluation.action_catalog import action_definition
 from core.evaluation.rule_checks import rule_series, synchronized_windows, view_outcomes
 from core.evaluation.rules.adapters import to_practice_check
 from core.evaluation.rules.sanda_v5 import (
     RULE_VERSION,
-    SIDE_TIMED_ACTIONS,
     FeedbackConfig,
     action_config,
     build_checks,
@@ -109,7 +109,9 @@ def _observe_view(
     """
     indices = view_windows.get((c["segment"], c["phase"]))
     if indices is None or len(indices) < cfg.min_valid:
-        c["viewProblems"][view] = "未找到该阶段；" + view_diagnostics.get("reason", "阶段不足")
+        c["viewProblems"][view] = outcome.detail or (
+            "未找到该阶段；" + view_diagnostics.get("reason", "阶段不足")
+        )
         return None, None
     # 共用的只能是同步时间段；每路仍须独立提供有效人体和规则所需的点。
     ranges = None
@@ -155,17 +157,13 @@ def _fuse(
             if v not in ranges
         )
         return
-    # 同步窗口已负责借用动作时间；仅合并两路判断时才核对两路可见范围。
+    # 动作阶段来自同一份识别；这里只核对两路是否覆盖该时间。
     # 本身需要双路数据的测量（如肩线朝向）仍由其规则检查数据完整性。
     if len(required_views) > 1:
-        if not alignment["reliable"]:
-            c["reason"] = alignment.get("reason", "正侧面时间无法对应")
-            return
-        if len(ranges["front"]) != len(ranges["side"]) or any(
-            max(abs(a - b) for a, b in zip(front, side)) > cfg.phase_tolerance_seconds
-            for front, side in zip(ranges["front"], ranges["side"])
-        ):
-            c["reason"] = "正侧面动作阶段时间不对应，请使用同一次同步录制的视频"
+        scope = f"{c['segment']}:{c['phase']}"
+        correspondence = alignment["phases"][scope]
+        if not correspondence["reliable"]:
+            c["reason"] = correspondence["reason"]
             return
     if any(weight > 0 and view not in outcomes for view, weight in weights.items()):
         c["reason"] = "；".join(
@@ -288,10 +286,22 @@ def evaluate_series(
         views, action, stance, cfg
     )
     profile = rule_profile(action, stance, cfg)
-    paired = paired_torso_measurements(views) if action in SIDE_TIMED_ACTIONS else {}
+    paired = (
+        paired_torso_measurements(views)
+        if any(len(s.required_views) > 1 for s in profile.rules)
+        else {}
+    )
     outcomes_by_view = {
         view: view_outcomes(
-            view, s, windows[view], profile, action, stance, cfg, paired_torso=paired.get(view)
+            view,
+            s,
+            windows[view],
+            profile,
+            action,
+            stance,
+            cfg,
+            paired_torso=paired.get(view),
+            phase_coverage=alignment["phases"],
         )
         for view, s in views.items()
     }
@@ -345,9 +355,9 @@ def evaluate_series(
 
 
 def _repetitions(action: str, diagnostics: dict) -> dict | None:
-    """上步组合（``SIDE_TIMED_ACTIONS``）按侧面切出的次数与每次的时间；其余动作不统计次数，为 None。"""
+    """上步组合侧面计时策略按侧面切出的次数与每次的时间；其余动作不统计次数，为 None。"""
     side = diagnostics.get("side", {})
-    if action not in SIDE_TIMED_ACTIONS or "repetitions" not in side:
+    if action_definition(action).timing != "side_combo" or "repetitions" not in side:
         return None
     result = {
         "expected": side["expectedRepetitions"],

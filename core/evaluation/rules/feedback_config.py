@@ -52,7 +52,7 @@ class FeedbackConfig:
     foot_angle: float = 145.0
     hip_rotation: float = 20.0
     fusion_support: float = 0.7
-    phase_tolerance_seconds: float = 0.4
+    phase_tolerance_seconds: float = 0.4  # 仅兼容旧配置；共享阶段覆盖改按真实采样时间逐次检查
     stance_window_seconds: float = 0.2
     min_motion_seconds: float = 0.06
     return_distance: float = 0.15
