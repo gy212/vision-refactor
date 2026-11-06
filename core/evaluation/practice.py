@@ -112,7 +112,9 @@ def _observe_view(
     """
     indices = view_windows.get((c["segment"], c["phase"]))
     if indices is None or len(indices) < cfg.min_valid:
-        c["viewProblems"][view] = "未找到该阶段；" + view_diagnostics.get("reason", "阶段不足")
+        c["viewProblems"][view] = outcome.detail or (
+            "未找到该阶段；" + view_diagnostics.get("reason", "阶段不足")
+        )
         return None, None
     # 共用的只能是同步时间段；每路仍须独立提供有效人体和规则所需的点。
     ranges = None
@@ -308,6 +310,7 @@ def evaluate_series(
                 diagnostics[view].get("phaseInstances")
                 or diagnostics[view].get("projectedPhaseInstances", ())
             ),
+            phase_coverage=alignment["phases"],
         )
         for view, s in views.items()
     }

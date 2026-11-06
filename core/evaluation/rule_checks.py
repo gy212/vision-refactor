@@ -80,6 +80,7 @@ def view_outcomes(
     *,
     paired_torso=None,
     phase_instances=(),
+    phase_coverage: dict | None = None,
 ) -> dict[str, RuleOutcome]:
     """一路视角上全部检查项经 ``evaluate_rules`` 的结论（以检查项 id 为键）；基线取起始实战式窗口，缺失时取开头几帧。"""
     baseline = view_windows.get(
@@ -94,6 +95,7 @@ def view_outcomes(
         params=cfg,
         paired_torso=paired_torso,
         phase_instances=_phase_instance_frames(series["times"], phase_instances),
+        phase_coverage=phase_coverage or {},
     )
     outcomes = evaluate_rules(
         series["landmarks"],
@@ -137,6 +139,7 @@ def _view_checks(
     phase_instances=(),
     evidence_views: dict,
     evidence_diagnostics: dict,
+    phase_coverage: dict | None = None,
 ) -> tuple[RuleCheck, ...]:
     """一路视角在给定相位窗口上的逐项结论（只列适用本视角的项）。"""
     outcomes = view_outcomes(
@@ -150,6 +153,7 @@ def _view_checks(
         supported_capabilities,
         paired_torso=paired_torso,
         phase_instances=phase_instances,
+        phase_coverage=phase_coverage,
     )
     return tuple(
         to_rule_check(
@@ -206,6 +210,7 @@ def judge_views(
                     diagnostics[view].get("phaseInstances")
                     or diagnostics[view].get("projectedPhaseInstances", ())
                 ),
+                phase_coverage=alignment["phases"],
             ),
             {**diagnostics[view], "phaseSource": sources[view], "sharedActionRecord": record},
         )

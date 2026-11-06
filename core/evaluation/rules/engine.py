@@ -6,8 +6,11 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import numpy as np
 
+from core.evaluation.phase_alignment import missing_phase_coverage
 from core.evaluation.rules.spec import (
     RULE_STATE_PASS,
     RULE_STATE_PENDING_RULE,
@@ -146,8 +149,21 @@ def evaluate_rules(
 
     ``supported_capabilities=None`` 表示后端全部支持（MediaPipe），缺点判定不生效。
     """
-    return [
-        _evaluate_phase(spec, landmarks, valid_mask, context, supported_capabilities)
-        for spec in profile.rules
-        if spec.view in ("any", context.view)
-    ]
+    outcomes = []
+    for spec in profile.rules:
+        if spec.view not in ("any", context.view):
+            continue
+        outcome = _evaluate_phase(spec, landmarks, valid_mask, context, supported_capabilities)
+        missing = missing_phase_coverage(
+            context.phase_coverage, spec.scope, spec.required_views or (context.view,)
+        )
+        if (
+            missing
+            and outcome.state != RULE_STATE_PENDING_RULE
+            and outcome.skip_reason != SKIP_MISSING_LANDMARKS
+        ):
+            outcome = replace(
+                outcome, state=RULE_STATE_UNABLE, skip_reason=SKIP_PHASE_NOT_FOUND, detail=missing
+            )
+        outcomes.append(outcome)
+    return outcomes
