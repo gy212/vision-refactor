@@ -1,8 +1,8 @@
 # Issue #57：公共能力复用整改与修复方案
 
-日期：2026-11-06。状态：修复方案，尚未实施。
+日期：2026-11-06。状态：已完成代码整改及现有材料验收；原问题记录仍待补齐。实施细节见[能力复用清单与实施记录](Issue57_能力复用清单与实施记录.md)。
 
-关联：[Issue #57](https://github.com/gy212/vision-refactor/issues/57)、[PR #56](https://github.com/gy212/vision-refactor/pull/56)。本文结合已有调查、当前主分支相关调用关系及本次讨论整理。本轮只编写文档，没有修改算法或重新运行录像。
+关联：[Issue #57](https://github.com/gy212/vision-refactor/issues/57)、[PR #56](https://github.com/gy212/vision-refactor/pull/56)。本文保留批准时的问题上下文和修复要求。实现、测试、真实缓存回放及尚未解决事项以实施记录为准；本次没有重新进行姿态推理。
 
 ## 1. 修复目标：把应该复用的能力真正共用起来
 
