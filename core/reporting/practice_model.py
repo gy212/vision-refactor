@@ -3,6 +3,7 @@
 
 纯函数、无 Tk 依赖：检查项去重与守恒计数、七级标题摘要、同原因分组、相位时间线数据。
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -25,19 +26,25 @@ _RERECORD_HINT = " 请重新录制：全身及拳脚入画、光线充足、减�
 @dataclass(frozen=True)
 class StatusCounts:
     """Strictly conserved check item counters."""
-    total_checks: int         # 原始去重检查项总数
-    candidate_count: int      # 当前未撤销候选数 (unconfirmed + confirmed)
-    confirmed_count: int      # 教师已确认数
-    unconfirmed_count: int    # 待教师确认数
-    revoked_count: int        # 教师已撤销数
-    not_observed_count: int   # 已检查未发现问题数
-    unable_count: int         # 暂无法判断数
-    pending_rule_count: int   # 未自动检查数
+
+    total_checks: int  # 原始去重检查项总数
+    candidate_count: int  # 当前未撤销候选数 (unconfirmed + confirmed)
+    confirmed_count: int  # 教师已确认数
+    unconfirmed_count: int  # 待教师确认数
+    revoked_count: int  # 教师已撤销数
+    not_observed_count: int  # 已检查未发现问题数
+    unable_count: int  # 暂无法判断数
+    pending_rule_count: int  # 未自动检查数
 
     def verify_conservation(self) -> bool:
         """Verify strict item conservation."""
-        cat_sum = (self.candidate_count + self.not_observed_count +
-                   self.unable_count + self.pending_rule_count + self.revoked_count)
+        cat_sum = (
+            self.candidate_count
+            + self.not_observed_count
+            + self.unable_count
+            + self.pending_rule_count
+            + self.revoked_count
+        )
         sub_sum = self.unconfirmed_count + self.confirmed_count
         return cat_sum == self.total_checks and sub_sum == self.candidate_count
 
@@ -45,6 +52,7 @@ class StatusCounts:
 @dataclass
 class ReportHeader:
     """Header metadata desensitized for presentation."""
+
     student_id: str
     student_name: str
     action: str
@@ -62,17 +70,19 @@ class ReportHeader:
 @dataclass
 class HeadlineSummary:
     """Headline and priority status tone."""
-    title: str               # 主标题文案
-    subtitle: str            # 辅标题/引导说明
-    needs_rerecord: bool     # 是否需要重新录制
-    status_tone: str         # "warning" | "caution" | "notice" | "info" | "success"
-    level: str               # "error" | "warning" | "info" | "success"
-    reason: str              # 决策原因
+
+    title: str  # 主标题文案
+    subtitle: str  # 辅标题/引导说明
+    needs_rerecord: bool  # 是否需要重新录制
+    status_tone: str  # "warning" | "caution" | "notice" | "info" | "success"
+    level: str  # "error" | "warning" | "info" | "success"
+    reason: str  # 决策原因
 
 
 @dataclass
 class NormalizedCheck:
     """Clean, normalized check entry with diagnostics and review state."""
+
     id: str
     code: str
     name: str
@@ -83,10 +93,10 @@ class NormalizedCheck:
     phase_label: str
     standard: str
     source: str
-    status: str              # "candidate" | "not_observed" | "unable" | "pending_rule"
-    status_display: str      # 判定状态；未启用项显示记录中保存的具体原因类别
-    review: str              # "pending" | "confirmed" | "revoked"
-    review_display: str      # "" | "教师已确认" | "教师已撤销"
+    status: str  # "candidate" | "not_observed" | "unable" | "pending_rule"
+    status_display: str  # 判定状态；未启用项显示记录中保存的具体原因类别
+    review: str  # "pending" | "confirmed" | "revoked"
+    review_display: str  # "" | "教师已确认" | "教师已撤销"
     reason: str
     blocked_reason: str
     evidence_refs: list[str] = field(default_factory=list)
@@ -99,6 +109,7 @@ class NormalizedCheck:
 @dataclass
 class PhaseTimelineItem:
     """Timeline stage representation."""
+
     segment: str
     phase: str
     title: str
@@ -115,6 +126,7 @@ class PhaseTimelineItem:
 @dataclass
 class GroupedReason:
     """Cluster of checks sharing the identical reason."""
+
     reason: str
     phase: str
     view: str
@@ -125,18 +137,19 @@ class GroupedReason:
 @dataclass
 class NormalizedReportModel:
     """Root model for UI result panel and offline HTML export."""
+
     header: ReportHeader
     headline: HeadlineSummary
     counts: StatusCounts
     phases: list[PhaseTimelineItem]
     candidate_groups: list[GroupedReason]
-    candidate_checks: list[NormalizedCheck]   # Active (unconfirmed + confirmed)
-    revoked_checks: list[NormalizedCheck]     # Excluded from candidate list
+    candidate_checks: list[NormalizedCheck]  # Active (unconfirmed + confirmed)
+    revoked_checks: list[NormalizedCheck]  # Excluded from candidate list
     not_observed_checks: list[NormalizedCheck]
     unable_checks: list[NormalizedCheck]
     pending_rule_checks: list[NormalizedCheck]
-    all_checks: list[NormalizedCheck]         # Deduplicated by id
-    evidence_catalog: dict[str, dict]         # Keyed by evidence ID
+    all_checks: list[NormalizedCheck]  # Deduplicated by id
+    evidence_catalog: dict[str, dict]  # Keyed by evidence ID
     diagnostics: dict[str, Any]
     capture: dict[str, Any]
     alignment: dict[str, Any]
@@ -180,73 +193,149 @@ def format_local_datetime(iso_str: str) -> str:
         return str(iso_str)
 
 
-def _headline(title: str, subtitle: str, needs_rerecord: bool, tone: str, level: str, reason: str,
-              *, rerecord_hint: bool = True) -> HeadlineSummary:
+def _headline(
+    title: str,
+    subtitle: str,
+    needs_rerecord: bool,
+    tone: str,
+    level: str,
+    reason: str,
+    *,
+    rerecord_hint: bool = True,
+) -> HeadlineSummary:
     """组装标题摘要；需要重录时在副标题后追加统一的重录提示。"""
     if rerecord_hint and needs_rerecord:
         subtitle += _RERECORD_HINT
-    return HeadlineSummary(title=title, subtitle=subtitle, needs_rerecord=needs_rerecord,
-                           status_tone=tone, level=level, reason=reason)
+    return HeadlineSummary(
+        title=title,
+        subtitle=subtitle,
+        needs_rerecord=needs_rerecord,
+        status_tone=tone,
+        level=level,
+        reason=reason,
+    )
 
 
 def _is_unjudgeable(counts: StatusCounts) -> bool:
     """所有可测项（不含已撤销）都无法判断。"""
     measurable = counts.candidate_count + counts.not_observed_count + counts.unable_count
-    return ((counts.candidate_count == 0 and counts.not_observed_count == 0 and counts.unable_count > 0)
-            or (measurable > 0 and counts.unable_count == measurable)
-            or (counts.total_checks > 0 and counts.unable_count == counts.total_checks))
+    return (
+        (counts.candidate_count == 0 and counts.not_observed_count == 0 and counts.unable_count > 0)
+        or (measurable > 0 and counts.unable_count == measurable)
+        or (counts.total_checks > 0 and counts.unable_count == counts.total_checks)
+    )
 
 
 def _candidate_headline(counts: StatusCounts, needs_rerecord: bool) -> HeadlineSummary:
     """存在未撤销候选问题时的标题（第 5、6 级）。"""
-    confirmed_note = f"（含教师已确认 {counts.confirmed_count} 项）" if counts.confirmed_count > 0 else ""
+    confirmed_note = (
+        f"（含教师已确认 {counts.confirmed_count} 项）" if counts.confirmed_count > 0 else ""
+    )
     if counts.unable_count > 0:
         return _headline(
             "分析完成，部分项目暂无法判断",
             f"优先展示发现的 {counts.candidate_count} 项疑似问题{confirmed_note}；另有 {counts.unable_count} 项因视角或标定不足未判定。",
-            needs_rerecord, "caution", "warning",
-            f"发现 {counts.candidate_count} 项疑似问题，且有 {counts.unable_count} 项无法判断")
+            needs_rerecord,
+            "caution",
+            "warning",
+            f"发现 {counts.candidate_count} 项疑似问题，且有 {counts.unable_count} 项无法判断",
+        )
     return _headline(
         "发现疑似动作问题，请核对依据",
         f"总结共发现 {counts.candidate_count} 项疑似动作问题{confirmed_note}，请结合正侧代表帧与测量依据查看。",
-        needs_rerecord, "caution", "warning", f"发现 {counts.candidate_count} 项疑似问题")
+        needs_rerecord,
+        "caution",
+        "warning",
+        f"发现 {counts.candidate_count} 项疑似问题",
+    )
 
 
-def get_headline_summary(counts: StatusCounts, checks: list, needs_rerecord: bool) -> HeadlineSummary:
+def get_headline_summary(
+    counts: StatusCounts, checks: list, needs_rerecord: bool
+) -> HeadlineSummary:
     """7-Level priority headline hierarchy (no grades, no penalty points)."""
     c = counts
     if c.total_checks == 0:
-        return _headline("暂无检查记录", "当前练习记录中未包含动作检查项数据。", needs_rerecord,
-                         "info", "info", "记录中无检查项", rerecord_hint=False)
+        return _headline(
+            "暂无检查记录",
+            "当前练习记录中未包含动作检查项数据。",
+            needs_rerecord,
+            "info",
+            "info",
+            "记录中无检查项",
+            rerecord_hint=False,
+        )
     if _is_unjudgeable(c):
         return HeadlineSummary(
             title="本次未能完成有效判断",
             subtitle="画面有效关键点不足或遮挡严重，无法判定动作对错。建议调整机位与光线后重新录制。",
-            needs_rerecord=True, status_tone="unable", level="error",
-            reason="所有可自动检查项目均为证据不足或无法判定")
-    if c.candidate_count == 0 and c.not_observed_count == 0 and c.pending_rule_count > 0 and c.unable_count == 0:
-        return _headline("本次暂无自动检查结果",
-                         "本次项目尚未启用自动检查；具体是待开发、待验证还是模型受限，请查看逐项说明。",
-                         needs_rerecord, "info", "info", "本次动作仅包含需人工复核项，无自动判断项")
+            needs_rerecord=True,
+            status_tone="unable",
+            level="error",
+            reason="所有可自动检查项目均为证据不足或无法判定",
+        )
+    if (
+        c.candidate_count == 0
+        and c.not_observed_count == 0
+        and c.pending_rule_count > 0
+        and c.unable_count == 0
+    ):
+        return _headline(
+            "本次暂无自动检查结果",
+            "本次项目尚未启用自动检查；具体是待开发、待验证还是模型受限，请查看逐项说明。",
+            needs_rerecord,
+            "info",
+            "info",
+            "本次动作仅包含需人工复核项，无自动判断项",
+        )
     if c.candidate_count == 0 and c.pending_rule_count > 0:
-        return _headline("已检查项目未发现问题，仍有待判断项目",
-                         f"已完成检查的项未见异常，另有 {c.pending_rule_count} 项尚未启用自动检查，原因见逐项说明。",
-                         needs_rerecord, "notice", "info", "自动检查项目未见异常，部分项目尚未启用")
+        return _headline(
+            "已检查项目未发现问题，仍有待判断项目",
+            f"已完成检查的项未见异常，另有 {c.pending_rule_count} 项尚未启用自动检查，原因见逐项说明。",
+            needs_rerecord,
+            "notice",
+            "info",
+            "自动检查项目未见异常，部分项目尚未启用",
+        )
     if c.candidate_count == 0 and c.unable_count > 0 and c.not_observed_count > 0:
-        return _headline("分析完成，部分项目暂无法判断",
-                         f"已检查项目未见异常，另有 {c.unable_count} 项因缺少真实长度标定或有效帧不足无法判断。",
-                         needs_rerecord, "notice", "warning", "已检查项目未发现异常，部分项目因证据不足无法判定")
+        return _headline(
+            "分析完成，部分项目暂无法判断",
+            f"已检查项目未见异常，另有 {c.unable_count} 项因缺少真实长度标定或有效帧不足无法判断。",
+            needs_rerecord,
+            "notice",
+            "warning",
+            "已检查项目未发现异常，部分项目因证据不足无法判定",
+        )
     if c.candidate_count > 0:
         return _candidate_headline(c, needs_rerecord)
     if c.unable_count == 0 and c.pending_rule_count == 0 and c.not_observed_count > 0:
-        return _headline("已检查项目未发现问题",
-                         "已按现有规则检查完毕，未发现明显动作问题（二维规则仅供参考，不代表全部实战标准合格）。",
-                         needs_rerecord, "success", "success", "所有检查项目均未发现异常")
+        return _headline(
+            "已检查项目未发现问题",
+            "已按现有规则检查完毕，未发现明显动作问题（二维规则仅供参考，不代表全部实战标准合格）。",
+            needs_rerecord,
+            "success",
+            "success",
+            "所有检查项目均未发现异常",
+        )
     if c.revoked_count > 0:
-        return _headline("候选问题已全部撤销", "教师已撤销所有候选问题，暂无其他判定项。",
-                         needs_rerecord, "info", "info", "所有候选问题均已被教师撤销", rerecord_hint=False)
-    return _headline("暂无有效判定结果", "检查项目未能匹配已知判定规则。",
-                     needs_rerecord, "info", "info", "未匹配到具体判定分类", rerecord_hint=False)
+        return _headline(
+            "候选问题已全部撤销",
+            "教师已撤销所有候选问题，暂无其他判定项。",
+            needs_rerecord,
+            "info",
+            "info",
+            "所有候选问题均已被教师撤销",
+            rerecord_hint=False,
+        )
+    return _headline(
+        "暂无有效判定结果",
+        "检查项目未能匹配已知判定规则。",
+        needs_rerecord,
+        "info",
+        "info",
+        "未匹配到具体判定分类",
+        rerecord_hint=False,
+    )
 
 
 def group_checks_by_reason(checks: list[NormalizedCheck]) -> list[GroupedReason]:
@@ -264,9 +353,24 @@ def group_checks_by_reason(checks: list[NormalizedCheck]) -> list[GroupedReason]
             for ref in item.evidence_refs:
                 if ":" in ref:
                     views.add(ref.split(":", 1)[0])
-        view_label = "正面/侧面" if len(views) > 1 else ({"front": "正面", "side": "侧面"}.get(next(iter(views)), "双视角") if views else "全部")
-        grouped_list.append(GroupedReason(reason=reason_text, phase=phase_text, view=view_label,
-                                          count=len(item_list), checks=item_list))
+        view_label = (
+            "正面/侧面"
+            if len(views) > 1
+            else (
+                {"front": "正面", "side": "侧面"}.get(next(iter(views)), "双视角")
+                if views
+                else "全部"
+            )
+        )
+        grouped_list.append(
+            GroupedReason(
+                reason=reason_text,
+                phase=phase_text,
+                view=view_label,
+                count=len(item_list),
+                checks=item_list,
+            )
+        )
 
     grouped_list.sort(key=lambda g: -g.count)
     return grouped_list
@@ -286,8 +390,11 @@ def _build_header(record: dict, result: dict) -> ReportHeader:
     except (ValueError, TypeError):
         revision = 1
     backend = result.get("backend", "mediapipe")
-    backend_desc = ("MediaPipe关键点规则检查；二维投影与工程阈值待标定，不作为正式成绩。"
-                    if backend == "mediapipe" else "旧版规则检查记录；可重新分析生成MediaPipe规则结果。")
+    backend_desc = (
+        "MediaPipe关键点规则检查；二维投影与工程阈值待标定，不作为正式成绩。"
+        if backend == "mediapipe"
+        else "旧版规则检查记录；可重新分析生成MediaPipe规则结果。"
+    )
     return ReportHeader(
         student_id=_text_or(record.get("studentId"), "未登记学号"),
         student_name=_text_or(record.get("studentName"), ""),
@@ -349,13 +456,19 @@ def _normalize_check(cid: str, c: dict, audit_logs: list[dict]) -> NormalizedChe
     status_display = STATUS_LABELS[status]
     if status == "pending_rule" and isinstance(availability, dict):
         status_display = availability.get("label") or status_display
+    trial = isinstance(availability, dict) and availability.get("state") == "trial"
+    if trial:
+        status_display = "试用 · " + status_display
+        reason = "试用检查。" + availability.get("reason", "") + " " + reason
     return NormalizedCheck(
         id=cid,
         code=str(c.get("code") or ""),
-        name=_text_or(c.get("name"), "未命名检查项"),
+        name=_text_or(c.get("name"), "未命名检查项") + ("（试用）" if trial else ""),
         body_part=_text_or(c.get("bodyPart"), "未指定部位"),
         segment=str(c.get("segment") or "stance"),
-        segment_label=str(c.get("segmentLabel") or ACTIONS.get(c.get("segment", ""), c.get("segment", ""))),
+        segment_label=str(
+            c.get("segmentLabel") or ACTIONS.get(c.get("segment", ""), c.get("segment", ""))
+        ),
         phase=str(c.get("phase") or "motion"),
         phase_label=str(c.get("phaseLabel") or PHASES.get(c.get("phase", ""), c.get("phase", ""))),
         standard=str(c.get("standard") or ""),
@@ -377,6 +490,7 @@ def _normalize_check(cid: str, c: dict, audit_logs: list[dict]) -> NormalizedChe
 @dataclass
 class _Buckets:
     """按守恒律分桶的检查项。"""
+
     candidate: list[NormalizedCheck] = field(default_factory=list)
     revoked: list[NormalizedCheck] = field(default_factory=list)
     not_observed: list[NormalizedCheck] = field(default_factory=list)
@@ -426,15 +540,20 @@ def _phase_times(phase_windows: dict) -> dict[tuple[str, str], list[float]]:
     return phase_times
 
 
-def build_phase_timeline(action: str, all_checks: list[NormalizedCheck], phase_windows: dict) -> list[PhaseTimelineItem]:
+def build_phase_timeline(
+    action: str, all_checks: list[NormalizedCheck], phase_windows: dict
+) -> list[PhaseTimelineItem]:
     """相位时间线数据：各阶段的起止时间与按状态计数的检查项。"""
     phase_times = _phase_times(phase_windows)
     items: list[PhaseTimelineItem] = []
     for seg, p_kind, stage_title in _ordered_stages(action):
         if p_kind == "segment":
-            stage_checks = [c for c in all_checks if c.segment == seg and c.phase not in {"start", "end"}]
+            stage_checks = [
+                c for c in all_checks if c.segment == seg and c.phase not in {"start", "end"}
+            ]
             times_list = [
-                stamp for (segment, phase), stamps in phase_times.items()
+                stamp
+                for (segment, phase), stamps in phase_times.items()
                 if segment == seg and phase not in {"start", "end"}
                 for stamp in stamps
             ]
@@ -447,15 +566,23 @@ def build_phase_timeline(action: str, all_checks: list[NormalizedCheck], phase_w
         else:
             t_min, t_max = 0.0, 0.0
             time_text = "时间段未记录"
-        items.append(PhaseTimelineItem(
-            segment=seg, phase=p_kind, title=stage_title, time_range_text=time_text,
-            start_seconds=t_min, end_seconds=t_max,
-            candidate_count=sum(1 for c in stage_checks if c.status == "candidate" and c.review != "revoked"),
-            unable_count=sum(1 for c in stage_checks if c.status == "unable"),
-            pending_count=sum(1 for c in stage_checks if c.status == "pending_rule"),
-            not_observed_count=sum(1 for c in stage_checks if c.status == "not_observed"),
-            checks=stage_checks,
-        ))
+        items.append(
+            PhaseTimelineItem(
+                segment=seg,
+                phase=p_kind,
+                title=stage_title,
+                time_range_text=time_text,
+                start_seconds=t_min,
+                end_seconds=t_max,
+                candidate_count=sum(
+                    1 for c in stage_checks if c.status == "candidate" and c.review != "revoked"
+                ),
+                unable_count=sum(1 for c in stage_checks if c.status == "unable"),
+                pending_count=sum(1 for c in stage_checks if c.status == "pending_rule"),
+                not_observed_count=sum(1 for c in stage_checks if c.status == "not_observed"),
+                checks=stage_checks,
+            )
+        )
     return items
 
 
@@ -490,8 +617,7 @@ def build_report_model(record: dict) -> NormalizedReportModel:
     if repetitions and repetitions["detected"] != repetitions["expected"]:
         # Tk 与 HTML 共用此横幅；只写原始 summary 不会进入结果页。
         headline.subtitle += (
-            f" 检测到 {repetitions['detected']} 次动作，"
-            f"应做 {repetitions['expected']} 次。"
+            f" 检测到 {repetitions['detected']} 次动作，应做 {repetitions['expected']} 次。"
         )
     if repetitions.get("incompleteRecovery"):
         headline.subtitle += " 存在打出后保持的动作，尚未观察到收回。"

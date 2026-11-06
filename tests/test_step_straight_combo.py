@@ -204,12 +204,12 @@ def test_missing_points_cannot_bridge_into_a_held_punch() -> None:
     assert found == []
 
 
-def test_guard_back_uses_mouth_reference_and_preserves_missing_points() -> None:
+def test_guard_back_tracks_elbow_relative_to_body_and_preserves_missing_points() -> None:
     baseline = np.repeat(_base_pose()[None], 6, axis=0)
     lm = baseline.copy()
-    # 肩部后转不代表护手后撤；随后腕相对口部后移才是目标。
-    lm[:, 12, 0] -= 0.1
-    lm[3:, REAR_WRIST, 0] -= 0.1
+    # 上步让全身平移，不能当成拉手；只有后三张肘相对肩后移。
+    lm[:, :, 0] += 0.1
+    lm[3:, 14, 0] -= 0.1
     mask = np.ones(lm.shape[:2], bool)
     context = RuleContext(view="side", action=ACTION, stance="left", params=FeedbackConfig())
 
@@ -217,8 +217,14 @@ def test_guard_back_uses_mouth_reference_and_preserves_missing_points() -> None:
 
     assert bad.tolist() == [False] * 3 + [True] * 3
     assert valid.all()
-    mask[:, 9] = False
-    assert not measure_guard_back("rear", lm, mask, baseline, mask, context)[1].any()
+    missing = mask.copy()
+    missing[:, 14] = False
+    assert not measure_guard_back("rear", lm, missing, baseline, mask, context)[1].any()
+    # 前手正常收回至肩前，不按收回路程报错；继续拉到肩后才提示。
+    lm[3:, 13, 0] -= 0.1
+    bad, valid, _ = measure_guard_back("front", lm, mask, baseline, mask, context)
+    assert bad.tolist() == [False] * 3 + [True] * 3
+    assert valid.all()
 
 
 def test_isolated_wrist_jumps_are_not_counted_as_repetitions() -> None:
@@ -254,30 +260,37 @@ def test_project_windows_maps_runs_by_time() -> None:
     assert project_windows({("a", "b"): np.array([9])}, source, target[:5]) == {}
 
 
-def test_calibrated_checks_are_live_and_the_rest_pending() -> None:
+def test_verified_checks_and_user_authorized_trials_both_run() -> None:
     checks = build_checks(ACTION, "left")
     live = [c for c in checks if c["availability"]["state"] == "enabled"]
-    assert {(c["segment"], c["phase"], c["role"], c["code"]) for c in live} == set(ENABLED)
+    assert {(c["segment"], c["phase"], c["role"], c["code"]) for c in live} == set(ENABLED) - {
+        ("front_straight", "finish", "rear", "guard_back")
+    }
     assert all(not c["blockedReason"] for c in live)
-    assert all(c["blockedReason"] for c in checks if c not in live)
+    assert all(not c["blockedReason"] for c in checks)
     assert {c["availability"]["state"] for c in checks} == {
         "enabled",
-        "unsupported",
-        "calibration_failed",
-        "validation_pending",
+        "trial",
     }
-    assert {c["primaryView"] for c in live if c["code"] in ("guard_shoulder", "guard_elbow")} == {
-        "front"
-    }
+    assert len(checks) == 37
+    assert len(live) == 16
+    assert not {"stance_head", "vertical_fist"} & {c["code"] for c in checks}
+    guards = [c for c in live if c["code"] in {"guard_shoulder", "guard_elbow"}]
+    assert all(c["primaryView"] == ("side" if c["role"] == "rear" else "front") for c in guards)
     assert {c["primaryView"] for c in live if c["code"] == "shoulder_level"} == {"side"}
     # 阶段和模型独立登记，不能沿用其他模型或阶段的资格。
     for phase in ("motion", "finish"):
         for model in ("full", "heavy"):
             by_id = {c["id"]: c for c in build_checks(ACTION, "left", pose_variant=model)}
+            elbow = by_id[f"front_straight:{phase}:rear:guard_elbow"]
+            assert elbow["availability"]["state"] == "enabled"
+            assert elbow["primaryView"] == "side"
             guard = by_id[f"front_straight:{phase}:rear:guard_back"]
-            assert guard["availability"]["state"] == "calibration_failed"
+            assert guard["availability"]["state"] == (
+                "enabled" if phase == "motion" or model == "heavy" else "trial"
+            )
             shoulder = by_id[f"front_straight:{phase}:rear:guard_shoulder"]
-            assert shoulder["availability"]["state"] == "calibration_failed"
+            assert shoulder["availability"]["state"] == "trial"
             assert (
                 by_id[f"rear_straight:{phase}:front:guard_shoulder"]["availability"]["state"]
                 == "enabled"
@@ -289,7 +302,7 @@ def test_calibrated_checks_are_live_and_the_rest_pending() -> None:
     assert ACTIONS[ACTION] == "上步前后手直拳组合"
 
 
-def test_paired_torso_requires_synchronized_evidence_and_a_validated_model() -> None:
+def test_paired_torso_requires_synchronized_evidence_and_marks_model_trial() -> None:
     views = {}
     for view, width in (("front", 0.2), ("side", 0.05)):
         series = _series(0)
@@ -318,7 +331,7 @@ def test_paired_torso_requires_synchronized_evidence_and_a_validated_model() -> 
     }
     exam_reports = exam_pool.rule_reports([targets["front"]], [targets["side"]], FeedbackConfig())
     assert all(
-        c.state == "pending_rule"
+        c.state == "violation" and c.detail.startswith("试用")
         for report in exam_reports
         for c in report["checks"]
         if c.code == "stance_torso"
@@ -327,8 +340,8 @@ def test_paired_torso_requires_synchronized_evidence_and_a_validated_model() -> 
     heavy = torso_check(
         evaluate_series(ACTION, "left", views, FeedbackConfig(pose_variant="heavy"))
     )
-    assert heavy["availability"]["state"] == "calibration_failed"
-    assert heavy["status"] == "pending_rule"
+    assert heavy["availability"]["state"] == "trial"
+    assert heavy["status"] == "candidate"
 
     views["side"]["landmarks"][:, [11, 12], 0] = (0.4, 0.6)
     assert torso_check(evaluate_series(ACTION, "left", views))["status"] == "not_observed"
@@ -407,7 +420,11 @@ def test_straight_measurements_keep_validity_and_direction(
 
 def test_pending_reason_and_label_keep_the_recorded_availability() -> None:
     check = next(c for c in build_checks(ACTION, "left") if c["code"] == "punch_predrop")
-    check.update(status="pending_rule", reason=check["blockedReason"])
+    check.update(
+        status="pending_rule",
+        reason="教师已确认，旧记录尚未开启",
+        availability={"state": "validation_pending", "label": "待样本验证"},
+    )
     record = {"action": ACTION, "stance": "left", "result": {"checks": [check]}}
 
     model = build_report_model(record)
@@ -637,3 +654,20 @@ def test_exam_rule_target_is_whole_clip_for_step_combo(monkeypatch) -> None:
         170,
         290,
     )
+
+
+@pytest.mark.parametrize("front_state", ["missing", "hidden"])
+def test_side_punch_check_survives_an_unusable_front_view(front_state):
+    side, front = _series(2), _series(2)
+    views = {"side": side}
+    if front_state == "hidden":
+        front["valid_mask"][:] = False
+        views["front"] = front
+    result = evaluate_series(ACTION, "left", views)
+    checks = {check["id"]: check for check in result["checks"]}
+    check = checks["rear_straight:finish:rear:shoulder_level"]
+    assert check["status"] == "not_observed"
+    assert {m["view"] for m in check["measurements"]} == {"side"}
+    assert all(ref.startswith("side:") for ref in check["evidence"])
+    assert checks["rear_straight:motion:front:guard_shoulder"]["status"] == "unable"
+    assert checks["stance:start::stance_torso"]["status"] == "unable"

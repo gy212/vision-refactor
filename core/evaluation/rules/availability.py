@@ -1,4 +1,5 @@
 """规则启用状态：区分待验证、验证未通过与模型能力限制。"""
+
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
@@ -6,6 +7,7 @@ from typing import Literal
 
 AvailabilityState = Literal[
     "enabled",
+    "trial",
     "validation_pending",
     "calibration_failed",
     "unsupported",
@@ -13,6 +15,7 @@ AvailabilityState = Literal[
 
 LABELS = {
     "enabled": "已启用",
+    "trial": "试用中",
     "validation_pending": "待样本验证",
     "calibration_failed": "样本验证未通过",
     "unsupported": "模型能力不支持",
