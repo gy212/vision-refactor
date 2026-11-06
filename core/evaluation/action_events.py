@@ -28,6 +28,13 @@ class ActionEvent:
         }
 
 
+def motion_landmarks(segment: str, stance: str) -> tuple[int, int]:
+    """基础动作位移使用的固定点与运动点，供识别和机位可见性选择共用。"""
+    role = "front" if segment.startswith("front_") else "rear"
+    shoulder, _, wrist, hip, _, ankle, *_ = sides_for_stance(role, stance)
+    return (hip, ankle) if "kick" in segment else (shoulder, wrist)
+
+
 def action_events(
     lm: np.ndarray,
     mask: np.ndarray,
@@ -41,9 +48,7 @@ def action_events(
     """普通动作按护位位移识别；直拳共用方向判据，腿法和摆拳保留各自要求。"""
     events: list[ActionEvent] = []
     for segment in segments:
-        role = "front" if segment.startswith("front_") else "rear"
-        shoulder, _, wrist, hip, _, ankle, *_ = sides_for_stance(role, stance)
-        anchor, moving = (hip, ankle) if "kick" in segment else (shoulder, wrist)
+        anchor, moving = motion_landmarks(segment, stance)
         relative = normalized_motion(lm, mask, torso, anchor, moving)
         if not np.isfinite(relative[baseline]).all():
             continue

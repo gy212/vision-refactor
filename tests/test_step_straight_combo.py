@@ -18,7 +18,8 @@ from core.evaluation.phase_alignment import project_windows
 from core.evaluation.practice import evaluate_series
 from core.evaluation.motion_events import MotionEvent
 from core.evaluation.punch_events import reach_events, settled_returns
-from core.evaluation.rule_checks import NEEDS_SIDE, judge_views, rule_series, view_outcomes
+from core.evaluation.action_timing import NEEDS_SIDE
+from core.evaluation.rule_checks import judge_views, rule_series, view_outcomes
 from core.evaluation.rules.sanda_v5 import (
     ACTIONS,
     FeedbackConfig,

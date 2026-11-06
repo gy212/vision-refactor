@@ -51,7 +51,6 @@ from core.evaluation.matching.repetition import (
     valid_mask_from_raw,
 )
 from core.evaluation.phases import phase_windows
-from core.evaluation.phase_alignment import align_views, share_phase_timing
 from core.evaluation.practice import (
     analyze_practice,
     create_practice_engine,
@@ -191,7 +190,6 @@ __all__ = [
     "TemplateStore",
     "WRIST_REQUIRED_INDICES",
     "active_window",
-    "align_views",
     "analyze_practice",
     "assert_feature_layout_match",
     "attach_contract",
@@ -253,7 +251,6 @@ __all__ = [
     "score_kick_quality",
     "score_view",
     "select_representative_cycle",
-    "share_phase_timing",
     "side_label",
     "sides_for_stance",
     "split_front_side",

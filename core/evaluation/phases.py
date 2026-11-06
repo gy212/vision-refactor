@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""规则判定的相位窗口（start/motion/finish/end）、正侧双视角对齐与同步相位时间共享（原 ``feedback_phases``）。
+"""从选定机位识别一次动作及其相位窗口（start/motion/finish/end）。
 
 考试、学生练习与离线处理的规则都按这里的窗口取帧（D-3）；保留原始点及无效帧，不影响模板评分链路。
 """

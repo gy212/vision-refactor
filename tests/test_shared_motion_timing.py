@@ -7,7 +7,7 @@ import pytest
 
 from core.evaluation import FeedbackConfig, evaluate_series
 from core.evaluation.rule_checks import synchronized_windows
-from core.evaluation.phase_alignment import event_correspondence, share_phase_timing
+from core.evaluation import action_timing
 from core.evaluation.punch_events import reach_events
 from tests.test_step_straight_combo import _series
 
@@ -52,29 +52,75 @@ def test_public_detector_keeps_held_and_rejects_gap_bridge(action):
     assert result["diagnostics"]["side"]["eventDetails"] == []
 
 
-def test_count_conflict_keeps_independent_start_and_blocks_unmatched_motion():
-    result = evaluate_series("rear_straight", "left", {"front": _series(2), "side": _series(1)})
-    assert not result["alignment"]["reliable"]
-    assert result["alignment"]["eventCounts"] == {
-        "front": {"rear_straight": 2},
-        "side": {"rear_straight": 1},
-    }
-    assert len(result["alignment"]["unmatchedEvents"]) == 1
-    checks = {check["id"]: check for check in result["checks"]}
-    assert checks["stance:start:front:stance_elbow"]["status"] in {"candidate", "not_observed"}
-    assert checks["rear_straight:finish:rear:punch_extension"]["status"] == "unable"
-    assert "次数不一致" in checks["rear_straight:finish:rear:punch_extension"]["reason"]
+@pytest.mark.parametrize("front_count,side_count", [(4, 2), (4, 4)])
+def test_dense_actions_share_one_detection_and_instance_identity(
+    monkeypatch, front_count, side_count
+):
+    def rapid(count):
+        series = _series(0, seconds=4)
+        for start in range(30, 50, 20 // count):
+            width = 20 // count - 1
+            series["landmarks"][start : start + width, 16, 0] += 0.18
+            series["landmarks"][start : start + width, 14, 0] += 0.09
+        return series
+
+    views = {"front": rapid(front_count), "side": rapid(side_count)}
+    called = []
+    detect = action_timing.phase_windows
+
+    def observe(series, *args):
+        called.append(series)
+        return detect(series, *args)
+
+    monkeypatch.setattr(action_timing, "phase_windows", observe)
+    result = evaluate_series("rear_straight", "left", views)
+    assert len(called) == 1 and called[0] is views["side"]
+    assert result["alignment"]["eventCounts"] == {"side": {"rear_straight": side_count}}
+    source, target = result["diagnostics"]["side"], result["diagnostics"]["front"]
+    assert target["eventDetails"] == []
+    assert target["projectedPhaseInstances"] == source["phaseInstances"]
+    assert target["projectedEventDetails"] == source["eventDetails"]
+    assert result["phaseWindows"]["front"] == result["phaseWindows"]["side"]
+    checks = {c["id"]: c for c in result["checks"]}
+    assert checks["rear_straight:motion:front:guard_low"]["status"] != "unable"
+    assert "eventPairs" not in result["alignment"]
 
 
-def test_start_stance_still_requires_matching_times_for_two_view_rule():
+def test_source_visibility_is_checked_before_detection_and_missing_data_stays_unable(monkeypatch):
+    front, side = _single_punch(), _series(0)
+    side["valid_mask"][:, 16] = False
+    result = evaluate_series("rear_straight", "left", {"front": front, "side": side})
+    assert result["alignment"]["timingSource"] == "front"
+    assert len(result["diagnostics"]["front"]["eventDetails"]) == 1
+    check = next(
+        c for c in result["checks"] if c["id"] == "rear_straight:finish:rear:punch_extension"
+    )
+    assert check["status"] == "unable"
+    assert "有效帧不足" in check["reason"]
+
+
+def test_source_with_no_event_is_not_replaced_by_a_more_active_other_view():
+    result = evaluate_series(
+        "rear_straight", "left", {"front": _single_punch(), "side": _series(0)}
+    )
+    assert result["alignment"]["timingSource"] == "side"
+    assert result["diagnostics"]["side"]["eventDetails"] == []
+    assert result["diagnostics"]["front"]["projectedEventDetails"] == []
+    check = next(
+        c for c in result["checks"] if c["id"] == "rear_straight:finish:rear:punch_extension"
+    )
+    assert check["status"] == "unable"
+
+
+def test_shared_phase_still_requires_target_time_coverage():
     front, side = _series(0), _series(0)
-    side["times"] = [time + 2 for time in side["times"]]
+    side["times"] = [time + 10 for time in side["times"]]
     result = evaluate_series("stance", "left", {"front": front, "side": side})
     elbow = next(
         check for check in result["checks"] if check["id"] == "stance:start:front:stance_elbow"
     )
     assert elbow["status"] == "unable"
-    assert "时间不对应" in elbow["reason"]
+    assert result["phaseWindows"]["side"] == []
 
 
 def test_projected_events_are_not_reported_as_independent_observations():
@@ -85,7 +131,7 @@ def test_projected_events_are_not_reported_as_independent_observations():
     assert diagnostics["front"]["projectedEventDetails"] == diagnostics["side"]["eventDetails"]
     assert diagnostics["front"]["timingSource"] == "side"
     assert sources["front"] == "side_synchronized_timing"
-    assert alignment["eventCounts"]["front"] == {}
+    assert "front" not in alignment["eventCounts"]
 
 
 def test_single_rear_punch_has_no_front_combination_requirement():
@@ -111,43 +157,22 @@ def test_side_punch_keeps_approved_gap_tolerance():
     ]
 
 
-@pytest.mark.parametrize("source,target", [("front", "side"), ("side", "front")])
-def test_projected_event_times_use_target_clock(source, target):
-    views = {"front": {"times": np.arange(30) / 10}, "side": {"times": np.arange(30) / 10 + 0.2}}
-    windows = {view: {("stance", "start"): np.arange(3)} for view in views}
-    windows[source][("rear_straight", "motion")] = np.arange(10, 21)
-    event = {
-        "segment": "rear_straight",
-        "start": float(views[source]["times"][10]),
-        "peak": float(views[source]["times"][15]),
-        "end": float(views[source]["times"][20]),
-        "ending": "returned",
-    }
-    instance = {
-        "segment": "rear_straight",
-        "phase": "motion",
-        "repetition": 1,
-        "start": event["start"],
-        "end": event["end"],
-    }
-    diagnostics = {
-        source: {
-            "events": ["rear_straight"],
-            "eventDetails": [event],
-            "phaseInstances": [instance],
-        },
-        target: {"events": [], "eventDetails": []},
-    }
-    alignment = {"reliable": True, "sideOffsetSeconds": -0.2}
-    sources = share_phase_timing(views, windows, alignment, diagnostics, FeedbackConfig())
-    projected = diagnostics[target]["projectedEventDetails"][0]
-    for key, index in (("start", 10), ("peak", 15), ("end", 20)):
-        assert projected[key] == pytest.approx(views[target]["times"][index])
-        assert event[key] == pytest.approx(views[source]["times"][index])
-    assert sources[target] == source + "_synchronized_timing"
-    phase = diagnostics[target]["projectedPhaseInstances"][0]
-    assert phase["start"] == pytest.approx(views[target]["times"][10])
-    assert phase["end"] == pytest.approx(views[target]["times"][20])
+def test_projection_uses_same_absolute_timestamps_with_different_sampling():
+    side, front = _single_punch(), _single_punch()
+    retained = np.arange(15, len(front["times"]), 2)
+    for key in ("landmarks", "valid_mask"):
+        front[key] = front[key][retained]
+    for key in ("times", "frames"):
+        front[key] = [front[key][i] for i in retained]
+    windows, diagnostics, alignment, _ = synchronized_windows(
+        {"front": front, "side": side}, "rear_straight", "left", FeedbackConfig()
+    )
+    assert alignment["sideOffsetSeconds"] == 0
+    assert diagnostics["front"]["projectedPhaseInstances"] == diagnostics["side"]["phaseInstances"]
+    for key in [("rear_straight", "motion"), ("rear_straight", "finish")]:
+        source_times = np.asarray(side["times"])[windows["side"][key]]
+        target_times = np.asarray(front["times"])[windows["front"][key]]
+        assert target_times.min() >= source_times.min() and target_times.max() <= source_times.max()
 
 
 def test_combination_stage_keeps_its_index_with_an_unpaired_earlier_punch():
@@ -170,29 +195,3 @@ def test_combination_stage_keeps_its_index_with_an_unpaired_earlier_punch():
         "finish",
         "recovered",
     }
-
-
-@pytest.mark.parametrize("front_peaks,side_peaks", [([1.0, 1.3], [1.2]), ([1.2], [1.0, 1.3])])
-def test_event_correspondence_requires_unique_match_from_both_views(front_peaks, side_peaks):
-    def observed(peaks):
-        return {
-            "eventDetails": [
-                {
-                    "segment": "rear_straight",
-                    "start": peak - 0.1,
-                    "peak": peak,
-                    "end": peak + 0.1,
-                    "ending": "returned",
-                }
-                for peak in [*peaks, 3.0]
-            ]
-        }
-
-    result = event_correspondence(
-        {"front": observed(front_peaks), "side": observed(side_peaks)}, 0, 0.4
-    )
-    assert result["eventPairs"] == [
-        {"segment": "rear_straight", "frontIndex": len(front_peaks), "sideIndex": len(side_peaks)}
-    ]
-    assert len(result["unmatchedEvents"]) == 3
-    assert all(event["reason"] == "对应候选不唯一" for event in result["unmatchedEvents"])
