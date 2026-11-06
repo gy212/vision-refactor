@@ -14,9 +14,10 @@ import numpy as np
 import pytest
 
 from core.evaluation.matching import engine
-from core.evaluation.phases import project_windows
+from core.evaluation.phase_alignment import project_windows
 from core.evaluation.practice import evaluate_series
-from core.evaluation.punch_events import PunchEvent, reach_events, settled_returns
+from core.evaluation.motion_events import MotionEvent
+from core.evaluation.punch_events import reach_events, settled_returns
 from core.evaluation.rule_checks import NEEDS_SIDE, judge_views, rule_series, view_outcomes
 from core.evaluation.rules.sanda_v5 import (
     ACTIONS,
@@ -153,12 +154,12 @@ def test_downward_release_is_not_an_extra_punch() -> None:
 def test_stable_withdrawal_ends_before_exit_without_faking_a_held_return() -> None:
     reach = np.array([0, 0.4, 0.9, 0.5, 0.5, np.nan, 0.2, 0.2, 0.2, 0])
     stable = [np.arange(3, 5), np.arange(5, 7), np.arange(6, 9)]
-    events = [PunchEvent(1, 2, 9, "returned"), PunchEvent(1, 2, 9, "held")]
+    events = [MotionEvent(1, 2, 9, "returned"), MotionEvent(1, 2, 9, "held")]
     times, cfg = np.arange(len(reach)) / FPS, FeedbackConfig()
 
     result = settled_returns(events, reach, times, stable, cfg, rise=0.3)
 
-    assert result[0] == PunchEvent(1, 2, 6, "returned")
+    assert result[0] == MotionEvent(1, 2, 6, "returned")
     assert result[1] == events[1]
     assert settled_returns(events, reach, times, stable[:2], cfg, rise=0.3) == events
     assert (

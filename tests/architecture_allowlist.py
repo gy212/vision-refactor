@@ -20,10 +20,8 @@ MODULE_SIZE: dict[str, tuple[int, str]] = {}
 
 TK_MODULE_SIZE: dict[str, tuple[int, str]] = {}
 
-FUNCTION_SIZE: dict[str, tuple[int, str]] = {
-    "core/evaluation/step_reps.py::step_combo_windows": (141, "format-2026-11-02"),
-}
+FUNCTION_SIZE: dict[str, tuple[int, str]] = {}
 
 DEFENSIVE_GETATTR: dict[str, tuple[int, str]] = {}
 
-ENTRY_CEILING = 1
+ENTRY_CEILING = 0

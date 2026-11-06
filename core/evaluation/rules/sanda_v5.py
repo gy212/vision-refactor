@@ -52,10 +52,9 @@ __all__ = [
     "build_checks",
     "check_view_weights",
     "rule_profile",
-    "SIDE_TIMED_ACTIONS",
 ]
 
-RULE_VERSION = "sanda-rules-mediapipe-2026-11-06-v5.10"
+RULE_VERSION = "sanda-rules-mediapipe-2026-11-06-v5.11"
 
 PROFILE_NAME = "sanda_v5"
 
@@ -69,11 +68,6 @@ STATE_LABELS = {
 }
 
 ABSENCE_RULES = frozenset({"hip_turn", "arm_swing"})
-
-# 消费者按分步迁移计划接入动作目录后移除；集合只派生自公共编排定义。
-SIDE_TIMED_ACTIONS = frozenset(
-    action for action in ACTIONS if action_definition(action).timing == "side_combo"
-)
 
 
 def action_config(cfg: FeedbackConfig, action: str) -> FeedbackConfig:

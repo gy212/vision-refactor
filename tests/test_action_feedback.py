@@ -670,7 +670,9 @@ def test_pair_alignment_uses_multiple_peaks_and_rejects_count_disagreement():
         c["status"] in {"unable", "pending_rule"}
         for c in data["checks"]
         if c.get("fusion", {}).get("method") != "primary_view"
+        and c["phase"] in {"motion", "finish"}
     )
+    assert _check(data, "stance_elbow")["status"] in {"candidate", "not_observed"}
     assert _check(data, "stance_width")["status"] == "candidate"
 
 

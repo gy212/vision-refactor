@@ -5,7 +5,7 @@
 坐标为宽高比修正坐标（D-5），有效掩码 = ``derive_valid_mask`` ∧ 坐标有限 ∧ 在画面内（补帧一律无效，D-2），
 按相位窗口取帧、按左右式取手。同步的正侧两路先经 ``synchronized_windows`` 共用可见机位的动作时间段，
 练习、考试与 batch paired 同一份证据得到同一阶段；练习另做正侧融合（``evaluation/practice.py``），考试与 batch 逐视角报告。
-上步组合（``SIDE_TIMED_ACTIONS``）的阶段只由侧面逐次切分（``step_reps``）确定，正面按同一时钟共用；没有侧面视频时不判定。
+上步组合侧面计时策略的阶段只由侧面逐次切分（``step_reps``）确定，正面按同一时钟共用；没有侧面视频时不判定。
 上步组合的躯干朝向另用 ``paired_torso`` 同步双机位投影，不将单路肩宽冒充身体朝向。
 """
 
@@ -15,13 +15,20 @@ from collections.abc import Sequence
 
 import numpy as np
 
-from core.evaluation.phases import align_views, phase_windows, project_windows, share_phase_timing
+from core.evaluation.phases import phase_windows
+from core.evaluation.phase_alignment import (
+    align_views,
+    event_correspondence,
+    phase_correspondence,
+    project_windows,
+    share_phase_timing,
+)
 from core.evaluation.paired_torso import paired_torso_measurements
+from core.evaluation.action_catalog import action_definition
 from core.evaluation.rules.adapters import RuleCheck, to_rule_check
 from core.evaluation.rules.engine import evaluate_rules
 from core.evaluation.rules.sanda_v5 import (
     ACTIONS,
-    SIDE_TIMED_ACTIONS,
     FeedbackConfig,
     build_checks,
     rule_profile,
@@ -115,13 +122,13 @@ def synchronized_windows(
 
     返回 ``(windows, diagnostics, alignment, phase_sources)``，均以视角为键（``alignment`` 除外）。
     """
-    if action in SIDE_TIMED_ACTIONS:
+    if action_definition(action).timing == "side_combo":
         return _side_timed_windows(views, stance, cfg)
     diagnostics = {view: {} for view in views}
     windows = {
         view: phase_windows(s, action, stance, cfg, diagnostics[view]) for view, s in views.items()
     }
-    alignment = align_views(views, windows, cfg)
+    alignment = align_views(views, windows, cfg, diagnostics)
     phase_sources = share_phase_timing(views, windows, alignment, diagnostics, cfg)
     return windows, diagnostics, alignment, phase_sources
 
@@ -129,7 +136,7 @@ def synchronized_windows(
 def _side_timed_windows(
     views: dict, stance: str, cfg: FeedbackConfig
 ) -> tuple[dict, dict, dict, dict]:
-    """上步组合（``SIDE_TIMED_ACTIONS``）：侧面逐次切分，正面按同一时钟共用侧面的时间段（同步录制，D-18）。"""
+    """上步组合侧面计时策略：侧面逐次切分，正面按同一时钟共用侧面的时间段（同步录制，D-18）。"""
     if "side" not in views:
         return (
             {view: {} for view in views},
@@ -150,7 +157,14 @@ def _side_timed_windows(
         windows["front"] = project_windows(
             windows["side"], views["side"]["times"], views["front"]["times"]
         )
-        diagnostics["front"] = dict(diagnostics["side"])
+        diagnostics["front"] = {
+            **diagnostics["side"],
+            "eventDetails": [],
+            "projectedEventDetails": diagnostics["side"]["eventDetails"],
+            "phaseInstances": [],
+            "projectedPhaseInstances": diagnostics["side"]["phaseInstances"],
+            "timingSource": "side",
+        }
         sources["front"] = "side_synchronized_timing"
     for view, series in views.items():
         windows[view] = settled_stance_windows(
@@ -162,6 +176,12 @@ def _side_timed_windows(
         "anchors": len(diagnostics["side"]["repetitions"]),
         "reliable": True,
     }
+    alignment["phases"] = phase_correspondence(
+        views, windows, 0.0, cfg.phase_tolerance_seconds, True
+    )
+    alignment.update(event_correspondence(diagnostics, 0.0, cfg.phase_tolerance_seconds))
+    # 正面时间来自侧面投影，这里的独立观测数不用于推翻已知共用时钟。
+    alignment["timingSource"] = "side"
     return windows, diagnostics, alignment, sources
 
 
@@ -206,7 +226,7 @@ def judge_view(
 ) -> tuple[tuple[RuleCheck, ...], dict]:
     """一路视角的逐项结论与相位诊断；没有同步的另一路时用它，不做正侧融合。"""
     diagnostics: dict = {}
-    if action not in SIDE_TIMED_ACTIONS:
+    if action_definition(action).timing != "side_combo":
         windows = phase_windows(series, action, stance, cfg, diagnostics)
     elif view == "side":
         windows = step_combo_windows(series, stance, cfg, diagnostics)
@@ -236,7 +256,12 @@ def judge_views(
     躯干朝向在正面项中引用双机位共同证据，其余项仍按各路独立测量。
     """
     windows, diagnostics, _alignment, sources = synchronized_windows(views, action, stance, cfg)
-    paired = paired_torso_measurements(views) if action in SIDE_TIMED_ACTIONS else {}
+    profile = rule_profile(action, stance, cfg)
+    paired = (
+        paired_torso_measurements(views)
+        if any(len(s.required_views) > 1 for s in profile.rules)
+        else {}
+    )
     return {
         view: (
             _view_checks(
