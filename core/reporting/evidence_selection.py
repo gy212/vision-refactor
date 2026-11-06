@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Sequence
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -23,6 +24,7 @@ class EvidenceSelection:
     metadata_recorded: bool
     repetition: int | None = None
     timing_source: str = ""
+    reference_for: str = ""
 
 
 def _saved_selection(check: NormalizedCheck, detail: dict, catalog: dict) -> EvidenceSelection:
@@ -38,6 +40,7 @@ def _saved_selection(check: NormalizedCheck, detail: dict, catalog: dict) -> Evi
         metadata_recorded="highlightJoints" in detail,
         repetition=detail.get("repetition"),
         timing_source=str(detail.get("timingSource", "")),
+        reference_for=str(detail.get("referenceFor", "")),
     )
 
 
@@ -76,10 +79,47 @@ def _member_candidates(check: NormalizedCheck, catalog: dict) -> list[EvidenceSe
     return sorted(result, key=lambda item: (priority.get(item.purpose, 3), -item.weight))
 
 
+def _reference_matches(
+    reference: EvidenceSelection, source: EvidenceSelection, catalog: dict[str, dict]
+) -> bool:
+    """新证据按已保存的主图引用匹配，旧证据只接受已保存的相同采样时刻。"""
+    if reference.reference_for:
+        return reference.reference_for == source.ref
+    source_frame = catalog.get(source.ref, {})
+    return (
+        "timeSeconds" in source_frame
+        and catalog.get(reference.ref, {}).get("timeSeconds") == source_frame["timeSeconds"]
+    )
+
+
+def _instance_representatives(
+    group: list[EvidenceSelection], catalog: dict[str, dict]
+) -> list[EvidenceSelection]:
+    """每个机位取一张，双面测量参照必须属于所选主图的同一采样。"""
+    primary = [candidate for candidate in group if candidate.purpose != "reference"]
+    views = dict.fromkeys(candidate.view for candidate in primary)
+    selected = [next(c for c in primary if c.view == name) for name in views]
+    for candidate in group:
+        if candidate.purpose != "reference" or candidate.view in views:
+            continue
+        source = next(
+            (
+                item
+                for item in selected
+                if item.purpose != "reference" and _reference_matches(candidate, item, catalog)
+            ),
+            None,
+        )
+        if source is not None:
+            selected.append(replace(candidate, reference_for=source.ref))
+            views[candidate.view] = None
+    return selected
+
+
 def select_evidence(
     check: NormalizedCheck, catalog: dict[str, dict], *, view: str | None = None
 ) -> list[EvidenceSelection]:
-    """每个原始成员保留各机位代表图；单机位最多两张，跨阶段成员不相互挤占。"""
+    """各成员和次数先保留问题依据及必要参照，再追加对照或同阶段第二张图。"""
     selected = []
     for member in check.members or (check,):
         candidates = _member_candidates(member, catalog)
@@ -87,12 +127,41 @@ def select_evidence(
             candidates = [candidate for candidate in candidates if candidate.view == view]
         for repetition in dict.fromkeys(candidate.repetition for candidate in candidates):
             group = [candidate for candidate in candidates if candidate.repetition == repetition]
-            views = dict.fromkeys(candidate.view for candidate in group)
-            picks = [next(c for c in group if c.view == name) for name in views]
+            picks = _instance_representatives(group, catalog) if view is None else group[:1]
             if view is None and len(picks) == 1:
-                picks.extend(group[1:2])
+                extras = [c for c in group if c.view == picks[0].view and c not in picks]
+                picks.extend(extras[:1])
             selected.extend(picks)
-    return selected
+    return prioritize_evidence(selected)
+
+
+def prioritize_evidence(selections: Sequence[EvidenceSelection]) -> list[EvidenceSelection]:
+    """共用预算顺序：各次首张问题图与必要参照、另一问题视角、对照、补图。"""
+    representatives = set()
+    supported_instances = set()
+    purposes = {
+        (item.check_id, item.repetition, item.ref): item.purpose
+        for item in selections
+        if item.purpose != "reference"
+    }
+    ranked = []
+    for selected in selections:
+        identity = (selected.check_id, selected.repetition, selected.view)
+        instance = (selected.check_id, selected.repetition)
+        if identity in representatives:
+            priority = 3
+        else:
+            representatives.add(identity)
+            if selected.purpose == "reference":
+                source = (*instance, selected.reference_for)
+                priority = 0 if purposes.get(source) == "violation" else 2
+            elif selected.purpose == "violation":
+                priority = 1 if instance in supported_instances else 0
+                supported_instances.add(instance)
+            else:
+                priority = 2
+        ranked.append((priority, selected))
+    return [selected for _, selected in sorted(ranked, key=lambda item: item[0])]
 
 
 def evidence_caption(selection: EvidenceSelection, evidence: dict) -> str:

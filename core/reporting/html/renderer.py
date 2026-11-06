@@ -16,7 +16,12 @@ from core.reporting.evidence import (
     frame_to_data_uri,
     resolve_record_video_path,
 )
-from core.reporting.evidence_selection import EvidenceSelection, evidence_caption, select_evidence
+from core.reporting.evidence_selection import (
+    EvidenceSelection,
+    evidence_caption,
+    prioritize_evidence,
+    select_evidence,
+)
 from core.reporting.html.icons import status_icon
 from core.reporting.html.sanitize import safe_clean, safe_float
 from core.reporting.html.timeline import generate_phase_timeline_svg
@@ -61,6 +66,7 @@ class _EvidenceEmbedder:
         self._max_images = max_images
         self._embedded = 0
         self._cache: dict[tuple[str, int, tuple[int, ...]], str] = {}
+        self._prepared: dict[EvidenceSelection, tuple[str | None, str]] = {}
 
     @property
     def catalog(self) -> dict[str, dict]:
@@ -69,6 +75,8 @@ class _EvidenceEmbedder:
 
     def data_uri(self, selected: EvidenceSelection) -> tuple[str | None, str]:
         """证据帧的 data URI 与图注；截不到时 URI 为 None，图注说明原因。"""
+        if selected in self._prepared:
+            return self._prepared[selected]
         ev_data = self._model.evidence_catalog.get(selected.ref)
         if not ev_data:
             return None, "未找到关联证据数据"
@@ -104,6 +112,11 @@ class _EvidenceEmbedder:
         self._cache[cache_key] = data_uri
         self._embedded += 1
         return data_uri, caption
+
+    def prepare(self, selections: list[EvidenceSelection]) -> None:
+        """按公共选图顺序分配整份报告的名额，卡片排版不再决定图片优先级。"""
+        for selected in selections:
+            self._prepared[selected] = self.data_uri(selected)
 
 
 def _count_pills(model: NormalizedReportModel) -> str:
@@ -208,6 +221,15 @@ def _issue_card(idx: int, check: NormalizedCheck, embedder: _EvidenceEmbedder) -
 def _candidate_section(model: NormalizedReportModel, embedder: _EvidenceEmbedder) -> str:
     issues = group_action_issues(model.candidate_checks, model.header.action)
     if issues:
+        embedder.prepare(
+            prioritize_evidence(
+                [
+                    selected
+                    for check in issues
+                    for selected in select_evidence(check, embedder.catalog)
+                ]
+            )
+        )
         cards = "\n".join(_issue_card(i, c, embedder) for i, c in enumerate(issues, 1))
     else:
         cards = _fill("no_candidates")
