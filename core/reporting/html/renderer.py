@@ -12,15 +12,21 @@ from pathlib import Path
 from string import Template
 
 from core.reporting.evidence import (
-    RULE_JOINTS,
     extract_evidence_frame,
     frame_to_data_uri,
     resolve_record_video_path,
+)
+from core.reporting.evidence_selection import (
+    EvidenceSelection,
+    evidence_caption,
+    prioritize_evidence,
+    select_evidence,
 )
 from core.reporting.html.icons import status_icon
 from core.reporting.html.sanitize import safe_clean, safe_float
 from core.reporting.html.timeline import generate_phase_timeline_svg
 from core.reporting.issue_groups import group_action_issues
+from core.reporting.timing_diagnostics import format_timing_diagnostics
 from core.reporting.practice_model import (
     NormalizedCheck,
     NormalizedReportModel,
@@ -60,24 +66,31 @@ class _EvidenceEmbedder:
         self._max_images = max_images
         self._embedded = 0
         self._cache: dict[tuple[str, int, tuple[int, ...]], str] = {}
+        self._prepared: dict[EvidenceSelection, tuple[str | None, str]] = {}
 
-    def data_uri(self, ev_id: str, rule_code: str) -> tuple[str | None, str]:
+    @property
+    def catalog(self) -> dict[str, dict]:
+        """保存的共享画面目录。"""
+        return self._model.evidence_catalog
+
+    def data_uri(self, selected: EvidenceSelection) -> tuple[str | None, str]:
         """证据帧的 data URI 与图注；截不到时 URI 为 None，图注说明原因。"""
-        ev_data = self._model.evidence_catalog.get(ev_id)
+        if selected in self._prepared:
+            return self._prepared[selected]
+        ev_data = self._model.evidence_catalog.get(selected.ref)
         if not ev_data:
             return None, "未找到关联证据数据"
+        caption = evidence_caption(selected, ev_data)
         if self._root is None:
-            return None, "未指定历史目录，跳过截帧"
+            return None, f"{caption}（未指定历史目录，跳过截帧）"
         view = ev_data.get("view", "front")
         frame_idx = ev_data.get("frame", 0)
-        view_label = "正面" if view == "front" else "侧面"
-        caption = f"{view_label}证据 · {ev_data.get('timeSeconds', 0.0):.3f}s · 第{frame_idx}帧"
-        if self._embedded >= self._max_images:
-            return None, f"{caption}（已省略次要截图以精简报告体积）"
-        highlight_joints = tuple(sorted(RULE_JOINTS.get(rule_code, set())))
+        highlight_joints = selected.highlight_joints
         cache_key = (view, frame_idx, highlight_joints)
         if cache_key in self._cache:
             return self._cache[cache_key], caption
+        if self._embedded >= self._max_images:
+            return None, f"{caption}（图片数量已达上限，本阶段此机位图片已省略）"
         video_path = resolve_record_video_path(
             self._root, self._model.header.record_id, view, self._videos
         )
@@ -99,6 +112,11 @@ class _EvidenceEmbedder:
         self._cache[cache_key] = data_uri
         self._embedded += 1
         return data_uri, caption
+
+    def prepare(self, selections: list[EvidenceSelection]) -> None:
+        """按公共选图顺序分配整份报告的名额，卡片排版不再决定图片优先级。"""
+        for selected in selections:
+            self._prepared[selected] = self.data_uri(selected)
 
 
 def _count_pills(model: NormalizedReportModel) -> str:
@@ -144,8 +162,8 @@ def _count_pills(model: NormalizedReportModel) -> str:
 
 def _evidence_grid(check: NormalizedCheck, embedder: _EvidenceEmbedder) -> str:
     boxes = []
-    for ev_ref in check.evidence_refs[:2]:
-        data_uri, caption = embedder.data_uri(ev_ref, check.code)
+    for selected in select_evidence(check, embedder.catalog):
+        data_uri, caption = embedder.data_uri(selected)
         if data_uri:
             boxes.append(_fill("evidence_image", src=data_uri, caption=safe_clean(caption)))
         else:
@@ -155,6 +173,9 @@ def _evidence_grid(check: NormalizedCheck, embedder: _EvidenceEmbedder) -> str:
 
 def _issue_details(check: NormalizedCheck) -> str:
     lines = []
+    for member in check.members:
+        review = member.review_display or "待教师复核"
+        lines.append(f"<div>{safe_clean(member.phase_label)}：{safe_clean(review)}</div>")
     if check.measurements_summary:
         lines.extend(
             f"<div>{safe_clean(line)}</div>" for line in check.measurements_summary.split("\n")
@@ -175,7 +196,7 @@ def _issue_card(idx: int, check: NormalizedCheck, embedder: _EvidenceEmbedder) -
     extras = []
     if check.evidence_refs:
         extras.append(_evidence_grid(check, embedder))
-    if check.measurements_summary or check.audit_logs:
+    if check.measurements_summary or check.audit_logs or check.members:
         extras.append(_issue_details(check))
     review_badge = (
         '<span class="issue-tag tag-confirmed">教师已确认</span>'
@@ -200,6 +221,15 @@ def _issue_card(idx: int, check: NormalizedCheck, embedder: _EvidenceEmbedder) -
 def _candidate_section(model: NormalizedReportModel, embedder: _EvidenceEmbedder) -> str:
     issues = group_action_issues(model.candidate_checks, model.header.action)
     if issues:
+        embedder.prepare(
+            prioritize_evidence(
+                [
+                    selected
+                    for check in issues
+                    for selected in select_evidence(check, embedder.catalog)
+                ]
+            )
+        )
         cards = "\n".join(_issue_card(i, c, embedder) for i, c in enumerate(issues, 1))
     else:
         cards = _fill("no_candidates")
@@ -280,13 +310,10 @@ def _diagnostics_section(model: NormalizedReportModel) -> str:
             f"<div>{label}：{safe_clean(cap_str)}；可见躯干链 {diag.get('bodyValidFrames', 0)}/"
             f"{diag.get('totalFrames', 0)} 帧；分段原因：{safe_clean(diag.get('reason', '正常'))}</div>"
         )
-    align = model.alignment
-    if align:
-        offset_val = safe_float(align.get("sideOffsetSeconds"), 0.0)
-        lines.append(
-            f"<div>时间对齐：{safe_clean(str(align.get('method', '未知')))}；侧面偏移 {offset_val:.3f}s；"
-            f"可靠性：{'可靠' if align.get('reliable') else '不可靠'}</div>"
-        )
+    lines.extend(
+        f"<div>{safe_clean(line)}</div>"
+        for line in format_timing_diagnostics(model.diagnostics, model.alignment)
+    )
     return _fill(
         "diagnostics_section",
         backend=safe_clean(model.header.backend_description),

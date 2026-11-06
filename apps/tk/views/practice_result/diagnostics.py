@@ -1,11 +1,12 @@
 # -*- coding: utf-8 -*-
 """结果页的分析依据折叠区：算法后端、采集属性、对齐残差与关键点有效性的技术诊断文字。"""
+
 from __future__ import annotations
 
 import tkinter as tk
 from tkinter import Text
 
-from core.reporting import NormalizedReportModel
+from core.reporting import NormalizedReportModel, format_timing_diagnostics
 
 from apps.tk.views.practice_result.style import FONT, STYLE_A, card
 
@@ -16,14 +17,28 @@ _EXPANDED_TEXT = "▼ 收起分析依据与技术诊断"
 def diagnostics_lines(model: NormalizedReportModel) -> list[str]:
     """折叠区里的诊断文字。"""
     diag, cap, align = model.diagnostics, model.capture, model.alignment
-    return [
+    lines = [
         f"【算法与后端】模型后端: {model.header.backend_description} | 规则版本: {model.header.rule_version}",
-        f"【视频采集属性】标称分辨率: {cap.get('resolution', '标准1080P/720P')} | 标称FPS: {cap.get('fps', '30fps')} | 正侧对齐: {align.get('status', '正常')}",
-        f"【对齐残差】时间偏移: {align.get('offsetSeconds', 0.0):.3f}s | 残差方差: {align.get('residualVar', 0.0):.4f}",
-        f"【关键点有效性】正面平均可见比例: {diag.get('frontValidRatio', '98%')} | 侧面平均可见比例: {diag.get('sideValidRatio', '95%')}",
-        "--------------------------------------------------------------------------------",
-        "【注】本系统所有指标均基于几何投影与规则判定，不产生扣分或总成绩，仅供学员动作辅导与教师复核参考。",
     ]
+    for view, label in (("front", "正面"), ("side", "侧面")):
+        capture, observation = cap.get(view, {}), diag.get(view, {})
+        width, height, fps = (
+            capture.get(key, "未记录") for key in ("width", "height", "sourceFps")
+        )
+        valid, total = (
+            observation.get(key, "未记录") for key in ("bodyValidFrames", "totalFrames")
+        )
+        lines.append(
+            f"【{label}录像】分辨率 {width}×{height}；标称帧率 {fps}；可见肩髋链 {valid}/{total} 帧"
+        )
+    lines.extend(format_timing_diagnostics(diag, align))
+    lines.extend(
+        [
+            "--------------------------------------------------------------------------------",
+            "【注】本系统所有指标均基于几何投影与规则判定，不产生扣分或总成绩，仅供学员动作辅导与教师复核参考。",
+        ]
+    )
+    return lines
 
 
 class DiagnosticsAccordion:
@@ -35,13 +50,29 @@ class DiagnosticsAccordion:
         header_row = tk.Frame(box, bg=STYLE_A["bg_card"])
         header_row.pack(fill="x")
         self.expanded = False
-        self.toggle_btn = tk.Button(header_row, text=_COLLAPSED_TEXT, font=(FONT, 9), bg=STYLE_A["bg_card"],
-                                    fg=STYLE_A["text_secondary"], relief="flat", anchor="w", cursor="hand2",
-                                    command=self.toggle)
+        self.toggle_btn = tk.Button(
+            header_row,
+            text=_COLLAPSED_TEXT,
+            font=(FONT, 9),
+            bg=STYLE_A["bg_card"],
+            fg=STYLE_A["text_secondary"],
+            relief="flat",
+            anchor="w",
+            cursor="hand2",
+            command=self.toggle,
+        )
         self.toggle_btn.pack(side="left", fill="x", expand=True)
         self.content = tk.Frame(box, bg=STYLE_A["bg_card"])
-        self.text = Text(self.content, height=7, wrap="word", font=("Consolas", 8), bg=STYLE_A["bg_page"],
-                         fg=STYLE_A["text_primary"], relief="flat", bd=1)
+        self.text = Text(
+            self.content,
+            height=7,
+            wrap="word",
+            font=("Consolas", 8),
+            bg=STYLE_A["bg_page"],
+            fg=STYLE_A["text_primary"],
+            relief="flat",
+            bd=1,
+        )
         self.text.pack(fill="both", expand=True, pady=(6, 0))
 
     def toggle(self) -> None:

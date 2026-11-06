@@ -47,6 +47,8 @@ class RuleContext:
     baseline: np.ndarray | None = None
     params: Any = None
     paired_torso: tuple[np.ndarray, np.ndarray] | None = None
+    # 真实阶段实例：scope -> ((已检测次数, 序列帧下标), ...)，仅用于保留证据来源。
+    phase_instances: Mapping[str, tuple[tuple[int, np.ndarray], ...]] = field(default_factory=dict)
     phase_coverage: Mapping[str, dict] = field(default_factory=dict)
 
 
@@ -99,6 +101,15 @@ class RuleProfile:
 
 
 @dataclass(frozen=True)
+class RuleEvidence:
+    """一张证据在阶段实例内的来源；同帧可以分别属于相邻两次动作。"""
+
+    frame: int
+    repetition: int | None = None
+    purpose: Literal["violation", "observation"] = "observation"
+
+
+@dataclass(frozen=True)
 class RuleOutcome:
     """一条规则在一路视角上的结论；``detail`` 保存停用或共享阶段不完整的具体原因。"""
 
@@ -113,3 +124,4 @@ class RuleOutcome:
     # 证据帧（序列帧下标，首/中/末代表帧）与测量值摘要（名称、单位、中位数、最小、最大）。
     evidence_frames: tuple[int, ...] = ()
     measurements: tuple[dict, ...] = ()
+    evidence_instances: tuple[RuleEvidence, ...] = ()

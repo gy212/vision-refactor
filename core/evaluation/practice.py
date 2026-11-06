@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Callable
 
 from core.evaluation.paired_torso import paired_torso_measurements
+from core.evaluation.action_record import shared_action_record
 from core.evaluation.action_catalog import action_definition
 from core.evaluation.rule_checks import rule_series, synchronized_windows, view_outcomes
 from core.evaluation.rules.adapters import to_practice_check
@@ -102,6 +103,8 @@ def _observe_view(
     cfg: FeedbackConfig,
     evidence: dict,
     outcome: RuleOutcome,
+    views: dict,
+    diagnostics: dict,
 ):
     """一路视角对一个检查项的观测：``(该阶段时间段或 None, (是否有问题, 证据权重) 或 None)``。
 
@@ -129,7 +132,7 @@ def _observe_view(
         ]
     else:
         c["viewProblems"][view] = f"该阶段可见肩髋链不足（{body_valid.sum()}/{len(indices)}帧）"
-    return ranges, to_practice_check(c, view, outcome, weights[view], series, evidence)
+    return ranges, to_practice_check(c, view, outcome, weights[view], views, diagnostics, evidence)
 
 
 def _fuse(
@@ -236,6 +239,8 @@ def _evaluate_check(
             cfg,
             evidence,
             outcomes_by_view[view][c["id"]],
+            views,
+            diagnostics,
         )
         if view_ranges is not None:
             ranges[view] = view_ranges
@@ -301,6 +306,10 @@ def evaluate_series(
             stance,
             cfg,
             paired_torso=paired.get(view),
+            phase_instances=(
+                diagnostics[view].get("phaseInstances")
+                or diagnostics[view].get("projectedPhaseInstances", ())
+            ),
             phase_coverage=alignment["phases"],
         )
         for view, s in views.items()
@@ -335,6 +344,9 @@ def evaluate_series(
         "inputViews": sorted(views),
         "capture": {view: series.get("capture", {}) for view, series in views.items()},
         "alignment": alignment,
+        "sharedActionRecord": shared_action_record(
+            action, stance, diagnostics, alignment, phase_sources
+        ),
         "diagnostics": _view_diagnostics(views, diagnostics, phase_sources),
         "phaseWindows": _phase_ranges(views, windows),
         "config": asdict(action_config(cfg, action)),

@@ -6,7 +6,6 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-import numpy as np
 
 from core.evaluation.rules.spec import (
     RULE_STATE_UNABLE,
@@ -15,6 +14,7 @@ from core.evaluation.rules.spec import (
     RuleState,
     SkipReason,
 )
+from core.evaluation.rules.evidence import build_rule_evidence
 from core.pose.validity import landmark_capabilities, landmark_names
 
 
@@ -43,12 +43,21 @@ class RuleCheck:
     missing_landmarks: tuple[str, ...] = ()
     evidence_frames: tuple[int, ...] = ()
     measurements: tuple[dict, ...] = ()
+    evidence_details: tuple[dict, ...] = ()
+    evidence_catalog: tuple[dict, ...] = ()
 
 
 def to_rule_check(
-    check: dict, view: str, outcome: RuleOutcome, frames, phase_reason: str = ""
+    check: dict,
+    view: str,
+    outcome: RuleOutcome,
+    views: Mapping[str, dict],
+    diagnostics: Mapping[str, dict],
+    phase_reason: str = "",
 ) -> RuleCheck:
-    """检查项（``build_checks`` 的一项）与它在本视角的结论 → ``RuleCheck``；``frames`` 把序列下标换成原视频帧号。"""
+    """检查项（``build_checks`` 的一项）与它在本视角的结论 → ``RuleCheck``；证据保留原帧号、时间、部位和同步参照。"""
+    evidence = build_rule_evidence(check, view, outcome, views, diagnostics)
+    frames = views[view]["frames"]
     detail = outcome.detail
     if outcome.state == RULE_STATE_UNABLE:
         detail = {
@@ -78,6 +87,8 @@ def to_rule_check(
         missing_landmarks=outcome.missing_landmarks,
         evidence_frames=tuple(int(frames[i]) for i in outcome.evidence_frames),
         measurements=outcome.measurements,
+        evidence_details=evidence.details,
+        evidence_catalog=tuple(evidence.frames.values()),
     )
 
 
@@ -86,7 +97,8 @@ def to_practice_check(
     view: str,
     outcome: RuleOutcome,
     base_weight: float,
-    series: Mapping,
+    views: Mapping[str, dict],
+    diagnostics: Mapping[str, dict],
     evidence: dict,
 ) -> tuple[bool, float] | None:
     """把一路视角的练习结论写进现有 ``checks`` 字典（测量记录、视角问题、证据引用），返回融合输入。
@@ -113,15 +125,12 @@ def to_practice_check(
         return None
     issue = outcome.state == RULE_STATE_VIOLATION
     measurement["issueObserved"] = issue
-    for index in outcome.evidence_frames:
-        ref = f"{view}:{series['frames'][index]}"
-        evidence[ref] = {
-            "id": ref,
-            "view": view,
-            "frame": series["frames"][index],
-            "timeSeconds": series["times"][index],
-            "landmarks": np.round(series["landmarks"][index], 5).tolist(),
-            "validMask": series["valid_mask"][index].tolist(),
-        }
-        check["evidence"].append(ref)
+    bundle = build_rule_evidence(
+        check, view, outcome, views, diagnostics, weight=base_weight * quality
+    )
+    evidence.update(bundle.frames)
+    for ref in bundle.frames:
+        if ref not in check["evidence"]:
+            check["evidence"].append(ref)
+    check.setdefault("evidenceDetails", []).extend(bundle.details)
     return issue, base_weight * quality

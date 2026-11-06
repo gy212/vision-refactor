@@ -20,11 +20,13 @@ from core.evaluation.rules.spec import (
     SKIP_MISSING_LANDMARKS,
     SKIP_PHASE_NOT_FOUND,
     RuleContext,
+    RuleEvidence,
     RuleOutcome,
     RuleProfile,
     RuleSpec,
 )
 from core.pose.validity import landmarks_missing_for_capabilities
+from core.foundation.signal import contiguous_runs
 
 
 def _measurement_summaries(details: dict, valid: np.ndarray) -> tuple[dict, ...]:
@@ -98,8 +100,7 @@ def _evaluate_phase(
         )
     # "未做某动作"只能在整个阶段均未出现该动作时成立。
     issue = bool(bad[valid].all()) if agg.absence else violation >= agg.trigger_ratio
-    picked = indices[valid & bad] if issue else indices[valid]
-    evidence = tuple(int(i) for i in picked[np.unique([0, len(picked) // 2, len(picked) - 1])])
+    evidence = _phase_evidence(indices, valid, bad, issue, ctx.phase_instances.get(spec.scope, ()))
     return RuleOutcome(
         spec,
         RULE_STATE_VIOLATION if issue else RULE_STATE_PASS,
@@ -107,9 +108,33 @@ def _evaluate_phase(
         violation,
         count,
         total,
-        evidence_frames=evidence,
+        evidence_frames=tuple(dict.fromkeys(item.frame for item in evidence)),
         measurements=measurements,
+        evidence_instances=evidence,
     )
+
+
+def _phase_evidence(indices, valid, bad, issue, instances) -> tuple[RuleEvidence, ...]:
+    """按已识别的每次阶段取图；连续或共用边界不改变次数，聚合判断不参与重算。"""
+    evidence = []
+    covered = np.zeros(len(indices), bool)
+    groups = []
+    for repetition, frames in instances:
+        inside = np.isin(indices, frames)
+        covered |= inside
+        groups.append((repetition, inside))
+    for window in contiguous_runs(indices[~covered]):
+        groups.append((None, (indices >= window[0]) & (indices <= window[-1]) & ~covered))
+    for repetition, inside in groups:
+        has_issue = issue and bool((inside & valid & bad).any())
+        observed = indices[inside & valid & (bad if has_issue else True)]
+        if observed.size:
+            selected = observed[np.unique([0, len(observed) // 2, len(observed) - 1])]
+            evidence.extend(
+                RuleEvidence(int(i), repetition, "violation" if has_issue else "observation")
+                for i in selected
+            )
+    return tuple(evidence)
 
 
 def evaluate_rules(

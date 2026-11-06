@@ -16,6 +16,7 @@ from collections.abc import Sequence
 import numpy as np
 
 from core.evaluation.action_timing import shared_timeline
+from core.evaluation.action_record import shared_action_record
 from core.evaluation.paired_torso import paired_torso_measurements
 from core.evaluation.rules.adapters import RuleCheck, to_rule_check
 from core.evaluation.rules.engine import evaluate_rules
@@ -78,6 +79,7 @@ def view_outcomes(
     supported_capabilities=None,
     *,
     paired_torso=None,
+    phase_instances=(),
     phase_coverage: dict | None = None,
 ) -> dict[str, RuleOutcome]:
     """一路视角上全部检查项经 ``evaluate_rules`` 的结论（以检查项 id 为键）；基线取起始实战式窗口，缺失时取开头几帧。"""
@@ -92,6 +94,7 @@ def view_outcomes(
         baseline=baseline,
         params=cfg,
         paired_torso=paired_torso,
+        phase_instances=_phase_instance_frames(series["times"], phase_instances),
         phase_coverage=phase_coverage or {},
     )
     outcomes = evaluate_rules(
@@ -102,6 +105,17 @@ def view_outcomes(
         supported_capabilities=supported_capabilities,
     )
     return {o.spec.code: o for o in outcomes}
+
+
+def _phase_instance_frames(times, instances) -> dict:
+    """把已检测阶段的原始时间转换为本路帧下标，保留明确的次数身份。"""
+    times = np.asarray(times)
+    grouped = {}
+    for instance in instances:
+        scope = f"{instance['segment']}:{instance['phase']}"
+        frames = np.flatnonzero((times >= instance["start"]) & (times <= instance["end"]))
+        grouped.setdefault(scope, []).append((instance["repetition"], frames))
+    return {scope: tuple(values) for scope, values in grouped.items()}
 
 
 def synchronized_windows(
@@ -122,6 +136,9 @@ def _view_checks(
     supported_capabilities=None,
     *,
     paired_torso=None,
+    phase_instances=(),
+    evidence_views: dict,
+    evidence_diagnostics: dict,
     phase_coverage: dict | None = None,
 ) -> tuple[RuleCheck, ...]:
     """一路视角在给定相位窗口上的逐项结论（只列适用本视角的项）。"""
@@ -135,10 +152,13 @@ def _view_checks(
         cfg,
         supported_capabilities,
         paired_torso=paired_torso,
+        phase_instances=phase_instances,
         phase_coverage=phase_coverage,
     )
     return tuple(
-        to_rule_check(c, view, outcomes[c["id"]], series["frames"], phase_reason)
+        to_rule_check(
+            c, view, outcomes[c["id"]], evidence_views, evidence_diagnostics, phase_reason
+        )
         for c in build_checks(action, stance, pose_variant=cfg.pose_variant)
         if c["id"] in outcomes
     )
@@ -153,22 +173,7 @@ def judge_view(
     supported_capabilities=None,
 ) -> tuple[tuple[RuleCheck, ...], dict]:
     """一路视角的逐项结论与相位诊断；没有同步的另一路时用它，不做正侧融合。"""
-    all_windows, all_diagnostics, alignment, _ = synchronized_windows(
-        {view: series}, action, stance, cfg
-    )
-    windows, diagnostics = all_windows[view], all_diagnostics[view]
-    checks = _view_checks(
-        view,
-        series,
-        windows,
-        diagnostics.get("reason", ""),
-        action,
-        stance,
-        cfg,
-        supported_capabilities,
-        phase_coverage=alignment["phases"],
-    )
-    return checks, diagnostics
+    return judge_views({view: series}, action, stance, cfg, supported_capabilities)[view]
 
 
 def judge_views(
@@ -180,6 +185,7 @@ def judge_views(
     躯干朝向在正面项中引用双机位共同证据，其余项仍按各路独立测量。
     """
     windows, diagnostics, alignment, sources = synchronized_windows(views, action, stance, cfg)
+    record = shared_action_record(action, stance, diagnostics, alignment, sources)
     profile = rule_profile(action, stance, cfg)
     paired = (
         paired_torso_measurements(views)
@@ -198,9 +204,15 @@ def judge_views(
                 cfg,
                 supported_capabilities,
                 paired_torso=paired.get(view),
+                evidence_views=views,
+                evidence_diagnostics=diagnostics,
+                phase_instances=(
+                    diagnostics[view].get("phaseInstances")
+                    or diagnostics[view].get("projectedPhaseInstances", ())
+                ),
                 phase_coverage=alignment["phases"],
             ),
-            {**diagnostics[view], "phaseSource": sources[view]},
+            {**diagnostics[view], "phaseSource": sources[view], "sharedActionRecord": record},
         )
         for view, series in views.items()
     }

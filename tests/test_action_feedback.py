@@ -612,7 +612,7 @@ def test_small_front_motion_gets_side_timing_in_practice_exam_and_paired_batch(t
     def lazy(view):
         return lambda start, end: (raws[view].landmarks, dict(raws[view].meta))
 
-    batch_front, _batch_side = dual._synchronized_rules(
+    batch_front, _batch_side, _action_records = dual._synchronized_rules(
         lazy("front"),
         lazy("side"),
         action="straight_combo",

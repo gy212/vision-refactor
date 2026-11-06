@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 from core.evaluation.rules.sanda_v5 import ACTIONS, PHASES, STANCES, STATE_LABELS
+from core.reporting.timing_diagnostics import format_timing_diagnostics
+from core.reporting.saved_results import MISSING_CHECKS_NOTE, saved_checks
 
 
 def format_fusion(check: dict) -> str:
@@ -89,11 +91,7 @@ def _diagnostic_lines(result: dict) -> list[str]:
             lines.append(
                 f"  {ACTIONS.get(phase['segment'], phase['segment'])}/{PHASES[phase['phase']]}：{spans}"
             )
-    alignment = result.get("alignment", {})
-    lines.append(
-        f"时间对齐：{alignment.get('method', '未知')}；侧面偏移{alignment.get('sideOffsetSeconds', 0):.3f}秒；"
-        f"对应峰值{alignment.get('anchors', 0)}个；{alignment.get('reason', '按同步录像时间对应')}"
-    )
+    lines.extend(format_timing_diagnostics(result["diagnostics"], result.get("alignment", {})))
     return lines
 
 
@@ -108,7 +106,10 @@ def _check_description(check: dict) -> str:
 
 
 def format_report(record: dict) -> str:
-    result = record["result"]
+    result = record.get("result") or {}
+    checks = saved_checks(result)
+    action = result.get("action", record.get("action", ""))
+    stance = result.get("stance", record.get("stance", ""))
     method = (
         "MediaPipe关键点规则检查；二维投影与工程阈值仍需教师标定，不作为正式成绩。"
         if result.get("backend") == "mediapipe"
@@ -116,28 +117,28 @@ def format_report(record: dict) -> str:
     )
     lines = [
         "散打动作问题说明（不打分）",
-        f"学生：{record['studentId']} {record['studentName']}",
-        f"动作：{ACTIONS[result['action']]}；{STANCES[result['stance']]}",
-        f"记录时间：{record['createdAt']}；保存至：{record['expiresAt']}",
-        f"规则版本：{result['ruleVersion']}",
+        f"学生：{record.get('studentId', '未登记学号')} {record.get('studentName', '')}",
+        f"动作：{ACTIONS.get(action, action)}；{STANCES.get(stance, stance)}",
+        f"记录时间：{record.get('createdAt', '未记录')}；保存至：{record.get('expiresAt', '未记录')}",
+        f"规则版本：{result.get('ruleVersion', '未记录')}",
         method,
         "",
-        result["summary"],
+        result.get("summary", ""),
     ]
+    if not checks:
+        lines.append(MISSING_CHECKS_NOTE)
     if result.get("fusionMethod"):
         lines += [
             "分析方式：正侧面按动作/检查项及有效帧比例加权；仅适用单视角公式的项目单独注明。",
             "；".join(
-                f"{label}：{sum(c['status'] == status for c in result['checks'])}项"
+                f"{label}：{sum(c['status'] == status for c in checks)}项"
                 for status, label in STATE_LABELS.items()
             ),
         ]
     if result.get("diagnostics"):
         lines += _diagnostic_lines(result)
     lines += ["", "动作问题："]
-    issues = [
-        c for c in result["checks"] if c["status"] == "candidate" and c["review"] != "revoked"
-    ]
+    issues = [c for c in checks if c["status"] == "candidate" and c["review"] != "revoked"]
     for i, c in enumerate(issues, 1):
         state = "教师已确认" if c["review"] == "confirmed" else "待教师确认"
         lines.append(
@@ -147,7 +148,7 @@ def format_report(record: dict) -> str:
             lines.append(format_fusion(c))
     if not issues:
         lines.append("当前没有未撤销的候选问题；不代表所有项目均合格。")
-    incomplete = [c for c in result["checks"] if c["status"] in {"unable", "pending_rule"}]
+    incomplete = [c for c in checks if c["status"] in {"unable", "pending_rule"}]
     if incomplete:
         lines += ["", "未完成判断的项目："]
         for c in incomplete:
@@ -156,11 +157,11 @@ def format_report(record: dict) -> str:
             )
             if c.get("measurements"):
                 lines.append(format_fusion(c))
-    if result["needsRerecord"]:
+    if result.get("needsRerecord"):
         lines += ["", "请重新录制：全身及拳脚入画、光线充足、减少遮挡，保留开始和结束实战式。"]
     if result.get("fusionMethod"):
         lines += ["", "已检查未发现的问题项（不代表全部动作合格）："]
-        for c in result["checks"]:
+        for c in checks:
             if c["status"] == "not_observed":
                 lines += [
                     f"- {c['segmentLabel']} / {c['phaseLabel']}：{_check_description(c)}",
