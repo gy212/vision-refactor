@@ -36,7 +36,8 @@ class RuleContext:
 
     ``phase_windows`` 以 ``"segment:phase"`` 为键给出序列帧下标；``baseline`` 是起始护位的帧下标；
     ``params`` 是阈值配置（``FeedbackConfig``）；``paired_torso`` 是本视角时间轴上
-    同步双机位的肩线投影比与有效掩码，单路入口不提供。
+    同步双机位的肩线投影比与有效掩码，单路入口不提供；``phase_coverage``
+    保存唯一来源每次阶段在各机位的实际时间覆盖，缺失实例不得用其余次数代替。
     """
 
     view: str
@@ -46,6 +47,7 @@ class RuleContext:
     baseline: np.ndarray | None = None
     params: Any = None
     paired_torso: tuple[np.ndarray, np.ndarray] | None = None
+    phase_coverage: Mapping[str, dict] = field(default_factory=dict)
 
 
 # 相位判定：输入窗口内关键点与掩码、基线关键点与掩码、上下文，返回 (问题帧, 有效帧, {测量名: (逐帧值, 单位)})。
@@ -98,7 +100,7 @@ class RuleProfile:
 
 @dataclass(frozen=True)
 class RuleOutcome:
-    """一条规则在一路视角上的结论；``detail`` 只在 ``pending_rule`` 时写拦截原因。"""
+    """一条规则在一路视角上的结论；``detail`` 保存停用或共享阶段不完整的具体原因。"""
 
     spec: RuleSpec
     state: RuleState

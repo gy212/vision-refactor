@@ -111,7 +111,9 @@ def shared_timeline(
         windows[view] = (
             source_windows
             if view == source
-            else project_windows(source_windows, views[source]["times"], series["times"])
+            else project_windows(
+                source_windows, views[source]["times"], series["times"], data["phaseInstances"]
+            )
         )
         diagnostics[view] = data if view == source else _project_diagnostics(data, source)
         sources[view] = "own_view" if view == source else source + "_synchronized_timing"
@@ -120,6 +122,13 @@ def shared_timeline(
             diagnostics[view]["reason"] = "本机位录像未覆盖共享阶段的完整时间范围"
         if definition.timing == "side_combo":
             windows[view] = settled_stance_windows(series, windows[view], data["repetitions"], cfg)
+    correspondence = phase_correspondence(
+        views, windows, source, source_windows, data["phaseInstances"]
+    )
+    for view in views:
+        diagnostics[view]["phaseCoverage"] = {
+            scope: phase["views"][view] for scope, phase in correspondence.items()
+        }
     alignment = {
         "method": "shared_clock",
         "sideOffsetSeconds": 0.0,
@@ -129,6 +138,6 @@ def shared_timeline(
         "eventCounts": {
             source: dict(Counter(event["segment"] for event in data.get("eventDetails", [])))
         },
-        "phases": phase_correspondence(views, windows, cfg.phase_tolerance_seconds),
+        "phases": correspondence,
     }
     return windows, diagnostics, alignment, sources

@@ -184,10 +184,12 @@ def test_quality_reduces_weight_and_equal_conflict_stays_undecided(monkeypatch):
     front, side = pose_series(), pose_series()
     side["landmarks"][:, 15, :2] = (0.4, 0.6)
     side["valid_mask"][[1, 3, 5, 7], 13] = False
-    monkeypatch.setattr(
-        "core.evaluation.action_timing.phase_windows",
-        lambda *args: {("stance", "start"): np.arange(10)},
-    )
+
+    def stance_window(series, action, stance, cfg, diagnostics):
+        diagnostics["phaseInstances"] = []
+        return {("stance", "start"): np.arange(10)}
+
+    monkeypatch.setattr("core.evaluation.action_timing.phase_windows", stance_window)
     weights = _default_front_weights()
     weights["stance"]["stance_elbow"] = 0.3
     cfg = FeedbackConfig(front_weights=weights)
@@ -207,7 +209,7 @@ def test_different_action_stages_are_not_fused():
     front, side = pose_series(), pose_series()
     side["times"] = [t + 2 for t in side["times"]]
     check = _check(evaluate_series("stance", "left", {"front": front, "side": side}))
-    assert check["status"] == "unable" and "未找到该阶段" in check["reason"]
+    assert check["status"] == "unable" and "侧面录像未完整覆盖" in check["reason"]
 
 
 def test_action_profiles_and_primary_view_limit_are_explicit():

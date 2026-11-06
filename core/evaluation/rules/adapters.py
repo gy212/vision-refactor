@@ -54,7 +54,7 @@ def to_rule_check(
         detail = {
             "missing_landmarks": "后端缺少所需关键点",
             "insufficient_valid_frames": f"该项测量有效帧不足（{outcome.valid_frames}/{outcome.total_frames}帧）",
-            "phase_not_found": "未找到该阶段；" + (phase_reason or "阶段不足"),
+            "phase_not_found": outcome.detail or "未找到该阶段；" + (phase_reason or "阶段不足"),
         }[outcome.skip_reason]
     availability = check.get("availability", {})
     trial = availability.get("state") == "trial"
@@ -107,7 +107,9 @@ def to_practice_check(
     }
     check["measurements"].append(measurement)
     if outcome.state == RULE_STATE_UNABLE:
-        check["viewProblems"][view] = f"该项测量有效帧不足（{count}/{total}帧），见关键点有效比例"
+        check["viewProblems"][view] = outcome.detail or (
+            f"该项测量有效帧不足（{count}/{total}帧），见关键点有效比例"
+        )
         return None
     issue = outcome.state == RULE_STATE_VIOLATION
     measurement["issueObserved"] = issue

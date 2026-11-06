@@ -78,6 +78,7 @@ def view_outcomes(
     supported_capabilities=None,
     *,
     paired_torso=None,
+    phase_coverage: dict | None = None,
 ) -> dict[str, RuleOutcome]:
     """一路视角上全部检查项经 ``evaluate_rules`` 的结论（以检查项 id 为键）；基线取起始实战式窗口，缺失时取开头几帧。"""
     baseline = view_windows.get(
@@ -91,6 +92,7 @@ def view_outcomes(
         baseline=baseline,
         params=cfg,
         paired_torso=paired_torso,
+        phase_coverage=phase_coverage or {},
     )
     outcomes = evaluate_rules(
         series["landmarks"],
@@ -120,6 +122,7 @@ def _view_checks(
     supported_capabilities=None,
     *,
     paired_torso=None,
+    phase_coverage: dict | None = None,
 ) -> tuple[RuleCheck, ...]:
     """一路视角在给定相位窗口上的逐项结论（只列适用本视角的项）。"""
     outcomes = view_outcomes(
@@ -132,6 +135,7 @@ def _view_checks(
         cfg,
         supported_capabilities,
         paired_torso=paired_torso,
+        phase_coverage=phase_coverage,
     )
     return tuple(
         to_rule_check(c, view, outcomes[c["id"]], series["frames"], phase_reason)
@@ -149,7 +153,9 @@ def judge_view(
     supported_capabilities=None,
 ) -> tuple[tuple[RuleCheck, ...], dict]:
     """一路视角的逐项结论与相位诊断；没有同步的另一路时用它，不做正侧融合。"""
-    all_windows, all_diagnostics, _, _ = synchronized_windows({view: series}, action, stance, cfg)
+    all_windows, all_diagnostics, alignment, _ = synchronized_windows(
+        {view: series}, action, stance, cfg
+    )
     windows, diagnostics = all_windows[view], all_diagnostics[view]
     checks = _view_checks(
         view,
@@ -160,6 +166,7 @@ def judge_view(
         stance,
         cfg,
         supported_capabilities,
+        phase_coverage=alignment["phases"],
     )
     return checks, diagnostics
 
@@ -172,7 +179,7 @@ def judge_views(
     相位与练习一样经 ``synchronized_windows`` 准备，诊断另带 ``phaseSource``；逐视角报告。
     躯干朝向在正面项中引用双机位共同证据，其余项仍按各路独立测量。
     """
-    windows, diagnostics, _alignment, sources = synchronized_windows(views, action, stance, cfg)
+    windows, diagnostics, alignment, sources = synchronized_windows(views, action, stance, cfg)
     profile = rule_profile(action, stance, cfg)
     paired = (
         paired_torso_measurements(views)
@@ -191,6 +198,7 @@ def judge_views(
                 cfg,
                 supported_capabilities,
                 paired_torso=paired.get(view),
+                phase_coverage=alignment["phases"],
             ),
             {**diagnostics[view], "phaseSource": sources[view]},
         )
