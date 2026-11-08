@@ -25,11 +25,16 @@ def _front_guard_back(role, lm, mask, baseline, baseline_mask, ctx):
     base_direction, base_length, _ = body_forward(baseline)
     base_valid = baseline_mask[:, [0, 11, 12, 23, 24]].all(axis=1) & (base_length > 1e-4)
     if base_valid.sum() < ctx.params.min_valid:
+        ctx.measurement_issues.append(
+            f"起始护位方向参照可用帧不足（{base_valid.sum()}/{len(baseline)}帧，至少{ctx.params.min_valid}帧）"
+        )
         return np.zeros(len(lm), bool), np.zeros(len(lm), bool), {}
     hips = (baseline[:, 23, :3] + baseline[:, 24, :3]) / 2
     facing = np.sign(
         np.median(np.sum((baseline[:, 0, :3] - hips) * base_direction, axis=1)[base_valid])
     )
+    if facing == 0:
+        ctx.measurement_issues.append("起始护位的鼻与髋部位置不足以确定面朝方向")
     direction, length, torso = body_forward(lm)
     values = np.sum((lm[:, shoulder, :3] - lm[:, elbow, :3]) * direction, axis=1)
     values *= facing / np.maximum(torso, 1e-4)
@@ -56,11 +61,15 @@ def measure_guard_back(
     base_torso = chain_torso(baseline, baseline_mask)
     base_valid = baseline_mask[:, [0, hip]].all(axis=1) & (base_torso > 1e-4)
     if base_valid.sum() < ctx.params.min_valid:
+        ctx.measurement_issues.append(
+            f"起始护位方向参照可用帧不足（{base_valid.sum()}/{len(baseline)}帧，至少{ctx.params.min_valid}帧）"
+        )
         return np.zeros(len(lm), bool), np.zeros(len(lm), bool), {}
     direction = np.median(
         (baseline[base_valid, 0, 0] - baseline[base_valid, hip, 0]) / base_torso[base_valid]
     )
     if abs(direction) < 0.1:
+        ctx.measurement_issues.append("起始护位的鼻与髋部位置不足以确定面朝方向")
         return np.zeros(len(lm), bool), np.zeros(len(lm), bool), {}
     torso = chain_torso(lm, mask)
     body = lm[:, hip, :2] - lm[:, shoulder, :2]

@@ -33,7 +33,7 @@ def _select(series, indices):
         (range(34, 39), 2),  # 录像头尾均完整，但中间整次缺失。
         ([31], 1),  # 同次阶段内部缺帧：相邻数组下标不代表原视频时间连续。
         ([44, 45, 46], 4),  # 最后一次只剩末帧，不能按部分画面宣布完整通过。
-        ([44], 4),  # 同帧率本应存在的阶段首帧不能用采样误差掩盖。
+        ([45], 4),  # 同帧率本应存在的阶段首帧不能用采样误差掩盖。
     ],
 )
 def test_missing_instance_blocks_practice_and_shared_judging(removed, repetition):
@@ -42,7 +42,7 @@ def test_missing_instance_blocks_practice_and_shared_judging(removed, repetition
     views = {"front": _select(side, retained), "side": side}
     practice = evaluate_series("rear_straight", "left", views)
     judged = judge_views(views, "rear_straight", "left", FeedbackConfig())
-    check_id = "rear_straight:finish:front:guard_low"
+    check_id = "rear_straight:finish:front:guard_shoulder"
     check = next(item for item in practice["checks"] if item["id"] == check_id)
     assert check["status"] == "unable"
     assert f"第 {repetition} 次" in check["reason"]
@@ -50,7 +50,12 @@ def test_missing_instance_blocks_practice_and_shared_judging(removed, repetition
     front = next(item for item in judged["front"][0] if item.check_id == check_id)
     assert front.state == "unable" and front.skip_reason == "phase_not_found"
     assert f"第 {repetition} 次" in front.detail
-    side_check = next(item for item in judged["side"][0] if item.check_id == check_id)
+    # 护手现在只看正面；独立的侧面出拳检查不受正面缺帧连坐。
+    side_check = next(
+        item
+        for item in judged["side"][0]
+        if item.check_id == "rear_straight:finish:rear:shoulder_level"
+    )
     assert side_check.state == "pass"
     # 仍保存实际已有的测量，不将整段录像伪装成没有任何画面。
     assert front.valid_frames > 0 and front.measurements
@@ -89,7 +94,7 @@ def test_real_sampling_boundaries_cover_the_same_instances(stride, offset):
     views = {"front": front, "side": side}
     practice = evaluate_series("rear_straight", "left", views)
     judged = judge_views(views, "rear_straight", "left", FeedbackConfig())
-    check_id = "rear_straight:finish:front:guard_low"
+    check_id = "rear_straight:finish:front:guard_shoulder"
     check = next(item for item in practice["checks"] if item["id"] == check_id)
     assert check["status"] == "not_observed"
     assert next(item for item in judged["front"][0] if item.check_id == check_id).state == "pass"

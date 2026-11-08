@@ -25,7 +25,7 @@ from core.evaluation.rules.spec import (
     RuleProfile,
     RuleSpec,
 )
-from core.pose.validity import landmarks_missing_for_capabilities
+from core.pose.validity import landmark_names, landmarks_missing_for_capabilities
 from core.foundation.signal import contiguous_runs
 
 
@@ -57,6 +57,7 @@ def _evaluate_phase(
     """一条规则在其相位窗口里的单视角结论；证据帧为问题帧（无问题时为有效帧）的首/中/末帧。"""
     if spec.authorization == "blocked":
         return RuleOutcome(spec, RULE_STATE_PENDING_RULE, None, 0.0, 0, 0, spec.blocked_reason)
+    indices = ctx.phase_windows.get(spec.scope)
     # 后端结构性缺少所需关键点：直接判证据不足，不混入合格/不合格（Issue #11）。
     backend_missing = landmarks_missing_for_capabilities(spec.required, supported_capabilities)
     if backend_missing:
@@ -67,10 +68,14 @@ def _evaluate_phase(
             0.0,
             0,
             0,
+            detail="后端缺少所需关键点：" + "、".join(backend_missing),
             missing_landmarks=tuple(backend_missing),
+            evidence_frames=()
+            if indices is None
+            else tuple(item.frame for item in _diagnostic_evidence(indices, ctx, spec)),
+            evidence_instances=() if indices is None else _diagnostic_evidence(indices, ctx, spec),
         )
     agg = spec.aggregation
-    indices = ctx.phase_windows.get(spec.scope)
     if indices is None or len(indices) < agg.min_valid:
         return RuleOutcome(
             spec,
@@ -79,7 +84,13 @@ def _evaluate_phase(
             0.0,
             0,
             0 if indices is None else len(indices),
+            detail="未找到该阶段"
+            if indices is None
+            else f"阶段仅有{len(indices)}帧，至少需要{agg.min_valid}帧",
+            evidence_frames=() if indices is None else tuple(int(i) for i in indices),
+            evidence_instances=() if indices is None else _diagnostic_evidence(indices, ctx, spec),
         )
+    ctx = replace(ctx, measurement_issues=[])
     baseline = ctx.baseline
     bad, valid, details = spec.check(
         landmarks[indices], valid_mask[indices], landmarks[baseline], valid_mask[baseline], ctx
@@ -89,6 +100,7 @@ def _evaluate_phase(
     violation = float((bad & valid).sum() / count) if count else 0.0
     measurements = _measurement_summaries(details, valid)
     if count < agg.min_valid or count / total < agg.valid_ratio:
+        evidence = _diagnostic_evidence(indices, ctx, spec)
         return RuleOutcome(
             spec,
             RULE_STATE_UNABLE,
@@ -96,7 +108,10 @@ def _evaluate_phase(
             violation,
             count,
             total,
+            detail=_insufficient_detail(spec, valid_mask[indices], count, ctx),
+            evidence_frames=tuple(item.frame for item in evidence),
             measurements=measurements,
+            evidence_instances=evidence,
         )
     # "未做某动作"只能在整个阶段均未出现该动作时成立。
     issue = bool(bad[valid].all()) if agg.absence else violation >= agg.trigger_ratio
@@ -112,6 +127,61 @@ def _evaluate_phase(
         measurements=measurements,
         evidence_instances=evidence,
     )
+
+
+def _diagnostic_evidence(indices, ctx: RuleContext, spec: RuleSpec) -> tuple[RuleEvidence, ...]:
+    """保留实际选中的阶段画面，失效点不会被当成可用测量。"""
+    samples = _phase_evidence(
+        indices,
+        np.ones(len(indices), bool),
+        np.zeros(len(indices), bool),
+        False,
+        ctx.phase_instances.get(spec.scope, ()),
+    )
+    return tuple(replace(sample, purpose="diagnostic") for sample in samples)
+
+
+def _point_label(index: int) -> str:
+    """将所需点的稳定名称转成报告可读的身体部位。"""
+    name = landmark_names((index,))[0]
+    for english, chinese in (
+        ("foot_index", "脚尖"),
+        ("shoulder", "肩"),
+        ("elbow", "肘"),
+        ("wrist", "腕"),
+        ("hip", "髋"),
+        ("knee", "膝"),
+        ("ankle", "踝"),
+        ("heel", "脚跟"),
+        ("mouth", "嘴角"),
+        ("nose", "鼻"),
+        ("left", "左"),
+        ("right", "右"),
+    ):
+        name = name.replace(english, chinese)
+    return name.replace("_", "")
+
+
+def _insufficient_detail(spec: RuleSpec, mask: np.ndarray, count: int, ctx: RuleContext) -> str:
+    """解释测量卡在所需点还是必需参照，不把所有失败归为录像缺帧。"""
+    total = len(mask)
+    required = spec.aggregation
+    reason = (
+        f"该项测量有效帧不足（{count}/{total}帧）；"
+        f"至少需要{required.min_valid}帧且占比达到{required.valid_ratio:.0%}"
+    )
+    absent = [
+        f"{_point_label(index)}{int(mask[:, index].sum())}/{total}帧"
+        for index in spec.required
+        if not mask[:, index].all()
+    ]
+    if absent:
+        reason += "；关键点可用情况：" + "、".join(absent)
+    if ctx.measurement_issues:
+        reason += "；" + "；".join(ctx.measurement_issues)
+    elif not absent:
+        reason += "；所需点已识别，但身体尺度或测量参照无法计算"
+    return reason
 
 
 def _phase_evidence(indices, valid, bad, issue, instances) -> tuple[RuleEvidence, ...]:

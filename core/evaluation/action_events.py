@@ -9,6 +9,7 @@ import numpy as np
 from core.evaluation.body_sides import sides_for_stance
 from core.evaluation.motion_events import EventPolicy, MotionEvent, excursion_events
 from core.evaluation.measures.motion import normalized_motion
+from core.evaluation.punch_events import observe_straight, straight_motion_landmarks
 
 
 @dataclass(frozen=True)
@@ -31,6 +32,8 @@ class ActionEvent:
 def motion_landmarks(segment: str, stance: str) -> tuple[int, int]:
     """基础动作位移使用的固定点与运动点，供识别和机位可见性选择共用。"""
     role = "front" if segment.startswith("front_") else "rear"
+    if segment.endswith("_straight"):
+        return straight_motion_landmarks(role, stance)
     shoulder, _, wrist, hip, _, ankle, *_ = sides_for_stance(role, stance)
     return (hip, ankle) if "kick" in segment else (shoulder, wrist)
 
@@ -44,17 +47,28 @@ def action_events(
     segments: tuple[str, ...],
     stance: str,
     cfg,
+    stable: list[np.ndarray],
+    diagnostics: dict,
+    view: str,
 ) -> list[ActionEvent]:
-    """普通动作按护位位移识别；直拳共用方向判据，腿法和摆拳保留各自要求。"""
+    """按基础动作分派唯一识别方法，直拳单独练习和编入组合时使用同一观测策略。"""
     events: list[ActionEvent] = []
     for segment in segments:
+        if segment.endswith("_straight"):
+            role = "front" if segment.startswith("front_") else "rear"
+            observation = observe_straight(
+                lm, mask, times, torso, baseline, stable, role, stance, cfg, view
+            )
+            if observation.reason:
+                diagnostics["reason"] = observation.reason
+            events.extend(ActionEvent(segment, event) for event in observation.events)
+            continue
         anchor, moving = motion_landmarks(segment, stance)
         relative = normalized_motion(lm, mask, torso, anchor, moving)
         if not np.isfinite(relative[baseline]).all():
             continue
         displacement = relative - np.median(relative[baseline], axis=0)
         distance = np.linalg.norm(displacement, axis=1)
-        straight = "straight" in segment
         found = excursion_events(
             distance,
             times,
@@ -62,9 +76,7 @@ def action_events(
             cfg,
             rise=cfg.motion_distance,
             fall=cfg.return_distance,
-            policy=EventPolicy(start_at_rest=True, inclusive_return=True, allow_held=straight),
-            forward=np.abs(displacement[:, 0]) if straight else None,
-            downward=displacement[:, 1] if straight else None,
+            policy=EventPolicy(start_at_rest=True, inclusive_return=True, allow_held=False),
         )
         events.extend(ActionEvent(segment, event) for event in found)
     return sorted(events, key=lambda event: event.motion.peak)

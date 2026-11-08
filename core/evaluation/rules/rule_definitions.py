@@ -27,14 +27,14 @@ from core.evaluation.rules.straight_posture import (
 )
 
 
-CATALOG_STRATEGIES = {
+RULE_STRATEGIES = {
     "stance_elbow": "elbow_angle_range",
-    "stance_height": "wrist_nose_height",
-    "stance_rear_guard": "wrist_jaw_and_elbow_body_distance",
+    "stance_height": "wrist_shoulder_floor",
+    "stance_rear_guard": "elbow_body_distance",
     "stance_knee": "knee_angle_limit",
-    "stance_width": "ankle_projected_shoulder_ratio",
-    "stance_toes": "foot_vector_angle",
-    "stance_torso": "projected_shoulder_torso_ratio",
+    "stance_width": "feet_paired_shoulder_ratio",
+    "stance_toes": "toe_heel_spread",
+    "stance_torso": "paired_shoulder_projection_ratio",
     "stance_head": "unsupported_head_posture",
     "guard_low": "wrist_mouth_height",
     "guard_back": "wrist_guard_displacement",
@@ -42,7 +42,7 @@ CATALOG_STRATEGIES = {
     "guard_shoulder": "wrist_shoulder_drop",
     "vertical_fist": "unsupported_fist_orientation",
     "shoulder_level": "wrist_shoulder_height_gap",
-    "punch_extension": "elbow_extension_frame_ratio",
+    "punch_extension": "elbow_extension_at_peak",
     "guard_recover": "wrist_mouth_distance",
     "foot_flexed": "knee_ankle_toe_angle",
     "hip_turn": "hip_axis_rotation",
@@ -52,15 +52,6 @@ CATALOG_STRATEGIES = {
     "punch_prepull": "prepunch_wrist_pull",
     "punch_preelbow": "prepunch_elbow_height",
     "punch_recover": "returned_wrist_jaw_distance",
-}
-TEACHER_STRATEGIES = {
-    "stance_height": "wrist_shoulder_floor",
-    "stance_rear_guard": "elbow_body_distance",
-    "stance_width": "feet_paired_shoulder_ratio",
-    "stance_toes": "toe_heel_spread",
-    "stance_torso": "paired_shoulder_projection_ratio",
-    "guard_back": "elbow_behind_body",
-    "punch_extension": "elbow_extension_at_peak",
 }
 
 
@@ -84,12 +75,12 @@ class RuleDefinition:
         return self.required
 
 
-def standard_config(cfg: FeedbackConfig, standard: str) -> FeedbackConfig:
-    """应用批准的参数范围，独立于分段、评分和验证资格。"""
-    return replace(cfg, **PARAMS) if standard == "teacher_straight" else cfg
+def standard_config(cfg: FeedbackConfig, segment: str) -> FeedbackConfig:
+    """基础实战式与直拳采用同一批准参数，不随动作编排改变。"""
+    return replace(cfg, **PARAMS) if segment == "stance" or segment.endswith("_straight") else cfg
 
 
-def _teacher_description(check: dict) -> tuple[str, str, str]:
+def _posture_description(check: dict) -> tuple[str, str, str]:
     code, role = check["code"], check["role"]
     name, standard, source = check["name"], check["standard"], check["source"]
     if code in REVISED_STANDARDS:
@@ -115,7 +106,7 @@ def _teacher_description(check: dict) -> tuple[str, str, str]:
     return name, standard, source
 
 
-def _teacher_view(code: str, role: str) -> str:
+def _posture_view(code: str, role: str) -> str:
     view = PREFERRED_VIEW.get(code, PRIMARY_VIEW.get(code, "any"))
     if code in {"guard_jaw", "punch_recover"}:
         return "front"
@@ -143,16 +134,14 @@ def _strategy_points(
     return required_landmarks(code, role, stance)
 
 
-def _phase_measurement(
-    strategy: str, code: str, role: str, scope: str, standard: str
-) -> PhaseCheck:
+def _phase_measurement(strategy: str, code: str, role: str, scope: str, segment: str) -> PhaseCheck:
     if strategy == "paired_shoulder_projection_ratio":
         return paired_torso_check(scope)
     if strategy == "feet_paired_shoulder_ratio":
         return stance_width_check(scope)
 
     def check(lm, mask, baseline, baseline_mask, ctx):
-        ctx = replace(ctx, params=standard_config(ctx.params, standard))
+        ctx = replace(ctx, params=standard_config(ctx.params, segment))
         if strategy == "elbow_extension_at_peak":
             return measure_extension_at_peak(role, lm, mask, ctx)
         if strategy == "toe_heel_spread":
@@ -165,26 +154,37 @@ def _phase_measurement(
             return measure_straight(code, role, lm, mask, baseline, baseline_mask, ctx)
         details = {}
         bad, valid = measure_catalog(
-            code, role, lm, mask, baseline, baseline_mask, ctx.stance, ctx.params, details
+            code,
+            role,
+            lm,
+            mask,
+            baseline,
+            baseline_mask,
+            ctx.stance,
+            ctx.params,
+            details,
+            ctx.measurement_issues,
         )
         return bad, valid, details
 
     return check
 
 
-def resolve_rule(check: dict, standard: str, stance: str) -> RuleDefinition:
+def resolve_rule(check: dict, stance: str) -> RuleDefinition:
     """将检查绑定为可执行定义，绑定过程中不读取动作名或资格状态。"""
     code, role = check["code"], check["role"]
-    strategy = CATALOG_STRATEGIES[code]
+    strategy = RULE_STRATEGIES[code]
     view = PRIMARY_VIEW.get(code, "any")
     name, description, source = check["name"], check["standard"], check["source"]
     overrides = {}
-    if standard == "teacher_straight":
-        strategy = TEACHER_STRATEGIES.get(code, strategy)
+    segment = check["segment"]
+    if segment == "stance" or segment.endswith("_straight"):
+        if code == "guard_back":
+            strategy = "elbow_behind_body"
         if code == "shoulder_level" and role == "front":
             strategy = "arm_torso_angle"
-        view = _teacher_view(code, role)
-        name, description, source = _teacher_description(check)
+        view = _posture_view(code, role)
+        name, description, source = _posture_description(check)
         overrides = dict(PARAMS)
     required = _strategy_points(strategy, code, role, stance, view)
     paired = strategy in {"paired_shoulder_projection_ratio", "feet_paired_shoulder_ratio"}
@@ -193,7 +193,7 @@ def resolve_rule(check: dict, standard: str, stance: str) -> RuleDefinition:
     scope = f"{check['segment']}:{check['phase']}"
     return RuleDefinition(
         strategy,
-        _phase_measurement(strategy, code, role, scope, standard),
+        _phase_measurement(strategy, code, role, scope, segment),
         required,
         view,
         name,

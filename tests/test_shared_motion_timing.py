@@ -82,7 +82,7 @@ def test_dense_actions_share_one_detection_and_instance_identity(
     assert target["projectedEventDetails"] == source["eventDetails"]
     assert result["phaseWindows"]["front"] == result["phaseWindows"]["side"]
     checks = {c["id"]: c for c in result["checks"]}
-    assert checks["rear_straight:motion:front:guard_low"]["status"] != "unable"
+    assert checks["rear_straight:motion:front:guard_shoulder"]["status"] != "unable"
     assert "eventPairs" not in result["alignment"]
 
 
@@ -175,11 +175,14 @@ def test_projection_uses_same_absolute_timestamps_with_different_sampling():
         assert target_times.min() >= source_times.min() and target_times.max() <= source_times.max()
 
 
-def test_combination_stage_keeps_its_index_with_an_unpaired_earlier_punch():
+@pytest.mark.parametrize("extra_start", [0.6, 3.0])
+def test_unpaired_punch_keeps_its_own_stages_before_or_after_combination(extra_start):
     series = _series(1)
     times = np.asarray(series["times"])
-    inside = (times >= 0.6) & (times <= 0.9)
-    series["landmarks"][inside, 15, 0] += 0.2 * (1 - np.abs(2 * (times[inside] - 0.6) / 0.3 - 1))
+    inside = (times >= extra_start) & (times <= extra_start + 0.3)
+    series["landmarks"][inside, 15, 0] += 0.2 * (
+        1 - np.abs(2 * (times[inside] - extra_start) / 0.3 - 1)
+    )
     _, diagnostics, _, _ = synchronized_windows(
         {"side": series}, "step_straight_combo", "left", FeedbackConfig()
     )
@@ -188,10 +191,69 @@ def test_combination_stage_keeps_its_index_with_an_unpaired_earlier_punch():
     assert (
         len([event for event in side["eventDetails"] if event["segment"] == "front_straight"]) == 2
     )
-    assert {instance["repetition"] for instance in side["phaseInstances"]} == {1}
+    events = {event["eventId"]: event for event in side["eventDetails"]}
+    assert set(events) == {"front_straight:1", "front_straight:2", "rear_straight:1"}
+    for identity, event in events.items():
+        instances = [
+            instance for instance in side["phaseInstances"] if instance["eventId"] == identity
+        ]
+        assert {instance["phase"] for instance in instances} >= {"motion", "finish"}
+        assert {instance["repetition"] for instance in instances} == {event["repetition"]}
+    for combination in side["repetitions"]:
+        assert combination["index"] == 1
+        for key in ("frontEventId", "rearEventId"):
+            assert combination[key] is None or combination[key] in events
+    unpaired = (
+        {"front_straight:1", "front_straight:2"} if extra_start < 1.5 else {"front_straight:2"}
+    )
+    assert set(side["unpairedEventIds"]) == unpaired
     assert {instance["phase"] for instance in side["phaseInstances"]} >= {
         "prepare",
         "motion",
         "finish",
         "recovered",
     }
+
+
+@pytest.mark.parametrize("segment", ["front_straight", "rear_straight"])
+def test_single_and_combined_punches_share_observed_events_and_stage_times(segment):
+    series = _series(2)
+    results = {}
+    for action in (segment, "straight_combo", "step_straight_combo"):
+        windows, diagnostics, _, _ = synchronized_windows(
+            {"side": series}, action, "left", FeedbackConfig()
+        )
+        results[action] = (windows["side"], diagnostics["side"])
+    reference_windows, reference = results[segment]
+    assert len(reference["eventDetails"]) == 2
+    assert {"prepare", "recovered"} <= {
+        phase for current, phase in reference_windows if current == segment
+    }
+    for windows, diagnostics in results.values():
+        observed = [e for e in diagnostics["eventDetails"] if e["segment"] == segment]
+        assert observed == reference["eventDetails"]
+        for phase in ("motion", "finish"):
+            np.testing.assert_array_equal(
+                windows[(segment, phase)], reference_windows[(segment, phase)]
+            )
+
+
+def test_missing_combination_member_preserves_the_observed_punch():
+    windows, diagnostics, _, _ = synchronized_windows(
+        {"side": _single_punch()}, "straight_combo", "left", FeedbackConfig()
+    )
+    assert "不完整" in diagnostics["side"]["reason"]
+    assert ("front_straight", "finish") not in windows["side"]
+    assert ("rear_straight", "finish") in windows["side"]
+    assert ("rear_straight", "prepare") in windows["side"]
+    assert ("rear_straight", "recovered") in windows["side"]
+
+
+def test_unseen_direction_reference_does_not_create_a_punch():
+    series = _single_punch()
+    series["valid_mask"][:, 0] = False
+    _, diagnostics, _, _ = synchronized_windows(
+        {"side": series}, "rear_straight", "left", FeedbackConfig()
+    )
+    assert diagnostics["side"]["eventDetails"] == []
+    assert "鼻点或髋点" in diagnostics["side"]["reason"]

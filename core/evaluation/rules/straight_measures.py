@@ -52,6 +52,9 @@ def measure_straight(
         base_torso = chain_torso(baseline, baseline_mask)
         base_valid = baseline_mask[:, required].all(axis=1) & (base_torso > 1e-4)
         if base_valid.sum() < cfg.min_valid:
+            ctx.measurement_issues.append(
+                f"起始护位参照可用帧不足（{base_valid.sum()}/{len(baseline)}帧，至少{cfg.min_valid}帧）"
+            )
             return np.zeros(len(lm), bool), np.zeros(len(lm), bool), {}
         base = baseline[base_valid]
         position, _ = relative_position(lm, mask, torso, shoulder, wrist)
@@ -63,6 +66,8 @@ def measure_straight(
             initial = np.median(base_position[:, 0])
             values = (initial - position[:, 0]) * facing
             valid &= facing != 0
+            if facing == 0:
+                ctx.measurement_issues.append("起始护位的鼻与髋部位置不足以确定面朝方向")
             label, threshold = "起动前向后预摆距离", cfg.punch_pull
         else:
             initial = np.median(base_position[:, 1])

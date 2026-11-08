@@ -7,7 +7,12 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from core.evaluation.rules.spec import RULE_STATE_VIOLATION, RuleEvidence, RuleOutcome
+from core.evaluation.rules.spec import (
+    RULE_STATE_UNABLE,
+    RULE_STATE_VIOLATION,
+    RuleEvidence,
+    RuleOutcome,
+)
 
 
 @dataclass(frozen=True)
@@ -51,7 +56,7 @@ def _detail(
         "role": check.get("role", ""),
         "view": view,
         "highlightJoints": list(spec.evidence_joints_by_view.get(view, spec.highlight_joints)),
-        "purpose": instance.purpose,
+        "purpose": "diagnostic" if outcome.state == RULE_STATE_UNABLE else instance.purpose,
         "repetition": instance.repetition,
         "weight": weight,
         "strategy": spec.strategy,

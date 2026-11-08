@@ -1,10 +1,10 @@
-"""上步直拳的验证资格，仅登记状态、范围与证据。"""
+"""基础实战式与直拳检查的验证资格，按阶段、测量与模型登记。"""
 
 from __future__ import annotations
 
 from core.evaluation.rules.availability import RuleAvailability
 
-REPORT = "docs/直拳逐项改进_20261105.md"
+REPORT = "docs/直拳逐项改进_20261105.md（原标定素材：上步直拳组合；登记粒度：基础动作段与阶段）"
 
 ENABLED = frozenset(
     (
@@ -69,14 +69,62 @@ TRIAL_CODES = frozenset(
 )
 
 
+# 登记对应具体测量方法，替换公式或新增阶段后不能冒领旧资格。
+REGISTERED_STRATEGIES = {
+    "stance_height": "wrist_shoulder_floor",
+    "stance_elbow": "elbow_angle_range",
+    "stance_width": "feet_paired_shoulder_ratio",
+    "stance_toes": "toe_heel_spread",
+    "stance_knee": "knee_angle_limit",
+    "stance_rear_guard": "elbow_body_distance",
+    "stance_torso": "paired_shoulder_projection_ratio",
+    "guard_jaw": "guard_wrist_jaw_distance",
+    "guard_back": "elbow_behind_body",
+    "guard_shoulder": "wrist_shoulder_drop",
+    "guard_elbow": "elbow_shoulder_height",
+    "punch_extension": "elbow_extension_at_peak",
+    "punch_predrop": "prepunch_wrist_drop",
+    "punch_prepull": "prepunch_wrist_pull",
+    "punch_preelbow": "prepunch_elbow_height",
+    "punch_recover": "returned_wrist_jaw_distance",
+}
+
+
+def _registered_measurement(check: dict) -> bool:
+    code, role, segment, phase = (check[k] for k in ("code", "role", "segment", "phase"))
+    expected = REGISTERED_STRATEGIES.get(code)
+    if code == "shoulder_level":
+        expected = "arm_torso_angle" if role == "front" else "wrist_shoulder_height_gap"
+    if check["strategy"] != expected:
+        return False
+    if segment == "stance":
+        return phase in {"start", "end"}
+    if code.startswith("punch_pre"):
+        return segment == "rear_straight" and phase == "prepare"
+    if code == "punch_recover":
+        return segment == "rear_straight" and phase == "recovered"
+    if code == "punch_extension":
+        return phase == "finish"
+    if code == "shoulder_level":
+        return phase == "finish" or (segment == "front_straight" and phase == "motion")
+    return phase in {"motion", "finish"}
+
+
 def apply_straight_availability(checks: list[dict], pose_variant: str = "full") -> None:
     """登记验证状态，不修改检查清单、定义、参数或观察方向。"""
     for check in checks:
         identity = (check["segment"], check["phase"], check["role"], check["code"])
         code = check["code"]
-        models = INSTANCE_MODELS.get(identity, ENABLED_MODELS.get(code))
-        allowed = models is None or pose_variant in models
-        if identity in ENABLED and allowed:
+        models = INSTANCE_MODELS.get(
+            identity, ENABLED_MODELS.get(code, frozenset({"full", "heavy"}))
+        )
+        allowed = pose_variant in models
+        registered = _registered_measurement(check)
+        if not registered:
+            availability = RuleAvailability(
+                "validation_pending", "当前阶段与测量方法尚无适用的验证记录", REPORT
+            )
+        elif identity in ENABLED and allowed:
             evidence = "docs/直拳结束低手修正_20261106.md" if code == "stance_height" else REPORT
             if code == "guard_back":
                 evidence = "docs/直拳逐项启用_20261106.md"
@@ -101,7 +149,8 @@ def apply_straight_availability(checks: list[dict], pose_variant: str = "full") 
                 REPORT,
             )
         if (
-            availability.state in {"calibration_failed", "validation_pending"}
+            registered
+            and availability.state in {"calibration_failed", "validation_pending"}
             and code in TRIAL_CODES
             and pose_variant in {"full", "heavy"}
         ):

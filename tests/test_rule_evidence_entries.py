@@ -4,7 +4,6 @@ from copy import deepcopy
 import json
 from pathlib import Path
 
-import numpy as np
 import pytest
 
 from core.evaluation import FeedbackConfig, compare_dual_streams, evaluate_series
@@ -127,7 +126,13 @@ def test_missing_paired_data_never_produces_reference_or_pass(missing):
         views.pop("side")
     judged = _check(judge_views(views, ACTION, "left", FeedbackConfig())["front"][0])
     assert judged.state == "unable"
-    assert not judged.evidence_details and not judged.evidence_catalog
+    if missing == "time":
+        assert judged.evidence_details and judged.evidence_catalog
+        assert all(detail["purpose"] == "diagnostic" for detail in judged.evidence_details)
+        assert all(detail["view"] == "front" for detail in judged.evidence_details)
+    else:
+        # 计时来源本身缺失，阶段没有定位，不能借其他阶段的帧冒充。
+        assert not judged.evidence_details and not judged.evidence_catalog
 
 
 def test_single_view_rule_output_records_own_original_times():

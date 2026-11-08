@@ -1,4 +1,5 @@
 """D-3、D-16：唯一的规则目录 ``sanda_v5`` 只经 ``evaluate_rules`` 执行，考试、练习、离线处理共用。"""
+
 from __future__ import annotations
 
 import ast
@@ -34,7 +35,9 @@ def test_practice_judges_every_measured_check_through_evaluate_rules(monkeypatch
     for i, view in enumerate(("front", "side")):
         lm, detected = sp.landmarks("straight_combo", "left", view, 3 + i)
         video = sp.write_avi(tmp_path / f"{view}.avi")
-        views[view] = ev.extract_series(video, cfg, lambda: False, sp.scripted_pipeline(lm, detected))
+        views[view] = ev.extract_series(
+            video, cfg, lambda: False, sp.scripted_pipeline(lm, detected)
+        )
     result = ev.evaluate_series("straight_combo", "left", views, cfg)
     assert [name for name, _ in calls] == ["sanda_v5", "sanda_v5"]
     measured = [c for c in result["checks"] if c.get("measurements")]
@@ -68,11 +71,12 @@ def test_batch_and_exam_judge_through_the_same_entry(monkeypatch):
     """考试与 batch 的逐视角检查经 ``rule_checks.judge_view`` → ``evaluate_rules``，与练习同一目录。"""
     calls: list = []
     _counting(monkeypatch, rule_checks, calls)
-    lm, detected = sp.landmarks("front_straight", "left", "front", 3)
-    lm = lm.astype(np.float32)
-    lm[~detected, :, 3] = 0.0
-    series = ev.series_from_raw(lm, {"width": sp.W, "height": sp.H, "fps": sp.FPS, "start_frame": 0})
-    checks, diagnostics = ev.judge_view(series, "front", "front_straight", "left", ev.FeedbackConfig())
+    from tests.test_step_straight_combo import _series
+
+    series = _series(1)
+    checks, diagnostics = ev.judge_view(
+        series, "side", "front_straight", "left", ev.FeedbackConfig()
+    )
     assert calls == [("sanda_v5", calls[0][1])]
     assert diagnostics["reason"] == "已检测到完整动作"
     assert {c.state for c in checks} <= {"pass", "violation", "unable", "pending_rule"}
@@ -89,8 +93,16 @@ def test_rule_checks_are_called_only_by_the_engine():
             if not isinstance(node, ast.Call):
                 continue
             fn = node.func
-            if isinstance(fn, ast.Attribute) and fn.attr == "check" and rel != "core/evaluation/rules/engine.py":
+            if (
+                isinstance(fn, ast.Attribute)
+                and fn.attr == "check"
+                and rel != "core/evaluation/rules/engine.py"
+            ):
                 offenders.append(f"{rel}:{node.lineno} .check()")
-            if isinstance(fn, ast.Name) and fn.id == "_measure" and rel != "core/evaluation/rules/sanda_v5.py":
+            if (
+                isinstance(fn, ast.Name)
+                and fn.id == "_measure"
+                and rel != "core/evaluation/rules/sanda_v5.py"
+            ):
                 offenders.append(f"{rel}:{node.lineno} _measure()")
     assert offenders == []

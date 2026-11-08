@@ -20,7 +20,6 @@ from core.evaluation.rules.adapters import to_practice_check
 from core.evaluation.rules.sanda_v5 import (
     RULE_VERSION,
     FeedbackConfig,
-    action_config,
     build_checks,
     check_view_weights,
     load_feedback_config,
@@ -115,6 +114,7 @@ def _observe_view(
         c["viewProblems"][view] = outcome.detail or (
             "未找到该阶段；" + view_diagnostics.get("reason", "阶段不足")
         )
+        to_practice_check(c, view, outcome, weights[view], views, diagnostics, evidence)
         return None, None
     # 共用的只能是同步时间段；每路仍须独立提供有效人体和规则所需的点。
     ranges = None
@@ -349,7 +349,7 @@ def evaluate_series(
         ),
         "diagnostics": _view_diagnostics(views, diagnostics, phase_sources),
         "phaseWindows": _phase_ranges(views, windows),
-        "config": asdict(action_config(cfg, action)),
+        "config": asdict(cfg),
         "status": "partial"
         if any(c["status"] in {"unable", "pending_rule"} for c in checks)
         else "completed",
