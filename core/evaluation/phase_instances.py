@@ -8,6 +8,7 @@ import numpy as np
 
 
 class PhaseInstance(TypedDict):
+    eventId: str
     segment: str
     phase: str
     repetition: int
@@ -20,6 +21,7 @@ def phase_instance(
 ) -> PhaseInstance:
     """为已找到的非空阶段保存归属，避免报告根据散落事件重新猜次数。"""
     return {
+        "eventId": f"{segment}:{repetition}",
         "segment": segment,
         "phase": phase,
         "repetition": repetition,

@@ -175,11 +175,14 @@ def test_projection_uses_same_absolute_timestamps_with_different_sampling():
         assert target_times.min() >= source_times.min() and target_times.max() <= source_times.max()
 
 
-def test_combination_stage_keeps_its_index_with_an_unpaired_earlier_punch():
+@pytest.mark.parametrize("extra_start", [0.6, 3.0])
+def test_unpaired_punch_keeps_its_own_stages_before_or_after_combination(extra_start):
     series = _series(1)
     times = np.asarray(series["times"])
-    inside = (times >= 0.6) & (times <= 0.9)
-    series["landmarks"][inside, 15, 0] += 0.2 * (1 - np.abs(2 * (times[inside] - 0.6) / 0.3 - 1))
+    inside = (times >= extra_start) & (times <= extra_start + 0.3)
+    series["landmarks"][inside, 15, 0] += 0.2 * (
+        1 - np.abs(2 * (times[inside] - extra_start) / 0.3 - 1)
+    )
     _, diagnostics, _, _ = synchronized_windows(
         {"side": series}, "step_straight_combo", "left", FeedbackConfig()
     )
@@ -188,7 +191,22 @@ def test_combination_stage_keeps_its_index_with_an_unpaired_earlier_punch():
     assert (
         len([event for event in side["eventDetails"] if event["segment"] == "front_straight"]) == 2
     )
-    assert {instance["repetition"] for instance in side["phaseInstances"]} == {1}
+    events = {event["eventId"]: event for event in side["eventDetails"]}
+    assert set(events) == {"front_straight:1", "front_straight:2", "rear_straight:1"}
+    for identity, event in events.items():
+        instances = [
+            instance for instance in side["phaseInstances"] if instance["eventId"] == identity
+        ]
+        assert {instance["phase"] for instance in instances} >= {"motion", "finish"}
+        assert {instance["repetition"] for instance in instances} == {event["repetition"]}
+    for combination in side["repetitions"]:
+        assert combination["index"] == 1
+        for key in ("frontEventId", "rearEventId"):
+            assert combination[key] is None or combination[key] in events
+    unpaired = (
+        {"front_straight:1", "front_straight:2"} if extra_start < 1.5 else {"front_straight:2"}
+    )
+    assert set(side["unpairedEventIds"]) == unpaired
     assert {instance["phase"] for instance in side["phaseInstances"]} >= {
         "prepare",
         "motion",

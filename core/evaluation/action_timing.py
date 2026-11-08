@@ -120,7 +120,7 @@ def shared_timeline(
         missing = set(source_windows) - set(windows[view])
         if missing:
             diagnostics[view]["reason"] = "本机位录像未覆盖共享阶段的完整时间范围"
-        boundaries = data.get("repetitions", data["eventDetails"])
+        boundaries = data["eventDetails"]
         windows[view] = settled_stance_windows(series, windows[view], boundaries, cfg)
     correspondence = phase_correspondence(
         views, windows, source, source_windows, data["phaseInstances"]
