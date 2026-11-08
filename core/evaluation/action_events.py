@@ -9,7 +9,7 @@ import numpy as np
 from core.evaluation.body_sides import sides_for_stance
 from core.evaluation.motion_events import EventPolicy, MotionEvent, excursion_events
 from core.evaluation.measures.motion import normalized_motion
-from core.evaluation.punch_events import observe_straight
+from core.evaluation.punch_events import observe_straight, straight_motion_landmarks
 
 
 @dataclass(frozen=True)
@@ -32,6 +32,8 @@ class ActionEvent:
 def motion_landmarks(segment: str, stance: str) -> tuple[int, int]:
     """基础动作位移使用的固定点与运动点，供识别和机位可见性选择共用。"""
     role = "front" if segment.startswith("front_") else "rear"
+    if segment.endswith("_straight"):
+        return straight_motion_landmarks(role, stance)
     shoulder, _, wrist, hip, _, ankle, *_ = sides_for_stance(role, stance)
     return (hip, ankle) if "kick" in segment else (shoulder, wrist)
 

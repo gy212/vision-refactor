@@ -8,7 +8,9 @@ import pytest
 from core.evaluation import ACTIONS, FeedbackConfig, compare_dual_streams, evaluate_series
 from core.evaluation.rule_checks import judge_views
 from core.evaluation.scoring.exam_pool import rule_reports
+from core.foundation.jsonable import to_jsonable
 from tests import golden_harness as H
+from tests.test_shared_motion_timing import _single_punch
 from tests.test_step_straight_combo import _series
 
 
@@ -102,3 +104,43 @@ def test_visible_punch_is_judged_in_every_composition_and_public_entry(action, r
         assert "试用" in result.name
         assert [item["frame"] for item in result.evidence_details] == expected_frames
         assert result.measurements == tuple(check["measurements"][0]["values"])
+
+
+@pytest.mark.parametrize("case", ["unpaired_front", "missing_side_reference"])
+def test_review_cases_keep_the_same_events_and_verdicts_in_every_output(case):
+    if case == "unpaired_front":
+        series = _series(1)
+        series["landmarks"][:, [14, 16], :] = _series(0)["landmarks"][:, [14, 16], :]
+        views = {"front": deepcopy(series), "side": deepcopy(series)}
+        action, source, segment = "step_straight_combo", "side", "front_straight"
+    else:
+        views = {"front": _single_punch(), "side": _single_punch()}
+        views["side"]["valid_mask"][:, 0] = False
+        views["side"]["landmarks"][:, 0, 3] = 0
+        action, source, segment = "rear_straight", "front", "rear_straight"
+    practice = evaluate_series(action, "left", deepcopy(views))
+    judged = judge_views(deepcopy(views), action, "left", FeedbackConfig())
+    exam = _exam(deepcopy(views), action)
+    batch = _batch(deepcopy(views), action)
+    expected = practice["sharedActionRecord"]
+    assert expected["timingSource"] == source
+    assert len(expected["eventDetails"]) == 1
+    assert expected["eventDetails"][0]["segment"] == segment
+    phases = [item for item in expected["phaseInstances"] if item["segment"] == segment]
+    assert {"motion", "finish"} <= {item["phase"] for item in phases}
+    assert to_jsonable(judged[source][1]["sharedActionRecord"]) == to_jsonable(expected)
+    assert to_jsonable(exam[0]["sharedActionRecord"]) == to_jsonable(expected)
+    assert to_jsonable(batch.shared_action_records) == [to_jsonable(expected)]
+    check_id = f"{segment}:finish:{segment.split('_')[0]}:punch_extension"
+    practice_check = next(item for item in practice["checks"] if item["id"] == check_id)
+    for output in (
+        judged["side"][0],
+        tuple(item for report in exam for item in report["checks"]),
+        batch.side_rule_checks,
+    ):
+        check = next(item for item in output if item.check_id == check_id)
+        assert check.state in {"pass", "violation"}
+        assert practice_check["status"] == (
+            "candidate" if check.state == "violation" else "not_observed"
+        )
+        assert check.evidence_details
