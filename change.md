@@ -1,3 +1,12 @@
+## 2026-11-08: [docs] 建立 spec/ 专项规范体系并归档根目录历史设计文档
+
+- 问题描述：根目录散落历史重构设计文档与归档文件；Issue、PR 与 Review 缺乏集中统一的专项规范目录及 `AGENTS.md` 自动触发路由。
+- 修改内容：
+  1. 新建 `spec/` 目录，集中维护 `spec/issue_spec.md`、`spec/pr_spec.md` 与 `spec/review_spec.md`（由 `DeepReview.md` 重命名移入），统一强化标题格式、“语言简洁易懂、内容完整不丢小节”及反锚定/破立交底模板。
+  2. 将根目录散落的历史设计文档（`camera_session_architecture.md`、`摄像头架构设计交接说明.md`、`整体架构重构设计.md`、`重构阶段任务/`）及 `change（2026.7~2026.11）.md` 统一 `git mv` 归档至 `docs/archive/`；清理本地临时录制残留目录并在 `.gitignore` 忽略本地素材目录 `img/`、`vido/`。
+  3. 更新 `AGENTS.md`：新增“专项任务规范（按需自动读取 `spec/`）”强制路由表与 §12 必读约束，并全量同步至所有本地分支与工作树。
+- 验证方法：`git -c core.whitespace=cr-at-eol diff --cached --check` 无空白错误，`pytest tests/test_architecture.py -q` 通过。
+
 ## 2026-11-08: [docs] 优化 DeepReview.md 审查输出结构（内思外判分离与倒金字塔模板）
 
 - 问题描述：首版 `DeepReview.md` 将内部反锚定推演过程直接作为外部报告结构，导致开头抽象理论过多、缺乏直观方案对比表、测试缺口与阻断项分散，人类阅读不够清晰直观。

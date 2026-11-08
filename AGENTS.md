@@ -9,6 +9,16 @@
 - **本仓库**：工作区的 `new/` 目录，远端 `https://github.com/gy212/vision-refactor`（私有）。本仓库是当前所有代码、文档、测试与提交的唯一活跃开发区。包含核心视觉与评分库 `core/`、Tkinter 桌面应用 `apps/tk/`、命令行入口 `apps/cli/`、离线批处理与分析工具（`batch/`、`analysis/`）以及自动化测试 `tests/`。
 - **旧项目只读参照**：工作区的 `old/` 目录属于外层仓库（`../old/`，工作区根目录的 `.git`，远端 `YGuo-2/vision`），仅用于只读对比与历史溯源。严禁在 `old/` 中修改、新增或删除任何文件；必须运行旧代码对照时，必须使用 `python -B` 且工作目录与输出显式指向 `old/` 之外。
 
+## 专项任务规范（按需自动读取 `spec/`）
+
+本仓库在 `spec/` 目录下维护三份专项工程契约。**当你的任务涉及以下任一场景时，在动笔或执行前必须先主动读取对应规范文档，并严格按其中的工作流与强制输出模板执行（严禁凭默认习惯盲写或删减小节）**：
+
+| 触发任务场景 | 必读规范路径 | 核心约束重点 |
+|---|---|---|
+| **编写或更新 Issue**<br>（问题建单、缺陷分析、重构任务定义） | `spec/issue_spec.md` | 强制从触发样本向上抽象一层、锁定源头模块与同级兄弟场景全集、语言简洁易懂且小节完整不丢项 |
+| **发起或更新 PR**<br>（创建拉取请求、撰写 PR 标题与正文描述） | `spec/pr_spec.md` | 强制填写“架构破立交底表”（如实招供未覆盖项与保留差异）与“业务结果前后对比表”，拒绝测试数字注水与免责废话 |
+| **执行代码与方案审查**<br>（PR Review、方案评审、复审验收） | `spec/review_spec.md` | 强制“先脱钩独立建模、后对比审判方向”的反锚定流程，按五大工程维度拷问做法是否正确、有无更优解，采用倒金字塔输出 |
+
 ## 功能完善工作方式
 
 系统架构重构（P0–P9）已全量闭环，当前处于**功能完善、算法精细化与产品化交付阶段**。所有新增功能与修改直接在现有架构结构上推进，不再保留任何过渡期双轨或旧路径门面。
@@ -97,9 +107,9 @@
 
 ### 12. 提交与 PR 协作规范
 
-- **分支与独立 PR**：提交只进入本仓库，默认主分支 `main`（由规则集保护，禁止直推与强推）。每个独立特性或任务单独建分支，工作区保持干净后提交，验收通过后由 `gh pr create --base main` 发起 PR，经确认后合并。
+- **分支与独立 PR**：提交只进入本仓库，默认主分支 `main`。每个独立特性或任务单独建分支，工作区保持干净后提交，验收通过后由 `gh pr create --base main` 发起 PR（简单的纯文档/配置维护可由管理员直接 commit 推送 `main`）。
 - **跨层协作与 PR 粒度**：跨多层的大型改动使用 stacked PR（`gh stack`）逐层递进，每一层独立通过门禁且具备独立审阅价值，避免一次性提交大而无当的超大 PR。
-- **规范化提交与详细描述**：遵循 Conventional Commits（`feat:`、`fix:`、`refactor:`、`docs:`、`test:`、`chore:`）。PR 与 Issue 统一中文，说明核心问题、修改内容、验证命令与具体测试证据。PR 描述务必附详尽的任务清单（对齐计划）与测试结果，被替换的旧测试在 PR 中注明对应的新测试（D-13）。
+- **规范化提交与专项契约必读**：提交说明遵循 Conventional Commits（`feat:`、`fix:`、`refactor:`、`docs:`、`test:`、`chore:`）。**撰写 Issue 前必读 `spec/issue_spec.md`，撰写 PR 标题与正文前必读 `spec/pr_spec.md`，执行审查前必读 `spec/review_spec.md`**——统一使用简洁直白的中文，严格遵循对应模板的所有必填小节与表格，严禁偷工减料丢小节或隐瞒未闭环分支。
 - **确认提交身份**：提交或推送前确认 Git / GitHub 身份（`gh auth status`、`git config user.name`、`git config user.email`）。
 
 ## 硬约束
@@ -164,13 +174,13 @@ CI（`.github/workflows/gates.yml`，检查名 `gates`）在每个 PR 和 `main`
 | 规则引擎 / 复用与动作计时 | `test_rule_availability.py test_rule_engine_entry.py test_rule_reuse.py test_rule_evidence_entries.py test_shared_motion_timing.py test_shared_phase_coverage.py test_shared_action_records.py test_step_straight_combo.py test_straight_refinements.py`（全量差分 `test_p3_eval_differential.py` 仅在明确更新差分基准时按需单跑） |
 | 摄像头与运行时 | `test_camera_warmup.py test_camera_service.py test_camera_enum.py test_tk_cameras.py`；源码模式跑 `test_camera_capture.py::test_tk_preview_student_switch_with_process_cameras`（真实 Tk + spawn），再构建 EXE 跑 `--offline-self-check`；整套自检只能在冻结包里跑 |
 
-全量基线和已知失败见 `重构阶段任务/README.md` 的"通用任务前检查"，不得新增失败。替换掉的测试要在 PR 里列出对应的新测试（D-13）。
+全量基线和已知失败见 `docs/archive/重构阶段任务/README.md` 的"通用任务前检查"，不得新增失败。替换掉的测试要在 PR 里列出对应的新测试（D-13）。
 
 ## 变更记录
 
 - 每次完成任务后，把修改总结写进 `change.md`，最新记录放在最上面。记录内容：修改日期、问题描述、修改内容、验证方法。只改文档时也要写同步依据，并至少做一次轻量验证。阶段 PR 要包含对应的记录。
-- `change.md` 过长时，用 `git mv` 把它归档为 `change（<起>~<止月>）.md`，再新建一个空的 `change.md`，把"归档与重建"作为新文件的第一条记录，并更新下面的归档清单。
-- 历史归档：本仓库 `change（2026.7~2026.11）.md`；更早归档在旧项目里：`old/change（start~2026.5）.md`、`old/change（2026.5~2026.6）.md`、`old/change（2026.6~2026.7）.md`。
+- `change.md` 过长时，用 `git mv` 把它归档为 `docs/archive/change（<起>~<止月>）.md`，再新建一个空的 `change.md`，把"归档与重建"作为新文件的第一条记录，并更新下面的归档清单。
+- 历史归档：本仓库 `docs/archive/change（2026.7~2026.11）.md`；更早归档在旧项目里：`old/change（start~2026.5）.md`、`old/change（2026.5~2026.6）.md`、`old/change（2026.6~2026.7）.md`。
 
 ## 代码地图
 
@@ -211,7 +221,9 @@ CI（`.github/workflows/gates.yml`，检查名 `gates`）在每个 PR 和 `main`
   - `check_format.py`：基于 Git变动的增量代码格式检查
   - `sim_exam_flow.py`：无硬件摄像头环境下的全流程考试状态机模拟器
   - `generate_feedback_icons.py`：练习结果页状态图标生成脚本
-- **工程配置与交付**：
+- **工程配置、规范与文档交付**：
+  - `spec/`：Agent 专项任务强制规范（`issue_spec.md`、`pr_spec.md`、`review_spec.md`）
+  - `docs/`：专项评估报告与历史重构设计归档（`docs/archive/`）
   - `ruff.toml`：全库代码格式化配置（100 列、双引号、4 空格缩进）
   - `app_ui_onefile.spec`：PyInstaller Windows 单文件 EXE 打包规范
   - `tests/`：pytest 契约与回归测试套件（含架构测试 `test_architecture.py` 与基准快照）
