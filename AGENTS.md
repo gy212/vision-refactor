@@ -170,7 +170,7 @@ CI（`.github/workflows/gates.yml`，检查名 `gates`）在每个 PR 和 `main`
 
 - 每次完成任务后，把修改总结写进 `change.md`，最新记录放在最上面。记录内容：修改日期、问题描述、修改内容、验证方法。只改文档时也要写同步依据，并至少做一次轻量验证。阶段 PR 要包含对应的记录。
 - `change.md` 过长时，用 `git mv` 把它归档为 `change（<起>~<止月>）.md`，再新建一个空的 `change.md`，把"归档与重建"作为新文件的第一条记录，并更新下面的归档清单。
-- 历史归档在旧项目里：`old/change（start~2026.5）.md`、`old/change（2026.5~2026.6）.md`、`old/change（2026.6~2026.7）.md`。
+- 历史归档：本仓库 `change（2026.7~2026.11）.md`；更早归档在旧项目里：`old/change（start~2026.5）.md`、`old/change（2026.5~2026.6）.md`、`old/change（2026.6~2026.7）.md`。
 
 ## 代码地图
 
