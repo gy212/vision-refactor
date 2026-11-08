@@ -108,7 +108,7 @@ class RuleEvidence:
 
     frame: int
     repetition: int | None = None
-    purpose: Literal["violation", "observation"] = "observation"
+    purpose: Literal["violation", "observation", "diagnostic"] = "observation"
 
 
 @dataclass(frozen=True)

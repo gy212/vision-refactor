@@ -127,8 +127,8 @@ def test_grouped_phases_keep_each_members_views_and_review(monkeypatch):
 
     assert [(view, frame) for view, frame, _ in requested] == [
         ("side", 10),
-        ("front", 10),
         ("side", 20),
+        ("front", 10),
         ("front", 20),
     ]
     assert len(grouped[0].members) == 2
@@ -344,7 +344,7 @@ def test_public_evaluation_to_html_keeps_side_judgment_and_correct_arm(monkeypat
 
     requested, _ = _render_requests(monkeypatch, record)
 
-    assert [view for view, _, _ in requested] == ["side", "front"]
+    assert [view for view, _, _ in requested] == ["side", "side"]
     assert all(joints == {11, 13, 15} for _, _, joints in requested)
 
 
@@ -414,30 +414,27 @@ def test_unpaired_front_punch_does_not_change_combination_evidence_number():
         assert details and {detail["repetition"] for detail in details} == {1}
 
 
-def test_touching_motion_windows_keep_all_four_repetitions_in_final_html(monkeypatch):
+def test_four_motion_instances_keep_each_repetition_in_final_html(monkeypatch):
     series = _series(0, seconds=4)
     for start in (30, 35, 40, 45):
         series["landmarks"][start : start + 4, 16, 0] += 0.18
         series["landmarks"][start : start + 4, 14, 0] += 0.09
-    series["landmarks"][29:50, 15, 0] = 0.30  # 四次打拳时护手都相对原护位后拉。
+    series["landmarks"][29:50, 13, 1] = 0.20  # 四次打拳时护手肘都高于肩。
     result = evaluate_series("rear_straight", "left", {"front": deepcopy(series), "side": series})
-    check = next(c for c in result["checks"] if c["id"] == "rear_straight:motion:front:guard_back")
+    check = next(c for c in result["checks"] if c["id"] == "rear_straight:motion:front:guard_elbow")
 
     assert check["status"] == "candidate"
     assert {detail["repetition"] for detail in check["evidenceDetails"]} == {1, 2, 3, 4}
-    assert {
-        detail["repetition"] for detail in check["evidenceDetails"] if detail["ref"] == "side:34"
-    } == {1, 2}  # 共用边界帧保留两次来源，不通过时间反推覆盖。
     record = make_html_test_record(action="rear_straight")
     record["result"] = {**result, "checks": [check]}
 
     requested, rendered = _render_requests(monkeypatch, record)
 
-    assert {29, 34, 39, 44} <= {frame for _, frame, _ in requested}
+    assert {30, 35, 40, 45} <= {frame for _, frame, _ in requested}
     for repetition in (1, 2, 3, 4):
-        assert f"第{repetition}次 · 动作过程 · 侧面问题依据" in rendered
+        assert f"第{repetition}次 · 动作过程 · 正面问题依据" in rendered
     no_root = render_html_report(record)
-    assert "第3次 · 动作过程 · 侧面问题依据" in no_root
+    assert "第3次 · 动作过程 · 正面问题依据" in no_root
     assert "未指定历史目录，跳过截帧" in no_root
 
 

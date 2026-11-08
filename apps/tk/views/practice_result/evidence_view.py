@@ -122,7 +122,10 @@ class EvidenceView:
             f"阶段：{check.segment_label} / {check.phase_label} · 部位：{check.body_part} · 状态：{check.status_display} {rev_tag}"
         )
         self.standard_var.set(f"动作标准：{check.standard}（出处：{check.source}）")
-        self.reason_var.set(f"检查依据：{check.reason}")
+        self.reason_var.set(
+            f"检查依据：{check.reason}"
+            + (f"\n{check.measurements_summary}" if check.measurements_summary else "")
+        )
 
     def show_empty(self, message: str) -> None:
         """没有可显示的检查项时的占位文字。"""

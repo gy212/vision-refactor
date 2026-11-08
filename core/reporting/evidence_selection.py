@@ -75,7 +75,7 @@ def _member_candidates(check: NormalizedCheck, catalog: dict) -> list[EvidenceSe
         if ref not in saved_refs
     )
     # 支持结论的画面优先；共同测量的参照面保留；权重只使用记录保存值。
-    priority = {"violation": 0, "reference": 1, "observation": 2, "unknown": 3}
+    priority = {"violation": 0, "diagnostic": 0, "reference": 1, "observation": 2, "unknown": 3}
     return sorted(result, key=lambda item: (priority.get(item.purpose, 3), -item.weight))
 
 
@@ -136,9 +136,10 @@ def select_evidence(
 
 
 def prioritize_evidence(selections: Sequence[EvidenceSelection]) -> list[EvidenceSelection]:
-    """共用预算顺序：各次首张问题图与必要参照、另一问题视角、对照、补图。"""
+    """先覆盖各阶段的问题或诊断主图，再放其余主图、参照、对照和补图。"""
     representatives = set()
     supported_instances = set()
+    covered_stages = set()
     purposes = {
         (item.check_id, item.repetition, item.ref): item.purpose
         for item in selections
@@ -149,17 +150,22 @@ def prioritize_evidence(selections: Sequence[EvidenceSelection]) -> list[Evidenc
         identity = (selected.check_id, selected.repetition, selected.view)
         instance = (selected.check_id, selected.repetition)
         if identity in representatives:
-            priority = 3
+            priority = 4
         else:
             representatives.add(identity)
             if selected.purpose == "reference":
                 source = (*instance, selected.reference_for)
-                priority = 0 if purposes.get(source) == "violation" else 2
-            elif selected.purpose == "violation":
-                priority = 1 if instance in supported_instances else 0
+                priority = 2 if purposes.get(source) in {"violation", "diagnostic"} else 3
+            elif selected.purpose in {"violation", "diagnostic"}:
+                stage = (selected.phase_label, selected.repetition, selected.purpose)
+                if instance in supported_instances:
+                    priority = 2
+                else:
+                    priority = 1 if stage in covered_stages else 0
+                    covered_stages.add(stage)
                 supported_instances.add(instance)
             else:
-                priority = 2
+                priority = 3
         ranked.append((priority, selected))
     return [selected for _, selected in sorted(ranked, key=lambda item: item[0])]
 
@@ -169,6 +175,7 @@ def evidence_caption(selection: EvidenceSelection, evidence: dict) -> str:
     view = {"front": "正面", "side": "侧面"}.get(selection.view, selection.view)
     purpose = {
         "violation": "问题依据",
+        "diagnostic": "未能判定的取帧",
         "reference": "测量参照",
         "observation": "观测画面",
         "unknown": "历史画面",

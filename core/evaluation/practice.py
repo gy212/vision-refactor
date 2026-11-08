@@ -114,6 +114,7 @@ def _observe_view(
         c["viewProblems"][view] = outcome.detail or (
             "未找到该阶段；" + view_diagnostics.get("reason", "阶段不足")
         )
+        to_practice_check(c, view, outcome, weights[view], views, diagnostics, evidence)
         return None, None
     # 共用的只能是同步时间段；每路仍须独立提供有效人体和规则所需的点。
     ranges = None

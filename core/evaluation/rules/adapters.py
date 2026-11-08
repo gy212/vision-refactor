@@ -60,11 +60,15 @@ def to_rule_check(
     frames = views[view]["frames"]
     detail = outcome.detail
     if outcome.state == RULE_STATE_UNABLE:
-        detail = {
-            "missing_landmarks": "后端缺少所需关键点",
-            "insufficient_valid_frames": f"该项测量有效帧不足（{outcome.valid_frames}/{outcome.total_frames}帧）",
-            "phase_not_found": outcome.detail or "未找到该阶段；" + (phase_reason or "阶段不足"),
-        }[outcome.skip_reason]
+        detail = (
+            outcome.detail
+            or {
+                "missing_landmarks": "后端缺少所需关键点",
+                "insufficient_valid_frames": f"该项测量有效帧不足（{outcome.valid_frames}/{outcome.total_frames}帧）",
+                "phase_not_found": outcome.detail
+                or "未找到该阶段；" + (phase_reason or "阶段不足"),
+            }[outcome.skip_reason]
+        )
     availability = check.get("availability", {})
     trial = availability.get("state") == "trial"
     if trial:
@@ -107,7 +111,7 @@ def to_practice_check(
     ``evidence``（以 ``"视角:帧号"`` 去重），供教师直接核对，不保存视频图像。
     """
     count, total = outcome.valid_frames, outcome.total_frames
-    quality = count / total
+    quality = count / total if total else 0.0
     measurement = {
         "view": view,
         "validFrames": count,
@@ -118,13 +122,6 @@ def to_practice_check(
         "values": list(outcome.measurements),
     }
     check["measurements"].append(measurement)
-    if outcome.state == RULE_STATE_UNABLE:
-        check["viewProblems"][view] = outcome.detail or (
-            f"该项测量有效帧不足（{count}/{total}帧），见关键点有效比例"
-        )
-        return None
-    issue = outcome.state == RULE_STATE_VIOLATION
-    measurement["issueObserved"] = issue
     bundle = build_rule_evidence(
         check, view, outcome, views, diagnostics, weight=base_weight * quality
     )
@@ -133,4 +130,11 @@ def to_practice_check(
         if ref not in check["evidence"]:
             check["evidence"].append(ref)
     check.setdefault("evidenceDetails", []).extend(bundle.details)
+    if outcome.state == RULE_STATE_UNABLE:
+        check["viewProblems"][view] = outcome.detail or (
+            f"该项测量有效帧不足（{count}/{total}帧），见关键点有效比例"
+        )
+        return None
+    issue = outcome.state == RULE_STATE_VIOLATION
+    measurement["issueObserved"] = issue
     return issue, base_weight * quality

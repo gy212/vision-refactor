@@ -221,15 +221,6 @@ def _issue_card(idx: int, check: NormalizedCheck, embedder: _EvidenceEmbedder) -
 def _candidate_section(model: NormalizedReportModel, embedder: _EvidenceEmbedder) -> str:
     issues = group_action_issues(model.candidate_checks, model.header.action)
     if issues:
-        embedder.prepare(
-            prioritize_evidence(
-                [
-                    selected
-                    for check in issues
-                    for selected in select_evidence(check, embedder.catalog)
-                ]
-            )
-        )
         cards = "\n".join(_issue_card(i, c, embedder) for i, c in enumerate(issues, 1))
     else:
         cards = _fill("no_candidates")
@@ -244,7 +235,21 @@ def _row_names(c: NormalizedCheck) -> dict[str, str]:
     }
 
 
-def _status_sections(model: NormalizedReportModel) -> list[str]:
+def _incomplete_details(check: NormalizedCheck, embedder: _EvidenceEmbedder) -> str:
+    """无法判断仍展示原始取帧和已得到的测量，不冒充问题证据。"""
+    if not check.evidence_refs and not check.measurements_summary:
+        return ""
+    images = _evidence_grid(check, embedder) if check.evidence_refs else ""
+    measurements = _issue_details(check) if check.measurements_summary else ""
+    return (
+        '<details style="flex-basis: 100%;"><summary>查看所选画面与测量</summary>'
+        + images
+        + measurements
+        + "</details>"
+    )
+
+
+def _status_sections(model: NormalizedReportModel, embedder: _EvidenceEmbedder) -> list[str]:
     """未完成判断、已检查未发现、教师已撤销三个折叠区，各自只在有项目时输出。"""
     sections = []
     incomplete = model.unable_checks + model.pending_rule_checks
@@ -256,6 +261,7 @@ def _status_sections(model: NormalizedReportModel) -> list[str]:
                 body_part=safe_clean(c.body_part),
                 status=safe_clean(c.status_display),
                 reason=safe_clean(c.reason),
+                extras=_incomplete_details(c, embedder),
                 **_row_names(c),
             )
             for c in incomplete
@@ -342,9 +348,19 @@ def render_html_report(
     embedder = _EvidenceEmbedder(record, model, history_root, max_image_edge, max_images)
     student_id = safe_clean(header.student_id, "未登记学号")
     time_display = safe_clean(header.created_at_local)
+    issues = group_action_issues(model.candidate_checks, model.header.action)
+    embedder.prepare(
+        prioritize_evidence(
+            [
+                selected
+                for check in [*issues, *model.unable_checks]
+                for selected in select_evidence(check, embedder.catalog)
+            ]
+        )
+    )
     sections = [
         _candidate_section(model, embedder),
-        *_status_sections(model),
+        *_status_sections(model, embedder),
         _diagnostics_section(model),
     ]
     return _fill(
