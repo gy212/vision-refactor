@@ -61,8 +61,17 @@ def test_all_action_checks_save_the_same_definition_used_for_judging(stance, mod
 
 
 def test_identical_standard_is_reused_by_stance_single_punch_and_combination():
-    outcomes = [_elbow_outcome(action) for action in ("stance", "rear_straight", "straight_combo")]
-    assert {outcome.state for outcome in outcomes} == {"violation"}
+    outcomes = [
+        _elbow_outcome(action)
+        for action in (
+            "stance",
+            "rear_straight",
+            "straight_combo",
+            "step_straight_combo",
+            "rear_hook",
+        )
+    ]
+    assert {outcome.state for outcome in outcomes} == {"pass"}
     assert len({outcome.spec.strategy for outcome in outcomes}) == 1
     assert all(outcome.measurements == outcomes[0].measurements for outcome in outcomes)
 
@@ -76,68 +85,46 @@ def test_timing_and_scoring_choices_cannot_change_rule_definitions(monkeypatch):
         replace(definition, timing="side_combo", scoring="per_repetition", rule_input="whole_clip"),
     )
     assert build_checks("rear_straight", "left") == before
-    assert _elbow_outcome("rear_straight").state == "violation"
+    assert _elbow_outcome("rear_straight").state == "pass"
 
 
-def test_explicit_standard_can_be_reused_without_changing_action_timing(monkeypatch):
-    original = action_definition("rear_straight")
-    assert _elbow_outcome("rear_straight").state == "violation"
-    monkeypatch.setitem(
-        ACTION_DEFINITIONS, "rear_straight", replace(original, rule_standard="teacher_straight")
-    )
-    assert _elbow_outcome("rear_straight").state == "pending_rule"
-    assert _elbow_outcome("step_straight_combo").state == "pass"
-    checks = build_checks("rear_straight", "left")
-    assert (
-        next(c for c in checks if c["code"] == "stance_elbow")["parameterOverrides"][
-            "stance_elbow_min"
+def test_same_base_segment_has_identical_checks_in_every_composition():
+    reference = build_checks("step_straight_combo", "left")
+    for action in ACTIONS:
+        checks = build_checks(action, "left")
+        members = {"stance", *action_definition(action).segments}
+        expected = [check for check in reference if check["segment"] in members]
+        actual = [
+            check
+            for check in checks
+            if check["segment"] in {"stance", "front_straight", "rear_straight"}
         ]
-        == 80
-    )
-    assert {c["availability"]["state"] for c in checks} == {"validation_pending"}
-    assert action_definition("rear_straight").timing == original.timing
-    assert action_definition("rear_straight").scoring == original.scoring
+        assert actual == expected
+    assert _elbow_outcome("step_straight_combo").state == "pass"
 
 
-@pytest.mark.parametrize(
-    "qualification", ["legacy_catalog", "step_straight_validation", "unregistered"]
-)
-def test_front_punch_reuses_only_its_members_and_does_not_inherit_combo_qualification(
-    monkeypatch, qualification
-):
-    original = action_definition("front_straight")
-    monkeypatch.setitem(
-        ACTION_DEFINITIONS,
-        "front_straight",
-        replace(original, rule_standard="teacher_straight", qualification=qualification),
-    )
+def test_front_punch_contains_only_its_members_and_shared_per_check_qualification():
     checks = build_checks("front_straight", "left")
     assert {c["segment"] for c in checks} == {"stance", "front_straight"}
     assert not {"prepare", "recovered"} & {c["phase"] for c in checks}
-    assert {c["availability"]["state"] for c in checks} == {"validation_pending"}
-    assert all("无适用登记" in c["availability"]["evidence"] for c in checks)
+    by_id = {c["id"]: c for c in checks}
+    assert by_id["front_straight:motion:rear:guard_elbow"]["availability"]["state"] == "enabled"
+    assert by_id["front_straight:finish:rear:guard_back"]["availability"]["state"] == "trial"
 
 
-def test_changing_qualification_keeps_standard_and_members(monkeypatch):
-    before = build_checks("step_straight_combo", "left")
-    monkeypatch.setitem(
-        ACTION_DEFINITIONS,
-        "step_straight_combo",
-        replace(action_definition("step_straight_combo"), qualification="unregistered"),
+def test_unknown_model_does_not_inherit_full_or_heavy_qualification():
+    checks = build_checks("rear_straight", "left", pose_variant="lite")
+    assert all(c["availability"]["state"] not in {"enabled", "trial"} for c in checks)
+    assert all(c["blockedReason"] for c in checks)
+
+
+def test_unregistered_phase_cannot_inherit_known_phase_qualification():
+    check = deepcopy(
+        next(c for c in build_checks("rear_straight", "left") if c["code"] == "punch_recover")
     )
-    after = build_checks("step_straight_combo", "left")
-    state_fields = {"availability", "blockedReason"}
-    assert [{k: v for k, v in c.items() if k not in state_fields} for c in before] == [
-        {k: v for k, v in c.items() if k not in state_fields} for c in after
-    ]
-    assert {c["availability"]["state"] for c in after} == {"validation_pending"}
-
-
-def test_unregistered_binding_cannot_claim_the_legacy_execution_exemption():
-    checks = build_checks("front_straight", "left")
-    apply_rule_qualification(checks, "new_straight", "catalog", "legacy_catalog", "full")
-    assert {c["availability"]["state"] for c in checks} == {"validation_pending", "unsupported"}
-    assert all("无适用登记" in c["availability"]["evidence"] for c in checks)
+    check["phase"] = "prepare"
+    apply_rule_qualification([check], "full")
+    assert check["availability"]["state"] == "validation_pending"
 
 
 def test_qualification_changes_only_execution_state_and_keeps_all_definitions():
@@ -230,5 +217,5 @@ def test_shared_displacement_retains_distinct_baseline_and_facing_requirements()
         baseline_mask,
         RuleContext(view="side", action="step_straight_combo", stance="left", params=cfg),
     )
-    assert not catalog_valid.any()  # 旧目录要求整段基线有效，教师标准保留有效基线帧。
+    assert catalog_valid.all()  # 一帧参照缺失不否决其余有效参照。
     assert teacher_valid.all()

@@ -20,7 +20,6 @@ from core.evaluation.rules.adapters import to_practice_check
 from core.evaluation.rules.sanda_v5 import (
     RULE_VERSION,
     FeedbackConfig,
-    action_config,
     build_checks,
     check_view_weights,
     load_feedback_config,
@@ -349,7 +348,7 @@ def evaluate_series(
         ),
         "diagnostics": _view_diagnostics(views, diagnostics, phase_sources),
         "phaseWindows": _phase_ranges(views, windows),
-        "config": asdict(action_config(cfg, action)),
+        "config": asdict(cfg),
         "status": "partial"
         if any(c["status"] in {"unable", "pending_rule"} for c in checks)
         else "completed",

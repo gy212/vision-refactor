@@ -8,14 +8,13 @@ from core.reporting.practice_model import NormalizedCheck
 
 
 def group_action_issues(checks: list[NormalizedCheck], action: str) -> list[NormalizedCheck]:
-    """仅合并上步直拳过程与打到头时的同类提醒，不改变逐项判断和计数。"""
-    if action != "step_straight_combo":
-        return checks
+    """按基础直拳段合并过程与打到头时的同类提醒，不改变逐项判断和计数。"""
     groups: dict[tuple[str, ...], list[NormalizedCheck]] = {}
     for check in checks:
         key = (check.id,)
         if (
-            check.status == "candidate"
+            check.segment in {"front_straight", "rear_straight"}
+            and check.status == "candidate"
             and check.review != "revoked"
             and check.phase in {"motion", "finish"}
             and check.code in {"guard_back", "guard_shoulder", "guard_elbow"}

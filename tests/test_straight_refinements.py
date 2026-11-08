@@ -5,7 +5,8 @@ from copy import deepcopy
 import numpy as np
 import pytest
 
-from core.evaluation.rules.sanda_v5 import FeedbackConfig, action_config
+from core.evaluation.rules.sanda_v5 import FeedbackConfig
+from core.evaluation.rules.rule_definitions import standard_config
 from core.evaluation.rules.spec import RuleContext
 from core.evaluation.rules.straight_posture import measure_posture
 from core.evaluation.stance_windows import settled_stance_windows
@@ -73,7 +74,10 @@ def test_straight_arm_does_not_automatically_mean_shoulder_height() -> None:
     lm[1, 13, :2], lm[1, 15, :2] = (0.625, 0.35), (0.75, 0.3)
     mask = np.ones(lm.shape[:2], bool)
     ctx = RuleContext(
-        view="side", action=ACTION, stance="left", params=action_config(FeedbackConfig(), ACTION)
+        view="side",
+        action=ACTION,
+        stance="left",
+        params=standard_config(FeedbackConfig(), "front_straight"),
     )
 
     extension, valid, _ = measure_posture("punch_extension", "front", lm, mask, ctx)
@@ -117,7 +121,8 @@ def test_grouped_reminders_keep_evidence_and_each_phase_verdict() -> None:
     model = build_report_model(record)
     assert len(group_action_issues(model.candidate_checks, ACTION)) == 1
     assert model.all_checks[1].status == "not_observed"
-    assert len(group_action_issues(original, "straight_combo")) == 2
+    for action in ("front_straight", "rear_straight", "straight_combo"):
+        assert len(group_action_issues(original, action)) == 1
 
 
 def test_unrecognized_combo_keeps_its_own_last_visible_stance() -> None:
@@ -200,7 +205,7 @@ def test_punch_extension_checks_each_punch_at_its_fullest_reach() -> None:
         view="side",
         action=ACTION,
         stance="left",
-        params=action_config(FeedbackConfig(), ACTION),
+        params=standard_config(FeedbackConfig(), "front_straight"),
         phase_windows={"front_straight:finish": np.array([10, 11, 12, 30, 31, 32])},
     )
     bad, valid, _ = measure_extension_at_peak("front", lm, mask, ctx)
@@ -294,10 +299,12 @@ def test_straight_tolerance_accepts_small_deviation_and_keeps_clear_errors(code,
     assert bad.tolist() == [False, False, True]
     mask[:, rule.required[0]] = False
     assert not rule.check(lm, mask, lm, mask, ctx)[1].any()
-    # 新余量仅用于上步直拳；其他动作继续用原设置。
-    other = action_config(cfg, "straight_combo")
-    assert (other.stance_elbow_min, other.stance_knee_max, other.punch_level_deviation) == (
-        90,
-        170,
-        5,
-    )
+    # 同一个基础段在单拳与组合拳中使用同一测量和参数。
+    for action in ("front_straight", "rear_straight", "straight_combo"):
+        same = next(
+            (r for r in rule_profile(action, "left", cfg).rules if r.code == rule.code), None
+        )
+        if same is not None:
+            actual, observed, _ = same.check(lm, np.ones_like(mask), lm, np.ones_like(mask), ctx)
+            np.testing.assert_array_equal(actual, bad)
+            assert observed.all()

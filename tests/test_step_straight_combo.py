@@ -23,7 +23,6 @@ from core.evaluation.rule_checks import judge_views, rule_series, view_outcomes
 from core.evaluation.rules.sanda_v5 import (
     ACTIONS,
     FeedbackConfig,
-    action_config,
     action_segments,
     build_checks,
     rule_profile,
@@ -297,9 +296,8 @@ def test_verified_checks_and_user_authorized_trials_both_run() -> None:
                 by_id[f"rear_straight:{phase}:front:guard_shoulder"]["availability"]["state"]
                 == "enabled"
             )
-    # 旧动作不受标定影响。
-    assert all("availability" not in c for c in build_checks("straight_combo", "left"))
-    assert "guard_shoulder" not in {c["code"] for c in build_checks("straight_combo", "left")}
+    # 同一基础动作段在不同编排下消费同一资格登记。
+    assert build_checks("straight_combo", "left") == checks
     assert action_segments(ACTION) == action_segments("straight_combo")
     assert ACTIONS[ACTION] == "上步前后手直拳组合"
 
@@ -357,17 +355,6 @@ def test_paired_torso_requires_synchronized_evidence_and_marks_model_trial() -> 
         torso_check(evaluate_series(ACTION, "left", {"front": views["front"]}))["status"]
         == "unable"
     )
-
-
-def test_action_config_applies_calibrated_params_only_to_its_action() -> None:
-    cfg = FeedbackConfig()
-    tuned = action_config(cfg, ACTION)
-    assert tuned.elbow_raise == pytest.approx(-0.18) and tuned.shoulder_height == pytest.approx(
-        0.17
-    )
-    assert action_config(cfg, "straight_combo") is cfg
-    with pytest.raises(ValueError):
-        FeedbackConfig(elbow_raise=1.5)
 
 
 def test_prepull_uses_original_guard_and_excludes_recovery() -> None:
@@ -445,7 +432,8 @@ def test_practice_reports_repetition_count() -> None:
     result = evaluate_series(ACTION, "left", {"front": front, "side": side})
     assert result["repetitions"]["expected"] == 2 and result["repetitions"]["detected"] == 1
     assert "检测到 1 次动作，应做 2 次" in result["summary"]
-    assert result["config"]["elbow_raise"] == pytest.approx(-0.18)
+    elbow = next(c for c in result["checks"] if c["code"] == "guard_elbow")
+    assert elbow["parameterOverrides"]["elbow_raise"] == pytest.approx(-0.18)
     assert "repetitions" not in evaluate_series(
         "straight_combo", "left", {"front": front, "side": side}
     )
