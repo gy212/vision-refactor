@@ -6,7 +6,7 @@ from dataclasses import asdict, dataclass, field
 import json
 import math
 
-from core.evaluation.rules.rule_descriptions import RULES
+from core.evaluation.rules.rule_descriptions import PARAMS, RULES
 from core.evaluation.view_weights import check_front_weights
 from core.foundation.paths import repo_root
 
@@ -59,9 +59,9 @@ class FeedbackConfig:
     max_gap_seconds: float = 0.10
     finish_window_seconds: float = 0.05
     fist_height: float = 0.08  # 拳峰与鼻尖纵向差上限（躯干长度，原正式规则，暂定）
-    stance_width_min: float = 0.8  # 踝距/肩宽下限（原正式规则，暂定）
-    stance_width_max: float = 1.2  # 踝距/肩宽上限
-    punch_elbow: float = 160.0  # 直拳出拳结束时肘角下限（度，原正式规则）
+    stance_width_min: float = PARAMS["stance_width_min"]  # 较窄脚间距/较完整肩宽下限
+    stance_width_max: float = PARAMS["stance_width_max"]  # 较窄脚间距/较完整肩宽上限
+    punch_elbow: float = PARAMS["punch_elbow"]  # 每次直拳最伸展时的肘角下限（度）
     guard_wrist_height: float = 0.5  # 实战式护位：手腕不低于肩下 0.5 倍躯干长，排除直立垂手的帧
     guard_shoulder_drop: float = (
         0.08  # 护手手腕低于同侧肩超过该值（躯干长度）算掉到肩膀以下（第二批样本标定）

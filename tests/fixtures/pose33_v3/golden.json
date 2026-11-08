@@ -179,7 +179,7 @@
       },
       {
         "check_id": "stance:start::stance_width",
-        "detail": "试用检查。已量较窄的脚尖或脚跟间距，并参照两面中较完整的肩宽。正确录像仍有误报。 缺少侧面视频",
+        "detail": "试用检查。为减少误报，按正确对照样本试调为0.7～1.35倍。关键点偏差仍可能造成误报或漏查，继续试用。 缺少侧面视频",
         "skip_reason": "phase_not_found",
         "state": "unable",
         "total_frames": 7,
@@ -233,7 +233,7 @@
       },
       {
         "check_id": "stance:end::stance_width",
-        "detail": "试用检查。已量较窄的脚尖或脚跟间距，并参照两面中较完整的肩宽。正确录像仍有误报。 缺少侧面视频",
+        "detail": "试用检查。为减少误报，按正确对照样本试调为0.7～1.35倍。关键点偏差仍可能造成误报或漏查，继续试用。 缺少侧面视频",
         "skip_reason": "phase_not_found",
         "state": "unable",
         "total_frames": 7,

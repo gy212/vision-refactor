@@ -89,18 +89,33 @@ def _assert_complete(details, catalog):
         assert reference["timingSource"] == "own_view"
 
 
-def test_all_final_outputs_keep_the_same_paired_measurement_evidence():
+@pytest.mark.parametrize(
+    ("width_ratio", "status"),
+    [(0.69, "candidate"), (0.75, "not_observed"), (1.22, "not_observed"), (1.4, "candidate")],
+)
+def test_all_final_outputs_keep_the_same_paired_measurement_evidence(width_ratio, status):
     views = _paired_views()
+    gap = 0.1 * width_ratio
+    views["front"]["landmarks"][:, [29, 31], 0] = 0.5 - gap / 2
+    views["front"]["landmarks"][:, [30, 32], 0] = 0.5 + gap / 2
     practice = evaluate_series(ACTION, "left", deepcopy(views))
     practice_check = next(check for check in practice["checks"] if check["id"] == CHECK_ID)
-    judged = _check(judge_views(deepcopy(views), ACTION, "left", FeedbackConfig())["front"][0])
+    # 已保存的旧默认值不能盖过新批准标准，否则报告文字与实际判断不一致。
+    old_config = FeedbackConfig(stance_width_min=0.8, stance_width_max=1.2)
+    judged = _check(judge_views(deepcopy(views), ACTION, "left", old_config)["front"][0])
     exam = _check(_exam(deepcopy(views))[0]["checks"])
     batch = _check(_batch(deepcopy(views)).front_rule_checks)
 
-    assert practice_check["status"] == "candidate"
+    assert practice_check["status"] == status
+    assert "0.7到1.35倍" in practice_check["standard"]
+    for action in ("stance", "rear_straight"):
+        sibling = evaluate_series(action, "left", deepcopy(views))
+        check = next(c for c in sibling["checks"] if c["id"] == CHECK_ID)
+        assert check["status"] == status
+        assert check["standard"] == practice_check["standard"]
     _assert_complete(practice_check["evidenceDetails"], practice["evidence"])
     for check in (judged, exam, batch):
-        assert check.state == "violation"
+        assert check.state == ("violation" if status == "candidate" else "pass")
         saved = json.loads(json.dumps(to_jsonable(check)))
         _assert_complete(saved["evidence_details"], saved["evidence_catalog"])
         # 入口权重可不同，但不能改变原画面、部位、来源及参照。
