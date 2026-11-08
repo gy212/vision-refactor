@@ -134,7 +134,7 @@ def observe_projected_punch(
         cfg,
         rise=rise,
         fall=RETURN_REACH,
-        policy=EventPolicy(max_gap_seconds=0.25, rearm_after_gap=False),
+        policy=EventPolicy(max_gap_seconds=0.25, rearm_after_gap=True),
         forward=np.abs(displacement[:, 0]),
         downward=displacement[:, 1],
     )
@@ -199,7 +199,7 @@ def reach_events(
         cfg,
         rise=rise,
         fall=fall,
-        policy=EventPolicy(max_gap_seconds=0.25, rearm_after_gap=False),
+        policy=EventPolicy(max_gap_seconds=0.25, rearm_after_gap=True),
         forward=forward,
         downward=descent,
     )
