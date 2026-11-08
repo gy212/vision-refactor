@@ -7,6 +7,9 @@ pygrabber==0.2
 # 考试名单 / 成绩 Excel
 openpyxl>=3.1.0
 
-# 测试依赖（属性测试）
+# 测试依赖（属性测试、代码格式化与打包构建）
 hypothesis==6.155.2
 pytest==9.1.1
+ruff==0.14.3
+pyinstaller==6.22.3
+imageio-ffmpeg==0.6.0

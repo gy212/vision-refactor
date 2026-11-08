@@ -1,8 +1,8 @@
 # -*- mode: python ; coding: utf-8 -*-
 """PyInstaller 单文件打包：把桌面 UI 打包成单个 vision_ui.exe（仓库唯一的 Tk spec）。
 
-构建命令（仓库根目录，依赖见 requirements-dev.txt）：
-    .\.venv\Scripts\python.exe -m PyInstaller app_ui_onefile.spec --noconfirm
+构建命令（仓库根目录，依赖见 requirements.txt）：
+    .\.venv\Scripts\python.exe -m PyInstaller packaging/pyinstaller/app_ui_onefile.spec --noconfirm
 
 产物：
   - dist/vision_ui.exe：单文件，含 mediapipe/opencv 运行时、模型、在线模板、
@@ -35,9 +35,12 @@ import PyInstaller
 from PyInstaller.utils.hooks import collect_all
 
 
+ROOT = Path(SPECPATH).resolve().parents[1]
+
+
 def _load(name):
     # 顶层包名 packaging 与 PyPI 的 packaging 冲突，按文件路径加载构建辅助模块。
-    path = Path("packaging") / "pyinstaller" / f"{name}.py"
+    path = ROOT / "packaging" / "pyinstaller" / f"{name}.py"
     spec = importlib.util.spec_from_file_location(f"vision_build_{name}", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -46,22 +49,23 @@ def _load(name):
 
 build_info = _load("build_info")
 delivery = _load("delivery")
-build_info.require_clean(Path("."))
+build_info.require_clean(ROOT)
 
 model_names = ["pose_landmarker_lite.task", "pose_landmarker_full.task",
                "pose_landmarker_heavy.task", "hand_landmarker.task"]
 for name in model_names:
-    if not (Path("models") / name).is_file():
+    if not (ROOT / "models" / name).is_file():
         raise SystemExit(f"离线打包缺少模型：models/{name}")
-info = build_info.collect(Path("."), [Path("models") / name for name in model_names],
+info = build_info.collect(ROOT, [ROOT / "models" / name for name in model_names],
                           pyinstaller_version=PyInstaller.__version__)
-info_path = build_info.write(info, Path("build") / build_info.BUILD_INFO_NAME)
+info_path = build_info.write(info, ROOT / "build" / build_info.BUILD_INFO_NAME)
 
-datas = [(str(Path("models") / name), "models") for name in model_names]
-datas += [("templates/online/直拳_左手.npz", "templates/online"),
-          ("templates/online/直拳_右手.npz", "templates/online")]
+datas = [(str(ROOT / "models" / name), "models") for name in model_names]
+datas += [(str(ROOT / "templates/online/直拳_左手.npz"), "templates/online"),
+          (str(ROOT / "templates/online/直拳_右手.npz"), "templates/online")]
 datas += [("assets/feedback", "assets/feedback")]
-datas += [("core/reporting/html/templates", "core/reporting/html/templates")]
+datas[-1] = (str(ROOT / datas[-1][0]), datas[-1][1])
+datas += [(str(ROOT / "core/reporting/html/templates"), "core/reporting/html/templates")]
 datas += [(str(info_path), ".")]
 datas += [(imageio_ffmpeg.get_ffmpeg_exe(), "ffmpeg")]
 binaries = []
@@ -152,14 +156,14 @@ nvidia_excludes = [
 
 
 a = Analysis(
-    ["apps/desktop_launcher.py"],
-    pathex=["."],
+    [str(ROOT / "apps/desktop_launcher.py")],
+    pathex=[str(ROOT)],
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=["packaging/pyinstaller/pyi_rth_video_writer_alias.py"],
+    runtime_hooks=[str(ROOT / "packaging/pyinstaller/pyi_rth_video_writer_alias.py")],
     excludes=heavy_excludes + nvidia_excludes,
     noarchive=False,
 )

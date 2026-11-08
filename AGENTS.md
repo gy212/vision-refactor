@@ -131,7 +131,7 @@
   ```powershell
   $env:HTTP_PROXY  = "http://127.0.0.1:7879"
   $env:HTTPS_PROXY = "http://127.0.0.1:7879"
-  .\.venv\Scripts\python.exe -m pip install -r requirements.txt -r requirements-dev.txt --proxy http://127.0.0.1:7879
+  .\.venv\Scripts\python.exe -m pip install -r requirements.txt --proxy http://127.0.0.1:7879
   ```
 
 - Python 用本仓库的 `.\.venv\Scripts\python.exe`；pip 一律用 `python -m pip`。不使用也不修改 `old/.venv`。
@@ -150,7 +150,7 @@
 ```
 
 - `batch_dual_compare.py --paired`：按学员文件名里的正/侧关键词配对并调用 `compare_dual_streams`，CSV 的 `video` 列写学员 id，`--export_raw` 在 paired 模式下跳过。
-- 打包构建：单文件 spec 为 `app_ui_onefile.spec`，构建命令：`.\.venv\Scripts\python.exe -m PyInstaller app_ui_onefile.spec --noconfirm`；产物为 `dist/vision_ui.exe`。EXE 自检命令：`vision_ui.exe --offline-self-check <报告.json>`。
+- 打包构建：单文件 spec 为 `packaging/pyinstaller/app_ui_onefile.spec`，构建命令：`.\.venv\Scripts\python.exe -m PyInstaller packaging/pyinstaller/app_ui_onefile.spec --noconfirm`；产物为 `dist/vision_ui.exe`。EXE 自检命令：`vision_ui.exe --offline-self-check <报告.json>`。
 
 ## 测试门禁
 
@@ -162,7 +162,7 @@
 - 直接受影响模块的最小套件（见下表；严格遵循 §4“单点验证与回答即停”，无关联反证严禁擅自扩跑全库套件或全量历史差分）
 - `git diff --check`：行尾提示可以接受，空白错误不行
 
-CI（`.github/workflows/gates.yml`，检查名 `gates`）在每个 PR 和 `main` 的推送上自动跑增量格式检查、golden / 契约、架构测试和空白检查，任何一步退出码非 0 即检查失败。格式检查以 PR 的 base SHA 或 push 的 before SHA 为基线，首次推送使用空树；排除已删除文件，没有 Python 改动时跳过。环境：`windows-latest`、Python 3.12，安装 `requirements.txt` 和 `requirements-dev.txt`；不用摄像头，也不预置 `models/` 下的模型，门禁测试只读 `tests/fixtures/`。受影响模块的套件和全量测试不在 CI 里，仍在本地跑。本地复现 CI 的空白检查：`git -c core.whitespace=cr-at-eol diff --check origin/main HEAD`。合入约束由仓库规则集 `main-gates`（作用于默认分支）强制：`gates` 是必需检查，未通过不能合并；`main` 只能经 PR 合入，禁止强推和删除。
+CI（`.github/workflows/gates.yml`，检查名 `gates`）在每个 PR 和 `main` 的推送上自动跑增量格式检查、golden / 契约、架构测试和空白检查，任何一步退出码非 0 即检查失败。格式检查以 PR 的 base SHA 或 push 的 before SHA 为基线，首次推送使用空树；排除已删除文件，没有 Python 改动时跳过。环境：`windows-latest`、Python 3.12，安装 `requirements.txt`；不用摄像头，也不预置 `models/` 下的模型，门禁测试只读 `tests/fixtures/`。受影响模块的套件和全量测试不在 CI 里，仍在本地跑。本地复现 CI 的空白检查：`git -c core.whitespace=cr-at-eol diff --check origin/main HEAD`。合入约束由仓库规则集 `main-gates`（作用于默认分支）强制：`gates` 是必需检查，未通过不能合并；`main` 只能经 PR 合入，禁止强推和删除。
 
 | 改动范围 | 测试（`tests/` 下） |
 |---|---|
@@ -225,6 +225,6 @@ CI（`.github/workflows/gates.yml`，检查名 `gates`）在每个 PR 和 `main`
   - `spec/`：Agent 专项任务强制规范（`issue_spec.md`、`pr_spec.md`、`review_spec.md`）
   - `docs/`：专项评估报告与历史重构设计归档（`docs/archive/`）
   - `ruff.toml`：全库代码格式化配置（100 列、双引号、4 空格缩进）
-  - `app_ui_onefile.spec`：PyInstaller Windows 单文件 EXE 打包规范
+  - `packaging/pyinstaller/app_ui_onefile.spec`：PyInstaller Windows 单文件 EXE 打包规范
   - `tests/`：pytest 契约与回归测试套件（含架构测试 `test_architecture.py` 与基准快照）
   - `assets/feedback/`：结果页与报告嵌入的状态图标资产

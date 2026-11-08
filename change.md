@@ -1,3 +1,11 @@
+## 2026-11-08: [chore] 合并依赖清单、归拢打包 spec 至 packaging/ 并清理根目录遗留文件
+
+- 问题描述：根目录遗留早期测试产生的 `user_prefs.json`、已废弃的 `requirements-spike.txt`、与 `requirements.txt` 重复的 `requirements-dev.txt`，以及散落在根目录的 `app_ui_onefile.spec`。
+- 修改内容：
+  1. 删除本地遗留 `user_prefs.json` 与废弃的 `requirements-spike.txt`；将 `requirements-dev.txt` 中的开发/打包依赖合并至 `requirements.txt` 并移除 `requirements-dev.txt`。
+  2. `git mv app_ui_onefile.spec packaging/pyinstaller/app_ui_onefile.spec`，以 `ROOT` 锚定打包路径，并同步更新 `packaging/pyinstaller/build_info.py`、`tests/test_packaging_build_info.py` 与 `AGENTS.md`。
+- 验证方法：`pytest tests/test_packaging_build_info.py tests/test_architecture.py -q` 通过，`scripts/check_format.py origin/main` 与 `git -c core.whitespace=cr-at-eol diff --cached --check` 通过。
+
 ## 2026-11-08: [docs] 建立 spec/ 专项规范体系并归档根目录历史设计文档
 
 - 问题描述：根目录散落历史重构设计文档与归档文件；Issue、PR 与 Review 缺乏集中统一的专项规范目录及 `AGENTS.md` 自动触发路由。

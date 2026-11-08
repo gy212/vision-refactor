@@ -22,7 +22,7 @@ from apps.tk.self_check import check_feedback_icons  # noqa: E402
 from core.evaluation import RULE_VERSION  # noqa: E402
 from core.evaluation import FeedbackConfig  # noqa: E402
 
-SPEC = _REPO_ROOT / "app_ui_onefile.spec"
+SPEC = _REPO_ROOT / "packaging" / "pyinstaller" / "app_ui_onefile.spec"
 
 
 def _load(name: str):
@@ -60,7 +60,9 @@ def repo(tmp_path: Path) -> Path:
 def test_clean_repo_passes_and_build_info_has_required_fields(repo: Path):
     model = repo / "m.task"
     model.write_bytes(b"model")
-    (repo / ".gitignore").write_text("m.task\n", encoding="utf-8")  # 根目录文件不在打包路径内
+    (repo / ".gitignore").write_text(
+        "m.task\n", encoding="utf-8"
+    )  # 根目录文件不在打包路径内
 
     build_info.require_clean(repo)
     info = build_info.collect(repo, [model], pyinstaller_version="6.22.3")
@@ -70,16 +72,23 @@ def test_clean_repo_passes_and_build_info_has_required_fields(repo: Path):
     assert info["ruleVersion"] == "rule-v-test"
     assert info["models"] == {"m.task": hashlib.sha256(b"model").hexdigest()}
     assert info["pyinstaller"] == "6.22.3"
-    assert info["python"] == f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+    assert (
+        info["python"]
+        == f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+    )
     assert info["builtAt"].endswith("+00:00")
 
 
 @pytest.mark.parametrize("make_dirty", ["modified", "untracked"])
 def test_dirty_source_refuses_build(repo: Path, make_dirty: str):
     if make_dirty == "modified":
-        (repo / build_info.RULE_VERSION_SOURCE).write_text('RULE_VERSION = "changed"\n', encoding="utf-8")
+        (repo / build_info.RULE_VERSION_SOURCE).write_text(
+            'RULE_VERSION = "changed"\n', encoding="utf-8"
+        )
     else:
-        (repo / "core" / "new_module.py").write_text("", encoding="utf-8")  # v4 曾从未跟踪源码出包
+        (repo / "core" / "new_module.py").write_text(
+            "", encoding="utf-8"
+        )  # v4 曾从未跟踪源码出包
 
     with pytest.raises(SystemExit, match="拒绝构建"):
         build_info.require_clean(repo)
@@ -107,13 +116,22 @@ def test_delivery_assembles_exe_build_info_and_attachments(tmp_path: Path):
 
     assert target.name == "vision_ui_20261003_abcdef1"
     names = {p.relative_to(target).as_posix() for p in target.rglob("*") if p.is_file()}
-    assert {"vision_ui.exe", "build_info.json", "使用说明.txt", "feedback_config.example.json"} <= names
+    assert {
+        "vision_ui.exe",
+        "build_info.json",
+        "使用说明.txt",
+        "feedback_config.example.json",
+    } <= names
     assert any(name.startswith("第三方许可/") for name in names)
     assert json.loads((target / "build_info.json").read_text(encoding="utf-8")) == info
 
 
 def test_feedback_config_example_matches_current_defaults():
-    example = json.loads((delivery.ATTACHMENTS_DIR / "feedback_config.example.json").read_text(encoding="utf-8"))
+    example = json.loads(
+        (delivery.ATTACHMENTS_DIR / "feedback_config.example.json").read_text(
+            encoding="utf-8"
+        )
+    )
     defaults = asdict(FeedbackConfig())
     defaults.pop("pose_variant")  # 由界面的分析模型下拉框决定
 
@@ -133,7 +151,10 @@ def test_missing_feedback_icon_is_reported(tmp_path: Path):
 
 
 def test_single_tk_spec_bundles_feedback_assets_and_build_info():
-    assert sorted(p.name for p in _REPO_ROOT.glob("*.spec")) == ["app_ui_onefile.spec"]
+    assert not list(_REPO_ROOT.glob("*.spec"))
+    assert sorted(
+        p.name for p in (_REPO_ROOT / "packaging" / "pyinstaller").glob("*.spec")
+    ) == ["app_ui_onefile.spec"]
     text = SPEC.read_text(encoding="utf-8")
     assert '("assets/feedback", "assets/feedback")' in text
     assert "build_info.require_clean" in text
