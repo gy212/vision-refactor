@@ -1,3 +1,9 @@
+## 2026-11-08: [docs] 统一强制默认使用简体中文（含 Commit 标题、Issue、PR 与审查）
+
+- 问题描述：此前未明确禁止全英文撰写 Git Commit 标题，易出现中英文 Commit 标题混用。
+- 修改内容：在 `AGENTS.md` §12 及 `spec/issue_spec.md`、`spec/pr_spec.md`、`spec/review_spec.md` 中明确规定：全仓库交互、注释、Commit 标题与正文、Issue、PR 及审查报告默认统一使用简体中文（保留必要的英文专业术语、代码符号与 Conventional Commits 类型前缀），严禁全英文撰写 Commit 标题。
+- 验证方法：`git -c core.whitespace=cr-at-eol diff --cached --check` 无空白错误，全分支与工作树同步更新。
+
 ## 2026-11-08: [chore] 合并依赖清单、归拢打包 spec 至 packaging/ 并清理根目录遗留文件
 
 - 问题描述：根目录遗留早期测试产生的 `user_prefs.json`、已废弃的 `requirements-spike.txt`、与 `requirements.txt` 重复的 `requirements-dev.txt`，以及散落在根目录的 `app_ui_onefile.spec`。

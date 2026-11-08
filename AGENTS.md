@@ -107,9 +107,10 @@
 
 ### 12. 提交与 PR 协作规范
 
+- **默认语言准绳（简体中文 + 保留专业术语）**：全仓库的交互沟通、代码 docstring/注释、Git Commit 标题与正文、Issue、PR 描述及审查报告，**默认统一使用简体中文（保留必要的英文专业术语、代码符号、模块名与 Conventional Commits 类型前缀）**，严禁使用全英文撰写 Commit 标题或中英混乱交替。
 - **分支与独立 PR**：提交只进入本仓库，默认主分支 `main`。每个独立特性或任务单独建分支，工作区保持干净后提交，验收通过后由 `gh pr create --base main` 发起 PR（简单的纯文档/配置维护可由管理员直接 commit 推送 `main`）。
 - **跨层协作与 PR 粒度**：跨多层的大型改动使用 stacked PR（`gh stack`）逐层递进，每一层独立通过门禁且具备独立审阅价值，避免一次性提交大而无当的超大 PR。
-- **规范化提交与专项契约必读**：提交说明遵循 Conventional Commits（`feat:`、`fix:`、`refactor:`、`docs:`、`test:`、`chore:`）。**撰写 Issue 前必读 `spec/issue_spec.md`，撰写 PR 标题与正文前必读 `spec/pr_spec.md`，执行审查前必读 `spec/review_spec.md`**——统一使用简洁直白的中文，严格遵循对应模板的所有必填小节与表格，严禁偷工减料丢小节或隐瞒未闭环分支。
+- **规范化提交与专项契约必读**：Git Commit 标题与 PR 标题统一遵循 `<type>(<scope>): <简体中文动宾短语>`（如 `fix(evaluation): 统一单拳与组合直拳规则标准`，`<type>` 限 `feat`/`fix`/`refactor`/`docs`/`test`/`chore`）。**撰写 Issue 前必读 `spec/issue_spec.md`，撰写 PR 标题与正文前必读 `spec/pr_spec.md`，执行审查前必读 `spec/review_spec.md`**——严格遵循对应模板的所有必填小节与表格，严禁偷工减料丢小节或隐瞒未闭环分支。
 - **确认提交身份**：提交或推送前确认 Git / GitHub 身份（`gh auth status`、`git config user.name`、`git config user.email`）。
 
 ## 硬约束
