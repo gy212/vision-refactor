@@ -6,7 +6,7 @@ import math
 
 import numpy as np
 
-from core.evaluation.rules.sanda_v5 import FeedbackConfig
+from core.evaluation.rules.feedback_config import FeedbackConfig
 from core.foundation.geometry import torso_length
 from core.foundation.signal import contiguous_runs
 

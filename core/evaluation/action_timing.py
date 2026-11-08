@@ -104,7 +104,7 @@ def shared_timeline(
     if definition.timing == "side_combo":
         source_windows = step_combo_windows(views[source], stance, cfg, data)
     else:
-        source_windows = phase_windows(views[source], action, stance, cfg, data)
+        source_windows = phase_windows(views[source], action, stance, cfg, data, source)
     data["timingSource"] = "own_view"
     windows, diagnostics, sources = {}, {}, {}
     for view, series in views.items():
@@ -120,8 +120,8 @@ def shared_timeline(
         missing = set(source_windows) - set(windows[view])
         if missing:
             diagnostics[view]["reason"] = "本机位录像未覆盖共享阶段的完整时间范围"
-        if definition.timing == "side_combo":
-            windows[view] = settled_stance_windows(series, windows[view], data["repetitions"], cfg)
+        boundaries = data.get("repetitions", data["eventDetails"])
+        windows[view] = settled_stance_windows(series, windows[view], boundaries, cfg)
     correspondence = phase_correspondence(
         views, windows, source, source_windows, data["phaseInstances"]
     )

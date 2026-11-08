@@ -3,7 +3,7 @@
 
 正面看直拳朝向镜头，二维图像里手腕几乎不动；侧面机位在考生右侧（D-19），左式的前手在远侧、出拳时常被身体挡住，
 后手在近侧、相对更可见。所以每一次以后手出拳为锚：后手前伸（手腕相对同侧肩、沿面向方向、按躯干长归一）超过起始
-护位 ``REACH_START``，再回落到 ``REACH_RETURN`` 或在末尾持续停住时保留事件；向下放手不算。前手直拳取这次后手出拳之前 ``FRONT_LOOKBACK_SECONDS``
+护位 ``REAR_REACH``，再回落到 ``RETURN_REACH`` 或在末尾持续停住时保留事件；向下放手不算。前手直拳取这次后手出拳之前 ``FRONT_LOOKBACK_SECONDS``
 内前手前伸（超过 ``FRONT_REACH``）的峰值；若此前存在唯一完整闭合前手事件，优先配对，避免慢速示范停顿超出回看范围。
 这一次从前手离开护位算起；前手看不清时这一次只有前手动作过程、
 没有前手出拳瞬间。阈值取自第二批样本（标定报告
@@ -16,19 +16,19 @@ import math
 
 import numpy as np
 
-from core.evaluation.body_sides import sides_for_stance
 from core.evaluation.action_events import ActionEvent
 from core.evaluation.stance_windows import stable_guard_windows
-from core.evaluation.punch_events import observe_punch, preceding_punch
-from core.evaluation.measures.motion import normalized_motion
+from core.evaluation.punch_events import (
+    FRONT_REACH,
+    RETURN_REACH,
+    observe_straight,
+    preceding_punch,
+)
 from core.evaluation.phase_instances import phase_instance
 from core.evaluation.punch_phases import punch_detail_windows
 from core.foundation.geometry import torso_length
 
 EXPECTED_REPETITIONS = 2  # 考试每个动作做 2 次（#32 汇总一）
-REACH_START = 0.30  # 后手前伸超过起始护位这么多（躯干长度）算出拳
-REACH_RETURN = 0.12  # 回落到起始护位这么多以内算收回
-FRONT_REACH = 0.25  # 前手（远侧、护位时已靠前）前伸超过起始护位这么多算出拳
 FRONT_LOOKBACK_SECONDS = 1.0  # 前手直拳在后手出拳前这段时间内找
 
 
@@ -64,11 +64,10 @@ def _combination_windows(
             front_peak = int(lookback[np.argmax(front[lookback])])
         if front_peak is not None:
             # 起点往回找到前手离开护位的时刻；示范放慢、前手停留较久时可以早于回看范围。
-            rep_start = front_peak
-            while (
-                rep_start > floor and front[rep_start - 1] >= front_base + REACH_RETURN
-            ):  # 前手看不清（NaN）即停
-                rep_start -= 1
+            rep_start = paired.start if paired is not None else front_peak
+            if paired is None:
+                while rep_start > floor and front[rep_start - 1] >= front_base + RETURN_REACH:
+                    rep_start -= 1
             parts.setdefault(("front_straight", "finish"), []).append(
                 np.arange(
                     max(rep_start, front_peak - radius), min(front_end, front_peak + radius) + 1
@@ -132,34 +131,14 @@ def step_combo_windows(series: dict, stance: str, cfg, diagnostics: dict) -> dic
     baseline = stable[0]
     # 预摆停住后也可能形成稳定窗；整段固定用最初护位，不能把错误姿势重置为基线。
     windows = {("stance", "start"): baseline, ("stance", "end"): stable[-1]}
-    hips = (lm[baseline, 23, 0] + lm[baseline, 24, 0]) / 2
-    facing = float(np.sign(np.nanmedian(lm[baseline, 0, 0] - hips)))
-    front_sh, _, front_wr, *_ = sides_for_stance("front", stance)
-    rear_sh, _, rear_wr, *_ = sides_for_stance("rear", stance)
-    rear_motion = normalized_motion(lm, mask, torso, rear_sh, rear_wr)
-    front_motion = normalized_motion(lm, mask, torso, front_sh, front_wr)
-    rear_observation = observe_punch(
-        rear_motion,
-        times,
-        baseline,
-        cfg,
-        facing=facing,
-        rise=REACH_START,
-        fall=REACH_RETURN,
-        stable=stable,
+    rear_observation = observe_straight(
+        lm, mask, times, torso, baseline, stable, "rear", stance, cfg
     )
-    front_observation = observe_punch(
-        front_motion,
-        times,
-        baseline,
-        cfg,
-        facing=facing,
-        rise=FRONT_REACH,
-        fall=REACH_RETURN,
-        stable=[],
+    front_observation = observe_straight(
+        lm, mask, times, torso, baseline, stable, "front", stance, cfg
     )
-    if facing == 0 or math.isnan(rear_observation.baseline):
-        diagnostics["reason"] = "起始护位看不清后手，无法确定出拳方向"
+    if math.isnan(rear_observation.baseline):
+        diagnostics["reason"] = rear_observation.reason or "起始护位看不清后手，无法确定出拳方向"
         return windows
     front, front_base = front_observation.reach, front_observation.baseline
     front_events = front_observation.events
@@ -174,11 +153,10 @@ def step_combo_windows(series: dict, stance: str, cfg, diagnostics: dict) -> dic
     if not punches:
         diagnostics["reason"] = "未检测到后手直拳"
         return windows
-    windows.update(
-        _combination_windows(
-            punches, front_events, front, front_base, baseline, times, dt, cfg, diagnostics
-        )
+    combined = _combination_windows(
+        punches, front_events, front, front_base, baseline, times, dt, cfg, diagnostics
     )
+    windows.update(combined)
     after = [ix for ix in stable if ix[0] >= punches[-1].end]
     if after:
         windows[("stance", "end")] = after[0]

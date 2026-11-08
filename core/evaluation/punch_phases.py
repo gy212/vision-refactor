@@ -19,9 +19,9 @@ def punch_detail_windows(
     segment: str,
     phase_instances: list[PhaseInstance],
 ) -> dict[tuple[str, str], np.ndarray]:
-    """每次后手出拳前0.4秒查预摆，收回后0.6秒内取首个稳定护位。
+    """每次直拳出拳前0.4秒查预摆，收回后0.6秒内取首个稳定护位。
 
-    起点由后手前伸事件给出；有下一次出拳时不得跨入下一次准备或动作。
+    起点由该手前伸事件给出；有下一次出拳时不得跨入下一次准备或动作。
     没有及时稳定的护位就不生成窗口，由规则引擎报告证据不足。
     """
     prepare, recovered = [], []

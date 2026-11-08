@@ -15,10 +15,12 @@ from core.evaluation.action_catalog import action_segments
 from core.evaluation.stance_windows import stable_guard_windows
 from core.evaluation.phase_instances import phase_instance
 from core.foundation.geometry import torso_length
-from core.foundation.signal import contiguous_runs
+from core.evaluation.punch_phases import punch_detail_windows
 
 
-def phase_windows(series: dict, action: str, stance: str, cfg, diagnostics=None) -> dict:
+def phase_windows(
+    series: dict, action: str, stance: str, cfg, diagnostics=None, view: str = "side"
+) -> dict:
     """单路序列的相位窗口 ``{(段, 相位): 帧下标}``；``diagnostics`` 写入检测结论与事件序列。"""
     diagnostics = diagnostics if diagnostics is not None else {}
     diagnostics.update(
@@ -41,20 +43,22 @@ def phase_windows(series: dict, action: str, stance: str, cfg, diagnostics=None)
     diagnostics["reason"] = "未检测到完整离开并回收的动作"
     windows = {("stance", "start"): baseline, ("stance", "end"): stable[-1]}
     segments = list(action_segments(action))
-    observed = action_events(lm, mask, times, torso, baseline, tuple(segments), stance, cfg)
+    observed = action_events(
+        lm, mask, times, torso, baseline, tuple(segments), stance, cfg, stable, diagnostics, view
+    )
     diagnostics["eventDetails"] = [event.to_record(times) for event in observed]
     events = [(e.segment, e.motion.start, e.motion.peak, e.motion.end) for e in observed]
     diagnostics["events"] = [e[0] for e in events]
     diagnostics["incompleteRecovery"] = sum(e.motion.ending == "held" for e in observed)
     if not events:
         return windows
-    # 多次完整前后组合逐轮保留；错序/缺失不强行拼成一个动作。
+    diagnostics["reason"] = "已检测到完整动作"
+    # 组合顺序只影响组合说明，不抹掉已观察到的独立动作段。
     if len(segments) > 1:
         expected = segments * (len(events) // len(segments))
         if [e[0] for e in events] != expected:
             diagnostics["reason"] = "检测到的前后手次数或顺序不完整"
-            return windows
-    diagnostics["reason"] = "已检测到完整动作"
+
     for segment in segments:
         selected = [e for e in events if e[0] == segment]
         if not selected:
@@ -76,10 +80,17 @@ def phase_windows(series: dict, action: str, stance: str, cfg, diagnostics=None)
                 )
         if peaks:
             windows[(segment, "finish")] = np.unique(np.concatenate(peaks))
-    before = [ix for ix in stable if ix[-1] <= events[0][1]]
+        if segment.endswith("_straight"):
+            windows.update(
+                punch_detail_windows(
+                    times,
+                    [e.motion for e in observed if e.segment == segment],
+                    stable,
+                    segment=segment,
+                    phase_instances=diagnostics["phaseInstances"],
+                )
+            )
     after = [ix for ix in stable if ix[0] >= events[-1][3]]
-    if before:
-        windows[("stance", "start")] = before[-1]
     if after and observed[-1].motion.ending == "returned":
         windows[("stance", "end")] = after[0]
     else:

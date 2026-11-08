@@ -125,12 +125,12 @@ def test_rules_use_selected_front_arm_and_keep_uncalibrated_checks_pending():
     assert not left["scoreAuthorized"]
 
 
-def test_fist_height_and_stance_width_use_relative_thresholds_and_the_front_hand():
-    """D-3：拳峰与鼻尖纵向差 ≤ 0.08 倍躯干长、踝距/肩宽在 0.8–1.2；只看左右式的前手，不再"任一手满足"。"""
+def test_wrist_height_and_foot_width_use_shared_stance_measurements():
+    """站姿看手腕与肩、脚尖脚跟间距；左右式选择自己的前手。"""
     series = pose_series()
     lm = series["landmarks"]
     lm[:, 15, :2] = (0.45, 0.17)  # 左腕与鼻尖纵向差 0.02（躯干 0.3），右腕仍低
-    lm[:, 27, 0], lm[:, 28, 0] = 0.4, 0.6  # 踝距 0.2 = 肩宽
+    lm[:, [29, 31], 0], lm[:, [30, 32], 0] = 0.4, 0.6  # 脚尖脚跟间距等于肩宽
     get = lambda data, code: next(c for c in data["checks"] if c["code"] == code)
     left = evaluate_series("stance", "left", {"front": series, "side": series})
     assert get(left, "stance_height")["status"] == "not_observed"
@@ -155,18 +155,18 @@ def _check(data, code="stance_elbow", phase="start"):
     return next(c for c in data["checks"] if c["code"] == code and c["phase"] == phase)
 
 
-def test_fusion_prefers_side_for_elbow_and_preserves_both_views():
+def test_elbow_uses_side_and_front_projection_cannot_veto_it():
     good, bad = pose_series(), pose_series()
     bad["landmarks"][:, 15, :2] = (0.4, 0.6)
     data = evaluate_series("stance", "left", {"front": bad, "side": good})
     check = _check(data)
     assert check["status"] == "not_observed"  # 正面投影异常不推翻更适用的侧面。
-    assert check["fusion"]["support"] == pytest.approx(0.2)
-    assert {m["view"] for m in check["measurements"]} == {"front", "side"}
+    assert check["fusion"]["support"] == pytest.approx(0.0)
+    assert {m["view"] for m in check["measurements"]} == {"side"}
     assert {e["view"] for e in data["evidence"]} == {"front", "side"}
     reverse = evaluate_series("stance", "left", {"front": good, "side": bad})
     assert _check(reverse)["status"] == "candidate"
-    assert _check(reverse)["fusion"]["support"] == pytest.approx(0.8)
+    assert _check(reverse)["fusion"]["support"] == pytest.approx(1.0)
 
 
 def test_missing_or_occluded_view_is_not_promoted_to_full_weight():
@@ -177,32 +177,19 @@ def test_missing_or_occluded_view_is_not_promoted_to_full_weight():
         assert check["status"] == "unable"
         assert check["fusion"]["support"] is None
         assert not check["fusion"]["effectiveWeights"]
-        assert check["measurements"]  # 保留可用单侧观测给教师。
+        if "side" in views:
+            assert check["measurements"]  # 看不清的主判机位仍保存测量失败依据。
 
 
-def test_quality_reduces_weight_and_equal_conflict_stays_undecided(monkeypatch):
+def test_primary_view_is_not_overridden_by_old_fusion_weights():
     front, side = pose_series(), pose_series()
     side["landmarks"][:, 15, :2] = (0.4, 0.6)
-    side["valid_mask"][[1, 3, 5, 7], 13] = False
-
-    def stance_window(series, action, stance, cfg, diagnostics):
-        diagnostics["phaseInstances"] = []
-        return {("stance", "start"): np.arange(10)}
-
-    monkeypatch.setattr("core.evaluation.action_timing.phase_windows", stance_window)
     weights = _default_front_weights()
-    weights["stance"]["stance_elbow"] = 0.3
+    weights["stance"]["stance_elbow"] = 0.99
     cfg = FeedbackConfig(front_weights=weights)
     check = _check(evaluate_series("stance", "left", {"front": front, "side": side}, cfg))
-    assert check["status"] == "unable"
-    assert check["fusion"]["effectiveWeights"]["side"] == pytest.approx(
-        0.7 * 0.6 / (0.3 + 0.7 * 0.6)
-    )
-    assert "接近" in check["reason"]
-    weights["stance"]["stance_elbow"] = 0.5
-    side["valid_mask"][:] = True
-    check = _check(evaluate_series("stance", "left", {"front": front, "side": side}, cfg))
-    assert check["status"] == "unable" and check["fusion"]["support"] == 0.5
+    assert check["status"] == "candidate"
+    assert check["fusion"]["effectiveWeights"] == {"side": 1.0}
 
 
 def test_different_action_stages_are_not_fused():
@@ -261,8 +248,9 @@ def test_same_video_cannot_be_used_as_both_cameras(tmp_path):
     assert list(store.root.iterdir()) == []
 
 
-def test_movement_windows_require_return_and_keep_front_rear_order():
+def test_movement_windows_require_return_and_keep_observed_segments():
     series = pose_series(40)
+    series["landmarks"][:, 0, 0] = 0.56
     # 每只手一次明确离开并回收：起峰后回到初始护位。
     for start, wrist in ((7, 15), (23, 16)):
         series["landmarks"][start : start + 7, wrist, 0] += np.array(
@@ -271,10 +259,13 @@ def test_movement_windows_require_return_and_keep_front_rear_order():
     windows = phase_windows(series, "straight_combo", "left", FeedbackConfig())
     assert windows[("front_straight", "finish")][1] == 10
     assert windows[("rear_straight", "finish")][1] == 26
-    assert phase_windows(series, "straight_combo", "right", FeedbackConfig()).keys() == {
-        ("stance", "start"),
-        ("stance", "end"),
-    }
+    diagnostics = {}
+    reversed_windows = phase_windows(
+        series, "straight_combo", "right", FeedbackConfig(), diagnostics
+    )
+    assert "不完整" in diagnostics["reason"]
+    assert ("front_straight", "finish") in reversed_windows
+    assert ("rear_straight", "finish") in reversed_windows
     series["valid_mask"][10, 15] = False  # 短暂漏点保留原无效标记，可以识别前后已观测到的运动。
     assert ("front_straight", "motion") in phase_windows(
         series, "straight_combo", "left", FeedbackConfig()
@@ -520,6 +511,7 @@ def test_corrupt_record_is_reported_without_deleting_unmanaged_files(tmp_path):
 
 def combo_series(n=80):
     series = pose_series(n)
+    series["landmarks"][:, 0, 0] = 0.56  # 侧面向+x出拳，鼻位于髋前。
     series["times"] = [i / 30 for i in range(n)]
     for start, wrist in ((12, 15), (30, 16)):
         series["landmarks"][start : start + 5, wrist, 0] += [0.10, 0.20, 0.28, 0.20, 0.10]
@@ -538,21 +530,21 @@ def test_fast_combo_shared_timing_keeps_independent_measurements_and_masks():
         if c["code"] == "shoulder_level" and c["segment"] == "front_straight"
     )
     assert check["status"] in {"candidate", "not_observed"}
-    assert len(check["measurements"]) == 2
+    assert {m["view"] for m in check["measurements"]} == {"side"}
     assert all(m["values"] for m in check["measurements"])
-    front["valid_mask"][11:19, 15] = False
+    side["valid_mask"][11:19, 23] = False
     data = evaluate_series("straight_combo", "left", {"front": front, "side": side})
     check = next(
         c
         for c in data["checks"]
         if c["code"] == "shoulder_level" and c["segment"] == "front_straight"
     )
-    assert check["status"] == "unable"  # 时间段可共享，缺失腕点不能从侧面借。
-    assert "正面" in check["reason"] and "有效帧不足" in check["reason"]
+    assert check["status"] == "unable"  # 时间段可共享，主判画面缺少髋点，不能从另一面借。
+    assert "侧面" in check["reason"] and "有效帧不足" in check["reason"]
 
 
 def test_small_front_motion_gets_side_timing_in_practice_exam_and_paired_batch(tmp_path):
-    """正面位移小、同步侧面看得清的直拳：练习、考试与 batch paired 用同一套同步相位，正面结论一致（#21）。"""
+    """正面位移小、同步侧面看得清的直拳：练习、考试与 batch paired 用同一套同步相位，适用机位的结论一致（#21）。"""
     from types import SimpleNamespace
 
     from core.evaluation.matching import dual
@@ -587,10 +579,10 @@ def test_small_front_motion_gets_side_timing_in_practice_exam_and_paired_batch(t
         ]
         if c["id"] == check_id
     )
-    practice_front = next(m for m in practice["measurements"] if m["view"] == "front")
-    assert practice_front["validFrames"] == practice_front["totalFrames"] > 0
+    practice_side = next(m for m in practice["measurements"] if m["view"] == "side")
+    assert practice_side["validFrames"] == practice_side["totalFrames"] > 0
 
-    def exam_front_check():
+    def exam_side_check():
         names = {"front": ACTIONS["straight_combo"], "side": ACTIONS["straight_combo"]}
         tpls = {v: [tmp_path / v / f"{n}.npz"] for v, n in names.items()}
 
@@ -606,13 +598,13 @@ def test_small_front_motion_gets_side_timing_in_practice_exam_and_paired_batch(t
             raw_series=lambda video, **_k: raws[Path(video).stem],
             stop_evt=threading.Event(),
         )
-        report = next(r for r in res.rule_checks if r["view"] == "front")
+        report = next(r for r in res.rule_checks if r["view"] == "side")
         return next(c for c in report["checks"] if c.check_id == check_id)
 
     def lazy(view):
         return lambda start, end: (raws[view].landmarks, dict(raws[view].meta))
 
-    batch_front, _batch_side, _action_records = dual._synchronized_rules(
+    _batch_front, batch_side, _action_records = dual._synchronized_rules(
         lazy("front"),
         lazy("side"),
         action="straight_combo",
@@ -620,13 +612,13 @@ def test_small_front_motion_gets_side_timing_in_practice_exam_and_paired_batch(t
         pose_variant="full",
         stop_evt=threading.Event(),
     )
-    for check in (exam_front_check(), next(c for c in batch_front if c.check_id == check_id)):
+    for check in (exam_side_check(), next(c for c in batch_side if c.check_id == check_id)):
         assert check.skip_reason != "phase_not_found"
         assert (check.valid_frames, check.total_frames) == (
-            practice_front["validFrames"],
-            practice_front["totalFrames"],
+            practice_side["validFrames"],
+            practice_side["totalFrames"],
         )
-        assert check.violation_ratio == pytest.approx(practice_front["violationRatio"])
+        assert check.violation_ratio == pytest.approx(practice_side["violationRatio"])
 
 
 def test_occluded_far_side_does_not_block_visible_arm_but_hidden_arm_stays_unable():
@@ -634,7 +626,14 @@ def test_occluded_far_side_does_not_block_visible_arm_but_hidden_arm_stays_unabl
     side["valid_mask"][:, [12, 14, 16, 24]] = False
     data = evaluate_series("stance", "left", {"front": front, "side": side})
     assert _check(data)["status"] == "not_observed"
-    assert _check(data, "stance_rear_guard")["status"] == "unable"
+    assert _check(data, "stance_rear_guard")["status"] == "not_observed"
+    front["valid_mask"][:, 14] = False
+    assert (
+        _check(
+            evaluate_series("stance", "left", {"front": front, "side": side}), "stance_rear_guard"
+        )["status"]
+        == "unable"
+    )
     record = {
         "result": data,
         "studentId": "test",
@@ -672,7 +671,11 @@ def test_shared_timestamps_are_not_guessed_from_separate_peak_detections():
     for start, wrist in ((50, 15), (67, 16)):
         front["landmarks"][start : start + 5, wrist, 0] += [0.10, 0.20, 0.28, 0.20, 0.10]
     revised = evaluate_series("straight_combo", "left", {"front": front, "side": side})
-    assert revised["phaseWindows"] == data["phaseWindows"]
+    for view in ("front", "side"):
+        observed = lambda result: [
+            stage for stage in result["phaseWindows"][view] if stage["segment"] != "stance"
+        ]
+        assert observed(revised) == observed(data)
     assert revised["diagnostics"]["front"]["eventDetails"] == []
 
 
@@ -851,11 +854,10 @@ def test_upright_frames_before_the_stance_are_not_the_start_stance():
 
 
 @pytest.mark.parametrize("other_state", ["missing", "hidden", "different_time"])
-@pytest.mark.parametrize("wide", [False, True])
-def test_front_only_check_does_not_require_the_other_view(other_state, wide):
+@pytest.mark.parametrize("low", [False, True])
+def test_front_only_check_does_not_require_the_other_view(other_state, low):
     front, side = pose_series(), pose_series()
-    front["landmarks"][:, 27, 0] = 0.35 if wide else 0.4
-    front["landmarks"][:, 28, 0] = 0.65 if wide else 0.6
+    front["landmarks"][:, 15, 1] = 0.4 if low else 0.2
     views = {"front": front, "side": side}
     if other_state == "missing":
         del views["side"]
@@ -863,9 +865,9 @@ def test_front_only_check_does_not_require_the_other_view(other_state, wide):
         side["valid_mask"][:] = False
     else:
         side["times"] = [time + 2 for time in side["times"]]
-    check = _check(evaluate_series("stance", "left", views), "stance_width")
-    assert check["status"] == ("candidate" if wide else "not_observed")
+    check = _check(evaluate_series("stance", "left", views), "stance_height")
+    assert check["status"] == ("candidate" if low else "not_observed")
     assert {m["view"] for m in check["measurements"]} == {"front"}
     assert all(ref.startswith("front:") for ref in check["evidence"])
     front["valid_mask"][:] = False
-    assert _check(evaluate_series("stance", "left", views), "stance_width")["status"] == "unable"
+    assert _check(evaluate_series("stance", "left", views), "stance_height")["status"] == "unable"
