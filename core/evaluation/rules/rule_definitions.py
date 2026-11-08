@@ -98,7 +98,7 @@ def _posture_description(check: dict) -> tuple[str, str, str]:
     if code == "stance_toes":
         standard = "正面比较两脚尖与两脚跟的间距；保留原35°对应的容许范围"
     if code == "stance_width":
-        standard = "较窄的脚尖或脚跟间距，与两面中较完整肩宽相比，应在0.8到1.2倍"
+        source = "用户2026-11-08授权按样本调整站距、优先减少误报；docs/实战式站距调整_20261108.md"
     if code == "stance_torso":
         standard = "同步双视角归一肩宽比超过√3；正交机位近似检查，不表示真实三维角度"
     if code in STRAIGHT_RULES:
@@ -137,11 +137,11 @@ def _strategy_points(
 def _phase_measurement(strategy: str, code: str, role: str, scope: str, segment: str) -> PhaseCheck:
     if strategy == "paired_shoulder_projection_ratio":
         return paired_torso_check(scope)
-    if strategy == "feet_paired_shoulder_ratio":
-        return stance_width_check(scope)
 
     def check(lm, mask, baseline, baseline_mask, ctx):
         ctx = replace(ctx, params=standard_config(ctx.params, segment))
+        if strategy == "feet_paired_shoulder_ratio":
+            return stance_width_check(scope)(lm, mask, baseline, baseline_mask, ctx)
         if strategy == "elbow_extension_at_peak":
             return measure_extension_at_peak(role, lm, mask, ctx)
         if strategy == "toe_heel_spread":

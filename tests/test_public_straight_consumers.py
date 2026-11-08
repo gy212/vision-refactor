@@ -3,6 +3,7 @@
 from copy import deepcopy
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from core.evaluation import ACTIONS, FeedbackConfig, compare_dual_streams, evaluate_series
@@ -17,13 +18,15 @@ from tests.test_step_straight_combo import _series
 FIXTURES = Path(__file__).parent / "fixtures" / "pose33_v3"
 
 
-def _visible_side_punch(role):
+def _visible_side_punch(role, angle):
     front, side = _series(1), _series(1)
     shoulder, elbow, wrist = (11, 13, 15) if role == "front" else (12, 14, 16)
-    # 侧面直接可见一直线的肩、肘、腕；正面同一手肘被遮住。
-    side["landmarks"][:, elbow, :2] = (
-        side["landmarks"][:, shoulder, :2] + side["landmarks"][:, wrist, :2]
-    ) / 2
+    # 固定肩腕的动作轨迹，以两条等长臂段构造指定肘角；正面同一肘被遮住。
+    lm = side["landmarks"]
+    chord = lm[:, wrist, :2] - lm[:, shoulder, :2]
+    normal = np.column_stack((-chord[:, 1], chord[:, 0]))
+    lm[:, elbow, :2] = (lm[:, shoulder, :2] + lm[:, wrist, :2]) / 2
+    lm[:, elbow, :2] += normal * np.tan(np.deg2rad((180 - angle) / 2)) / 2
     front["valid_mask"][:, elbow] = False
     front["landmarks"][:, elbow, 3] = 0
     return {"front": front, "side": side}
@@ -77,12 +80,14 @@ def _batch(views, action):
         ("step_straight_combo", "rear"),
     ],
 )
-def test_visible_punch_is_judged_in_every_composition_and_public_entry(action, role):
-    views = _visible_side_punch(role)
+@pytest.mark.parametrize(("angle", "status"), [(168.10, "not_observed"), (167.01, "candidate")])
+def test_visible_punch_is_judged_in_every_composition_and_public_entry(action, role, angle, status):
+    views = _visible_side_punch(role, angle)
     check_id = f"{role}_straight:finish:{role}:punch_extension"
     practice = evaluate_series(action, "left", deepcopy(views))
     check = next(item for item in practice["checks"] if item["id"] == check_id)
-    assert check["status"] == "not_observed"
+    assert check["status"] == status
+    assert "168°" in check["standard"]
     assert check["fusion"]["baseWeights"] == {"front": 0.0, "side": 1.0}
     assert {item["view"] for item in check["measurements"]} == {"side"}
     assert check["availability"]["state"] == "trial"
@@ -98,7 +103,7 @@ def test_visible_punch_is_judged_in_every_composition_and_public_entry(action, r
     expected_frames = [item["frame"] for item in check["evidenceDetails"]]
     for checks in outputs:
         result = next(item for item in checks if item.check_id == check_id)
-        assert result.state == "pass"
+        assert result.state == ("pass" if status == "not_observed" else "violation")
         assert result.view == "side"
         assert result.valid_frames == result.total_frames >= 3
         assert "试用" in result.name

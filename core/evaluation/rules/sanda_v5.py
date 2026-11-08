@@ -52,7 +52,7 @@ __all__ = [
     "rule_profile",
 ]
 
-RULE_VERSION = "sanda-rules-mediapipe-2026-11-08-v5.14"
+RULE_VERSION = "sanda-rules-mediapipe-2026-11-08-v5.16"
 
 PROFILE_NAME = "sanda_v5"
 

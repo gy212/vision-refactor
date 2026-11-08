@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from core.evaluation.rules.availability import RuleAvailability
+from core.evaluation.rules.rule_descriptions import PARAMS
 
 REPORT = "docs/直拳逐项改进_20261105.md（原标定素材：上步直拳组合；登记粒度：基础动作段与阶段）"
 
@@ -38,12 +39,18 @@ TRIAL_EVIDENCE = "docs/直拳逐项启用_20261106.md；用户2026-11-06明确�
 
 FAILED = {
     "guard_back": "侧面常看不清护手肘。正面能找到肘，但试过的正面判法还没分清后拉。",
-    "punch_extension": "已只看侧面。按3°余量检查，仍会把正确出拳报错，先不开。",
+    "punch_extension": (
+        f"已按反馈增加容错：每次出拳最伸展时达到{PARAMS['punch_elbow']:g}°不提示弯肘。"
+        "关键点偏差仍可能造成误报，接近边界的弯肘可能漏查，继续试用。"
+    ),
     "guard_shoulder": "已改看侧面。三段错误录像只查出两段，且查出的两段来自同一个人，还不够。",
     "stance_knee": "已按用户确认增加容错：超过175°才提醒。接近伸直时仍可能看错，继续试用。",
     "stance_elbow": "已按用户确认把下限降到80°。肩肘位置仍可能找偏，继续试用。",
     "stance_height": "已改看手腕有没有低过肩。开始站姿仍有误报；旧的低拳录像也不都低于肩，先不开。",
-    "stance_width": "已量较窄的脚尖或脚跟间距，并参照两面中较完整的肩宽。正确录像仍有误报。",
+    "stance_width": (
+        f"为减少误报，按正确对照样本试调为{PARAMS['stance_width_min']:.1f}～{PARAMS['stance_width_max']:g}倍。"
+        "关键点偏差仍可能造成误报或漏查，继续试用。"
+    ),
     "stance_toes": "已比较脚尖和脚跟间距。正确站姿仍有误报；两脚前后错开会影响画面距离。",
     "stance_rear_guard": "已把手肘贴身与护下巴分开。只看肘离身体的距离，仍没查出两段错误录像。",
     "stance_torso": "这套识别方式还没通过身体朝向的核对，先不开。",

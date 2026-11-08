@@ -7,9 +7,11 @@ TEACHER_SOURCE = "教师确认 #33 issuecomment-6235417498；卷三第7题更正
 PARAMS = {
     "elbow_raise": -0.18,
     "shoulder_height": 0.17,
-    "punch_elbow": 177.0,
+    "punch_elbow": 168.0,
     "stance_elbow_min": 80.0,
     "stance_knee_max": 175.0,
+    "stance_width_min": 0.7,
+    "stance_width_max": 1.35,
     "punch_level_deviation": 15.0,
 }
 
@@ -62,6 +64,11 @@ PREFERRED_VIEW = {
 }
 
 REVISED_STANDARDS = {
+    "stance_width": (
+        "两脚站距过宽或过窄",
+        "较窄的脚尖或脚跟间距，与两面中较完整肩宽相比，"
+        f"应在{PARAMS['stance_width_min']:.1f}到{PARAMS['stance_width_max']:g}倍",
+    ),
     "stance_elbow": (
         f"前手肘角不在{PARAMS['stance_elbow_min']:g}°～135°",
         f"前手大小臂夹角{PARAMS['stance_elbow_min']:g}°～135°；已给较小角度增加10°余量",
@@ -72,7 +79,11 @@ REVISED_STANDARDS = {
     ),
     "stance_height": ("前手手腕低于肩", "前手手腕不低于同侧肩膀"),
     "stance_rear_guard": ("后手肘离身体过远", "看肘与身体的距离；护下巴另查"),
-    "punch_extension": ("直拳出拳时肘未伸直", "侧面看出拳肘角；177°及以上不提示弯肘"),
+    "punch_extension": (
+        "直拳出拳时肘未伸直",
+        f"侧面看每次出拳最伸展时的肘角；{PARAMS['punch_elbow']:g}°及以上不提示弯肘"
+        f"（距180°留{180 - PARAMS['punch_elbow']:g}°余量）",
+    ),
     "guard_back": (
         "护手肘明显退到身体后方",
         "侧面看护手肘到肩与腿根连线的后方距离；允许从身前收回到身旁",
@@ -101,7 +112,7 @@ RULES = {
     "stance_width": (
         "两脚站距过宽或过窄",
         "feet",
-        "两脚略与肩同宽：踝距/肩宽在0.8～1.2（暂定，现场微调）",
+        REVISED_STANDARDS["stance_width"][1],
         "",
     ),
     "stance_toes": ("两脚内八或外八", "feet", "两脚大致平行、朝斜前方", ""),
@@ -126,7 +137,7 @@ RULES = {
     "punch_extension": (
         "直拳出拳时肘未伸直",
         "arm",
-        "直拳出拳结束时肘接近伸直（肘角不小于160°）",
+        REVISED_STANDARDS["punch_extension"][1],
         "",
     ),
     "guard_recover": ("未回收护住下颚", "hand", "前手回收护住下颚", ""),
