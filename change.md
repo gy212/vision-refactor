@@ -1,3 +1,10 @@
+## 2026-11-14: [feat] 接入低鞭腿检查项、逐次切分与双模型标定
+
+- 问题：原系统仅直拳组合接入完整规则检查与逐次切分，上步前低鞭腿、前低鞭腿与后低鞭腿缺少侧视滞回切分、垫步与踢腿几何规则（踢高、收腿、后/前侧护手、摆臂、低头、侧倾等），部分既有规则未纳入分模型资格门禁，且易受片头缺帧与左右腿互换影响。
+- 修改：统一三类低鞭腿动作接入侧视 `side_kick` 动作阶段管线，`step_front_low_kick` 与 `rear_low_kick` 开启逐次切分、单独 `front_low_kick` 共用同款侧视相位不做拆段；下沉几何计算至 `core/evaluation/measures/kicks.py`（补齐 3 点摆臂可见性与双踝同见防互换掩码），实战式起止窗回归完整 `motion_in.stable` + `settled_stance_windows`；按 `full`/`heavy` 含 `unable` 总分母独立定级并阻断 `lite` 与未达标项（`full` 启用 14 项、`heavy` 启用 16 项，0 未授权 `trial`）；规则版本升级为 v5.17（`sanda-rules-mediapipe-2026-11-14-v5.17`）。
+- 验证：256 组 `full`/`heavy` 实拍缓存（47 上步前低鞭腿、17 原地后低鞭腿）逐次切分与 `exam_pool` 全对零错配，全部 42 实例/模型状态与标定红线一致；CI 核心架构/契约门禁及低鞭腿、规则复用、动作反馈测试全通过（无 Tk 环境的 GUI 用例跳过），`ruff check`、`ruff format --check` 与 `git diff --check` 通过。
+- 限制：踢高 (`kick_height`) 与后低鞭腿侧倾缺错例、后低鞭腿前护手掉肩 (`guard_shoulder`) 仅 1 人错例，暂保持 `validation_pending`；脚跟轴转 (`pivot_heel`)、绷脚 (`foot_flexed < 165°`)、未翻髋 (`hip_turn`)、护肘角度 (`guard_elbow > 30°`) 及后鞭腿护颌 (`guard_jaw`) 因单目二维投影混叠或高误报维持 `calibration_failed` 阻断；`lite` 模型未标定统一阻断。详见 `docs/低鞭腿规则标定报告_20261114.md`。
+
 ## 2026-11-08: [fix] 按减少误报优先调整公共实战式站距范围
 
 - 问题：客户报告站距比值 1.21～1.25，被原 0.8～1.2 范围提示；客户先提 1.0～1.35，随后用户授权按样本选择并明确优先减少误报。

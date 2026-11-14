@@ -35,7 +35,11 @@ def motion_landmarks(segment: str, stance: str) -> tuple[int, int]:
     if segment.endswith("_straight"):
         return straight_motion_landmarks(role, stance)
     shoulder, _, wrist, hip, _, ankle, *_ = sides_for_stance(role, stance)
-    return (hip, ankle) if "kick" in segment else (shoulder, wrist)
+    return (
+        (hip, ankle)
+        if ("kick" in segment or segment == "pad_step")
+        else (shoulder, wrist)
+    )
 
 
 def action_events(
@@ -76,7 +80,9 @@ def action_events(
             cfg,
             rise=cfg.motion_distance,
             fall=cfg.return_distance,
-            policy=EventPolicy(start_at_rest=True, inclusive_return=True, allow_held=False),
+            policy=EventPolicy(
+                start_at_rest=True, inclusive_return=True, allow_held=False
+            ),
         )
         events.extend(ActionEvent(segment, event) for event in found)
     return sorted(events, key=lambda event: event.motion.peak)

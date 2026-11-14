@@ -15,8 +15,12 @@ from typing import Any, Literal
 
 import numpy as np
 
-RuleState = Literal["pass", "violation", "not_observed", "unable", "candidate", "pending_rule"]
-SkipReason = Literal["missing_landmarks", "insufficient_valid_frames", "phase_not_found"]
+RuleState = Literal[
+    "pass", "violation", "not_observed", "unable", "candidate", "pending_rule"
+]
+SkipReason = Literal[
+    "missing_landmarks", "insufficient_valid_frames", "phase_not_found"
+]
 
 RULE_STATE_PASS: RuleState = "pass"
 RULE_STATE_VIOLATION: RuleState = "violation"
@@ -48,10 +52,13 @@ class RuleContext:
     params: Any = None
     paired_torso: tuple[np.ndarray, np.ndarray] | None = None
     # 真实阶段实例：scope -> ((已检测次数, 序列帧下标), ...)，仅用于保留证据来源。
-    phase_instances: Mapping[str, tuple[tuple[int, np.ndarray], ...]] = field(default_factory=dict)
+    phase_instances: Mapping[str, tuple[tuple[int, np.ndarray], ...]] = field(
+        default_factory=dict
+    )
     phase_coverage: Mapping[str, dict] = field(default_factory=dict)
     # 单项测量记录实际失败步骤，由规则引擎为每次调用单独创建。
     measurement_issues: list[str] = field(default_factory=list)
+    times: np.ndarray | None = None
 
 
 # 相位判定：输入窗口内关键点与掩码、基线关键点与掩码、上下文，返回 (问题帧, 有效帧, {测量名: (逐帧值, 单位)})。

@@ -15,6 +15,93 @@ PARAMS = {
     "punch_level_deviation": 15.0,
 }
 
+KICK_PARAMS = {
+    "pad_step_min_disp": 0.45,
+    "pad_step_overtake_max": 0.20,
+    "pad_step_pause_max": 0.60,
+    "kick_height_hip_margin": 0.06,
+    "kick_height_knee_margin": 0.08,
+    "kick_retract_max_x": 0.40,
+    "foot_flexed_min_angle": 165.0,
+    "hip_turn_width_ratio": 0.80,
+    "head_down_drop": 0.030,
+    "body_lean_angle": 35.0,
+    "arm_swing_drop": 0.45,
+    "arm_swing_min_angle": 115.0,
+    "kick_guard_drop_side": 0.35,
+    "kick_guard_drop_front": 0.25,
+    "kick_guard_back_side": 0.32,
+    "kick_guard_back_front": 0.18,
+    "kick_guard_elbow_flare": 30.0,
+    "kick_guard_jaw_dist": 0.34,
+}
+
+KICK_STANDARDS = {
+    "pad_step_missing": (
+        "未做后脚垫步",
+        f"上步前低鞭腿起腿前，后脚向攻击方向推进不少于{KICK_PARAMS['pad_step_min_disp']:.2f}倍躯干长",
+    ),
+    "pad_step_overtake": (
+        "垫步后脚超越前脚",
+        "垫步结束临起腿时，允许并拢到与前脚并齐，但后脚踝不得超越前脚踝"
+        f"超过{KICK_PARAMS['pad_step_overtake_max']:.2f}倍躯干长",
+    ),
+    "pad_step_pause": (
+        "垫步落稳后停顿过长",
+        f"完成垫步落稳后应在{KICK_PARAMS['pad_step_pause_max']:.2f}秒内衔接起腿，避免先定步再起脚",
+    ),
+    "pivot_heel": (
+        "支撑脚未碾脚外旋",
+        "踢腿击打过程中支撑脚应充分外旋拧转，脚尖转至不领先于脚跟",
+    ),
+    "kick_height": (
+        "踢击高度过低或过高",
+        "踢腿脚尖高度应不高过同侧髋，且不明显低于支撑膝高度",
+    ),
+    "kick_retract": (
+        "踢后未及时收腿直接落地",
+        f"踢击最高点后落地前应及时回屈小腿，踝相对髋最小前伸不超过{KICK_PARAMS['kick_retract_max_x']:.2f}倍躯干长",
+    ),
+    "foot_flexed": (
+        "脚背未绷直（勾脚尖）",
+        f"踢腿过程与发力端膝-踝-脚尖背伸角应达到{KICK_PARAMS['foot_flexed_min_angle']:g}°及以上",
+    ),
+    "hip_turn": (
+        "未充分翻胯",
+        f"正面两髋水平宽相对起始护位需明显收窄（比值不高于{KICK_PARAMS['hip_turn_width_ratio']:.2f}）",
+    ),
+    "head_down": (
+        "踢腿时低头",
+        "侧面观察鼻相对双肩中点垂向位置相对起始护位下压不超过"
+        f"{KICK_PARAMS['head_down_drop']:.3f}倍躯干长",
+    ),
+    "body_lean": (
+        "踢腿时上体明显侧倾",
+        f"正面双肩连线与水平夹角不超过{KICK_PARAMS['body_lean_angle']:g}°",
+    ),
+    "arm_swing": (
+        "未顺势向下甩手",
+        f"踢腿同侧手臂顺势向下甩臂发力（腕低于肩{KICK_PARAMS['arm_swing_drop']:.2f}倍躯干长"
+        f"且臂伸展角不小于{KICK_PARAMS['arm_swing_min_angle']:g}°）",
+    ),
+    "guard_shoulder": (
+        "护手掉到肩膀以下",
+        "非踢腿侧护手保持高位防护，手腕不明显低于同侧肩部",
+    ),
+    "guard_back": (
+        "护手肘明显退到身体后方",
+        "非踢腿侧护手保持身前防护，肘部不明显退到躯干后方",
+    ),
+    "guard_elbow": (
+        "护手开肘亮肋",
+        f"正面非踢腿侧大臂与躯干夹角不超过{KICK_PARAMS['kick_guard_elbow_flare']:g}°",
+    ),
+    "guard_jaw": (
+        "前手未护住下颚",
+        f"原地后低鞭腿起腿过程中前手腕距口部不超过{KICK_PARAMS['kick_guard_jaw_dist']:.2f}倍躯干长",
+    ),
+}
+
 STRAIGHT_RULES = {
     "guard_jaw": (
         "后手未护住下颚",
@@ -95,7 +182,12 @@ DOC = "武术散打得分点.docx 表1"
 SUMMARY = "扣分点说明功能需求汇总.md"
 
 RULES = {
-    "stance_elbow": ("前手肘角不在90°～135°", "front_arm", "前手大小臂夹角90°～135°", ""),
+    "stance_elbow": (
+        "前手肘角不在90°～135°",
+        "front_arm",
+        "前手大小臂夹角90°～135°",
+        "",
+    ),
     "stance_height": (
         "前手拳峰未与鼻尖同高",
         "front_hand",
@@ -144,6 +236,54 @@ RULES = {
     "foot_flexed": ("脚背未绷直（勾脚尖）", "foot", "低鞭腿脚背绷直", ""),
     "hip_turn": ("未翻胯", "hip", "低鞭腿翻胯", ""),
     "arm_swing": ("未顺势向下甩手", "arm", "踢腿同侧手顺势向下甩手", ""),
+    "pad_step_missing": (
+        KICK_STANDARDS["pad_step_missing"][0],
+        "step_foot",
+        KICK_STANDARDS["pad_step_missing"][1],
+        "",
+    ),
+    "pad_step_overtake": (
+        KICK_STANDARDS["pad_step_overtake"][0],
+        "step_foot",
+        KICK_STANDARDS["pad_step_overtake"][1],
+        "",
+    ),
+    "pad_step_pause": (
+        KICK_STANDARDS["pad_step_pause"][0],
+        "step_foot",
+        KICK_STANDARDS["pad_step_pause"][1],
+        "",
+    ),
+    "pivot_heel": (
+        KICK_STANDARDS["pivot_heel"][0],
+        "step_foot",
+        KICK_STANDARDS["pivot_heel"][1],
+        "",
+    ),
+    "kick_height": (
+        KICK_STANDARDS["kick_height"][0],
+        "leg",
+        KICK_STANDARDS["kick_height"][1],
+        "",
+    ),
+    "kick_retract": (
+        KICK_STANDARDS["kick_retract"][0],
+        "leg",
+        KICK_STANDARDS["kick_retract"][1],
+        "",
+    ),
+    "head_down": (
+        KICK_STANDARDS["head_down"][0],
+        "head",
+        KICK_STANDARDS["head_down"][1],
+        "",
+    ),
+    "body_lean": (
+        KICK_STANDARDS["body_lean"][0],
+        "torso",
+        KICK_STANDARDS["body_lean"][1],
+        "",
+    ),
     **STRAIGHT_RULES,
 }
 
@@ -153,10 +293,13 @@ PARTS = {
     "arm": "臂肘",
     "hand": "手",
     "foot": "脚背",
+    "step_foot": "脚",
+    "leg": "腿",
     "hip": "髋",
     "knees": "双膝",
     "feet": "双脚",
     "torso": "躯干",
+    "head": "头部",
     "head_torso": "头部与胸腹",
 }
 

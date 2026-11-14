@@ -10,7 +10,7 @@ from typing import Literal
 class ActionDefinition:
     label: str
     segments: tuple[str, ...]
-    timing: Literal["shared_events", "side_combo"] = "shared_events"
+    timing: Literal["shared_events", "side_combo", "side_kick"] = "shared_events"
     timing_views: tuple[str, ...] = ("side", "front")
     scoring: Literal["whole_clip", "per_repetition"] = "whole_clip"
     rule_input: Literal["matched_window", "whole_clip"] = "matched_window"
@@ -26,7 +26,17 @@ ACTION_DEFINITIONS = {
         scoring="per_repetition",
         rule_input="whole_clip",
     ),
-    "straight_combo": ActionDefinition("前后手直拳组合", ("front_straight", "rear_straight")),
+    "step_front_low_kick": ActionDefinition(
+        "上步前低鞭腿",
+        ("pad_step", "front_low_kick"),
+        timing="side_kick",
+        timing_views=("side",),
+        scoring="per_repetition",
+        rule_input="whole_clip",
+    ),
+    "straight_combo": ActionDefinition(
+        "前后手直拳组合", ("front_straight", "rear_straight")
+    ),
     "hook_combo": ActionDefinition(
         "前后手摆拳组合",
         ("front_hook", "rear_hook"),
@@ -34,12 +44,29 @@ ACTION_DEFINITIONS = {
     ),
     "front_straight": ActionDefinition("前手直拳", ("front_straight",)),
     "rear_straight": ActionDefinition("后手直拳", ("rear_straight",)),
-    "front_hook": ActionDefinition("前手摆拳", ("front_hook",), timing_views=("front", "side")),
-    "rear_hook": ActionDefinition("后手摆拳", ("rear_hook",), timing_views=("front", "side")),
-    "front_low_kick": ActionDefinition("前低鞭腿", ("front_low_kick",)),
-    "rear_low_kick": ActionDefinition("后低鞭腿", ("rear_low_kick",)),
+    "front_hook": ActionDefinition(
+        "前手摆拳", ("front_hook",), timing_views=("front", "side")
+    ),
+    "rear_hook": ActionDefinition(
+        "后手摆拳", ("rear_hook",), timing_views=("front", "side")
+    ),
+    "front_low_kick": ActionDefinition(
+        "前低鞭腿",
+        ("front_low_kick",),
+        timing="side_kick",
+        timing_views=("side",),
+    ),
+    "rear_low_kick": ActionDefinition(
+        "后低鞭腿",
+        ("rear_low_kick",),
+        timing="side_kick",
+        timing_views=("side",),
+        scoring="per_repetition",
+        rule_input="whole_clip",
+    ),
 }
 ACTIONS = {key: definition.label for key, definition in ACTION_DEFINITIONS.items()}
+SEGMENT_LABELS = {**ACTIONS, "pad_step": "后脚垫步"}
 ACTION_SEGMENTS = {
     key: definition.segments
     for key, definition in ACTION_DEFINITIONS.items()
@@ -51,6 +78,7 @@ PHASES = {
     "prepare": "出拳前",
     "motion": "动作过程",
     "finish": "动作结束瞬间",
+    "retract": "收腿过程",
     "recovered": "收回后护位",
     "end": "结束实战式",
 }
