@@ -56,10 +56,14 @@ def _evaluate_phase(
 ) -> RuleOutcome:
     """一条规则在其相位窗口里的单视角结论；证据帧为问题帧（无问题时为有效帧）的首/中/末帧。"""
     if spec.authorization == "blocked":
-        return RuleOutcome(spec, RULE_STATE_PENDING_RULE, None, 0.0, 0, 0, spec.blocked_reason)
+        return RuleOutcome(
+            spec, RULE_STATE_PENDING_RULE, None, 0.0, 0, 0, spec.blocked_reason
+        )
     indices = ctx.phase_windows.get(spec.scope)
     # 后端结构性缺少所需关键点：直接判证据不足，不混入合格/不合格（Issue #11）。
-    backend_missing = landmarks_missing_for_capabilities(spec.required, supported_capabilities)
+    backend_missing = landmarks_missing_for_capabilities(
+        spec.required, supported_capabilities
+    )
     if backend_missing:
         return RuleOutcome(
             spec,
@@ -73,7 +77,9 @@ def _evaluate_phase(
             evidence_frames=()
             if indices is None
             else tuple(item.frame for item in _diagnostic_evidence(indices, ctx, spec)),
-            evidence_instances=() if indices is None else _diagnostic_evidence(indices, ctx, spec),
+            evidence_instances=()
+            if indices is None
+            else _diagnostic_evidence(indices, ctx, spec),
         )
     agg = spec.aggregation
     if indices is None or len(indices) < agg.min_valid:
@@ -88,18 +94,24 @@ def _evaluate_phase(
             if indices is None
             else f"阶段仅有{len(indices)}帧，至少需要{agg.min_valid}帧",
             evidence_frames=() if indices is None else tuple(int(i) for i in indices),
-            evidence_instances=() if indices is None else _diagnostic_evidence(indices, ctx, spec),
+            evidence_instances=()
+            if indices is None
+            else _diagnostic_evidence(indices, ctx, spec),
         )
     ctx = replace(ctx, measurement_issues=[])
     baseline = ctx.baseline
     bad, valid, details = spec.check(
-        landmarks[indices], valid_mask[indices], landmarks[baseline], valid_mask[baseline], ctx
+        landmarks[indices],
+        valid_mask[indices],
+        landmarks[baseline],
+        valid_mask[baseline],
+        ctx,
     )
     count = int(valid.sum())
     total = len(indices)
-    violation = float((bad & valid).sum() / count) if count else 0.0
     measurements = _measurement_summaries(details, valid)
     if count < agg.min_valid or count / total < agg.valid_ratio:
+        violation = float((bad & valid).sum() / count) if count else 0.0
         evidence = _diagnostic_evidence(indices, ctx, spec)
         return RuleOutcome(
             spec,
@@ -113,9 +125,15 @@ def _evaluate_phase(
             measurements=measurements,
             evidence_instances=evidence,
         )
-    # "未做某动作"只能在整个阶段均未出现该动作时成立。
-    issue = bool(bad[valid].all()) if agg.absence else violation >= agg.trigger_ratio
-    evidence = _phase_evidence(indices, valid, bad, issue, ctx.phase_instances.get(spec.scope, ()))
+    instances = ctx.phase_instances.get(spec.scope, ())
+    if agg.absence:
+        # "未做某动作"按每次重复独立判定：任一次有效帧全程未出现该动作即成立。
+        issue, bad = _resolve_absence(indices, valid, bad, instances, agg.min_valid)
+        violation = float((bad & valid).sum() / count) if count else 0.0
+    else:
+        violation = float((bad & valid).sum() / count) if count else 0.0
+        issue = violation >= agg.trigger_ratio
+    evidence = _phase_evidence(indices, valid, bad, issue, instances)
     return RuleOutcome(
         spec,
         RULE_STATE_VIOLATION if issue else RULE_STATE_PASS,
@@ -129,7 +147,9 @@ def _evaluate_phase(
     )
 
 
-def _diagnostic_evidence(indices, ctx: RuleContext, spec: RuleSpec) -> tuple[RuleEvidence, ...]:
+def _diagnostic_evidence(
+    indices, ctx: RuleContext, spec: RuleSpec
+) -> tuple[RuleEvidence, ...]:
     """保留实际选中的阶段画面，失效点不会被当成可用测量。"""
     samples = _phase_evidence(
         indices,
@@ -162,7 +182,9 @@ def _point_label(index: int) -> str:
     return name.replace("_", "")
 
 
-def _insufficient_detail(spec: RuleSpec, mask: np.ndarray, count: int, ctx: RuleContext) -> str:
+def _insufficient_detail(
+    spec: RuleSpec, mask: np.ndarray, count: int, ctx: RuleContext
+) -> str:
     """解释测量卡在所需点还是必需参照，不把所有失败归为录像缺帧。"""
     total = len(mask)
     required = spec.aggregation
@@ -184,24 +206,54 @@ def _insufficient_detail(spec: RuleSpec, mask: np.ndarray, count: int, ctx: Rule
     return reason
 
 
-def _phase_evidence(indices, valid, bad, issue, instances) -> tuple[RuleEvidence, ...]:
-    """按已识别的每次阶段取图；连续或共用边界不改变次数，聚合判断不参与重算。"""
-    evidence = []
+def _instance_groups(indices, instances) -> list[tuple[int | None, np.ndarray]]:
+    """按已识别的重复次数切片分组，未覆盖片段按连续段补齐。"""
     covered = np.zeros(len(indices), bool)
-    groups = []
+    groups: list[tuple[int | None, np.ndarray]] = []
     for repetition, frames in instances:
         inside = np.isin(indices, frames)
         covered |= inside
         groups.append((repetition, inside))
     for window in contiguous_runs(indices[~covered]):
-        groups.append((None, (indices >= window[0]) & (indices <= window[-1]) & ~covered))
-    for repetition, inside in groups:
+        groups.append(
+            (None, (indices >= window[0]) & (indices <= window[-1]) & ~covered)
+        )
+    return groups
+
+
+def _resolve_absence(
+    indices: np.ndarray,
+    valid: np.ndarray,
+    bad: np.ndarray,
+    instances: tuple,
+    min_valid: int,
+) -> tuple[bool, np.ndarray]:
+    """按次判定缺省类规则：无次切片时整窗全错才违规；多次重复时任一次有效帧全错即违规。"""
+    if not instances:
+        issue = bool(valid.any() and bad[valid].all())
+        return issue, bad if issue else np.zeros_like(bad)
+    out_bad = np.zeros_like(bad)
+    issue = False
+    for _, inside in _instance_groups(indices, instances):
+        inst_valid = inside & valid
+        if int(inst_valid.sum()) >= min_valid and bool(bad[inst_valid].all()):
+            issue = True
+            out_bad[inst_valid] = True
+    return issue, out_bad
+
+
+def _phase_evidence(indices, valid, bad, issue, instances) -> tuple[RuleEvidence, ...]:
+    """按已识别的每次阶段取图；连续或共用边界不改变次数，聚合判断不参与重算。"""
+    evidence = []
+    for repetition, inside in _instance_groups(indices, instances):
         has_issue = issue and bool((inside & valid & bad).any())
         observed = indices[inside & valid & (bad if has_issue else True)]
         if observed.size:
             selected = observed[np.unique([0, len(observed) // 2, len(observed) - 1])]
             evidence.extend(
-                RuleEvidence(int(i), repetition, "violation" if has_issue else "observation")
+                RuleEvidence(
+                    int(i), repetition, "violation" if has_issue else "observation"
+                )
                 for i in selected
             )
     return tuple(evidence)
@@ -223,7 +275,9 @@ def evaluate_rules(
     for spec in profile.rules:
         if spec.view not in ("any", context.view):
             continue
-        outcome = _evaluate_phase(spec, landmarks, valid_mask, context, supported_capabilities)
+        outcome = _evaluate_phase(
+            spec, landmarks, valid_mask, context, supported_capabilities
+        )
         missing = missing_phase_coverage(
             context.phase_coverage, spec.scope, spec.required_views or (context.view,)
         )
@@ -233,7 +287,10 @@ def evaluate_rules(
             and outcome.skip_reason != SKIP_MISSING_LANDMARKS
         ):
             outcome = replace(
-                outcome, state=RULE_STATE_UNABLE, skip_reason=SKIP_PHASE_NOT_FOUND, detail=missing
+                outcome,
+                state=RULE_STATE_UNABLE,
+                skip_reason=SKIP_PHASE_NOT_FOUND,
+                detail=missing,
             )
         outcomes.append(outcome)
     return outcomes

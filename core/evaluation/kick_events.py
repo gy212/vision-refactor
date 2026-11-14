@@ -139,6 +139,11 @@ def _prepare_signals(
     ankle_missing = ~np.isfinite(seg_sig)
     hold_sig = np.where(ankle_missing, fallback, seg_sig)
     signed_sig = np.where(np.isfinite(sup_rel), sup_rel, fallback)
+    low_return = (
+        (np.isfinite(sup_rel) & (sup_rel <= _EXIT_TH))
+        | (np.isfinite(knee_rel) & (knee_rel <= _EXIT_TH))
+        | (np.isfinite(toe_rel) & (toe_rel <= _EXIT_TH))
+    )
 
     k_ang_raw = series_angles(lm, kh, kk, ka)
     k_ang = np.where(mask[:, kh] & mask[:, kk] & mask[:, ka], k_ang_raw, np.nan)
@@ -147,20 +152,62 @@ def _prepare_signals(
         "sup_rel": sup_rel,
         "signed_sig": signed_sig,
         "hold_sig": hold_sig,
+        "low_return": low_return,
         "knee_angle": k_ang,
     }
+
+
+def _qualifies_interval(
+    hold_sig: np.ndarray, times: np.ndarray, a: int, b: int
+) -> bool:
+    """判断单个原始事件区间是否独立满足峰值与最短持续时长要求。"""
+    seg = hold_sig[a : b + 1]
+    if not np.isfinite(seg).any():
+        return False
+    return (
+        float(np.nanmax(seg)) >= _PEAK_TH and float(times[b] - times[a]) >= _MIN_DUR_S
+    )
+
+
+def _merge_raw_intervals(
+    raw_intervals: list[tuple[int, int, bool]],
+    hold_sig: np.ndarray,
+    times: np.ndarray,
+) -> list[tuple[int, int, bool]]:
+    """仅合并未闭合碎片或超短毛刺区间，保留已各自回落的独立完整踢腿。"""
+    merged: list[tuple[int, int, bool]] = []
+    for a, b, closed in raw_intervals:
+        end_idx = max(a, b)
+        prev_closed_full = (
+            bool(merged)
+            and merged[-1][2]
+            and _qualifies_interval(hold_sig, times, merged[-1][0], merged[-1][1])
+        )
+        curr_closed_full = closed and _qualifies_interval(hold_sig, times, a, end_idx)
+        if (
+            merged
+            and (times[a] - times[merged[-1][1]]) <= _MERGE_GAP_S
+            and not (prev_closed_full and curr_closed_full)
+        ):
+            merged[-1] = (merged[-1][0], end_idx, closed)
+        else:
+            merged.append((a, end_idx, closed))
+    return merged
 
 
 def _hysteresis_intervals(
     hold_sig: np.ndarray,
     signed_sig: np.ndarray,
     times: np.ndarray,
+    low_return: np.ndarray | None = None,
 ) -> list[tuple[int, int, bool]]:
     raw_intervals: list[tuple[int, int, bool]] = []
     n = len(hold_sig)
     in_ev = False
     start = 0
     low_run = 0
+    wait_return = False
+    return_run = 0
 
     for i in range(n):
         val = hold_sig[i]
@@ -169,11 +216,41 @@ def _hysteresis_intervals(
             if in_ev:
                 low_run += 1
                 if low_run >= 6:
-                    raw_intervals.append((start, i - low_run, False))
+                    raw_intervals.append((start, max(start, i - low_run), False))
                     in_ev = False
                     low_run = 0
+                    wait_return = True
+                    return_run = 0
+            elif wait_return:
+                if low_return is not None and bool(low_return[i]):
+                    return_run += 1
+                    if return_run >= 2:
+                        wait_return = False
+                        return_run = 0
+                else:
+                    return_run = 0
             continue
         if not in_ev:
+            if wait_return:
+                if val <= _EXIT_TH:
+                    return_run += 1
+                    if return_run >= 2:
+                        wait_return = False
+                        return_run = 0
+                    continue
+                return_run = 0
+                prev_a, prev_b, _ = raw_intervals[-1]
+                # 仅在短缺口内续接未闭合事件；完整抬腿后的长期丢点须等回落再开新次。
+                if (times[i] - times[prev_b]) <= _MERGE_GAP_S:
+                    raw_intervals.pop()
+                    in_ev = True
+                    start = prev_a
+                    low_run = 0
+                    wait_return = False
+                    continue
+                if _qualifies_interval(hold_sig, times, prev_a, prev_b):
+                    continue
+                wait_return = False
             trig = s_val if np.isfinite(s_val) else val
             if trig >= _ENTER_TH or val >= _PEAK_TH:
                 s0 = i
@@ -199,14 +276,7 @@ def _hysteresis_intervals(
     if in_ev:
         raw_intervals.append((start, n - 1, False))
 
-    merged: list[tuple[int, int, bool]] = []
-    for a, b, closed in raw_intervals:
-        end_idx = max(a, b)
-        if merged and (times[a] - times[merged[-1][1]]) <= _MERGE_GAP_S:
-            merged[-1] = (merged[-1][0], end_idx, closed)
-        else:
-            merged.append((a, end_idx, closed))
-    return merged
+    return _merge_raw_intervals(raw_intervals, hold_sig, times)
 
 
 def _select_ext_idx(
@@ -245,7 +315,9 @@ def segment_kick_events(
     knee_angle = sig["knee_angle"]
 
     events: list[dict] = []
-    for a, b, closed in _hysteresis_intervals(hold_sig, signed_sig, times):
+    for a, b, closed in _hysteresis_intervals(
+        hold_sig, signed_sig, times, low_return=sig["low_return"]
+    ):
         seg_h = hold_sig[a : b + 1]
         seg_s = signed_sig[a : b + 1]
         fin_h = np.flatnonzero(np.isfinite(seg_h))
@@ -265,7 +337,12 @@ def segment_kick_events(
         peak_idx = a + int(fin_h[int(np.argmax(seg_h[fin_h]))])
         ext_idx = _select_ext_idx(a, peak_idx, seg_h, knee_angle[a : b + 1], peak_val)
         after_hold = hold_sig[b + 1 : min(n, b + 30)]
-        landed_after = bool((np.isfinite(after_hold) & (after_hold <= _EXIT_TH)).any())
+        fin_after = after_hold[np.isfinite(after_hold)]
+        landed_after = bool(
+            fin_after.size
+            and fin_after[0] < _ENTER_TH
+            and (fin_after <= _EXIT_TH).any()
+        )
         events.append(
             {
                 "start_idx": int(a),

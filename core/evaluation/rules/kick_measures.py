@@ -46,7 +46,7 @@ KICK_SEGMENTS = frozenset({"pad_step", "front_low_kick", "rear_low_kick"})
 # 策略 -> (覆盖 valid_ratio 或 None, 覆盖 trigger_ratio 或 None)
 _VERDICT_OVERRIDES: dict[str, tuple[float | None, float | None]] = {
     "pad_step_displacement": (None, 0.01),
-    "pad_step_ankle_overtake": (None, 0.01),
+    "pad_step_ankle_overtake": (0.5, 0.01),
     "pad_step_settle_pause": (None, 0.01),
     "retract_ankle_reach": (None, 0.01),
     "kick_peak_height_band": (0.5, 0.5),

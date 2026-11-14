@@ -122,12 +122,12 @@ class RuleDefinition:
 
 
 def standard_config(cfg: FeedbackConfig, segment: str) -> FeedbackConfig:
-    """基础实战式与直拳采用同一批准参数，不随动作编排改变。"""
-    return (
-        replace(cfg, **PARAMS)
-        if segment == "stance" or segment.endswith("_straight")
-        else cfg
-    )
+    """基础实战式与直拳采用同一批准参数，低鞭腿与垫步采用已标定参数，不随动作编排改变。"""
+    if segment == "stance" or segment.endswith("_straight"):
+        return replace(cfg, **PARAMS)
+    if segment in KICK_SEGMENTS:
+        return replace(cfg, **KICK_PARAMS)
+    return cfg
 
 
 def _posture_description(check: dict) -> tuple[str, str, str]:

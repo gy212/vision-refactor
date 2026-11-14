@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from core.evaluation.rules.availability import RuleAvailability
+from core.evaluation.rules.rule_descriptions import KICK_PARAMS
 
 KICK_REPORT = "docs/低鞭腿规则标定报告_20261114.md"
 _VERIFIED_MODELS = frozenset({"full", "heavy"})
@@ -107,6 +108,11 @@ _FAILED_CODES = {
 def _registered_phase_ok(check: dict) -> bool:
     code, segment, phase = check["code"], check["segment"], check["phase"]
     if check["strategy"] != _REGISTERED_STRATEGIES.get(code):
+        return False
+    if (
+        "parameterOverrides" in check
+        and dict(check["parameterOverrides"]) != KICK_PARAMS
+    ):
         return False
     if segment == "pad_step":
         return code.startswith("pad_step_") and phase == "prepare"

@@ -159,8 +159,8 @@ def measure_pad_step_rule(
             cfg.pad_step_pause_max,
             facing=facing,
         )
-        bad[sub] = bad_seg
         valid[sub] = valid_seg
+        bad[sub] = valid_seg if bad_seg else False
         _write_segment_details(detail_arrays, sub, n_frames, seg_details)
     return bad, valid, detail_arrays
 
@@ -199,7 +199,7 @@ def measure_kick_retract_rule(
             facing,
             retract_max_x=max_x,
         )
-        bad[sub] = bad_seg
         valid[sub] = valid_seg
+        bad[sub] = valid_seg if bad_seg else False
         _write_segment_details(detail_arrays, sub, n_frames, seg_details)
     return bad, valid, detail_arrays

@@ -1,3 +1,14 @@
+## 2026-11-15: [fix] 修复 PR #66 审查指出的低鞭腿切分、垫步尺度、逐次缺省判定与参数一致性问题
+
+- 问题：PR #66 CodeRabbit 审查指出 6 项问题：1) 持续抬腿中途发生连续 6 帧及以上丢点再恢复高位时，滞回状态机未等回落即重开第二次区间；2) 相邻两次已各自闭合且满足峰值与时长的独立踢腿，因间隔 `<= 0.35s` 被误合并；3) 垫步位移先逐帧计算 `x / torso`，在后踝静止、躯干投影缩小时会伪造垫步推进；4) `absence=True`（如 `arm_swing`）在多次重复合并窗内对全帧求 `.all()`，导致其中一次未摆臂被另一次掩盖；5) `kick_step.py` 将标量布尔有效值广播到整段 `valid[sub]`，绕过引擎 `valid_ratio` 门禁；6) `standard_config` 未对踢腿动作段统一应用 `KICK_PARAMS`，且 `kick_policy.py` 未核对 `parameterOverrides` 是否被篡改。
+- 修改：
+  1. `core/evaluation/kick_events.py`：长缺帧结束旧区间后进入待回落等待（短缺口 `<= 0.35s` 续接同次，完整抬腿后的长丢点须见到回落才重新触发，且 `landed_after` 校验首个有限样本低落），新增 `_merge_raw_intervals` 保留各自闭合的独立完整踢腿；
+  2. `core/evaluation/measures/kicks.py` / `core/evaluation/rules/kick_step.py` / `kick_measures.py`：`_rear_ankle_progression` 改为先平滑原始投影再按整窗躯干中位数统一归一化；`measure_pad_step_*` 与 `measure_kick_retract_segment` 全部返回逐帧有效掩码并直接写入 `valid[sub]`，不再标量广播，并为双踝同见易交叉的 `pad_step_ankle_overtake` 对齐侧视 `0.5` 有效比例覆盖；
+  3. `core/evaluation/rules/engine.py` / `spec.py`：提取 `_instance_groups` 与 `_resolve_absence`，对存在 `phase_instances` 的 `absence` 规则改为按每次重复切片独立判全错，仅在违规次内标注问题帧；
+  4. `core/evaluation/rules/rule_definitions.py` / `kick_policy.py`：`standard_config` 对低鞭腿与垫步动作段统一应用 `KICK_PARAMS`，并在 `_registered_phase_ok` 校验 `parameterOverrides == KICK_PARAMS`；
+  5. `tests/test_low_kick_rules.py` 与 `docs/低鞭腿规则标定报告_20261114.md`：更新逐帧掩码断言、补充 6 项回归用例并同步 `hip_turn` 实测统计。
+- 验证：重跑 256 组 `full`/`heavy` 缓存生产链路，47 上步前低鞭腿与 17 原地后低鞭腿逐次切分及 `exam_pool` 全对零错配，全部 42 实例模型定级零变化；CI 门禁、`test_low_kick_rules.py` 及相关规则/计时/反馈测试全通过；`ruff format --check`、`ruff check` 与 `git diff --check` 通过。
+
 ## 2026-11-14: [feat] 接入低鞭腿检查项、逐次切分与双模型标定
 
 - 问题：原系统仅直拳组合接入完整规则检查与逐次切分，上步前低鞭腿、前低鞭腿与后低鞭腿缺少侧视滞回切分、垫步与踢腿几何规则（踢高、收腿、后/前侧护手、摆臂、低头、侧倾等），部分既有规则未纳入分模型资格门禁，且易受片头缺帧与左右腿互换影响。

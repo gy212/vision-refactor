@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
@@ -47,6 +48,7 @@ from core.evaluation.measures.kicks import (  # noqa: E402
 from core.evaluation.rule_checks import ACTION_BY_NAME  # noqa: E402
 from core.evaluation.rules.kick_measures import kick_landmarks  # noqa: E402
 from core.evaluation.rules.kick_policy import apply_kick_availability  # noqa: E402
+from core.evaluation.rules.rule_descriptions import KICK_PARAMS  # noqa: E402
 from core.evaluation.rules.sanda_v5 import build_checks  # noqa: E402
 from core.evaluation.scoring import exam_pool  # noqa: E402
 from core.pose.landmarks import (  # noqa: E402
@@ -490,21 +492,31 @@ def test_kick_geometry_thresholds_and_anti_swap_masking():
     lm_small = lm.copy()
     lm_small[:, 28, 0] = np.linspace(0.40, 0.45, n)
     bad, valid, _ = measure_pad_step_missing(lm_small, mask, times, "left", facing=1.0)
-    assert valid and bad
+    assert isinstance(valid, np.ndarray) and valid.shape == (n,) and valid.all() and bad
     lm_good = lm.copy()
     lm_good[:, 28, 0] = np.linspace(0.40, 0.58, n)
     bad, valid, _ = measure_pad_step_missing(lm_good, mask, times, "left", facing=1.0)
-    assert valid and not bad
+    assert (
+        isinstance(valid, np.ndarray)
+        and valid.shape == (n,)
+        and valid.all()
+        and not bad
+    )
 
     # pad_step_overtake：允许两脚并齐(=0.0)，>0.20 判超越
     lm_flush = lm.copy()
     lm_flush[:, 28, 0] = 0.60
     bad, valid, _ = measure_pad_step_overtake(lm_flush, mask, times, "left", facing=1.0)
-    assert valid and not bad
+    assert (
+        isinstance(valid, np.ndarray)
+        and valid.shape == (n,)
+        and valid.all()
+        and not bad
+    )
     lm_over = lm.copy()
     lm_over[:, 28, 0] = 0.70  # (0.70 - 0.60) / 0.30 = 0.33 > 0.20
     bad, valid, _ = measure_pad_step_overtake(lm_over, mask, times, "left", facing=1.0)
-    assert valid and bad
+    assert isinstance(valid, np.ndarray) and valid.shape == (n,) and valid.all() and bad
 
     # pad_step_pause：落稳停顿 > 0.60s 违规
     t_long = np.linspace(0.0, 1.2, 36)
@@ -514,7 +526,9 @@ def test_kick_geometry_thresholds_and_anti_swap_masking():
     bad, valid, _ = measure_pad_step_pause(
         lm_pause, np.ones((36, 33), dtype=bool), t_long, "left", facing=1.0
     )
-    assert valid and bad
+    assert (
+        isinstance(valid, np.ndarray) and valid.shape == (36,) and valid.all() and bad
+    )
 
     # kick_height：高过同侧髋 (< -0.06) 或明显低于支撑膝 (> +0.08) 均违规
     torso = np.full(n, 0.30)
@@ -531,7 +545,9 @@ def test_kick_geometry_thresholds_and_anti_swap_masking():
     lm_ret = lm.copy()
     lm_ret[:, 27, 0] = 0.70  # (0.70 - 0.50)/0.30 = 0.67 > 0.40
     bad_r, val_r, _ = measure_kick_retract_segment(lm_ret, mask, torso, 27, 23, 1.0)
-    assert val_r and bad_r
+    assert (
+        isinstance(val_r, np.ndarray) and val_r.shape == (n,) and val_r.all() and bad_r
+    )
 
     # 锁定角度：foot_flexed < 165°、body_lean > 35°、guard_elbow > 30°
     lm_ang = lm.copy()
@@ -778,3 +794,176 @@ def test_kick_remediation_regression_cases():
         ]["reason"]
         == NEEDS_SIDE
     )
+
+
+def test_coderabbit_pr66_review_regressions():
+    """覆盖 PR #66 CodeRabbit 审查指出的 6 项边界与契约问题。"""
+    cfg = FeedbackConfig(pose_variant="heavy")
+    meta_30 = {"width": 100, "height": 100, "fps": 30.0, "start_frame": 0}
+
+    # CR-1：长缺帧（>=6 帧）结束后信号仍处于高位未回落时，不把同一次持续抬腿拆计为两次
+    lm_drop = np.zeros((85, 33, 4), dtype=np.float32)
+    lm_drop[:, :, 3] = 0.95
+    lm_drop[:, L_SHOULDER, :2] = (0.50, 0.25)
+    lm_drop[:, R_SHOULDER, :2] = (0.50, 0.25)
+    lm_drop[:, L_HIP, :2] = (0.50, 0.55)
+    lm_drop[:, R_HIP, :2] = (0.50, 0.55)
+    lm_drop[:, 25, :2] = (0.58, 0.73)
+    lm_drop[:, 27, :2] = (0.64, 0.90)
+    lm_drop[:, 31, :2] = (0.67, 0.92)
+    lm_drop[:, 26, :2] = (0.42, 0.73)
+    lm_drop[:, 28, :2] = (0.40, 0.90)
+    lm_drop[15:31, 27, 1] = 0.72
+    lm_drop[15:31, 25, 1] = 0.58
+    lm_drop[15:31, 31, 1] = 0.72
+    lm_drop[31:43, [25, 27, 29, 31, 26, 28, 30, 32], 3] = 0.0
+    lm_drop[43:59, 27, 1] = 0.72
+    lm_drop[43:59, 25, 1] = 0.58
+    lm_drop[43:59, 31, 1] = 0.72
+    ev_drop = segment_kick_events(
+        series_from_raw(lm_drop, meta_30), "step_front_low_kick", "left"
+    )
+    assert len(ev_drop) == 1 and not ev_drop[0]["closed"]
+
+    # CR-2：间隔 7/30s (< 0.35s) 的两次各自闭合完整抬腿，不得合并为一次
+    lm_two = np.zeros((60, 33, 4), dtype=np.float32)
+    lm_two[:, :, 3] = 0.95
+    lm_two[:, [L_SHOULDER, R_SHOULDER], :2] = (0.50, 0.25)
+    lm_two[:, [L_HIP, R_HIP], :2] = (0.50, 0.55)
+    lm_two[:, 25, :2] = (0.58, 0.73)
+    lm_two[:, 27, :2] = (0.64, 0.90)
+    lm_two[:, 31, :2] = (0.67, 0.92)
+    lm_two[:, 26, :2] = (0.42, 0.73)
+    lm_two[:, 28, :2] = (0.40, 0.90)
+    for sl in (slice(10, 25), slice(31, 46)):
+        lm_two[sl, 27, 1] = 0.72
+        lm_two[sl, 25, 1] = 0.58
+        lm_two[sl, 31, 1] = 0.72
+    ev_two = segment_kick_events(
+        series_from_raw(lm_two, meta_30), "step_front_low_kick", "left"
+    )
+    assert len(ev_two) == 2 and all(ev["closed"] for ev in ev_two)
+
+    # CR-3：后踝坐标静止而躯干投影缩短时，仍必须检出垫步缺失
+    n_pad = 20
+    lm_stat = np.zeros((n_pad, 33, 4), dtype=np.float32)
+    lm_stat[:, :, 3] = 0.95
+    lm_stat[:, NOSE, :2] = (0.54, 0.12)
+    lm_stat[:, [L_SHOULDER, R_SHOULDER], :2] = (0.50, 0.25)
+    lm_stat[:5, [L_HIP, R_HIP], :2] = (0.50, 0.65)  # torso = 0.40
+    lm_stat[5:, [L_HIP, R_HIP], :2] = (0.50, 0.55)  # torso = 0.30
+    lm_stat[:, 28, :2] = (0.60, 0.90)  # 后踝静止不动
+    lm_stat[:, 27, :2] = (0.65, 0.90)
+    bad_pad, val_pad, det_pad = measure_pad_step_missing(
+        lm_stat,
+        np.ones((n_pad, 33), dtype=bool),
+        np.arange(n_pad, dtype=float) / 30.0,
+        "left",
+        facing=1.0,
+    )
+    assert val_pad.all() and bad_pad
+    assert det_pad["垫步后脚前推距离"][0] == pytest.approx(0.0, abs=1e-6)
+
+    # CR-4：arm_swing 缺省按次独立判定——第 1 次摆臂、第 2 次未摆臂仍报违规且证据指明第 2 次
+    lm_f_one, mf1 = _make_kick_sequence(
+        stance="left", view="front", n_kicks=2, omit_arm_swing=True
+    )
+    lm_f_one[39:62, 13, :2] = (0.40, 0.37)
+    lm_f_one[39:62, 15, :2] = (0.40, 0.49)
+    lm_s_one, ms1 = _make_kick_sequence(stance="left", view="side", n_kicks=2)
+    views_one = {
+        "front": series_from_raw(lm_f_one, mf1),
+        "side": series_from_raw(lm_s_one, ms1),
+    }
+    res_one = evaluate_series("step_front_low_kick", "left", views_one, cfg)
+    arm_checks = [
+        c
+        for c in res_one["checks"]
+        if c["segment"] == "front_low_kick" and c["code"] == "arm_swing"
+    ]
+    assert arm_checks and all(c["status"] == "candidate" for c in arm_checks)
+    jv_one = judge_views(views_one, "step_front_low_kick", "left", cfg)
+    arm_out = next(
+        c
+        for c in jv_one["front"][0]
+        if c.check_id == "front_low_kick:motion:front:arm_swing"
+    )
+    assert arm_out.state == "violation"
+    assert {
+        item["repetition"]
+        for item in arm_out.evidence_details
+        if item["purpose"] == "violation"
+    } == {2}
+
+    # CR-5：垫步/收腿仅少量散点有效时不得广播整段 valid[sub]，必须输出 unable
+    lm_f_sp, mf_s = _make_kick_sequence(
+        stance="left", view="front", n_kicks=1, pad_pause_s=0.60, retract_offset=0.22
+    )
+    lm_s_sp, ms_s = _make_kick_sequence(
+        stance="left",
+        view="side",
+        n_kicks=1,
+        pad_disp=0.02,
+        pad_pause_s=0.60,
+        retract_offset=0.22,
+    )
+    base_views_sp = {
+        "front": series_from_raw(lm_f_sp, mf_s),
+        "side": series_from_raw(lm_s_sp, ms_s),
+    }
+    wins_sp, _, _, _ = shared_timeline(
+        base_views_sp, "step_front_low_kick", "left", cfg
+    )
+    pad_idx = wins_sp["side"][("pad_step", "prepare")]
+    ret_idx = wins_sp["side"][("front_low_kick", "retract")]
+    lm_s_sp[pad_idx[5:-1], 28, 3] = 0.0  # 后踝有效占比远低于 valid_ratio=0.6
+    lm_s_sp[ret_idx[3:], 23, 3] = 0.0  # 收腿髋点仅保留 3 帧 (< 0.6)
+    res_sp = evaluate_series(
+        "step_front_low_kick",
+        "left",
+        {
+            "front": series_from_raw(lm_f_sp, mf_s),
+            "side": series_from_raw(lm_s_sp, ms_s),
+        },
+        cfg,
+    )
+    sparse_ids = {
+        "pad_step:prepare:rear:pad_step_missing",
+        "pad_step:prepare:rear:pad_step_overtake",
+        "pad_step:prepare:rear:pad_step_pause",
+        "front_low_kick:retract:front:kick_retract",
+    }
+    sparse_checks = [c for c in res_sp["checks"] if c["id"] in sparse_ids]
+    assert len(sparse_checks) == 4 and all(
+        c["status"] == "unable" for c in sparse_checks
+    )
+
+    # CR-6：自定义踢腿参数不能绕过已标定参数，且 parameterOverrides 篡改时剥夺 enabled 资格
+    lm_f_k, mf_k = _make_kick_sequence(stance="left", view="front", n_kicks=2)
+    lm_s_k, ms_k = _make_kick_sequence(stance="left", view="side", n_kicks=2)
+    # 设后护手肘后退 0.50*torso：大于已标定 0.32，小于被调松的 1.0
+    for f0 in (39, 99):
+        lm_s_k[f0 : f0 + 23, 14, 0] = 0.35
+    res_custom = evaluate_series(
+        "step_front_low_kick",
+        "left",
+        {
+            "front": series_from_raw(lm_f_k, mf_k),
+            "side": series_from_raw(lm_s_k, ms_k),
+        },
+        FeedbackConfig(pose_variant="heavy", kick_guard_back_side=1.0),
+    )
+    gb_chk = next(
+        c
+        for c in res_custom["checks"]
+        if c["id"] == "front_low_kick:finish:rear:guard_back"
+    )
+    assert gb_chk["status"] == "candidate"
+    assert gb_chk["parameterOverrides"]["kick_guard_back_side"] == pytest.approx(
+        KICK_PARAMS["kick_guard_back_side"]
+    )
+    tampered_ov = copy.deepcopy(gb_chk)
+    tampered_ov["parameterOverrides"]["kick_guard_back_side"] = 1.0
+    apply_kick_availability([tampered_ov], "heavy")
+    assert tampered_ov["availability"]["state"] == "validation_pending"
+    assert tampered_ov["blockedReason"]

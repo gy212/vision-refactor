@@ -74,7 +74,7 @@ class PhaseVerdict:
 
     窗口短于 ``min_valid`` 帧为未找到阶段；有效帧少于 ``min_valid`` 或占比低于 ``valid_ratio`` 为 ``unable``；
     问题帧占有效帧比例 ≥ ``trigger_ratio`` 为 ``violation``。``absence=True`` 的项（"未做某动作"）
-    只在全部有效帧都有问题时才算 ``violation``。
+    在无次分组时需整窗有效帧全部有问题才算 ``violation``，在存在逐次重复切片时任一次有效帧全都有问题即算 ``violation``。
     """
 
     min_valid: int
