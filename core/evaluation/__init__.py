@@ -66,6 +66,7 @@ from core.evaluation.rule_checks import (
     synchronized_windows,
 )
 from core.evaluation.rules.adapters import RuleCheck
+from core.evaluation.action_catalog import SEGMENT_LABELS
 from core.evaluation.rules.sanda_v5 import (
     ACTIONS,
     DEFAULT_STANCE,
@@ -179,6 +180,7 @@ __all__ = [
     "RuleCheck",
     "RepetitionMatch",
     "SCHEMES",
+    "SEGMENT_LABELS",
     "STANCES",
     "STATE_LABELS",
     "Scheme",

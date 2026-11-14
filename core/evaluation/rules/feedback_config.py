@@ -20,8 +20,18 @@ def default_front_weights() -> dict:
             "stance_knee": 0.2,
             "stance_rear_guard": 0.6,
         },
-        "straight": {"default": 0.4, "guard_low": 0.7, "guard_elbow": 0.7, "shoulder_level": 0.7},
-        "hook": {"default": 0.6, "guard_low": 0.75, "guard_elbow": 0.7, "shoulder_level": 0.6},
+        "straight": {
+            "default": 0.4,
+            "guard_low": 0.7,
+            "guard_elbow": 0.7,
+            "shoulder_level": 0.7,
+        },
+        "hook": {
+            "default": 0.6,
+            "guard_low": 0.75,
+            "guard_elbow": 0.7,
+            "shoulder_level": 0.6,
+        },
         "kick": {
             "default": 0.4,
             "guard_low": 0.65,
@@ -47,12 +57,16 @@ class FeedbackConfig:
     guard_drop: float = 0.25
     guard_back: float = 0.18
     shoulder_height: float = 0.20
-    elbow_raise: float = 0.10  # 肘高于肩超过该值（躯干长度）即算抬肘；可为负，见 straight_policy
+    elbow_raise: float = (
+        0.10  # 肘高于肩超过该值（躯干长度）即算抬肘；可为负，见 straight_policy
+    )
     torso_front_ratio: float = 0.75
     foot_angle: float = 145.0
     hip_rotation: float = 20.0
     fusion_support: float = 0.7
-    phase_tolerance_seconds: float = 0.4  # 仅兼容旧配置；共享阶段覆盖改按真实采样时间逐次检查
+    phase_tolerance_seconds: float = (
+        0.4  # 仅兼容旧配置；共享阶段覆盖改按真实采样时间逐次检查
+    )
     stance_window_seconds: float = 0.2
     min_motion_seconds: float = 0.06
     return_distance: float = 0.15
@@ -62,7 +76,9 @@ class FeedbackConfig:
     stance_width_min: float = PARAMS["stance_width_min"]  # 较窄脚间距/较完整肩宽下限
     stance_width_max: float = PARAMS["stance_width_max"]  # 较窄脚间距/较完整肩宽上限
     punch_elbow: float = PARAMS["punch_elbow"]  # 每次直拳最伸展时的肘角下限（度）
-    guard_wrist_height: float = 0.5  # 实战式护位：手腕不低于肩下 0.5 倍躯干长，排除直立垂手的帧
+    guard_wrist_height: float = (
+        0.5  # 实战式护位：手腕不低于肩下 0.5 倍躯干长，排除直立垂手的帧
+    )
     guard_shoulder_drop: float = (
         0.08  # 护手手腕低于同侧肩超过该值（躯干长度）算掉到肩膀以下（第二批样本标定）
     )
@@ -70,6 +86,28 @@ class FeedbackConfig:
     punch_pull: float = 0.22  # 出拳前手腕相对同侧肩向后偏移（躯干长度）
     punch_elbow_raise: float = -0.10  # 出拳前肘高于肩下0.1倍躯干长（侧面）
     punch_recovery: float = 0.34  # 收回后手腕距口部上限（正面，躯干长度）
+    pad_step_min_disp: float = 0.45  # 垫步后脚前推距离下限（侧面，躯干长度）
+    pad_step_overtake_max: float = 0.20  # 垫步末端后脚越前上限（允许并齐，躯干长度）
+    pad_step_pause_max: float = 0.60  # 垫步落稳至起脚停顿上限（秒）
+    kick_height_hip_margin: float = 0.06  # 低鞭腿脚尖高过同侧髋容差（侧面，躯干长度）
+    kick_height_knee_margin: float = 0.08  # 低鞭腿脚尖低于支撑膝容差（侧面，躯干长度）
+    kick_retract_max_x: float = 0.40  # 收腿落地前踝髋最小前伸上限（侧面，躯干长度）
+    foot_flexed_min_angle: float = 165.0  # 踢腿脚背绷直锁定角下限（度）
+    hip_turn_width_ratio: float = 0.80  # 正面翻胯两髋水平宽相对基线上限
+    head_down_drop: float = 0.030  # 低头鼻相对肩中点下压增量上限（侧面，躯干长度）
+    body_lean_angle: float = 35.0  # 踢腿上体侧倾锁定角上限（正面，度）
+    arm_swing_drop: float = 0.45  # 同侧向下甩臂腕相对肩下伸下限（正面，躯干长度）
+    arm_swing_min_angle: float = 115.0  # 同侧向下甩臂伸展角下限（正面，度）
+    kick_guard_drop_side: float = 0.35  # 上步前低鞭腿护手掉落阈值（侧面，躯干长度）
+    kick_guard_drop_front: float = 0.25  # 原地后低鞭腿护手掉落阈值（正面，躯干长度）
+    kick_guard_back_side: float = 0.32  # 上步前低鞭腿护肘后拉阈值（侧面，躯干长度）
+    kick_guard_back_front: float = 0.18  # 原地后低鞭腿护肘后拉阈值（正面，躯干长度）
+    kick_guard_elbow_flare: float = (
+        30.0  # 踢腿护手开肘大臂与躯干夹角锁定上限（正面，度）
+    )
+    kick_guard_jaw_dist: float = (
+        0.34  # 原地后低鞭腿前手护颚腕口距上限（正面，躯干长度）
+    )
     front_weights: dict = field(default_factory=default_front_weights)
     stance_elbow_min: float = 90.0  # 上步直拳容错由 straight_policy 单独覆盖
     stance_knee_max: float = 170.0
@@ -93,7 +131,10 @@ class FeedbackConfig:
             raise ValueError(
                 "抬肘阈值必须在-1～1倍躯干长之间（负值表示肘低于肩不足该距离即算抬肘）"
             )
-        if not math.isfinite(self.punch_elbow_raise) or not -1 < self.punch_elbow_raise < 1:
+        if (
+            not math.isfinite(self.punch_elbow_raise)
+            or not -1 < self.punch_elbow_raise < 1
+        ):
             raise ValueError("出拳前抬肘阈值必须在-1～1倍躯干长之间")
         if (
             not math.isfinite(self.sample_fps)
@@ -102,7 +143,9 @@ class FeedbackConfig:
             or self.min_valid < 2
             or not isinstance(self.min_valid, int)
         ):
-            raise ValueError("采样频率为0（逐帧）或不超过60，分辨率至少64，有效帧数至少2")
+            raise ValueError(
+                "采样频率为0（逐帧）或不超过60，分辨率至少64，有效帧数至少2"
+            )
         if self.pose_variant not in {"lite", "full", "heavy"}:
             raise ValueError("模型只能选择lite/full/heavy")
         if self.return_distance >= self.motion_distance:
@@ -114,7 +157,9 @@ class FeedbackConfig:
             or self.stance_knee_max >= 180
             or self.punch_level_deviation >= 90
         ):
-            raise ValueError("站姿肘角下限须小于135°，膝角上限须小于180°，齐肩余量须小于90°")
+            raise ValueError(
+                "站姿肘角下限须小于135°，膝角上限须小于180°，齐肩余量须小于90°"
+            )
         if self.valid_ratio > 1 or self.trigger_ratio > 1:
             raise ValueError("比例参数不能大于1")
         if not 0.5 < self.fusion_support <= 1:

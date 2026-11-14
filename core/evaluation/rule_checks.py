@@ -31,6 +31,7 @@ from core.pose.validity import derive_valid_mask
 
 # 模板名（考试池、batch 的动作名）→ 目录动作；不在目录里的动作没有规则检查。
 ACTION_BY_NAME = {label: key for key, label in ACTIONS.items()}
+ACTION_BY_NAME["原地后低鞭腿"] = "rear_low_kick"
 
 
 def aspect_corrected(landmarks: np.ndarray, width: int, height: int) -> np.ndarray:
@@ -41,11 +42,18 @@ def aspect_corrected(landmarks: np.ndarray, width: int, height: int) -> np.ndarr
     return lm.astype(np.float32)
 
 
-def rule_series(landmarks: np.ndarray, frames: Sequence[int], fps: float, aspect: float) -> dict:
+def rule_series(
+    landmarks: np.ndarray, frames: Sequence[int], fps: float, aspect: float
+) -> dict:
     """规则输入序列：``landmarks`` 为宽高比修正坐标 ``(T,33,4)``，``aspect`` 为画面宽高比（x 的上界）。"""
     lm = np.asarray(landmarks)
     mask = derive_valid_mask(lm) & np.isfinite(lm[:, :, :3]).all(axis=2)
-    mask &= (lm[:, :, 0] >= 0) & (lm[:, :, 0] <= aspect) & (lm[:, :, 1] >= 0) & (lm[:, :, 1] <= 1)
+    mask &= (
+        (lm[:, :, 0] >= 0)
+        & (lm[:, :, 0] <= aspect)
+        & (lm[:, :, 1] >= 0)
+        & (lm[:, :, 1] <= 1)
+    )
     frames = [int(i) for i in frames]
     return {
         "landmarks": lm,
@@ -90,12 +98,15 @@ def view_outcomes(
         view=view,
         action=action,
         stance=stance,
-        phase_windows={f"{segment}:{phase}": idx for (segment, phase), idx in view_windows.items()},
+        phase_windows={
+            f"{segment}:{phase}": idx for (segment, phase), idx in view_windows.items()
+        },
         baseline=baseline,
         params=cfg,
         paired_torso=paired_torso,
         phase_instances=_phase_instance_frames(series["times"], phase_instances),
         phase_coverage=phase_coverage or {},
+        times=np.asarray(series["times"], dtype=float),
     )
     outcomes = evaluate_rules(
         series["landmarks"],
@@ -113,7 +124,9 @@ def _phase_instance_frames(times, instances) -> dict:
     grouped = {}
     for instance in instances:
         scope = f"{instance['segment']}:{instance['phase']}"
-        frames = np.flatnonzero((times >= instance["start"]) & (times <= instance["end"]))
+        frames = np.flatnonzero(
+            (times >= instance["start"]) & (times <= instance["end"])
+        )
         grouped.setdefault(scope, []).append((instance["repetition"], frames))
     return {scope: tuple(values) for scope, values in grouped.items()}
 
@@ -157,7 +170,12 @@ def _view_checks(
     )
     return tuple(
         to_rule_check(
-            c, view, outcomes[c["id"]], evidence_views, evidence_diagnostics, phase_reason
+            c,
+            view,
+            outcomes[c["id"]],
+            evidence_views,
+            evidence_diagnostics,
+            phase_reason,
         )
         for c in build_checks(action, stance, pose_variant=cfg.pose_variant)
         if c["id"] in outcomes
@@ -173,18 +191,26 @@ def judge_view(
     supported_capabilities=None,
 ) -> tuple[tuple[RuleCheck, ...], dict]:
     """一路视角的逐项结论与相位诊断；没有同步的另一路时用它，不做正侧融合。"""
-    return judge_views({view: series}, action, stance, cfg, supported_capabilities)[view]
+    return judge_views({view: series}, action, stance, cfg, supported_capabilities)[
+        view
+    ]
 
 
 def judge_views(
-    views: dict, action: str, stance: str, cfg: FeedbackConfig, supported_capabilities=None
+    views: dict,
+    action: str,
+    stance: str,
+    cfg: FeedbackConfig,
+    supported_capabilities=None,
 ) -> dict[str, tuple[tuple[RuleCheck, ...], dict]]:
     """同步录制的各路视角（``{"front"/"side": 规则输入序列}``）的逐项结论与相位诊断；考试与 batch paired 用。
 
     相位与练习一样经 ``synchronized_windows`` 准备，诊断另带 ``phaseSource``；逐视角报告。
     躯干朝向在正面项中引用双机位共同证据，其余项仍按各路独立测量。
     """
-    windows, diagnostics, alignment, sources = synchronized_windows(views, action, stance, cfg)
+    windows, diagnostics, alignment, sources = synchronized_windows(
+        views, action, stance, cfg
+    )
     record = shared_action_record(action, stance, diagnostics, alignment, sources)
     profile = rule_profile(action, stance, cfg)
     paired = (
@@ -212,7 +238,11 @@ def judge_views(
                 ),
                 phase_coverage=alignment["phases"],
             ),
-            {**diagnostics[view], "phaseSource": sources[view], "sharedActionRecord": record},
+            {
+                **diagnostics[view],
+                "phaseSource": sources[view],
+                "sharedActionRecord": record,
+            },
         )
         for view, series in views.items()
     }

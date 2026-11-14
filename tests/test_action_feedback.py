@@ -326,12 +326,26 @@ def test_feedback_pipeline_missing_model_keeps_message(monkeypatch, tmp_path):
 
 def test_completed_hip_turn_and_arm_swing_are_not_missing_actions():
     series = pose_series(32)
-    series["landmarks"][7:14, 27, 0] += np.array([0.10, 0.16, 0.22, 0.28, 0.22, 0.16, 0.10])
-    series["landmarks"][10, 15, 1] += 0.2  # 高峰处已甩手
-    series["landmarks"][10, 24, 2] += 0.1  # 高峰处已翻胯
+    series["landmarks"][8:16, 27, 1] -= np.array(
+        [0.10, 0.18, 0.24, 0.24, 0.22, 0.18, 0.12, 0.08]
+    )
+    series["landmarks"][8:16, 25, 1] -= 0.12
+    series["landmarks"][8:16, 31, 1] -= 0.20
+    series["landmarks"][8:16, 15, :2] = (0.40, 0.60)  # 同侧臂下伸甩臂（180°）
+    series["landmarks"][10, 24, 0] -= 0.05  # 高峰处正面两髋水平收窄
     data = evaluate_series("front_low_kick", "left", {"front": series, "side": series})
-    checked = [c for c in data["checks"] if c["code"] in {"hip_turn", "arm_swing"}]
-    assert checked and all(c["status"] == "not_observed" for c in checked)
+    by_code = {}
+    for c in data["checks"]:
+        if c["code"] in {"hip_turn", "arm_swing"}:
+            by_code.setdefault(c["code"], []).append(c)
+    assert by_code["arm_swing"] and all(
+        c["status"] == "not_observed" for c in by_code["arm_swing"]
+    )
+    assert by_code["hip_turn"] and all(
+        c["status"] == "pending_rule"
+        and c["availability"]["state"] == "calibration_failed"
+        for c in by_code["hip_turn"]
+    )
 
 
 def test_personal_history_review_export_reanalysis_and_retention(tmp_path):
