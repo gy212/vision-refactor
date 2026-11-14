@@ -4,22 +4,29 @@ from __future__ import annotations
 
 from collections import Counter
 
-from core.evaluation.action_catalog import ACTIONS, PHASES
+from core.evaluation.action_catalog import PHASES, SEGMENT_LABELS
 
 _VIEWS = {"front": "正面", "side": "侧面"}
 
 
 def _count_text(counts: dict) -> str:
-    return "、".join(f"{ACTIONS.get(action, action)}{count}次" for action, count in counts.items())
+    return "、".join(
+        f"{SEGMENT_LABELS.get(action, action)}{count}次"
+        for action, count in counts.items()
+    )
 
 
 def _event_text(event: dict) -> str:
-    name = ACTIONS.get(event.get("segment", ""), event.get("segment", "动作未记录"))
+    name = SEGMENT_LABELS.get(
+        event.get("segment", ""), event.get("segment", "动作未记录")
+    )
     times = []
     for key, label in (("start", "开始"), ("peak", "峰值"), ("end", "结束")):
         value = event.get(key)
         times.append(
-            f"{label}{value:.3f}秒" if isinstance(value, (int, float)) else f"{label}时刻未记录"
+            f"{label}{value:.3f}秒"
+            if isinstance(value, (int, float))
+            else f"{label}时刻未记录"
         )
     ending = "；未观察到收回" if event.get("ending") == "held" else ""
     return f"{name}；{'，'.join(times)}{ending}"
@@ -52,7 +59,7 @@ def _view_lines(view: str, diagnostic: dict, counts: dict) -> list[str]:
 def _correspondence_lines(diagnostics: dict, alignment: dict) -> list[str]:
     lines = []
     for pair in alignment.get("eventPairs", []):
-        action = ACTIONS.get(pair["segment"], pair["segment"])
+        action = SEGMENT_LABELS.get(pair["segment"], pair["segment"])
         lines.append(
             f"已对应：{action}，正面事件{pair['frontIndex'] + 1}与侧面事件{pair['sideIndex'] + 1}。"
         )
@@ -61,7 +68,9 @@ def _correspondence_lines(diagnostics: dict, alignment: dict) -> list[str]:
         borrowing = [
             _VIEWS[name]
             for name, diagnostic in diagnostics.items()
-            if name in _VIEWS and diagnostic.get("timingSource") == view and name != view
+            if name in _VIEWS
+            and diagnostic.get("timingSource") == view
+            and name != view
         ]
         reason = (
             f"供{'、'.join(borrowing)}共用阶段时间，未作独立事件配对"
@@ -77,7 +86,7 @@ def _correspondence_lines(diagnostics: dict, alignment: dict) -> list[str]:
             continue
         segment, _, moment = scope.partition(":")
         lines.append(
-            f"阶段对应受限：{ACTIONS.get(segment, segment)}/{PHASES.get(moment, moment)}；"
+            f"阶段对应受限：{SEGMENT_LABELS.get(segment, segment)}/{PHASES.get(moment, moment)}；"
             f"{phase['reason']}。"
         )
     return lines

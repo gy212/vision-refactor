@@ -20,12 +20,22 @@ from typing import Any
 
 import numpy as np
 
-from core.evaluation.rule_checks import ACTION_BY_NAME, judge_views, series_from_raw
-from core.evaluation.rules.sanda_v5 import DEFAULT_STANCE, FeedbackConfig, load_feedback_config
 from core.evaluation.action_catalog import action_definition
+from core.evaluation.kick_events import kick_repetitions
+from core.evaluation.rule_checks import ACTION_BY_NAME, judge_views, series_from_raw
+from core.evaluation.rules.sanda_v5 import (
+    DEFAULT_STANCE,
+    FeedbackConfig,
+    load_feedback_config,
+)
 from core.evaluation.scoring.kick_quality import score_kick_quality
 from core.evaluation.step_reps import EXPECTED_REPETITIONS, step_combo_windows
-from core.evaluation.templates import EXAM_POOL, TemplateError, TemplateStore, load_template
+from core.evaluation.templates import (
+    EXAM_POOL,
+    TemplateError,
+    TemplateStore,
+    load_template,
+)
 from core.evaluation.view_weights import normalized_pair
 from core.pose.extract import pose_cache
 from core.pose.raw_series import slice_pose_raw_series
@@ -96,7 +106,9 @@ def check_pair(front_path: Path, side_path: Path) -> None:
         )
 
 
-def usable_pools(front: Iterable | None, side: Iterable | None) -> tuple[list[Path], list[Path]]:
+def usable_pools(
+    front: Iterable | None, side: Iterable | None
+) -> tuple[list[Path], list[Path]]:
     """多模板池：各自过滤出可用模板（保序去重，单个坏模板跳过不整体失败）；两池都空抛 ``template_missing``。"""
     store = TemplateStore(EXAM_POOL)
     front_ok, side_ok = store.usable(front or []), store.usable(side or [])
@@ -134,7 +146,9 @@ def merge_view_weighted_actions(action_details: list[dict]) -> list[dict]:
             {
                 "name": base,
                 "view": "combined",
-                "score": float(w_front * float(front_d["score"]) + w_side * float(side_d["score"])),
+                "score": float(
+                    w_front * float(front_d["score"]) + w_side * float(side_d["score"])
+                ),
                 "front_score": float(front_d["score"]),
                 "side_score": float(side_d["score"]),
                 "view_weights": {"front": w_front, "side": w_side},
@@ -167,7 +181,9 @@ def action_score(name: str, dtw_score: float, geom_score: float | None) -> float
 
 def rule_action_for(name: str) -> str | None:
     """模板名（可带 ``_正面``/``_侧面`` 后缀）对应的规则目录动作；目录外的动作为 None。"""
-    return ACTION_BY_NAME.get(name.removesuffix(VIEW_FRONT_SUFFIX).removesuffix(VIEW_SIDE_SUFFIX))
+    return ACTION_BY_NAME.get(
+        name.removesuffix(VIEW_FRONT_SUFFIX).removesuffix(VIEW_SIDE_SUFFIX)
+    )
 
 
 def side_repetitions(series, cfg: FeedbackConfig) -> list[tuple[float, float]]:
@@ -176,6 +192,20 @@ def side_repetitions(series, cfg: FeedbackConfig) -> list[tuple[float, float]]:
     diagnostics: dict = {}
     step_combo_windows(series_from_raw(landmarks, meta), EXAM_STANCE, cfg, diagnostics)
     return [(r["start"], r["end"]) for r in diagnostics.get("repetitions", [])]
+
+
+def action_side_repetitions(
+    series, action: str, cfg: FeedbackConfig
+) -> list[tuple[float, float]]:
+    """侧面整段原始序列上按规则目录动作切分每一次的 ``(起, 止)``（秒）；不支持或切不出时为空列表。"""
+    if action == "step_straight_combo":
+        return side_repetitions(series, cfg)
+    if action in ("step_front_low_kick", "rear_low_kick"):
+        landmarks, meta = slice_pose_raw_series(series)
+        return kick_repetitions(
+            series_from_raw(landmarks, meta), action, EXAM_STANCE, cfg
+        )
+    return []
 
 
 def rep_windows(reps: list[tuple[float, float]], fps: float) -> list[tuple[int, int]]:
@@ -210,7 +240,11 @@ def stepwise_detail(name: str, view: str, per_rep: list) -> dict:
         "start": int(per_rep[0].start_frame),
         "end": int(per_rep[-1].end_frame),
         "repetitions": [
-            {"start": int(r.start_frame), "end": int(r.end_frame), "score": float(r.score)}
+            {
+                "start": int(r.start_frame),
+                "end": int(r.end_frame),
+                "score": float(r.score),
+            }
             for r in per_rep
         ],
     }
@@ -285,9 +319,9 @@ def rule_reports(
             unpaired.remove(side)
             judged[id(side)] = result["side"]
     for side in unpaired:
-        judged[id(side)] = judge_views({"side": side["series"]}, side["action"], EXAM_STANCE, cfg)[
-            "side"
-        ]
+        judged[id(side)] = judge_views(
+            {"side": side["series"]}, side["action"], EXAM_STANCE, cfg
+        )["side"]
     reports, record_reports = [], {}
     for target in front_targets + side_targets:
         item = judged[id(target)]
@@ -307,20 +341,72 @@ def _check_stop(stop_evt: Event) -> None:
         raise InterruptedError("后台比对已取消")
 
 
-def _stepwise_matches(
+def _plain_detail(name: str, view: str, res, series) -> dict:
+    dtw_score = float(res.score)
+    start, end = int(res.start_frame), int(res.end_frame)
+    geom_score, geom_detail = None, ""
+    if series is not None and name in KICK_KINDS:
+        lm_win, meta_win = slice_pose_raw_series(
+            series, start_frame=start, end_frame=end
+        )
+        geom_score, geom_detail = score_kick_quality(
+            lm_win,
+            meta_win["valid_mask"],
+            KICK_KINDS[name],
+            width=meta_win.get("width"),
+            height=meta_win.get("height"),
+        )
+    return {
+        "name": name,
+        "view": view,
+        "score": action_score(name, dtw_score, geom_score),
+        "dtw_score": dtw_score,
+        "geom_score": geom_score,
+        "geom_detail": geom_detail,
+        "start": start,
+        "end": end,
+    }
+
+
+def _stepwise_pool_matches(
     templates: list[Path],
-    series,
     video: Path,
-    reps: list[tuple[float, float]],
-    compare_windows: WindowCompare,
+    timed: list[int],
+    catalog_actions: list[str | None],
+    reps: list[tuple[float, float]] | None,
+    reps_by_action: dict[str, list[tuple[float, float]]] | None,
+    compare_windows: WindowCompare | None,
+    raw_series: RawSeriesFn,
     stop_evt: Event,
-) -> dict[int, list]:
-    """上步组合模板（``templates`` 下标 → 逐次比对结果）；一次也没匹配上的模板不列入，回到整段匹配。"""
-    windows = rep_windows(reps, float(series.meta.get("fps") or 30.0))
-    per_template = compare_windows(
-        templates, video, windows, pose_variant=POSE_VARIANT, workers=1, stop_evt=stop_evt
-    )
-    return {i: per_rep for i, per_rep in enumerate(per_template) if per_rep}
+) -> tuple[object | None, dict[int, list]]:
+    """按动作目录分组逐次匹配模板；一次也没匹配上的模板回到整段匹配。"""
+    grouped: dict[str, tuple[list[int], list[tuple[float, float]]]] = {}
+    for idx in timed:
+        act = catalog_actions[idx]
+        assert act is not None
+        act_reps = reps_by_action.get(act) if reps_by_action is not None else reps
+        if act_reps:
+            grouped.setdefault(act, ([], act_reps))[0].append(idx)
+    if not grouped or compare_windows is None:
+        return None, {}
+    series = raw_series(video, pose_variant=POSE_VARIANT)
+    _check_stop(stop_evt)
+    fps = float(series.meta.get("fps") or 30.0)
+    stepped: dict[int, list] = {}
+    for indices, act_reps in grouped.values():
+        windows = rep_windows(act_reps, fps)
+        per_template = compare_windows(
+            [templates[i] for i in indices],
+            video,
+            windows,
+            pose_variant=POSE_VARIANT,
+            workers=1,
+            stop_evt=stop_evt,
+        )
+        for j, per_rep in enumerate(per_template):
+            if per_rep:
+                stepped[indices[j]] = per_rep
+    return series, stepped
 
 
 @pose_cache()
@@ -334,35 +420,38 @@ def score_pool(
     stop_evt: Event,
     rule_cfg: FeedbackConfig | None = None,
     reps: list[tuple[float, float]] | None = None,
+    reps_by_action: dict[str, list[tuple[float, float]]] | None = None,
     compare_windows: WindowCompare | None = None,
 ) -> tuple[list[dict], float | None, list[dict]]:
     """一个视角的池：视频姿态只提取一次复用给池内每个模板；含踢腿或规则目录动作时取原始序列算几何分与规则输入。
 
     在 ``pose_cache`` 作用域内执行：模板比对与原始序列的顺序提取共用同一次推理。返回 ``(逐动作明细, 池均分,
     规则目标)``；规则目标是规则目录动作的规则输入序列，由 ``rule_reports`` 与另一池成对判定。``rule_cfg=None`` 时不做规则检查。
-    ``reps``（侧面切出的每一次，秒）非空且注入了 ``compare_windows`` 时，上步组合的模板逐次匹配、子分取均值；
-    否则整段匹配，上步组合的明细写明原因。
+    ``reps``/``reps_by_action``（侧面切出的每一次，秒）非空且注入了 ``compare_windows`` 时，按次计分动作逐次匹配、子分取均值；
+    否则整段匹配，明细写明原因。
     """
     if not templates:
         return [], None, []
     _check_stop(stop_evt)
     names = [Path(t).stem for t in templates]
+    catalog_actions = [rule_action_for(n) for n in names]
     timed = [
         i
-        for i, n in enumerate(names)
-        if rule_action_for(n) is not None
-        and action_definition(rule_action_for(n)).scoring == "per_repetition"
+        for i, act in enumerate(catalog_actions)
+        if act is not None and action_definition(act).scoring == "per_repetition"
     ]
-    rule_actions = [rule_action_for(n) if rule_cfg is not None else None for n in names]
-    series = None
-    stepped: dict[int, list] = {}
-    if timed and reps and compare_windows is not None:
-        series = raw_series(video, pose_variant=POSE_VARIANT)
-        _check_stop(stop_evt)
-        found = _stepwise_matches(
-            [templates[i] for i in timed], series, video, reps, compare_windows, stop_evt
-        )
-        stepped = {timed[i]: per_rep for i, per_rep in found.items()}
+    rule_actions = [act if rule_cfg is not None else None for act in catalog_actions]
+    series, stepped = _stepwise_pool_matches(
+        templates,
+        video,
+        timed,
+        catalog_actions,
+        reps,
+        reps_by_action,
+        compare_windows,
+        raw_series,
+        stop_evt,
+    )
     plain = [i for i in range(len(templates)) if i not in stepped]
     _check_stop(stop_evt)
     plain_results = (
@@ -386,41 +475,19 @@ def score_pool(
         if i in stepped:
             details.append(stepwise_detail(name, view, stepped[i]))
             continue
-        res = results[i]
-        dtw_score = float(res.score)
-        start, end = int(res.start_frame), int(res.end_frame)
-        geom_score: float | None = None
-        geom_detail = ""
-        if series is not None and name in KICK_KINDS:
-            lm_win, meta_win = slice_pose_raw_series(series, start_frame=start, end_frame=end)
-            geom_score, geom_detail = score_kick_quality(
-                lm_win,
-                meta_win["valid_mask"],
-                KICK_KINDS[name],
-                width=meta_win.get("width"),
-                height=meta_win.get("height"),
-            )
-        details.append(
-            {
-                "name": name,
-                "view": view,
-                "score": action_score(name, dtw_score, geom_score),
-                "dtw_score": dtw_score,
-                "geom_score": geom_score,
-                "geom_detail": geom_detail,
-                "start": start,
-                "end": end,
-            }
-        )
+        detail = _plain_detail(name, view, results[i], series)
         if i in timed:
-            details[-1]["repetition_note"] = (
+            detail["repetition_note"] = (
                 "未接入逐次比对，按整段匹配一次"
                 if compare_windows is None
                 else "未切出动作次数，按整段匹配一次"
             )
+        details.append(detail)
     pool_mean = float(np.mean([d["score"] for d in details])) if details else None
     targets = [
-        rule_target(series, d, action, view) for d, action in zip(details, rule_actions) if action
+        rule_target(series, d, action, view)
+        for d, action in zip(details, rule_actions)
+        if action
     ]
     return details, pool_mean, targets
 
@@ -463,24 +530,34 @@ def score_exam_pools(
         rule_cfg, rule_error = load_feedback_config(), ""
     except ValueError as exc:  # 规则只报告：配置无效不影响考试分数
         rule_cfg, rule_error = None, str(exc)
-    stepwise = compare_windows is not None and any(
-        rule_action_for(Path(t).stem) is not None
-        and action_definition(rule_action_for(Path(t).stem)).scoring == "per_repetition"
-        for t in [*front_tpls, *side_tpls]
+    per_rep_actions = list(
+        dict.fromkeys(
+            act
+            for t in [*front_tpls, *side_tpls]
+            if (act := rule_action_for(Path(t).stem)) is not None
+            and action_definition(act).scoring == "per_repetition"
+        )
     )
+    stepwise = compare_windows is not None and bool(per_rep_actions)
     with pose_cache() if stepwise else nullcontext():
         reps = None
+        reps_by_action = None
         if stepwise:
             _check_stop(stop_evt)
-            reps = side_repetitions(
-                raw_series(side_video, pose_variant=POSE_VARIANT), rule_cfg or FeedbackConfig()
-            )
+            side_raw = raw_series(side_video, pose_variant=POSE_VARIANT)
+            cfg_rep = rule_cfg or FeedbackConfig()
+            reps_by_action = {
+                act: action_side_repetitions(side_raw, act, cfg_rep)
+                for act in per_rep_actions
+            }
+            reps = reps_by_action.get("step_straight_combo")
         pool_args = {
             "compare": compare,
             "raw_series": raw_series,
             "stop_evt": stop_evt,
             "rule_cfg": rule_cfg,
             "reps": reps,
+            "reps_by_action": reps_by_action,
             "compare_windows": compare_windows,
         }
         front_details, front_score, front_targets = score_pool(
@@ -489,15 +566,23 @@ def score_exam_pools(
         side_details, side_score, side_targets = score_pool(
             side_tpls, side_video, "side", **pool_args
         )
-    reports = rule_reports(front_targets, side_targets, rule_cfg) if rule_cfg is not None else []
+    reports = (
+        rule_reports(front_targets, side_targets, rule_cfg)
+        if rule_cfg is not None
+        else []
+    )
     # 合并只影响 combined 与逐动作列，避免正+侧双模板动作被双重计数。
     action_scores = merge_view_weighted_actions(front_details + side_details)
     all_scores = [d["score"] for d in action_scores]
     combined = float(np.mean(all_scores)) if all_scores else 0.0
     pct = int(np.clip(int(round(combined * 100.0)), 0, 100))
     # 兼容旧字段：front/side_segment 取各池首个匹配窗口
-    front_seg = (front_details[0]["start"], front_details[0]["end"]) if front_details else None
-    side_seg = (side_details[0]["start"], side_details[0]["end"]) if side_details else None
+    front_seg = (
+        (front_details[0]["start"], front_details[0]["end"]) if front_details else None
+    )
+    side_seg = (
+        (side_details[0]["start"], side_details[0]["end"]) if side_details else None
+    )
     return ExamPoolResult(
         front_score,
         side_score,

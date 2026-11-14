@@ -15,12 +15,15 @@ _PHASE_LABELS = {
     "end": "结束护位",
     "motion": "动作过程",
     "finish": "击出",
+    "retract": "收腿",
     "prepare": "准备",
     "recovered": "收回",
 }
 
 
-def _expected_instances(windows: dict, source_times, instances: Sequence[PhaseInstance]) -> dict:
+def _expected_instances(
+    windows: dict, source_times, instances: Sequence[PhaseInstance]
+) -> dict:
     """保留识别来源的动作身份；无动作次数的站姿窗口按自己的时间范围登记。"""
     grouped = {key: [] for key in windows}
     for instance in instances:
@@ -116,7 +119,11 @@ def phase_correspondence(
             "ranges": ranges,
             "views": coverage,
             "reason": "；".join(reasons)
-            or ("同步机位覆盖同一动作阶段" if reliable else "同步机位缺少该阶段的时间覆盖"),
+            or (
+                "同步机位覆盖同一动作阶段"
+                if reliable
+                else "同步机位缺少该阶段的时间覆盖"
+            ),
         }
     return result
 
@@ -127,7 +134,9 @@ def missing_phase_coverage(coverage: dict, scope: str, views: Sequence[str]) -> 
         return ""
     per_view = coverage[scope]["views"]
     return "；".join(
-        per_view[view]["reason"] if view in per_view else f"缺少{_VIEW_LABELS[view]}视频"
+        per_view[view]["reason"]
+        if view in per_view
+        else f"缺少{_VIEW_LABELS[view]}视频"
         for view in views
         if view not in per_view or not per_view[view]["complete"]
     )

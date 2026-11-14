@@ -9,6 +9,7 @@ from core.evaluation.action_catalog import (
     ACTIONS,
     ACTION_SEGMENTS,
     PHASES,
+    SEGMENT_LABELS,
     STANCES,
     action_segments,
 )
@@ -18,6 +19,7 @@ from core.evaluation.rules.feedback_config import (
     load_feedback_config,
     default_front_weights,
 )
+from core.evaluation.rules.kick_measures import KICK_SEGMENTS, kick_phase_verdict
 from core.evaluation.rules.rule_descriptions import (
     RULES,
     STANCE_RULES,
@@ -52,11 +54,15 @@ __all__ = [
     "rule_profile",
 ]
 
-RULE_VERSION = "sanda-rules-mediapipe-2026-11-08-v5.16"
+RULE_VERSION = "sanda-rules-mediapipe-2026-11-14-v5.17"
 
 PROFILE_NAME = "sanda_v5"
 
-DEFAULT_STANCE = "left"  # 考试与 batch 的左右式：左手、左脚在前，右手护脸（D-3，配置值，以后可改）
+DEFAULT_STANCE = (
+    "left"  # 考试与 batch 的左右式：左手、左脚在前，右手护脸（D-3，配置值，以后可改）
+)
+
+KICK_SOURCE = "低鞭腿动作规则实证标定 2026-11-14"
 
 STATE_LABELS = {
     "candidate": "待教师确认",
@@ -65,35 +71,62 @@ STATE_LABELS = {
     "pending_rule": "未自动检查",
 }
 
-ABSENCE_RULES = frozenset({"hip_turn", "arm_swing"})
+ABSENCE_RULES = frozenset({"hip_turn", "arm_swing", "pivot_heel"})
+
+
+def _append_low_kick_checks(add: Callable[..., None], segment: str) -> None:
+    """按基础低鞭腿动作段组装过程、发力端与收腿阶段检查。"""
+    front = segment == "front_low_kick"
+    role = "front" if front else "rear"
+    guard = "rear" if front else "front"
+    for phase in ("motion", "finish"):
+        for code in ("guard_shoulder", "guard_back", "guard_elbow"):
+            add(code, segment, phase, guard, source=KICK_SOURCE)
+        if not front:
+            add("guard_jaw", segment, phase, "front", source=KICK_SOURCE)
+        for code in ("foot_flexed", "hip_turn", "arm_swing"):
+            add(code, segment, phase, role, source=KICK_SOURCE)
+        for code in ("head_down", "body_lean"):
+            add(code, segment, phase, "", source=KICK_SOURCE)
+    add("pivot_heel", segment, "finish", guard, source=KICK_SOURCE)
+    add("kick_height", segment, "finish", role, source=KICK_SOURCE)
+    if front:
+        add("kick_retract", segment, "retract", "front", source=KICK_SOURCE)
 
 
 def _append_segment_checks(add: Callable[..., None], segment: str) -> None:
     """按动作成员和明确标准组装过程与结束检查。"""
     if segment == "stance":
         return
+    if segment == "pad_step":
+        for code in ("pad_step_missing", "pad_step_overtake", "pad_step_pause"):
+            add(code, segment, "prepare", "rear", source=KICK_SOURCE)
+        return
+    if segment in {"front_low_kick", "rear_low_kick"}:
+        _append_low_kick_checks(add, segment)
+        return
     front = segment.startswith("front_")
     role = "front" if front else "rear"
     guard = "rear" if front else "front"
     hook = "hook" in segment
-    kick = "kick" in segment
     straight = "straight" in segment
     source = f"{DOC} 第{10 if front else 11}行" if straight else SUMMARY
     for phase in ("motion", "finish"):
-        if not kick or front:
-            guard_codes = (
-                ("guard_shoulder", "guard_back", "guard_elbow")
-                if straight
-                else ("guard_low", "guard_back", "guard_elbow")
+        guard_codes = (
+            ("guard_shoulder", "guard_back", "guard_elbow")
+            if straight
+            else ("guard_low", "guard_back", "guard_elbow")
+        )
+        for code in guard_codes:
+            # 后手摆拳前手回收未包含向后拉手，不扩展问卷清单。
+            if segment == "rear_hook" and code == "guard_back":
+                continue
+            blocked = (
+                "原文摆拳阶段误写为直拳，需教师核对" if segment == "front_hook" else ""
             )
-            for code in guard_codes:
-                # 后手摆拳前手回收未包含向后拉手，不扩展问卷清单。
-                if segment == "rear_hook" and code == "guard_back":
-                    continue
-                blocked = "原文摆拳阶段误写为直拳，需教师核对" if segment == "front_hook" else ""
-                if hook and code == "guard_elbow":
-                    blocked = "摆拳要求抬肘与错误抬肘的幅度/阶段需区分"
-                add(code, segment, phase, guard, blocked, source)
+            if hook and code == "guard_elbow":
+                blocked = "摆拳要求抬肘与错误抬肘的幅度/阶段需区分"
+            add(code, segment, phase, guard, blocked, source)
         if segment == "rear_hook":
             for code in ("guard_low", "guard_back", "guard_elbow"):
                 add(
@@ -104,12 +137,8 @@ def _append_segment_checks(add: Callable[..., None], segment: str) -> None:
                     "教师已确认阶段标准；该动作仍需实现并验证出拳侧的分阶段测量",
                     SUMMARY,
                 )
-        if segment == "rear_hook" or segment == "rear_low_kick":
             add("guard_recover", segment, phase, "front")
-        if kick:
-            for code in ("foot_flexed", "hip_turn", "arm_swing"):
-                add(code, segment, phase, role)
-        elif phase == "finish" or front:
+        if phase == "finish" or front:
             add(
                 "shoulder_level",
                 segment,
@@ -123,7 +152,9 @@ def _append_segment_checks(add: Callable[..., None], segment: str) -> None:
             add("vertical_fist", segment, phase, "front", source=source)
 
 
-def build_checks(action: str, stance: str, *, pose_variant: str = "full") -> list[dict[str, Any]]:
+def build_checks(
+    action: str, stance: str, *, pose_variant: str = "full"
+) -> list[dict[str, Any]]:
     """所选动作与左右式的检查清单（开始实战式 → 各动作段 → 结束实战式）；多次动作合并在同一检查项里判定。"""
     if (
         not isinstance(action, str)
@@ -153,7 +184,7 @@ def build_checks(action: str, stance: str, *, pose_variant: str = "full") -> lis
             "name": name,
             "bodyPart": f"{prefix}{PARTS[part]}" + (f"（{side}）" if side else ""),
             "segment": segment,
-            "segmentLabel": ACTIONS[segment],
+            "segmentLabel": SEGMENT_LABELS[segment],
             "phase": phase,
             "phaseLabel": PHASES[phase],
             "standard": standard,
@@ -184,7 +215,11 @@ def build_checks(action: str, stance: str, *, pose_variant: str = "full") -> lis
     order = {name: i + 1 for i, name in enumerate(segments)}
     checks.sort(
         key=lambda c: (
-            0 if c["phase"] == "start" else 99 if c["phase"] == "end" else order[c["segment"]],
+            0
+            if c["phase"] == "start"
+            else 99
+            if c["phase"] == "end"
+            else order[c["segment"]],
             list(PHASES).index(c["phase"]),
             c["bodyPart"],
             c["id"],
@@ -200,7 +235,9 @@ def check_view_weights(check: dict, cfg: FeedbackConfig) -> dict[str, float]:
         if "primaryView" in check
         else PRIMARY_VIEW
     )
-    return practice_view_weights(check["code"], check["segment"], cfg.front_weights, primary)
+    return practice_view_weights(
+        check["code"], check["segment"], cfg.front_weights, primary
+    )
 
 
 def rule_profile(action: str, stance: str, cfg: FeedbackConfig) -> RuleProfile:
@@ -216,11 +253,19 @@ def rule_profile(action: str, stance: str, cfg: FeedbackConfig) -> RuleProfile:
                 required=definition.required,
                 view=definition.view,
                 scope=f"{check['segment']}:{check['phase']}",
-                aggregation=PhaseVerdict(
-                    cfg.min_valid,
-                    cfg.valid_ratio,
-                    cfg.trigger_ratio,
-                    absence=check["code"] in ABSENCE_RULES,
+                aggregation=(
+                    kick_phase_verdict(
+                        definition.strategy,
+                        cfg,
+                        absence=check["code"] in ABSENCE_RULES,
+                    )
+                    if check["segment"] in KICK_SEGMENTS
+                    else PhaseVerdict(
+                        cfg.min_valid,
+                        cfg.valid_ratio,
+                        cfg.trigger_ratio,
+                        absence=check["code"] in ABSENCE_RULES,
+                    )
                 ),
                 authorization="blocked" if check["blockedReason"] else "candidate",
                 blocked_reason=check["blockedReason"],

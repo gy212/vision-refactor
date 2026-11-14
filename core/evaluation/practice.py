@@ -30,9 +30,17 @@ from core.foundation.geometry import torso_length
 from core.foundation.paths import models_dir
 from core.foundation.signal import contiguous_runs
 from core.foundation.tasks import Cancelled, from_stopped
-from core.media.video_source import UndecodableFrame, VideoFpsUnavailable, VideoOpenError
+from core.media.video_source import (
+    UndecodableFrame,
+    VideoFpsUnavailable,
+    VideoOpenError,
+)
 from core.pose.engine import create_engine
-from core.pose.extract import extract_pose_sequence, practice_engine, practice_v4_profile
+from core.pose.extract import (
+    extract_pose_sequence,
+    practice_engine,
+    practice_v4_profile,
+)
 from core.pose.sequence import Coords, GapPolicy
 
 _VIEW_LABELS = {"front": "正面", "side": "侧面"}
@@ -41,7 +49,9 @@ _VIEW_LABELS = {"front": "正面", "side": "侧面"}
 def create_practice_engine(cfg: FeedbackConfig | None = None):
     """练习分析用的 MediaPipe 引擎（不联网下载模型）。"""
     cfg = cfg or FeedbackConfig()
-    return create_engine(practice_engine(cfg.pose_variant), models_dir=models_dir(), download=False)
+    return create_engine(
+        practice_engine(cfg.pose_variant), models_dir=models_dir(), download=False
+    )
 
 
 def extract_series(
@@ -74,7 +84,10 @@ def extract_series(
     w, h = (int(v) for v in seq.source_wh[-1])
     fps = seq.meta.fps_reported
     series = rule_series(
-        seq.raw(GapPolicy.ZERO, Coords.ASPECT_CORRECTED).copy(), seq.frame_index, fps, w / h
+        seq.raw(GapPolicy.ZERO, Coords.ASPECT_CORRECTED).copy(),
+        seq.frame_index,
+        fps,
+        w / h,
     )
     inference_w, inference_h = seq.meta.inference_size
     series["capture"] = {
@@ -120,19 +133,28 @@ def _observe_view(
     ranges = None
     body_valid = (
         torso_length(
-            series["landmarks"][indices], series["valid_mask"][indices], "visible_side_chain"
+            series["landmarks"][indices],
+            series["valid_mask"][indices],
+            "visible_side_chain",
         )
         > 1e-4
     )
     if body_valid.mean() >= cfg.valid_ratio and body_valid.sum() >= cfg.min_valid:
         offset = alignment["sideOffsetSeconds"] if view == "side" else 0
         ranges = [
-            (float(series["times"][run[0]]) + offset, float(series["times"][run[-1]]) + offset)
+            (
+                float(series["times"][run[0]]) + offset,
+                float(series["times"][run[-1]]) + offset,
+            )
             for run in contiguous_runs(indices)
         ]
     else:
-        c["viewProblems"][view] = f"该阶段可见肩髋链不足（{body_valid.sum()}/{len(indices)}帧）"
-    return ranges, to_practice_check(c, view, outcome, weights[view], views, diagnostics, evidence)
+        c["viewProblems"][view] = (
+            f"该阶段可见肩髋链不足（{body_valid.sum()}/{len(indices)}帧）"
+        )
+    return ranges, to_practice_check(
+        c, view, outcome, weights[view], views, diagnostics, evidence
+    )
 
 
 def _fuse(
@@ -149,7 +171,9 @@ def _fuse(
     if any(view not in views for view in required_views):
         c["reason"] = (
             "缺少"
-            + "、".join(_VIEW_LABELS[view] for view in required_views if view not in views)
+            + "、".join(
+                _VIEW_LABELS[view] for view in required_views if view not in views
+            )
             + "视频，无法检查这一项"
         )
         return
@@ -255,7 +279,10 @@ def _view_diagnostics(views: dict, diagnostics: dict, phase_sources: dict) -> di
             **diagnostics[view],
             "phaseSource": phase_sources[view],
             "bodyValidFrames": int(
-                (torso_length(s["landmarks"], s["valid_mask"], "visible_side_chain") > 1e-4).sum()
+                (
+                    torso_length(s["landmarks"], s["valid_mask"], "visible_side_chain")
+                    > 1e-4
+                ).sum()
             ),
             "totalFrames": len(s["times"]),
             "jointValidRatios": s["valid_mask"].mean(axis=0).tolist(),
@@ -316,7 +343,9 @@ def evaluate_series(
     }
     evidence = {}
     for c in checks:
-        _evaluate_check(c, views, windows, diagnostics, alignment, outcomes_by_view, cfg, evidence)
+        _evaluate_check(
+            c, views, windows, diagnostics, alignment, outcomes_by_view, cfg, evidence
+        )
     unable = any(c["status"] == "unable" for c in checks)
     issues = any(c["status"] == "candidate" for c in checks)
     summary = (
@@ -367,9 +396,12 @@ def evaluate_series(
 
 
 def _repetitions(action: str, diagnostics: dict) -> dict | None:
-    """上步组合侧面计时策略按侧面切出的次数与每次的时间；其余动作不统计次数，为 None。"""
+    """按侧面逐次评分策略登记的动作统计重复次数与各次时间；其余动作不统计次数，为 None。"""
     side = diagnostics.get("side", {})
-    if action_definition(action).timing != "side_combo" or "repetitions" not in side:
+    if (
+        action_definition(action).scoring != "per_repetition"
+        or "repetitions" not in side
+    ):
         return None
     result = {
         "expected": side["expectedRepetitions"],
@@ -382,7 +414,14 @@ def _repetitions(action: str, diagnostics: dict) -> dict | None:
 
 
 def analyze_practice(
-    action, stance, front, side, *, stopped=lambda: False, config=None, pipeline_factory=None
+    action,
+    stance,
+    front,
+    side,
+    *,
+    stopped=lambda: False,
+    config=None,
+    pipeline_factory=None,
 ) -> dict:
     """正、侧两路练习视频（可缺一路）→ 练习结果字典；``config=None`` 时读 ``feedback_config.json``。"""
     build_checks(action, stance)

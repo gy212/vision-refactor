@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from core.evaluation.action_catalog import SEGMENT_LABELS
 from core.evaluation.rules.sanda_v5 import ACTIONS, PHASES, STANCES, STATE_LABELS
 from core.reporting.timing_diagnostics import format_timing_diagnostics
 from core.reporting.saved_results import MISSING_CHECKS_NOTE, saved_checks
@@ -16,7 +17,9 @@ def format_fusion(check: dict) -> str:
     base = " / ".join(f"{labels[v]}{w:.0%}" for v, w in fusion["baseWeights"].items())
     lines = [f"视角基础权重：{base}（工程初值，待标定）"]
     for m in check.get("measurements", []):
-        ratio = "不可用" if m["violationRatio"] is None else f"{m['violationRatio']:.0%}"
+        ratio = (
+            "不可用" if m["violationRatio"] is None else f"{m['violationRatio']:.0%}"
+        )
         lines.append(
             f"{labels[m['view']]}：有效帧{m['validFrames']}/{m['totalFrames']}，问题帧占比{ratio}"
         )
@@ -25,10 +28,16 @@ def format_fusion(check: dict) -> str:
                 f"  {value['name']}：中位{value['median']:.2f}，范围{value['min']:.2f}～{value['max']:.2f} {value['unit']}"
             )
     if fusion["effectiveWeights"]:
-        actual = " / ".join(f"{labels[v]}{w:.0%}" for v, w in fusion["effectiveWeights"].items())
-        lines.append(f"实际权重：{actual}；问题支持度{fusion['support']:.0%}（非成绩、非准确率）")
+        actual = " / ".join(
+            f"{labels[v]}{w:.0%}" for v, w in fusion["effectiveWeights"].items()
+        )
+        lines.append(
+            f"实际权重：{actual}；问题支持度{fusion['support']:.0%}（非成绩、非准确率）"
+        )
     if fusion["method"] == "primary_view":
-        lines.append("本项只使用指定画面的检查结果，不要求另一面也单独判一次；不能称为双视角一致。")
+        lines.append(
+            "本项只使用指定画面的检查结果，不要求另一面也单独判一次；不能称为双视角一致。"
+        )
     return "\n".join(lines)
 
 
@@ -76,7 +85,8 @@ def _diagnostic_lines(result: dict) -> list[str]:
         source_label = (
             "本视角检测"
             if source == "own_view"
-            else ("正面" if source.startswith("front") else "侧面") + "提供同步时间段，各自测量"
+            else ("正面" if source.startswith("front") else "侧面")
+            + "提供同步时间段，各自测量"
         )
         lines.append(
             f"{label}：可见肩髋链{diagnostic['bodyValidFrames']}/{diagnostic['totalFrames']}帧；{source_label}；本路检测：{diagnostic['reason']}"
@@ -89,9 +99,11 @@ def _diagnostic_lines(result: dict) -> list[str]:
         for phase in result.get("phaseWindows", {}).get(view, []):
             spans = "、".join(f"{lo:.2f}～{hi:.2f}s" for lo, hi in phase["ranges"])
             lines.append(
-                f"  {ACTIONS.get(phase['segment'], phase['segment'])}/{PHASES[phase['phase']]}：{spans}"
+                f"  {SEGMENT_LABELS.get(phase['segment'], phase['segment'])}/{PHASES[phase['phase']]}：{spans}"
             )
-    lines.extend(format_timing_diagnostics(result["diagnostics"], result.get("alignment", {})))
+    lines.extend(
+        format_timing_diagnostics(result["diagnostics"], result.get("alignment", {}))
+    )
     return lines
 
 
@@ -138,7 +150,9 @@ def format_report(record: dict) -> str:
     if result.get("diagnostics"):
         lines += _diagnostic_lines(result)
     lines += ["", "动作问题："]
-    issues = [c for c in checks if c["status"] == "candidate" and c["review"] != "revoked"]
+    issues = [
+        c for c in checks if c["status"] == "candidate" and c["review"] != "revoked"
+    ]
     for i, c in enumerate(issues, 1):
         state = "教师已确认" if c["review"] == "confirmed" else "待教师确认"
         lines.append(
@@ -158,7 +172,10 @@ def format_report(record: dict) -> str:
             if c.get("measurements"):
                 lines.append(format_fusion(c))
     if result.get("needsRerecord"):
-        lines += ["", "请重新录制：全身及拳脚入画、光线充足、减少遮挡，保留开始和结束实战式。"]
+        lines += [
+            "",
+            "请重新录制：全身及拳脚入画、光线充足、减少遮挡，保留开始和结束实战式。",
+        ]
     if result.get("fusionMethod"):
         lines += ["", "已检查未发现的问题项（不代表全部动作合格）："]
         for c in checks:
