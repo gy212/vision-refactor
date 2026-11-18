@@ -12,7 +12,7 @@ import numpy as np
 from PIL import Image
 import pytest
 
-from core.evaluation import ACTIONS, STANCES, build_checks
+from core.evaluation import ACTIONS, PHASES, STANCES, build_checks
 from core.reporting import practice_report_renderers
 from core.services import HistoryStore as FeedbackHistory
 from core.reporting import (
@@ -52,13 +52,13 @@ def make_synthetic_check(
         "segment": segment,
         "segmentLabel": ACTIONS.get(segment, segment),
         "phase": phase,
-        "phaseLabel": "开始实战式" if phase == "start" else "动作过程",
+        "phaseLabel": PHASES.get(phase, phase),
         "standard": "前手大小臂夹角90°～135°",
         "source": "武术散打得分点.docx",
         "status": status,
         "review": review,
         "reason": reason,
-        "evidence": evidence or ["front:0"],
+        "evidence": ["front:0"] if evidence is None else evidence,
         "measurements": [
             {
                 "view": "front",
@@ -79,8 +79,10 @@ def make_synthetic_check(
         "fusion": {
             "method": "action_rule_quality_weighted_v1",
             "baseWeights": {"front": 0.5, "side": 0.5},
-            "effectiveWeights": {"front": 0.5, "side": 0.5},
-            "support": 0.8,
+            "effectiveWeights": {}
+            if status == "unable"
+            else {"front": 0.5, "side": 0.5},
+            "support": None if status == "unable" else 0.8,
             "threshold": 0.5,
             "calibrationStatus": "unvalidated",
         },
@@ -700,3 +702,92 @@ def test_feedback_history_export_html(tmp_path):
     # 4. Confinement: cannot export inside history root
     with pytest.raises(ValueError, match="受管历史目录之外"):
         store.export(record_id, history_root / "leak.html")
+
+
+def test_legacy_pending_rule_with_needs_rerecord_false_does_not_prompt_rerecord():
+    """旧历史记录 pending_rule 在 needsRerecord=False 时归入 unable，但不误导学生重录或归因遮挡。"""
+    legacy_check = make_synthetic_check(
+        code="hip_turn",
+        segment="rear_low_kick",
+        phase="motion",
+        role="rear",
+        status="pending_rule",
+        reason="待核验",
+    )
+    legacy_record = make_synthetic_record(checks=[legacy_check], needs_rerecord=False)
+    model = build_report_model(legacy_record)
+    assert model.headline.needs_rerecord is False
+    assert "未取得有效自动判定结论" in model.headline.subtitle
+    assert "重新录制" not in model.headline.subtitle
+    assert "未入画或遮挡" not in model.headline.subtitle
+
+    rerecord_model = build_report_model(
+        make_synthetic_record(
+            checks=[make_synthetic_check(status="unable", reason="未检测到关键点")],
+            needs_rerecord=True,
+        )
+    )
+    assert rerecord_model.headline.needs_rerecord is True
+    assert "重新录制" in rerecord_model.headline.subtitle
+
+
+def test_format_report_handles_unknown_status_missing_labels_and_timeline_empty_phase():
+    """纯文本报告在旧状态/缺省标签下不崩溃；时间轴 0 项阶段使用中性 '—' 而非绿色对勾。"""
+    unknown_check = {
+        "id": "rear_hook:motion:front:guard_low",
+        "code": "guard_low",
+        "name": "非手护位偏低（试用）",
+        "status": "legacy_unknown_state",
+        "review": "pending",
+        "reason": "旧状态提示",
+        "measurements": [],
+    }
+    text = format_report(
+        {
+            "action": "rear_hook",
+            "stance": "left",
+            "result": {"backend": "mediapipe", "checks": [unknown_check]},
+        }
+    )
+    assert "（试用）" not in text
+    assert "未完成判断的项目" in text
+    assert "后手摆拳 / 动作过程 / 全身：非手护位偏低；旧状态提示" in text
+
+    svg = generate_phase_timeline_svg(
+        [
+            PhaseTimelineItem(
+                segment="rear_hook",
+                phase="prepare",
+                title="后手摆拳 · 预摆",
+                time_range_text="0.0s-0.4s",
+                start_seconds=0.0,
+                end_seconds=0.4,
+                candidate_count=0,
+                not_observed_count=0,
+                unable_count=0,
+            ),
+            PhaseTimelineItem(
+                segment="rear_hook",
+                phase="motion",
+                title="后手摆拳 · 过程",
+                time_range_text="0.4s-1.0s",
+                start_seconds=0.4,
+                end_seconds=1.0,
+                candidate_count=0,
+                not_observed_count=1,
+                unable_count=0,
+            ),
+        ],
+        StatusCounts(
+            total_checks=1,
+            candidate_count=0,
+            confirmed_count=0,
+            unconfirmed_count=0,
+            revoked_count=0,
+            not_observed_count=1,
+            unable_count=0,
+        ),
+    )
+    assert "#F8FAFC" in svg
+    assert ">—<" in svg
+    assert ">✓<" in svg

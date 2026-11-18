@@ -253,6 +253,7 @@ def check_practice_history(report: dict, video: Path) -> tuple[object, dict]:
     assert result["inputViews"] == ["front", "side"]
     assert result["ruleVersion"] == RULE_VERSION
     assert result["poseVariant"] == "full"
+    assert result["checks"]
     assert all(c["status"] == "unable" for c in result["checks"])
     assert all(
         c["analyzedFrames"] == 24 and c["stride"] == 1

@@ -1,7 +1,7 @@
 # Issue #57：公共能力复用整改与修复方案
 
 > [!NOTE]
-> **2026-11-18 更新**：本文中涉及的“`pending_rule`（未自动检查）、`trial`（试用）与分模型资格门禁”机制已全面废止；所有已实现规则在全模型（`lite` / `full` / `heavy`）下直接正式启用，检查结果严格收敛为三态（`candidate` / `not_observed` / `unable`），详见 `AGENTS.md`。
+> **2026-11-18 更新**：本文中涉及的“`pending_rule`（未自动检查）、`trial`（试用）与分模型资格门禁”机制已全面废止；所有已实现规则在全模型（`lite` / `full` / `heavy`）下直接正式启用，练习检查结果严格收敛为三态（`candidate` / `not_observed` / `unable`），考试与 batch 规则结论严格收敛为三态（`violation` / `pass` / `unable`），详见 `AGENTS.md`。
 
 日期：2026-11-07。状态：按用户审查反馈纠正同步录像的共用方式，并补齐证据出口与图片预算。最新实施与验收见[审查补修与共享动作结果](Issue57_审查补修与共享动作结果.md)。
 

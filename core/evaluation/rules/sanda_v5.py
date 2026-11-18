@@ -120,13 +120,15 @@ def _append_segment_checks(add: Callable[..., None], segment: str) -> None:
                 continue
             add(code, segment, phase, guard, source=source)
         if segment == "rear_hook":
-            for code in ("guard_low", "guard_back", "guard_elbow"):
+            for code in ("guard_low", "guard_elbow"):
                 add(code, segment, phase, "rear", source=SUMMARY)
             add("guard_recover", segment, phase, "front")
         if phase == "finish" or front:
             add("shoulder_level", segment, phase, role)
         if straight and phase == "finish":
             add("punch_extension", segment, phase, role, source=FORMAL)
+    if segment == "rear_hook":
+        add("guard_back", segment, "prepare", "rear", source=SUMMARY)
 
 
 def build_checks(

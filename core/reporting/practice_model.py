@@ -269,10 +269,15 @@ def get_headline_summary(
             rerecord_hint=False,
         )
     if _is_unjudgeable(c):
+        subtitle = (
+            "画面有效关键点不足或遮挡严重，无法判定动作对错。建议调整机位与光线后重新录制。"
+            if needs_rerecord
+            else "所有检查项目均为暂无法判断（未取得有效自动判定结论，详见下方各项说明）。"
+        )
         return HeadlineSummary(
             title="本次未能完成有效判断",
-            subtitle="画面有效关键点不足或遮挡严重，无法判定动作对错。建议调整机位与光线后重新录制。",
-            needs_rerecord=True,
+            subtitle=subtitle,
+            needs_rerecord=needs_rerecord,
             status_tone="unable",
             level="error",
             reason="所有检查项目均为证据不足或无法判定",

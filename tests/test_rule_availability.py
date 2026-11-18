@@ -152,7 +152,16 @@ def test_judged_when_enough_valid_frames():
 # --------------------------------------------------------------------------- #
 def test_unable_phase_not_found_when_no_valid_frames():
     by_code = _judge(_make_seq(n_valid=0, n_invalid=10))
-    assert by_code
+    assert set(by_code) == {
+        "stance_elbow",
+        "stance_height",
+        "stance_width",
+        "stance_knee",
+        "stance_toes",
+        "stance_rear_guard",
+        "stance_torso",
+        "guard_jaw",
+    }
     for c in by_code.values():
         assert c.state == RULE_STATE_UNABLE
         assert c.skip_reason == SKIP_PHASE_NOT_FOUND
@@ -296,3 +305,60 @@ def test_coco17_missing_groups_remain_structural_capability_gaps():
         "left_thumb",
         "right_thumb",
     }.issubset(missing)
+
+
+def test_absence_multi_rep_insufficient_frames_returns_unable_instead_of_pass():
+    """多段重复动作中若均未确认违规且至少一段有效帧不足，absence 检查必须归入 unable 而非 pass。"""
+    from core.evaluation.rules.engine import evaluate_rules
+    from core.evaluation.rules.spec import (
+        PhaseVerdict,
+        RuleContext,
+        RuleProfile,
+        RuleSpec,
+    )
+
+    def _check(lm, mask, _b_lm, _b_mask, _ctx):
+        n = len(lm)
+        return (
+            np.zeros(n, dtype=bool),
+            np.all(mask[:, (11,)], axis=1),
+            {"指标": (np.zeros(n), "torso")},
+        )
+
+    spec = RuleSpec(
+        code="rear_hook:prepare:rear:guard_back",
+        title="出拳前先向后拉手",
+        check=_check,
+        required=(11,),
+        view="side",
+        scope="rear_hook:prepare",
+        aggregation=PhaseVerdict(
+            min_valid=4,
+            valid_ratio=0.5,
+            trigger_ratio=0.5,
+            absence=True,
+        ),
+    )
+    profile = RuleProfile(name="test", rules=(spec,))
+    lm = np.zeros((8, 33, 4), dtype=np.float32)
+    mask = np.ones((8, 33), dtype=bool)
+    mask[5:, 11] = False  # 第 2 次仅 1 帧有效（< min_valid=4）
+    ctx = RuleContext(
+        view="side",
+        action="rear_hook",
+        stance="left",
+        params=FeedbackConfig(),
+        baseline=np.arange(4),
+        phase_windows={"rear_hook:prepare": np.arange(8)},
+        phase_instances={
+            "rear_hook:prepare": (
+                (1, np.array([0, 1, 2, 3])),
+                (2, np.array([4, 5, 6, 7])),
+            )
+        },
+    )
+    outcomes = evaluate_rules(lm, mask, profile, context=ctx)
+    assert len(outcomes) == 1
+    out = outcomes[0]
+    assert out.state == RULE_STATE_UNABLE
+    assert out.skip_reason == SKIP_INSUFFICIENT_VALID_FRAMES

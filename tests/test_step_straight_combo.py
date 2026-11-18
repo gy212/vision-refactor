@@ -344,12 +344,14 @@ def test_paired_torso_requires_synchronized_evidence() -> None:
     exam_reports = exam_pool.rule_reports(
         [targets["front"]], [targets["side"]], FeedbackConfig()
     )
-    assert all(
-        c.state == "violation" and "试用" not in c.detail
+    torso_reports = [
+        c
         for report in exam_reports
         for c in report["checks"]
         if c.code == "stance_torso"
-    )
+    ]
+    assert torso_reports
+    assert all(c.state == "violation" and "试用" not in c.detail for c in torso_reports)
 
     heavy = torso_check(
         evaluate_series(ACTION, "left", views, FeedbackConfig(pose_variant="heavy"))

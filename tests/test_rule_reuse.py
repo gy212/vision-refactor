@@ -125,6 +125,35 @@ def test_front_punch_contains_only_its_members_and_all_models_are_enabled_identi
         assert build_checks(action, "left", pose_variant="heavy") == base
         assert all("availability" not in c and "blockedReason" not in c for c in base)
 
+    # 验证同一检查项在 lite/full/heavy 下实际执行结论完全一致
+    lm = np.repeat(_base_pose()[None], 3, axis=0)
+    angle = np.deg2rad(60)
+    lm[:, 11, :2], lm[:, 13, :2] = (0.5, 0.3), (0.5, 0.5)
+    lm[:, 15, :2] = (0.5 + 0.2 * np.sin(angle), 0.5 - 0.2 * np.cos(angle))
+    outcomes = {}
+    for variant in ("lite", "full", "heavy"):
+        cfg = FeedbackConfig(pose_variant=variant)
+        profile = rule_profile("front_straight", "left", cfg)
+        rule = next(
+            r for r in profile.rules if r.code == "stance:start:front:stance_elbow"
+        )
+        ctx = RuleContext(
+            view="side",
+            action="front_straight",
+            stance="left",
+            params=cfg,
+            baseline=np.arange(3),
+            phase_windows={rule.scope: np.arange(3)},
+        )
+        outcomes[variant] = evaluate_rules(
+            lm,
+            np.ones(lm.shape[:2], bool),
+            replace(profile, rules=(rule,)),
+            context=ctx,
+        )[0]
+        assert outcomes[variant].state == "violation"
+    assert outcomes["lite"].state == outcomes["full"].state == outcomes["heavy"].state
+
 
 def test_paired_measurement_declares_its_reference_view_separately_from_display_view():
     rules = rule_profile("step_straight_combo", "left", FeedbackConfig()).rules

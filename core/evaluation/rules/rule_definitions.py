@@ -9,6 +9,7 @@ from core.evaluation.paired_torso import paired_torso_check
 from core.evaluation.rules.catalog_measurements import (
     FEET,
     measure_catalog,
+    measure_hook_shoulder_level,
     required_landmarks,
 )
 from core.evaluation.rules.feedback_config import FeedbackConfig
@@ -217,6 +218,8 @@ def _strategy_points(
         "elbow_extension_at_peak",
     }:
         return posture_landmarks(code, role, stance)
+    if strategy == "hook_arm_shoulder_level":
+        return required_landmarks(strategy, role, stance)
     return required_landmarks(code, role, stance)
 
 
@@ -248,6 +251,12 @@ def _phase_measurement(
             return measure_posture(code, role, lm, mask, ctx)
         if code in STRAIGHT_RULES:
             return measure_straight(code, role, lm, mask, baseline, baseline_mask, ctx)
+        if strategy == "hook_arm_shoulder_level":
+            details = {}
+            bad, valid = measure_hook_shoulder_level(
+                role, lm, mask, ctx.stance, ctx.params, details
+            )
+            return bad, valid, details
         details = {}
         bad, valid = measure_catalog(
             code,
@@ -287,6 +296,17 @@ def resolve_rule(check: dict, stance: str) -> RuleDefinition:
         view = _kick_view(code, segment)
         name, description, source = _kick_description(check)
         overrides = dict(KICK_PARAMS)
+    elif segment.endswith("_hook"):
+        if code == "shoulder_level":
+            strategy = "hook_arm_shoulder_level"
+            description = "出拳时拳与肘均应大致与肩齐平"
+        elif (
+            segment == "rear_hook"
+            and check["phase"] == "prepare"
+            and code == "guard_back"
+        ):
+            name = "出拳前先向后拉手"
+            description = "出拳前护手保持原护位，不先向后预摆拉手"
     required = _strategy_points(strategy, code, role, stance, view, segment)
     paired = strategy in {
         "paired_shoulder_projection_ratio",

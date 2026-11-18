@@ -174,6 +174,9 @@ def _measure_baseline_relative_rule(
 ) -> tuple[np.ndarray, np.ndarray, dict]:
     """处理依赖起始护位基线（正面翻胯、低头）的低鞭腿规则。"""
     cfg = ctx.params
+    if "stance:start" not in ctx.phase_windows:
+        ctx.measurement_issues.append("缺少起始护位窗口，无法确定正面翻胯或低头基线")
+        return _empty_result(len(lm))
     torso = chain_torso(lm, mask)
     base_torso = chain_torso(baseline, baseline_mask)
     if strategy == "frontal_hip_width_ratio":

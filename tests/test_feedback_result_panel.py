@@ -237,7 +237,7 @@ def test_result_panel_instantiation_and_style_a_structure():
         root.destroy()
 
 
-def test_history_view_handles_legacy_pending_rule_without_keyerror():
+def test_history_view_handles_legacy_pending_rule_without_keyerror(tmp_path):
     """存量历史记录含旧版 pending_rule 或（试用）后缀时，历史弹窗辅助函数自动归入 unable 且不抛 KeyError。"""
     from apps.tk.views.practice_history import check_detail_text, check_state_text
     from core.evaluation import STATE_LABELS
@@ -258,6 +258,27 @@ def test_history_view_handles_legacy_pending_rule_without_keyerror():
     assert "未充分翻胯\n" in detail
     assert "（试用）" not in detail
     assert "旧门禁拦截原因" in detail
+
+    # 缺少 reviewHistory / name 时不抛 KeyError 且安全降级
+    no_history_detail = check_detail_text({"result": {}}, {"status": "unable"})
+    assert "未命名检查项\n" in no_history_detail
+
+    win_root = tk.Tk()
+    win_root.withdraw()
+    try:
+        from apps.tk.views.practice_history import EvidenceWindow
+
+        win = EvidenceWindow(
+            win_root,
+            record={"result": {"evidence": []}},
+            check={"name": "抬手过慢（试用）", "evidence": []},
+            directory=tmp_path,
+        )
+        assert "抬手过慢" in win.window.title()
+        assert "（试用）" not in win.window.title()
+        win.window.destroy()
+    finally:
+        win_root.destroy()
 
 
 def test_result_panel_clear_resets_content():

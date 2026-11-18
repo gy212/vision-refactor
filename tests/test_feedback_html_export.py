@@ -14,10 +14,12 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import html
+from html.parser import HTMLParser
 import os
 from pathlib import Path
 import re
 from typing import Any
+from urllib.parse import urlsplit
 
 import cv2
 import numpy as np
@@ -238,6 +240,25 @@ def test_html_report_strictly_zero_external_links():
     # 清理合法的 XML namespace 声明字符串 (http://www.w3.org/2000/svg)
     scrubbed = html_content.replace("http://www.w3.org/2000/svg", "")
     scrubbed = scrubbed.replace("http://www.w3.org/1999/xlink", "")
+
+    class _AttrUrlCollector(HTMLParser):
+        def __init__(self) -> None:
+            super().__init__()
+            self.urls: list[str] = []
+
+        def handle_starttag(
+            self, tag: str, attrs: list[tuple[str, str | None]]
+        ) -> None:
+            for attr, val in attrs:
+                if attr in {"src", "href"} and val:
+                    self.urls.append(val)
+
+    collector = _AttrUrlCollector()
+    collector.feed(html_content)
+    for url in collector.urls:
+        parsed = urlsplit(url)
+        assert parsed.scheme in {"", "data"}, f"发现非自包含外链 scheme: {url}"
+        assert parsed.netloc == "", f"发现外部域名/协议相对外链: {url}"
 
     # 严格断言零 http:// 与 https:// 与 // 协议链接
     assert "http://" not in scrubbed, "HTML 报告中检测到外部 http:// 链接！"

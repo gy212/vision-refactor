@@ -875,3 +875,188 @@ def test_coderabbit_pr66_review_regressions():
     assert gb_chk["parameterOverrides"]["kick_guard_back_side"] == pytest.approx(
         KICK_PARAMS["kick_guard_back_side"]
     )
+
+
+def _make_hook_sequence(
+    *,
+    action: str = "hook_combo",
+    view: str = "side",
+    pullback_rear: bool = False,
+    drop_front_elbow: bool = False,
+    mask_front_elbow: bool = False,
+) -> tuple[np.ndarray, dict]:
+    """构造单摆拳 / 组合摆拳合成 Pose33 序列（用于验证 [P1-1] 预摆后拉 与 [P1-2] 拳肘同平）。"""
+    total = 135
+    lm = np.zeros((total, 33, 4), dtype=np.float32)
+    lm[:, :, 3] = 0.95
+    lm[:, 0, :2] = (0.54, 0.12)
+    lm[:, [11, 12], :2] = [(0.52, 0.28), (0.48, 0.28)]
+    lm[:, [23, 24], :2] = [(0.51, 0.62), (0.49, 0.62)]
+    lm[:, [25, 26], :2] = [(0.53, 0.76), (0.47, 0.76)]
+    lm[:, [27, 28], :2] = [(0.54, 0.90), (0.46, 0.90)]
+    lm[:, [29, 30], :2] = [(0.53, 0.92), (0.45, 0.92)]
+    lm[:, [31, 32], :2] = [(0.56, 0.92), (0.48, 0.92)]
+    lm[:, [13, 14], :2] = [(0.55, 0.36), (0.48, 0.36)]
+    lm[:, [15, 16], :2] = [(0.62, 0.20), (0.54, 0.20)]
+
+    events = (
+        [("front_hook", 35, 55), ("rear_hook", 80, 100)]
+        if action == "hook_combo"
+        else [("rear_hook", 55, 75)]
+    )
+    for name, start, end in events:
+        front = name.startswith("front_")
+        el, wr = (13, 15) if front else (14, 16)
+        if not front and pullback_rear:
+            # 出拳前 prepare 窗口向后拉手 ~0.22*torso（超过 guard_back=0.18），随后回过基准点向前挥拳
+            lm[start - 10 : start - 2, wr, 0] = 0.465
+            lm[start - 10 : start - 2, el, 0] = 0.42
+        for t in range(start, end + 1):
+            p = math.sin(math.pi * (t - start) / (end - start))
+            if view == "side":
+                lm[t, wr, :2] = (0.62 + 0.36 * p, 0.20 + 0.08 * p)
+                el_y = (
+                    (0.36 + 0.24 * p)
+                    if (front and drop_front_elbow)
+                    else (0.36 - 0.08 * p)
+                )
+                lm[t, el, :2] = (0.55 + 0.26 * p, el_y)
+            else:
+                dx = -0.32 * p if front else 0.32 * p
+                lm[t, wr, :2] = ((0.62 if front else 0.42) + dx, 0.20 + 0.08 * p)
+                el_y = (
+                    (0.36 + 0.24 * p)
+                    if (front and drop_front_elbow)
+                    else (0.36 - 0.08 * p)
+                )
+                lm[t, el, :2] = ((0.55 if front else 0.45) + 0.6 * dx, el_y)
+        if front and mask_front_elbow:
+            lm[start : end + 1, el, 3] = 0.0
+
+    meta = {"width": 100, "height": 100, "fps": 30.0, "start_frame": 0}
+    return lm, meta
+
+
+def test_pr67_hook_prepare_pullback_and_shoulder_level_require_elbow():
+    """验证 [P1-1] 后手摆拳准备预摆检出 与 [P1-2] 摆拳肘手同高缺失肘点判定 unable。"""
+    cfg = FeedbackConfig(pose_variant="heavy")
+    for action in ("rear_hook", "hook_combo"):
+        lm_f_ok, mf = _make_hook_sequence(
+            action=action, view="front", pullback_rear=False
+        )
+        lm_s_ok, ms = _make_hook_sequence(
+            action=action, view="side", pullback_rear=False
+        )
+        res_ok = evaluate_series(
+            action,
+            "left",
+            {
+                "front": series_from_raw(lm_f_ok, mf),
+                "side": series_from_raw(lm_s_ok, ms),
+            },
+            cfg,
+        )
+        gb_ok = next(
+            c
+            for c in res_ok["checks"]
+            if c["id"] == "rear_hook:prepare:rear:guard_back"
+        )
+        assert gb_ok["status"] == "not_observed"
+
+        lm_f_bad, mf = _make_hook_sequence(
+            action=action, view="front", pullback_rear=True
+        )
+        lm_s_bad, ms = _make_hook_sequence(
+            action=action, view="side", pullback_rear=True
+        )
+        res_bad = evaluate_series(
+            action,
+            "left",
+            {
+                "front": series_from_raw(lm_f_bad, mf),
+                "side": series_from_raw(lm_s_bad, ms),
+            },
+            cfg,
+        )
+        gb_bad = next(
+            c
+            for c in res_bad["checks"]
+            if c["id"] == "rear_hook:prepare:rear:guard_back"
+        )
+        assert gb_bad["status"] == "candidate"
+
+    # [P1-2]: front_hook / hook_combo 拳在肩高但肘部明显下沉时应检出，缺失肘关键点时应为 unable
+    lm_f_drop, mf = _make_hook_sequence(
+        action="hook_combo", view="front", drop_front_elbow=True
+    )
+    lm_s_drop, ms = _make_hook_sequence(
+        action="hook_combo", view="side", drop_front_elbow=True
+    )
+    res_drop = evaluate_series(
+        "hook_combo",
+        "left",
+        {
+            "front": series_from_raw(lm_f_drop, mf),
+            "side": series_from_raw(lm_s_drop, ms),
+        },
+        cfg,
+    )
+    sl_drop = next(
+        c
+        for c in res_drop["checks"]
+        if c["id"] == "front_hook:motion:front:shoulder_level"
+    )
+    assert sl_drop["status"] == "candidate"
+
+    lm_f_miss, mf = _make_hook_sequence(
+        action="hook_combo", view="front", mask_front_elbow=True
+    )
+    lm_s_miss, ms = _make_hook_sequence(
+        action="hook_combo", view="side", mask_front_elbow=True
+    )
+    res_miss = evaluate_series(
+        "hook_combo",
+        "left",
+        {
+            "front": series_from_raw(lm_f_miss, mf),
+            "side": series_from_raw(lm_s_miss, ms),
+        },
+        cfg,
+    )
+    sl_miss = next(
+        c
+        for c in res_miss["checks"]
+        if c["id"] == "front_hook:motion:front:shoulder_level"
+    )
+    assert sl_miss["status"] == "unable"
+
+
+def test_kick_measure_without_stance_start_records_issue_and_returns_empty():
+    """缺少 stance:start 窗口时，低鞭腿相对基线测量不抛 KeyError 且安全返回空结果。"""
+    from core.evaluation.rules.kick_measures import measure_kick
+    from core.evaluation.rules.spec import RuleContext
+
+    lm, _ = _make_kick_sequence(stance="left", view="front", n_kicks=1)
+    mask = np.ones((len(lm), 33), dtype=bool)
+    issues: list[str] = []
+    ctx = RuleContext(
+        view="front",
+        action="step_front_low_kick",
+        stance="left",
+        params=FeedbackConfig(),
+        phase_windows={},
+        measurement_issues=issues,
+    )
+    bad, valid, _vals = measure_kick(
+        "nose_shoulder_drop",
+        "front",
+        lm,
+        mask,
+        lm[:8],
+        mask[:8],
+        ctx,
+        "rear_low_kick:motion",
+    )
+    assert not bad.any()
+    assert not valid.any()
+    assert any("缺少起始护位窗口" in msg for msg in issues)

@@ -117,6 +117,18 @@ def _check_name(check: dict) -> str:
     return str(check.get("name") or "未命名检查项").removesuffix("（试用）")
 
 
+def _check_labels(check: dict) -> tuple[str, str, str]:
+    parts = str(check.get("id") or "").split(":")
+    seg = check.get("segment") or (parts[0] if parts else "")
+    phase = check.get("phase") or (parts[1] if len(parts) > 1 else "")
+    seg_label = (
+        check.get("segmentLabel") or SEGMENT_LABELS.get(seg) or ACTIONS.get(seg, seg)
+    )
+    phase_label = check.get("phaseLabel") or PHASES.get(phase, phase)
+    body_part = check.get("bodyPart") or "全身"
+    return seg_label, phase_label, body_part
+
+
 def format_report(record: dict) -> str:
     result = record.get("result") or {}
     checks = saved_checks(result)
@@ -157,8 +169,9 @@ def format_report(record: dict) -> str:
     ]
     for i, c in enumerate(issues, 1):
         state = "教师已确认" if c.get("review") == "confirmed" else "待教师确认"
+        seg_label, phase_label, body_part = _check_labels(c)
         lines.append(
-            f"{i}. {c['segmentLabel']} / {c['phaseLabel']} / {c['bodyPart']}：{_check_name(c)}（{state}）"
+            f"{i}. {seg_label} / {phase_label} / {body_part}：{_check_name(c)}（{state}）"
         )
         if c.get("fusion"):
             lines.append(format_fusion(c))
@@ -169,8 +182,9 @@ def format_report(record: dict) -> str:
         lines += ["", "未完成判断的项目："]
         for c in incomplete:
             reason = c.get("reason") or c.get("blockedReason") or "暂无法判断"
+            seg_label, phase_label, body_part = _check_labels(c)
             lines.append(
-                f"- {c['segmentLabel']} / {c['phaseLabel']} / {c['bodyPart']}：{_check_name(c)}；{reason}"
+                f"- {seg_label} / {phase_label} / {body_part}：{_check_name(c)}；{reason}"
             )
             if c.get("measurements"):
                 lines.append(format_fusion(c))
@@ -183,8 +197,9 @@ def format_report(record: dict) -> str:
         lines += ["", "已检查未发现的问题项（不代表全部动作合格）："]
         for c in checks:
             if _effective_status(c) == "not_observed":
+                seg_label, phase_label, _ = _check_labels(c)
                 lines += [
-                    f"- {c['segmentLabel']} / {c['phaseLabel']}：{_check_name(c)}",
+                    f"- {seg_label} / {phase_label}：{_check_name(c)}",
                     format_fusion(c),
                 ]
     return "\n".join(lines) + "\n"

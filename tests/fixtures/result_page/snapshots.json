@@ -2,7 +2,7 @@
   "with_video": [
     [
       "loaded",
-      "63acd6a9e337d6a1cc16cd0d024e26695c7919b99fc0b93160ffbeb45704aa86"
+      "9a057dd932ed8919b2f0236695c993d98913a3c09b2e041efd5a01cc96ab5951"
     ],
     [
       "phase:start",
@@ -14,11 +14,11 @@
     ],
     [
       "phase:finish",
-      "1e132ccaa5f4eae99cc79755d4a63457fe9c84b112a4d8a3f083f15ab14e18f9"
+      "94f3abda90ca0fb2739e0762ff8458371cfde6160ab4123ca2133f6158fe7a46"
     ],
     [
       "phase:end",
-      "a7b8b8a007195b796478ec01424f82163bc3dc6d367d14829919329787b93d62"
+      "aa91a194d103c4e07748778cd414ca4836754c049d8de462aa16fe363cfa0cda"
     ],
     [
       "phase:segment",
@@ -26,7 +26,7 @@
     ],
     [
       "phase:None",
-      "63acd6a9e337d6a1cc16cd0d024e26695c7919b99fc0b93160ffbeb45704aa86"
+      "9a057dd932ed8919b2f0236695c993d98913a3c09b2e041efd5a01cc96ab5951"
     ],
     [
       "status:candidate",
@@ -34,43 +34,43 @@
     ],
     [
       "status:not_observed",
-      "e70ce96ad6408aeb3977b3631b5bb6df2f1f65552d091ca702f677ed9b8d6d44"
+      "af0b23e8aaf95428192f939ec899446899130a98089326367d4425ad0b8e9bd5"
     ],
     [
       "status:unable",
-      "1558802a835c17b3a7f2a8f263615e081fa8bee40d9465f0ca788ed892eadcc9"
+      "70e1f4f485fe866af51813b36f26d19a9ce50e5fc2980b0f32826cc7f0e6a4e7"
     ],
     [
       "status:revoked",
-      "a2b5cc705673f7b0b579c8b45df648ea1ff21310f256556359e5c0af03378792"
+      "906daf16c6e5181c5ce02d2c2a1308b6f5cb68f67a7fbdffa98873ba1041519b"
     ],
     [
       "status:all",
-      "6be3073e4b8da2f520d4d1491eed876a18d74c1077c757d11a507dcffbab5cbf"
+      "34d7ef5457b8d3892e2f0eff9a810ed49d9e5587ae82def7eec7941c738f35cc"
     ],
     [
       "check:stance:start:front:stance_elbow",
-      "6be3073e4b8da2f520d4d1491eed876a18d74c1077c757d11a507dcffbab5cbf"
+      "34d7ef5457b8d3892e2f0eff9a810ed49d9e5587ae82def7eec7941c738f35cc"
     ],
     [
       "check:front_straight:motion:front:guard_low",
-      "c1edfacf61467e438094a7c22dffab5e629da78a3a89bb408a5314d6bb43d625"
+      "20b119564f28f6671c618cc848f2c35a32a0a795399b80df47f800818942d271"
     ],
     [
       "check:rear_straight:motion:front:guard_back",
-      "26791a6379d8dd3eed727a2a58061bbea8772de000d35df43435f4100af1cd33"
+      "58142530bc024b3b1c69227340f03838849e30e3778f115df65b0b2b451742e2"
     ],
     [
       "check:rear_straight:finish:front:hip_turn",
-      "6bbccdd04dfb0c4a48bd0451ea243e828edf7824f1dc525fc4ea6111dadb6e95"
+      "f7529d0343e8e451ba7dcff7cb6837bdcf4cb4387f15e4fee075547d54db6a2c"
     ],
     [
       "check:stance:end:front:stance_knee",
-      "30e350384d8fae7cdad59650d3b02973a94464e437bfd4607a7b62f5f87c80a9"
+      "497227ac53b64cb2b614bcea6a932a42b452b3e26618ccfc2ea07614f01863e6"
     ],
     [
       "check:front_straight:finish:front:punch_extension",
-      "8ac8d7bcb7f744c2fec0974c62df91b9d3fc905ce6c08346cdabf1b36b837447"
+      "341af3162c52c41c3f39c527e345f728bc73ae732597fb7c3ff3e5784ef9550f"
     ],
     [
       "cleared",

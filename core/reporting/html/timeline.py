@@ -77,13 +77,22 @@ def _node_style(
             "#E2E8F0",
             COLOR_UNABLE,
         )
+    if phase.not_observed_count > 0:
+        return (
+            "#FFFFFF",
+            _START_BORDER if i == 0 else "#D8E0EA",
+            _START_ACCENT if i == 0 else "#10B981",
+            "✓",
+            COLOR_NOT_OBSERVED_BG,
+            COLOR_NOT_OBSERVED,
+        )
     return (
-        "#FFFFFF",
-        _START_BORDER if i == 0 else "#D8E0EA",
-        _START_ACCENT if i == 0 else "#10B981",
-        "✓",
-        COLOR_NOT_OBSERVED_BG,
-        COLOR_NOT_OBSERVED,
+        "#F8FAFC",
+        "#D8E0EA",
+        "#64748B",
+        "—",
+        "#F1F5F9",
+        "#64748B",
     )
 
 

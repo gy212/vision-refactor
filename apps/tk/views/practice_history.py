@@ -27,15 +27,18 @@ def check_state_text(check: dict) -> str:
 
 def check_detail_text(record: dict, check: dict) -> str:
     """检查项的标准、出处、原因、融合说明与复核记录。"""
+    check_id = check.get("id")
     audit = [
         entry
-        for entry in record["result"]["reviewHistory"]
-        if entry["checkId"] == check["id"]
+        for entry in (record.get("result") or {}).get("reviewHistory", [])
+        if check_id and entry.get("checkId") == check_id
     ]
     name = str(check.get("name") or "未命名检查项").removesuffix("（试用）")
+    standard = check.get("standard") or "未记录"
+    source = check.get("source") or "未记录"
     reason = check.get("reason") or check.get("blockedReason") or "暂无法判断"
     return (
-        f"{name}\n标准：{check['standard']}\n出处：{check['source']}\n{reason}\n{format_fusion(check)}\n"
+        f"{name}\n标准：{standard}\n出处：{source}\n{reason}\n{format_fusion(check)}\n"
         + "\n".join(
             f"{e['at']} {e['teacher']}：{'确认' if e['after'] == 'confirmed' else '撤销'} {e['reason']}"
             for e in audit
@@ -260,7 +263,8 @@ class EvidenceWindow:
         refs = set(check["evidence"])
         items = [e for e in record["result"]["evidence"] if e["id"] in refs]
         window = self.window = Toplevel(root)
-        window.title("证据帧 · " + check["name"])
+        clean_name = str(check.get("name") or "未命名检查项").removesuffix("（试用）")
+        window.title("证据帧 · " + clean_name)
         window._photos = []
         if not items:
             ttk.Label(
