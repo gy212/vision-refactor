@@ -1,5 +1,8 @@
 # Issue #57：公共能力复用整改与修复方案
 
+> [!NOTE]
+> **2026-11-18 更新**：本文中涉及的“`pending_rule`（未自动检查）、`trial`（试用）与分模型资格门禁”机制已全面废止；所有已实现规则在全模型（`lite` / `full` / `heavy`）下直接正式启用，检查结果严格收敛为三态（`candidate` / `not_observed` / `unable`），详见 `AGENTS.md`。
+
 日期：2026-11-07。状态：按用户审查反馈纠正同步录像的共用方式，并补齐证据出口与图片预算。最新实施与验收见[审查补修与共享动作结果](Issue57_审查补修与共享动作结果.md)。
 
 关联：[Issue #57](https://github.com/gy212/vision-refactor/issues/57)、[PR #56](https://github.com/gy212/vision-refactor/pull/56)。本文保留批准时的问题上下文和修复要求。实现、测试、真实缓存回放及尚未解决事项以实施记录为准；本次没有重新进行姿态推理。

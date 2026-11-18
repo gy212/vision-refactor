@@ -10,6 +10,7 @@ Empirical verification of:
 6. Presence gate completely disarmed on "再练一次" and cannot trigger recording automatically.
 7. Result panel rapid set_record stress test (100 rapid reloads).
 """
+
 from __future__ import annotations
 
 import gc
@@ -58,6 +59,7 @@ def _pumped(root):
 # Test Helpers & Fixtures
 # ---------------------------------------------------------------------------
 
+
 def make_stress_record(
     student_id: str = "001",
     student_name: str = "测试学员",
@@ -103,7 +105,6 @@ def make_stress_record(
                     "status": "candidate",
                     "review": "pending",
                     "reason": f"左肘角偏差 (token={token})",
-                    "blockedReason": "",
                     "role": "front",
                     "measurements": [],
                     "evidence": [],
@@ -122,7 +123,6 @@ def make_stress_record(
                     "status": "not_observed",
                     "review": "pending",
                     "reason": "护手保持正常",
-                    "blockedReason": "",
                     "role": "rear",
                     "measurements": [],
                     "evidence": [],
@@ -139,10 +139,15 @@ def make_stress_record(
 
 def make_test_app(root, student_id="001"):
     """已进入练习、最近片段可评判的应用；身份在开录瞬间读界面学号，结果页与左侧/预览容器换成 MagicMock。"""
-    app = practice_app(root, student_id=student_id,
-                       identity=lambda: {"studentId": app.window.practice.controls.student_id.get()})
+    app = practice_app(
+        root,
+        student_id=student_id,
+        identity=lambda: {"studentId": app.window.practice.controls.student_id.get()},
+    )
     app.recording.service = SimpleNamespace(state="idle")
-    app.practice.practice.segment = PracticeSegment("record_0", None, ready=True, terminal=True)
+    app.practice.practice.segment = PracticeSegment(
+        "record_0", None, ready=True, terminal=True
+    )
     app.window.left_container = MagicMock()
     app.window.preview.frame = MagicMock()
     app.window.result_panel = MagicMock()
@@ -151,7 +156,10 @@ def make_test_app(root, student_id="001"):
 
 def fresh_practice(app):
     """同一应用上换一轮新的练习流程（避免逐轮重建窗口）。"""
-    practice = activate_practice(app, identity=lambda: {"studentId": app.window.practice.controls.student_id.get()})
+    practice = activate_practice(
+        app,
+        identity=lambda: {"studentId": app.window.practice.controls.student_id.get()},
+    )
     practice.segment = PracticeSegment("record_0", None, ready=True, terminal=True)
     app.window.result_panel.reset_mock()
 
@@ -174,6 +182,7 @@ def dispatch_analysis(app, token, student_id):
 # ===========================================================================
 # 1. Worker Completion after Cancellation
 # ===========================================================================
+
 
 def test_worker_completion_after_cancellation(root):
     """压力测试 1：取消分析后，模拟后台工作线程回调到达。
@@ -213,8 +222,15 @@ def test_worker_completion_after_cancellation_feedback_panel_integration():
     panel = None
     try:
         show_result = Mock()
-        panel = PracticeControls(root, root=root, post=_pumped(root), set_busy=lambda _busy: None, show_result=show_result,
-                                 set_status=lambda _text: None, can_analyze=lambda: True)
+        panel = PracticeControls(
+            root,
+            root=root,
+            post=_pumped(root),
+            set_busy=lambda _busy: None,
+            show_result=show_result,
+            set_status=lambda _text: None,
+            can_analyze=lambda: True,
+        )
         on_saved_mock = Mock()
         finish = threading.Event()
 
@@ -248,6 +264,7 @@ def test_worker_completion_after_cancellation_feedback_panel_integration():
 # ===========================================================================
 # 2. Worker Completion after Student ID Change
 # ===========================================================================
+
 
 def test_worker_completion_after_student_id_change_via_event(root):
     """压力测试 2a：学生 A 任务在跑，用户修改学号为 B 并触发 identity_changed 事件。"""
@@ -325,6 +342,7 @@ def test_student_rapid_switch_a_to_b_execution(root):
 # 3. Worker Completion after "再练一次"
 # ===========================================================================
 
+
 def test_worker_completion_after_practice_again(root):
     """压力测试 3：已完成任务切换到结果页，用户点击“再练一次”，随后收到旧任务的迟到/重复回调。
 
@@ -378,6 +396,7 @@ def test_worker_completion_after_practice_again(root):
 # 4. 50 Rapid Sequential Analyses with Out-of-Order Completions
 # ===========================================================================
 
+
 def test_50_rapid_sequential_dispatches_out_of_order(root):
     """压力测试 4：快速发起 50 次连续分析，模拟后台 worker 乱序（甚至逆序、随机重排）返回。
 
@@ -413,7 +432,9 @@ def test_50_rapid_sequential_dispatches_out_of_order(root):
         for token in completion_order:
             rec = records[token]
             before_call_count = app.window.result_panel.set_record.call_count
-            app.practice.analysis_saved(token=token, student_id="student_001", record=rec)
+            app.practice.analysis_saved(
+                token=token, student_id="student_001", record=rec
+            )
             after_call_count = app.window.result_panel.set_record.call_count
 
             if after_call_count > before_call_count:
@@ -449,20 +470,29 @@ def test_out_of_order_where_latest_token_completes_first(root):
     # 代次 50 最先完成
     app.practice.analysis_saved(token=50, student_id="student_001", record=records[50])
     assert app.window.result_panel.set_record.call_count == 1
-    assert app.practice.practice.current_record["result"]["checks"][0]["id"] == "chk:start:front:stance_elbow_50"
+    assert (
+        app.practice.practice.current_record["result"]["checks"][0]["id"]
+        == "chk:start:front:stance_elbow_50"
+    )
 
     # 代次 49 到 1 依次迟到
     for old_token in range(49, 0, -1):
-        app.practice.analysis_saved(token=old_token, student_id="student_001", record=records[old_token])
+        app.practice.analysis_saved(
+            token=old_token, student_id="student_001", record=records[old_token]
+        )
 
     # 严苛断言：set_record 仍然只被调用过 1 次，当前记录依然是代次 50
     assert app.window.result_panel.set_record.call_count == 1
-    assert app.practice.practice.current_record["result"]["checks"][0]["id"] == "chk:start:front:stance_elbow_50"
+    assert (
+        app.practice.practice.current_record["result"]["checks"][0]["id"]
+        == "chk:start:front:stance_elbow_50"
+    )
 
 
 # ===========================================================================
 # 5. Practice Again Camera Loop: 150+ _tick() Invocations in Result View
 # ===========================================================================
+
 
 def _publish_pair(store, tick_idx, actions):
     """runner 侧：发布一对 BGR 帧（160x120），主路带动作文本。"""
@@ -477,10 +507,16 @@ def test_camera_loop_150_ticks_in_result_view(root):
     验证：隐藏的双摄预览上连续换图无 TclError；预览槽每次都被取走、无积压；切回预览后画面照常刷新。
     """
     store = PreviewStore(1, lambda _role: (1, 1))
-    app = build_app(root, live=FakeLive("running", preview=store,
-                                        config=SimpleNamespace(dual=True, is_file=False)))
+    app = build_app(
+        root,
+        live=FakeLive(
+            "running", preview=store, config=SimpleNamespace(dual=True, is_file=False)
+        ),
+    )
     window = app.window
-    window.show_result_page(make_stress_record("student_001"))   # 进入结果视图：控制区与预览隐藏
+    window.show_result_page(
+        make_stress_record("student_001")
+    )  # 进入结果视图：控制区与预览隐藏
     actions = window.status.actions_var
     TICKS_COUNT = 150
     gc.collect()
@@ -491,7 +527,7 @@ def test_camera_loop_150_ticks_in_result_view(root):
         assert store.take_newer(0) is None, f"Preview not drained at tick {tick_idx}"
     assert actions.get() == f"Action Tick {TICKS_COUNT - 1}"
 
-    window.show_preview_page()   # 「再练一次」切回录制预览
+    window.show_preview_page()  # 「再练一次」切回录制预览
     for tick_idx in range(TICKS_COUNT, TICKS_COUNT + 50):
         _publish_pair(store, tick_idx, f"Resumed Tick {tick_idx}")
         app.ui.pump()
@@ -502,6 +538,7 @@ def test_camera_loop_150_ticks_in_result_view(root):
 # ===========================================================================
 # 6. Presence Gate Completely Disarmed on "再练一次"
 # ===========================================================================
+
 
 def test_presence_gate_completely_disarmed_on_practice_again(root, monkeypatch):
     """压力测试 6：验证点击“再练一次”后，站位检测被彻底解除，学生站入黄框绝不会自动触发录制。
@@ -518,10 +555,13 @@ def test_presence_gate_completely_disarmed_on_practice_again(root, monkeypatch):
     # 1. 模拟处于已完成评判、正在显示结果的状态
     app.practice.practice.phase = "showing_result"
     app.practice.practice.presence.arm_enter()
-    begin_record_mock = MagicMock(return_value=SimpleNamespace(segment_id="record_1", directory=None))
+    begin_record_mock = MagicMock(
+        return_value=SimpleNamespace(segment_id="record_1", directory=None)
+    )
+
     def begin(_intent=None, on_confirm=None):
         segment = begin_record_mock()
-        if on_confirm is not None:   # 两路写出首帧的确认（真实录制经 Tk 线程回送）
+        if on_confirm is not None:  # 两路写出首帧的确认（真实录制经 Tk 线程回送）
             on_confirm(segment, None)
         return segment
 
@@ -536,7 +576,9 @@ def test_presence_gate_completely_disarmed_on_practice_again(root, monkeypatch):
 
     # 3. 对抗压力：会话线程经 presence 事件投递站位采样（连续 150 次有人，持续 15 秒）
     def presence(at):
-        app.session.handle(SessionEvent("presence", app.session.live.token, PresenceSample(True, at)))
+        app.session.handle(
+            SessionEvent("presence", app.session.live.token, PresenceSample(True, at))
+        )
 
     base_time = time.monotonic()
     for i in range(150):
@@ -567,6 +609,7 @@ def test_presence_gate_completely_disarmed_on_practice_again(root, monkeypatch):
 # ===========================================================================
 # 7. Result Panel Rapid Set Record Stress Test (100 Reloads)
 # ===========================================================================
+
 
 def test_result_panel_rapid_set_record_stress():
     """压力测试 7：快速对 FeedbackResultPanel 调用 100 次 set_record() 与 clear()。

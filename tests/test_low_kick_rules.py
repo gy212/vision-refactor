@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import copy
 import math
 import sys
 from pathlib import Path
@@ -47,7 +46,6 @@ from core.evaluation.measures.kicks import (  # noqa: E402
 )
 from core.evaluation.rule_checks import ACTION_BY_NAME  # noqa: E402
 from core.evaluation.rules.kick_measures import kick_landmarks  # noqa: E402
-from core.evaluation.rules.kick_policy import apply_kick_availability  # noqa: E402
 from core.evaluation.rules.rule_descriptions import KICK_PARAMS  # noqa: E402
 from core.evaluation.rules.sanda_v5 import build_checks  # noqa: E402
 from core.evaluation.scoring import exam_pool  # noqa: E402
@@ -173,10 +171,11 @@ def _make_kick_sequence(
                 lm[pad_end + 1 : kick_start, r_hl, 0] = rear_target_x - 0.01 * dir_x
                 lm[pad_end + 1 : kick_start, r_to, 0] = rear_target_x + 0.03 * dir_x
 
-            # 支撑脚外旋（toe 与 heel 重合略后）与踢腿抬膝伸腿
-            lm[kick_start : kick_end + 1, r_to, 0] = (
-                lm[kick_start, r_hl, 0] - 0.01 * dir_x
-            )
+            # 垫步落稳后支撑脚站在落点并碾脚外旋（toe 转至不领先于 heel），踢腿抬膝绷脚背
+            lm[kick_start : kick_end + 1, r_ak, 0] = rear_target_x
+            lm[kick_start : kick_end + 1, r_kn, 0] = rear_target_x + 0.02 * dir_x
+            lm[kick_start : kick_end + 1, r_hl, 0] = rear_target_x - 0.01 * dir_x
+            lm[kick_start : kick_end + 1, r_to, 0] = rear_target_x - 0.02 * dir_x
             land_x = 0.50 + (0.24 if in_place_landing else 0.14) * dir_x
             for i in range(kick_start, kick_end + 1):
                 if i <= kick_peak:
@@ -193,9 +192,16 @@ def _make_kick_sequence(
                         )
                     else:
                         ank_x = end_x if not in_place_landing else land_x
+                kn_x = ank_x - 0.08 * dir_x
+                kn_y = 0.55 + (ank_y - 0.55) * 0.55
+                shin_dx, shin_dy = ank_x - kn_x, ank_y - kn_y
+                shin_len = math.hypot(shin_dx, shin_dy)
                 lm[i, f_ak, :2] = (ank_x, ank_y)
-                lm[i, f_kn, :2] = (ank_x - 0.08 * dir_x, 0.55 + (ank_y - 0.55) * 0.55)
-                lm[i, f_to, :2] = (ank_x + 0.04 * dir_x, ank_y + 0.01)
+                lm[i, f_kn, :2] = (kn_x, kn_y)
+                lm[i, f_to, :2] = (
+                    ank_x + 0.04 * shin_dx / shin_len,
+                    ank_y + 0.04 * shin_dy / shin_len,
+                )
                 lm[i, f_hl, :2] = (ank_x - 0.02 * dir_x, ank_y + 0.02)
 
             if in_place_landing:
@@ -210,6 +216,10 @@ def _make_kick_sequence(
             if drop_guard_shoulder:
                 lm[kick_start : kick_end + 1, r_wr, 1] = 0.44
                 lm[kick_start : kick_end + 1, r_el, 1] = 0.36
+        else:
+            # 正面踢腿期间翻胯收窄两髋水平间距
+            lm[kick_start : kick_end + 1, L_HIP, 0] = 0.46
+            lm[kick_start : kick_end + 1, R_HIP, 0] = 0.54
 
         if not omit_arm_swing:
             swing_sh_x = lm[kick_start : kick_end + 1, f_sh, 0]
@@ -271,8 +281,6 @@ def test_kick_segment_reuse_and_strategy_isolation():
                 c["phase"],
                 c["bodyPart"],
                 c["strategy"],
-                c["availability"]["state"],
-                c["blockedReason"],
                 c.get("primaryView"),
             )
             for c in items
@@ -299,114 +307,19 @@ def test_kick_segment_reuse_and_strategy_isolation():
     )
 
 
-def test_kick_qualification_gating_and_tamper_resistance():
-    lite_checks = [
-        c
-        for c in build_checks("step_front_low_kick", "left", pose_variant="lite")
-        if c["segment"] in {"pad_step", "front_low_kick"}
-    ]
-    assert lite_checks
-    assert all(
-        c["availability"]["state"] == "validation_pending" and c["blockedReason"]
-        for c in lite_checks
-    )
-
-    for variant in ("full", "heavy"):
-        step_by = {
-            (c["segment"], c["phase"], c["code"]): c
-            for c in build_checks("step_front_low_kick", "left", pose_variant=variant)
-            if c["segment"] in {"pad_step", "front_low_kick"}
-        }
-        rear_by = {
-            (c["segment"], c["phase"], c["code"]): c
-            for c in build_checks("rear_low_kick", "left", pose_variant=variant)
-            if c["segment"] == "rear_low_kick"
-        }
-        # 绝不允许擅自以 trial 状态绕过 blockedReason
+def test_kick_checks_enabled_across_all_models():
+    for action, expected_total in (
+        ("step_front_low_kick", 38),
+        ("front_low_kick", 35),
+        ("rear_low_kick", 36),
+    ):
+        full_checks = build_checks(action, "left", pose_variant="full")
+        assert len(full_checks) == expected_total
+        assert build_checks(action, "left", pose_variant="lite") == full_checks
+        assert build_checks(action, "left", pose_variant="heavy") == full_checks
         assert all(
-            c["availability"]["state"] != "trial"
-            for c in (*step_by.values(), *rear_by.values())
+            "availability" not in c and "blockedReason" not in c for c in full_checks
         )
-        for k in (
-            ("pad_step", "prepare", "pad_step_missing"),
-            ("pad_step", "prepare", "pad_step_overtake"),
-            ("pad_step", "prepare", "pad_step_pause"),
-            ("front_low_kick", "retract", "kick_retract"),
-            ("front_low_kick", "motion", "arm_swing"),
-            ("front_low_kick", "motion", "guard_shoulder"),
-            ("front_low_kick", "motion", "guard_back"),
-            ("front_low_kick", "motion", "head_down"),
-        ):
-            assert step_by[k]["availability"]["state"] == "enabled"
-            assert step_by[k]["blockedReason"] == ""
-        for k in (
-            ("rear_low_kick", "motion", "arm_swing"),
-            ("rear_low_kick", "finish", "arm_swing"),
-            ("rear_low_kick", "motion", "guard_back"),
-        ):
-            assert rear_by[k]["availability"]["state"] == "enabled"
-            assert rear_by[k]["blockedReason"] == ""
-
-        # body_lean 按模型独立登记：heavy 启用，full 阻断
-        expected_lean = "enabled" if variant == "heavy" else "calibration_failed"
-        for phase in ("motion", "finish"):
-            lean = step_by[("front_low_kick", phase, "body_lean")]
-            assert lean["availability"]["state"] == expected_lean
-            assert bool(lean["blockedReason"]) == (expected_lean != "enabled")
-
-        # 缺正例或少于 2 人：validation_pending 并阻断
-        for k in (("front_low_kick", "finish", "kick_height"),):
-            assert step_by[k]["availability"]["state"] == "validation_pending"
-            assert step_by[k]["blockedReason"]
-        for k in (
-            ("rear_low_kick", "finish", "kick_height"),
-            ("rear_low_kick", "motion", "guard_shoulder"),
-            ("rear_low_kick", "finish", "guard_shoulder"),
-            ("rear_low_kick", "motion", "body_lean"),
-            ("rear_low_kick", "finish", "body_lean"),
-        ):
-            assert rear_by[k]["availability"]["state"] == "validation_pending"
-            assert rear_by[k]["blockedReason"]
-
-        # 实证未达标（高误报 / 总检出不足 70%）：calibration_failed 并阻断
-        for phase, code in (
-            ("finish", "head_down"),
-            ("finish", "pivot_heel"),
-            ("finish", "foot_flexed"),
-            ("finish", "hip_turn"),
-            ("finish", "guard_elbow"),
-        ):
-            assert (
-                step_by[("front_low_kick", phase, code)]["availability"]["state"]
-                == "calibration_failed"
-            )
-            assert step_by[("front_low_kick", phase, code)]["blockedReason"]
-        for phase, code in (
-            ("finish", "guard_back"),
-            ("motion", "head_down"),
-            ("finish", "head_down"),
-            ("finish", "pivot_heel"),
-            ("finish", "foot_flexed"),
-            ("finish", "hip_turn"),
-            ("finish", "guard_elbow"),
-            ("finish", "guard_jaw"),
-        ):
-            assert (
-                rear_by[("rear_low_kick", phase, code)]["availability"]["state"]
-                == "calibration_failed"
-            )
-            assert rear_by[("rear_low_kick", phase, code)]["blockedReason"]
-
-    tampered = copy.deepcopy(step_by[("front_low_kick", "retract", "kick_retract")])
-    tampered["strategy"] = "forged_strategy"
-    apply_kick_availability([tampered], "heavy")
-    assert tampered["availability"]["state"] == "validation_pending"
-    assert tampered["blockedReason"]
-
-    wrong_phase = copy.deepcopy(step_by[("pad_step", "prepare", "pad_step_missing")])
-    wrong_phase["phase"] = "finish"
-    apply_kick_availability([wrong_phase], "heavy")
-    assert wrong_phase["availability"]["state"] == "validation_pending"
 
 
 def test_kick_side_repetition_splitting_and_exam_pool_compat():
@@ -609,13 +522,13 @@ def test_end_to_end_kick_evaluation_defects_unable_and_issue_grouping():
         for c in ok_res["checks"]
         if c["segment"] in {"pad_step", "front_low_kick"} and c["status"] == "candidate"
     ]
-    failed_checks = [
+    active_checks = [
         c
         for c in ok_res["checks"]
         if c["code"] in {"pivot_heel", "foot_flexed", "hip_turn", "guard_elbow"}
         and c["segment"] == "front_low_kick"
     ]
-    assert failed_checks and all(c["status"] == "pending_rule" for c in failed_checks)
+    assert active_checks and all(c["status"] == "not_observed" for c in active_checks)
 
     # 注入四类实测缺陷：无垫步、收腿不足、摆臂缺位、掉后护手
     lm_f_bad, mf_b = _make_kick_sequence(
@@ -763,12 +676,12 @@ def test_kick_remediation_regression_cases():
     assert "repetitions" not in single_res
     assert "repetitions" in step_res
     single_map = {
-        c["id"]: (c["status"], c.get("blockedReason", ""), c["availability"]["state"])
+        c["id"]: c["status"]
         for c in single_res["checks"]
         if c["segment"] == "front_low_kick"
     }
     step_map = {
-        c["id"]: (c["status"], c.get("blockedReason", ""), c["availability"]["state"])
+        c["id"]: c["status"]
         for c in step_res["checks"]
         if c["segment"] == "front_low_kick"
     }
@@ -962,8 +875,3 @@ def test_coderabbit_pr66_review_regressions():
     assert gb_chk["parameterOverrides"]["kick_guard_back_side"] == pytest.approx(
         KICK_PARAMS["kick_guard_back_side"]
     )
-    tampered_ov = copy.deepcopy(gb_chk)
-    tampered_ov["parameterOverrides"]["kick_guard_back_side"] = 1.0
-    apply_kick_availability([tampered_ov], "heavy")
-    assert tampered_ov["availability"]["state"] == "validation_pending"
-    assert tampered_ov["blockedReason"]

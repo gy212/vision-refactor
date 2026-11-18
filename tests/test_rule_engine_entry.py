@@ -27,7 +27,9 @@ def _counting(monkeypatch, module, calls: list) -> None:
     monkeypatch.setattr(module, "evaluate_rules", wrapper)
 
 
-def test_practice_judges_every_measured_check_through_evaluate_rules(monkeypatch, tmp_path):
+def test_practice_judges_every_measured_check_through_evaluate_rules(
+    monkeypatch, tmp_path
+):
     calls: list = []
     _counting(monkeypatch, rule_checks, calls)
     cfg = ev.FeedbackConfig()
@@ -50,19 +52,26 @@ def test_profile_is_the_single_catalog_with_phase_verdicts():
     assert profile.name == "sanda_v5"
     assert [r.code for r in profile.rules] == [c["id"] for c in checks]
     assert all(isinstance(r.aggregation, PhaseVerdict) for r in profile.rules)
-    assert {r.authorization for r in profile.rules} == {"candidate", "blocked"}
-    measured = [r for r in profile.rules if r.authorization == "candidate"]
-    assert all(r.required for r in measured)  # 能力契约：每个测量项都声明所需关键点
+    assert {r.authorization for r in profile.rules} == {"candidate"}
+    assert all(
+        r.required for r in profile.rules
+    )  # 能力契约：每个检查项都声明所需关键点
 
 
 def test_formal_v1_is_gone_and_no_second_catalog_exists():
     """D-3：不允许两个 profile 并存。"""
     rules_dir = ROOT / "core" / "evaluation" / "rules"
-    assert not (rules_dir / "formal_v1.py").exists() and not (rules_dir / "practice_v4.py").exists()
+    assert (
+        not (rules_dir / "formal_v1.py").exists()
+        and not (rules_dir / "practice_v4.py").exists()
+    )
     profiles = []
     for path in (ROOT / "core").rglob("*.py"):
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8-sig"))):
-            if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "RuleProfile":
+            if (
+                isinstance(node, ast.Call)
+                and getattr(node.func, "id", "") == "RuleProfile"
+            ):
                 profiles.append(path.relative_to(ROOT).as_posix())
     assert profiles == ["core/evaluation/rules/sanda_v5.py"]
 
@@ -79,8 +88,11 @@ def test_batch_and_exam_judge_through_the_same_entry(monkeypatch):
     )
     assert calls == [("sanda_v5", calls[0][1])]
     assert diagnostics["reason"] == "已检测到完整动作"
-    assert {c.state for c in checks} <= {"pass", "violation", "unable", "pending_rule"}
-    assert next(c for c in checks if c.code == "stance_elbow").state in {"pass", "violation"}
+    assert {c.state for c in checks} <= {"pass", "violation", "unable"}
+    assert next(c for c in checks if c.code == "stance_elbow").state in {
+        "pass",
+        "violation",
+    }
 
 
 def test_rule_checks_are_called_only_by_the_engine():

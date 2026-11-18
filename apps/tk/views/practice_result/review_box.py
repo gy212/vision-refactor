@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """结果页的教师复核操作区：当前复核状态、教师姓名与说明输入，以及"确认问题""撤销问题"按钮。"""
+
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -18,7 +19,9 @@ class ReviewBox:
 
     def __init__(self, parent: tk.Misc, on_decide: Callable[[str], None]) -> None:
         bg = STYLE_A["accent_blue_bg"]
-        self.frame = card(parent, bg=bg, border=STYLE_A["pending_rule"]["border"], padx=8, pady=6)
+        self.frame = card(
+            parent, bg=bg, border=STYLE_A["accent_blue_border"], padx=8, pady=6
+        )
         self.frame.pack(fill="x", pady=(0, 4))
         top_row = tk.Frame(self.frame, bg=bg)
         top_row.pack(fill="x")
@@ -32,13 +35,31 @@ class ReviewBox:
         label(row, size=8, bg=bg, text="说明:").pack(side="left")
         self.reason_entry = ttk.Entry(row, width=14)
         self.reason_entry.pack(side="left", padx=4, fill="x", expand=True)
-        self.confirm_btn = tk.Button(row, text="确认问题", font=(FONT, 8), bg="#2563EB", fg="#FFFFFF",
-                                     relief="flat", padx=6, pady=1, cursor="hand2",
-                                     command=lambda: on_decide("confirmed"))
+        self.confirm_btn = tk.Button(
+            row,
+            text="确认问题",
+            font=(FONT, 8),
+            bg="#2563EB",
+            fg="#FFFFFF",
+            relief="flat",
+            padx=6,
+            pady=1,
+            cursor="hand2",
+            command=lambda: on_decide("confirmed"),
+        )
         self.confirm_btn.pack(side="left", padx=2)
-        self.revoke_btn = tk.Button(row, text="撤销问题", font=(FONT, 8), bg="#E5E7EB", fg=STYLE_A["text_primary"],
-                                    relief="flat", padx=6, pady=1, cursor="hand2",
-                                    command=lambda: on_decide("revoked"))
+        self.revoke_btn = tk.Button(
+            row,
+            text="撤销问题",
+            font=(FONT, 8),
+            bg="#E5E7EB",
+            fg=STYLE_A["text_primary"],
+            relief="flat",
+            padx=6,
+            pady=1,
+            cursor="hand2",
+            command=lambda: on_decide("revoked"),
+        )
         self.revoke_btn.pack(side="left", padx=2)
 
     def show(self, check: NormalizedCheck) -> None:
@@ -49,4 +70,7 @@ class ReviewBox:
 
     def inputs(self) -> tuple[str, str]:
         """教师姓名（留空为"任课教师"）与说明。"""
-        return self.teacher_entry.get().strip() or "任课教师", self.reason_entry.get().strip()
+        return (
+            self.teacher_entry.get().strip() or "任课教师",
+            self.reason_entry.get().strip(),
+        )

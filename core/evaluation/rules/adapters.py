@@ -22,7 +22,7 @@ from core.pose.validity import landmark_capabilities, landmark_names
 class RuleCheck:
     """一个检查项在一路视角上的结论（考试、batch 只报告，不折算分数）。
 
-    ``state`` 为 ``violation``/``pass``/``unable``/``pending_rule``；``unable`` 的原因见 ``skip_reason`` 与 ``detail``。
+    ``state`` 为 ``violation``/``pass``/``unable``；``unable`` 的原因见 ``skip_reason`` 与 ``detail``。
     ``evidence_frames`` 是原视频帧号。
     """
 
@@ -69,14 +69,10 @@ def to_rule_check(
                 or "未找到该阶段；" + (phase_reason or "阶段不足"),
             }[outcome.skip_reason]
         )
-    availability = check.get("availability", {})
-    trial = availability.get("state") == "trial"
-    if trial:
-        detail = "试用检查。" + availability.get("reason", "") + " " + detail
     return RuleCheck(
         check_id=check["id"],
         code=check["code"],
-        name=check["name"] + ("（试用）" if trial else ""),
+        name=check["name"],
         segment=check["segment"],
         phase=check["phase"],
         view=view,

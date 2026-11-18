@@ -13,7 +13,6 @@ import numpy as np
 from core.evaluation.phase_alignment import missing_phase_coverage
 from core.evaluation.rules.spec import (
     RULE_STATE_PASS,
-    RULE_STATE_PENDING_RULE,
     RULE_STATE_UNABLE,
     RULE_STATE_VIOLATION,
     SKIP_INSUFFICIENT_VALID_FRAMES,
@@ -55,10 +54,6 @@ def _evaluate_phase(
     supported_capabilities,
 ) -> RuleOutcome:
     """一条规则在其相位窗口里的单视角结论；证据帧为问题帧（无问题时为有效帧）的首/中/末帧。"""
-    if spec.authorization == "blocked":
-        return RuleOutcome(
-            spec, RULE_STATE_PENDING_RULE, None, 0.0, 0, 0, spec.blocked_reason
-        )
     indices = ctx.phase_windows.get(spec.scope)
     # 后端结构性缺少所需关键点：直接判证据不足，不混入合格/不合格（Issue #11）。
     backend_missing = landmarks_missing_for_capabilities(
@@ -281,11 +276,7 @@ def evaluate_rules(
         missing = missing_phase_coverage(
             context.phase_coverage, spec.scope, spec.required_views or (context.view,)
         )
-        if (
-            missing
-            and outcome.state != RULE_STATE_PENDING_RULE
-            and outcome.skip_reason != SKIP_MISSING_LANDMARKS
-        ):
+        if missing and outcome.skip_reason != SKIP_MISSING_LANDMARKS:
             outcome = replace(
                 outcome,
                 state=RULE_STATE_UNABLE,

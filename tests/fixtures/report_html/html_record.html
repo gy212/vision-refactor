@@ -93,7 +93,6 @@
     .pill-candidate { background: var(--color-warn-bg); border-color: var(--color-warn-border); color: var(--color-warn); }
     .pill-not-observed { background: var(--color-ok-bg); border-color: var(--color-ok-border); color: var(--color-ok); }
     .pill-unable { background: var(--color-unable-bg); border-color: #E2E8F0; color: var(--color-unable); }
-    .pill-pending { background: var(--color-primary-bg); border-color: #BFDBFE; color: var(--color-primary); }
     .pill-revoked { background: #F9FAFB; border-color: #E5E7EB; color: #6B7280; }
     .timeline-section { margin-bottom: 28px; }
     .section-title {
@@ -243,9 +242,8 @@
     <!-- Conserved Counts Bar -->
     <div class="counts-bar">
       <div class="count-pill pill-candidate"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" role="img" aria-label="疑似问题"><path d="M12 4L4 19.5H20L12 4Z" stroke="#92400E" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="#FFF7ED"/><line x1="12" y1="9" x2="12" y2="13.5" stroke="#92400E" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="16.5" r="1" fill="#92400E"/></svg> 发现疑似问题：<strong>1</strong>项</div>
-      <div class="count-pill pill-not-observed"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" role="img" aria-label="未发现问题"><circle cx="12" cy="12" r="9.5" stroke="#166534" stroke-width="2" fill="#F0FDF4"/><path d="M7 12L10.5 15.5L17 9" stroke="#166534" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg> 已检查未发现：<strong>1</strong>项</div>
+      <div class="count-pill pill-not-observed"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" role="img" aria-label="未发现问题"><circle cx="12" cy="12" r="9.5" stroke="#166534" stroke-width="2" fill="#F0FDF4"/><path d="M7 12L10.5 15.5L17 9" stroke="#166534" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg> 已检查未发现：<strong>2</strong>项</div>
       <div class="count-pill pill-unable"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" role="img" aria-label="暂无法判断"><circle cx="12" cy="12" r="9.5" stroke="#475569" stroke-width="2" fill="#F1F5F9"/><path d="M9.5 9.5C9.5 7.8 10.6 6.5 12 6.5C13.5 6.5 14.5 7.6 14.5 9C14.5 10.5 12 11.5 12 13" stroke="#475569" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="16.5" r="1" fill="#475569"/></svg> 暂无法判断：<strong>1</strong>项</div>
-      <div class="count-pill pill-pending"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" role="img" aria-label="需教师判断"><rect x="4.5" y="5.5" width="15" height="15" rx="2" stroke="#1D4ED8" stroke-width="2" fill="#EFF6FF"/><path d="M8.5 3.5H15.5V6.5H8.5V3.5Z" stroke="#1D4ED8" stroke-width="1.8" fill="#FFFFFF"/><path d="M7.5 12.5L10.5 15.5L16.5 9.5" stroke="#1D4ED8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg> 需教师判断：<strong>1</strong>项</div>
 
       <div class="count-pill">检查项总计：<strong>4</strong>项 (守恒)</div>
     </div>
@@ -307,8 +305,8 @@
         <div class="issue-reason"><strong>依据：</strong>左肘角180度超过标准</div>
         <div class="evidence-grid">
           <div class="evidence-box">
-            <div class="evidence-placeholder">未指定历史目录，跳过截帧</div>
-            <div class="evidence-caption">未指定历史目录，跳过截帧</div>
+            <div class="evidence-placeholder">开始实战式 · 正面历史画面 · 0.330s · 第10帧（旧记录未保存测量部位，未加问题标记）（未指定历史目录，跳过截帧）</div>
+            <div class="evidence-caption">开始实战式 · 正面历史画面 · 0.330s · 第10帧（旧记录未保存测量部位，未加问题标记）（未指定历史目录，跳过截帧）</div>
           </div>
         </div>
         <details>
@@ -324,16 +322,12 @@
     <!-- Incomplete / Unable Checks -->
     <section class="incomplete-section">
       <details >
-        <summary>未完成判断的项目 (2项：无法判断1项，需教师判断1项)</summary>
+        <summary>暂无法判断的项目 (1项)</summary>
         <div class="details-content">
           <ul class="item-list">
-            <li class="item-row">
+            <li class="item-row" style="flex-wrap: wrap;">
               <div><svg width="14" height="14" viewBox="0 0 24 24" fill="none" role="img" aria-label="暂无法判断"><circle cx="12" cy="12" r="9.5" stroke="#475569" stroke-width="2" fill="#F1F5F9"/><path d="M9.5 9.5C9.5 7.8 10.6 6.5 12 6.5C13.5 6.5 14.5 7.6 14.5 9C14.5 10.5 12 11.5 12 13" stroke="#475569" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="16.5" r="1" fill="#475569"/></svg> <strong>前手直拳/动作结束瞬间</strong> · 出拳击打高度不足 (前拳（左）)</div>
               <div style="color: var(--color-subtle);">暂无法判断：缺少侧面视角，无法准确判定肩平</div>
-            </li>
-            <li class="item-row">
-              <div><svg width="14" height="14" viewBox="0 0 24 24" fill="none" role="img" aria-label="需教师判断"><rect x="4.5" y="5.5" width="15" height="15" rx="2" stroke="#1D4ED8" stroke-width="2" fill="#EFF6FF"/><path d="M8.5 3.5H15.5V6.5H8.5V3.5Z" stroke="#1D4ED8" stroke-width="1.8" fill="#FFFFFF"/><path d="M7.5 12.5L10.5 15.5L16.5 9.5" stroke="#1D4ED8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg> <strong>前手直拳/动作结束瞬间</strong> · 拳峰朝向待人工核对 (前拳（左）)</div>
-              <div style="color: var(--color-subtle);">需教师判断：当前轻量Pose未支持拳峰朝向自动识别</div>
             </li>
           </ul>
         </div>
@@ -342,12 +336,16 @@
     <!-- Not Observed Checks -->
     <section class="not-observed-section">
       <details>
-        <summary>已检查未发现问题的项目 (1项)</summary>
+        <summary>已检查未发现问题的项目 (2项)</summary>
         <div class="details-content">
           <p style="margin-bottom: 8px; color: var(--color-subtle);">说明：以下项目按二维几何规则检查完毕，未发现明显动作问题（不代表全部实战标准合格）。</p>
           <ul class="item-list">
             <li class="item-row">
               <div><svg width="14" height="14" viewBox="0 0 24 24" fill="none" role="img" aria-label="未发现问题"><circle cx="12" cy="12" r="9.5" stroke="#166534" stroke-width="2" fill="#F0FDF4"/><path d="M7 12L10.5 15.5L17 9" stroke="#166534" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg> <strong>前手直拳/动作过程</strong> · 出拳过程护手下落</div>
+              <div style="color: var(--color-ok);">已检查未发现</div>
+            </li>
+            <li class="item-row">
+              <div><svg width="14" height="14" viewBox="0 0 24 24" fill="none" role="img" aria-label="未发现问题"><circle cx="12" cy="12" r="9.5" stroke="#166534" stroke-width="2" fill="#F0FDF4"/><path d="M7 12L10.5 15.5L17 9" stroke="#166534" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg> <strong>前手直拳/动作结束瞬间</strong> · 出拳未充分伸直</div>
               <div style="color: var(--color-ok);">已检查未发现</div>
             </li>
           </ul>

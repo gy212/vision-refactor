@@ -2,7 +2,7 @@
 """规则的声明结构：``RuleSpec``（一条规则）、``RuleProfile``（一套规则目录）、判定上下文、聚合方式与结构化结论（设计文档 §7.2）。
 
 唯一的规则目录 ``sanda_v5``（D-3）用 ``PhaseVerdict``：在 ``RuleContext`` 给出的相位窗口里取帧，以起始护位为基线逐帧测量，
-单视角结论为 ``violation``/``pass``/``unable``，被拦截的项为 ``pending_rule``；练习正侧融合后的 ``candidate``/``not_observed``
+单视角结论为 ``violation``/``pass``/``unable``；练习正侧融合后的 ``candidate``/``not_observed``
 由 ``evaluation/practice.py`` 写入检查项。``unable`` 带结构化原因 ``skip_reason``（后端缺点、有效帧不足、未找到阶段），
 下游判断只读结构化字段（YOLO 迁移 S4 / Issue #11）。
 """
@@ -15,9 +15,7 @@ from typing import Any, Literal
 
 import numpy as np
 
-RuleState = Literal[
-    "pass", "violation", "not_observed", "unable", "candidate", "pending_rule"
-]
+RuleState = Literal["pass", "violation", "not_observed", "unable", "candidate"]
 SkipReason = Literal[
     "missing_landmarks", "insufficient_valid_frames", "phase_not_found"
 ]
@@ -27,7 +25,6 @@ RULE_STATE_VIOLATION: RuleState = "violation"
 RULE_STATE_NOT_OBSERVED: RuleState = "not_observed"
 RULE_STATE_UNABLE: RuleState = "unable"
 RULE_STATE_CANDIDATE: RuleState = "candidate"
-RULE_STATE_PENDING_RULE: RuleState = "pending_rule"
 
 SKIP_MISSING_LANDMARKS: SkipReason = "missing_landmarks"
 SKIP_INSUFFICIENT_VALID_FRAMES: SkipReason = "insufficient_valid_frames"
@@ -94,8 +91,7 @@ class RuleSpec:
     view: Literal["front", "side", "any"]
     scope: str  # 相位窗口 "segment:phase"
     aggregation: PhaseVerdict
-    authorization: Literal["scored", "candidate", "blocked"] = "scored"
-    blocked_reason: str = ""
+    authorization: Literal["scored", "candidate"] = "scored"
     source: str = ""  # 依据：文档与行号
     strategy: str = ""  # 实际测量与判法的命名策略，随保存结果留存
     highlight_joints: tuple[int, ...] = ()  # 本检查的被测部位和必要参照点

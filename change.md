@@ -1,3 +1,12 @@
+## 2026-11-18: [refactor] 废除未自动检查与样本标定门禁并全量启用检查项
+
+- 问题：此前系统在 `AGENTS.md` 硬约束与 `qualification.py` / `straight_policy.py` / `kick_policy.py` / `availability.py` 中设立了“未自动检查（`pending_rule`）”“试用（`trial`）”及基于未确认 100% 标准的视频样本误报率/检出率上线门禁，导致用户已给出完整判定规则并完成底层实现的检查项（如 `12_后低鞭腿_练习分析报告` 中的 17 项检查）被门禁层短路拦截为“未自动检查”，且报告与 Tk 桌面端存在第四类未自动检查展示与“（试用）”前缀。
+- 修改：
+  1. **规则与评估层**：物理删除 `core/evaluation/rules/{qualification,straight_policy,kick_policy,availability}.py`；精简 `spec.py`、`engine.py`、`sanda_v5.py`（规则版本升级为 `sanda-rules-mediapipe-2026-11-18-v5.18`）、`adapters.py`、`practice.py` 与 `feedback_config.py`，清理未入表的死定义 `stance_head` / `vertical_fist` 及摆拳硬编码 `blocked` 拦截，保留全部 11 个动作共 100 个既有检查项并在 `lite` / `full` / `heavy` 全模型下直接正式启用，系统检查结论严格收敛为三态（练习：`candidate` / `not_observed` / `unable`；考试与 batch：`violation` / `pass` / `unable`）；
+  2. **报告导出与 Tk 桌面层**：修改 `core/reporting/{practice_model,text}.py`、`core/reporting/html/{renderer,icons,timeline}.py`、`core/reporting/html/templates/{report,incomplete_section,incomplete_row}.html` 与 `apps/tk/{self_check,views/practice_history,views/practice_result/*}.py`、`scripts/generate_feedback_icons.py`，彻底移除“未自动检查”胶囊、横幅分级、筛选按钮与 6 张 `pending_rule` 图标资源，保留正交的教师人工复核字段 `review`（未发生撤销时界面与报告 100% 仅显示三类）；在 `practice_model._normalize_check`、`text._effective_status` 与 `practice_history.check_state_text` 兜底将存量历史记录中的旧 `pending_rule` 自动归入 `unable` 并清洗残留 `（试用）` 后缀，确保历史数据无损兼容且计数守恒；
+  3. **规范与基准同步**：重写 `AGENTS.md` 硬约束为“动作规则直接生效与三态结果红线”（严禁私自拿视频素材当标准真值算合格率关停规则或改阈值），在 4 份历史标定 `docs/` 顶部加注废止提示，更新评估/报告/UI 测试套件并同步重生成 `tests/fixtures/pose33_v3/golden.json`（仅 11 条 `detail` 去掉 `试用检查。` 前缀，评分与指标零漂移）、14 份 `tests/fixtures/report_html/*.html` 及 `tests/fixtures/result_page/snapshots.json`。
+- 验证：WSL 原生环境通过 `test_architecture.py`、`test_pose33_v3_golden.py`、`test_valid_mask_migration.py`、`test_tech_eval_contract.py`、`test_rule_availability.py` 及相关规则/报告单测；Windows `.venv` 通过含 Tk 的 4 个集成与结果页快照套件；改动文件 `ruff format --check`、`core`/`apps`/`scripts` `ruff check` 与 `git -c core.whitespace=cr-at-eol diff --check origin/main` 全部通过。
+
 ## 2026-11-15: [fix] 修复 PR #66 审查指出的低鞭腿切分、垫步尺度、逐次缺省判定与参数一致性问题
 
 - 问题：PR #66 CodeRabbit 审查指出 6 项问题：1) 持续抬腿中途发生连续 6 帧及以上丢点再恢复高位时，滞回状态机未等回落即重开第二次区间；2) 相邻两次已各自闭合且满足峰值与时长的独立踢腿，因间隔 `<= 0.35s` 被误合并；3) 垫步位移先逐帧计算 `x / torso`，在后踝静止、躯干投影缩小时会伪造垫步推进；4) `absence=True`（如 `arm_swing`）在多次重复合并窗内对全帧求 `.all()`，导致其中一次未摆臂被另一次掩盖；5) `kick_step.py` 将标量布尔有效值广播到整段 `valid[sub]`，绕过引擎 `valid_ratio` 门禁；6) `standard_config` 未对踢腿动作段统一应用 `KICK_PARAMS`，且 `kick_policy.py` 未核对 `parameterOverrides` 是否被篡改。

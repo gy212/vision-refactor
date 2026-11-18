@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """学生练习报告的数据模型：把历史记录归一成结果页与图文报告共用的只读模型（原 ``feedback_report.build_report_model``）。
 
-纯函数、无 Tk 依赖：检查项去重与守恒计数、七级标题摘要、同原因分组、相位时间线数据。
+纯函数、无 Tk 依赖：检查项去重与守恒计数、分级标题摘要、同原因分组、相位时间线数据。
 """
 
 from __future__ import annotations
@@ -18,10 +18,11 @@ STATUS_LABELS = {
     "candidate": "发现疑似问题",
     "not_observed": "已检查未发现问题",
     "unable": "暂无法判断",
-    "pending_rule": "未自动检查",
 }
 _REVIEW_LABELS = {"confirmed": "教师已确认", "revoked": "教师已撤销"}
-_RERECORD_HINT = " 请重新录制：全身及拳脚入画、光线充足、减少遮挡，保留开始和结束实战式。"
+_RERECORD_HINT = (
+    " 请重新录制：全身及拳脚入画、光线充足、减少遮挡，保留开始和结束实战式。"
+)
 
 
 @dataclass(frozen=True)
@@ -35,7 +36,6 @@ class StatusCounts:
     revoked_count: int  # 教师已撤销数
     not_observed_count: int  # 已检查未发现问题数
     unable_count: int  # 暂无法判断数
-    pending_rule_count: int  # 未自动检查数
 
     def verify_conservation(self) -> bool:
         """Verify strict item conservation."""
@@ -43,7 +43,6 @@ class StatusCounts:
             self.candidate_count
             + self.not_observed_count
             + self.unable_count
-            + self.pending_rule_count
             + self.revoked_count
         )
         sub_sum = self.unconfirmed_count + self.confirmed_count
@@ -94,12 +93,11 @@ class NormalizedCheck:
     phase_label: str
     standard: str
     source: str
-    status: str  # "candidate" | "not_observed" | "unable" | "pending_rule"
-    status_display: str  # 判定状态；未启用项显示记录中保存的具体原因类别
+    status: str  # "candidate" | "not_observed" | "unable"
+    status_display: str  # 判定状态中文标签
     review: str  # "pending" | "confirmed" | "revoked"
     review_display: str  # "" | "教师已确认" | "教师已撤销"
     reason: str
-    blocked_reason: str
     evidence_refs: list[str] = field(default_factory=list)
     measurements_summary: str = ""
     measurements: list[dict] = field(default_factory=list)
@@ -121,7 +119,6 @@ class PhaseTimelineItem:
     end_seconds: float
     candidate_count: int
     unable_count: int
-    pending_count: int
     not_observed_count: int
     checks: list[NormalizedCheck] = field(default_factory=list)
 
@@ -150,7 +147,6 @@ class NormalizedReportModel:
     revoked_checks: list[NormalizedCheck]  # Excluded from candidate list
     not_observed_checks: list[NormalizedCheck]
     unable_checks: list[NormalizedCheck]
-    pending_rule_checks: list[NormalizedCheck]
     all_checks: list[NormalizedCheck]  # Deduplicated by id
     evidence_catalog: dict[str, dict]  # Keyed by evidence ID
     diagnostics: dict[str, Any]
@@ -173,10 +169,6 @@ class NormalizedReportModel:
     @property
     def unable_items(self) -> list[NormalizedCheck]:
         return self.unable_checks
-
-    @property
-    def pending_items(self) -> list[NormalizedCheck]:
-        return self.pending_rule_checks
 
 
 def format_local_datetime(iso_str: str) -> str:
@@ -221,9 +213,15 @@ def _headline(
 
 def _is_unjudgeable(counts: StatusCounts) -> bool:
     """所有可测项（不含已撤销）都无法判断。"""
-    measurable = counts.candidate_count + counts.not_observed_count + counts.unable_count
+    measurable = (
+        counts.candidate_count + counts.not_observed_count + counts.unable_count
+    )
     return (
-        (counts.candidate_count == 0 and counts.not_observed_count == 0 and counts.unable_count > 0)
+        (
+            counts.candidate_count == 0
+            and counts.not_observed_count == 0
+            and counts.unable_count > 0
+        )
         or (measurable > 0 and counts.unable_count == measurable)
         or (counts.total_checks > 0 and counts.unable_count == counts.total_checks)
     )
@@ -232,7 +230,9 @@ def _is_unjudgeable(counts: StatusCounts) -> bool:
 def _candidate_headline(counts: StatusCounts, needs_rerecord: bool) -> HeadlineSummary:
     """存在未撤销候选问题时的标题（第 5、6 级）。"""
     confirmed_note = (
-        f"（含教师已确认 {counts.confirmed_count} 项）" if counts.confirmed_count > 0 else ""
+        f"（含教师已确认 {counts.confirmed_count} 项）"
+        if counts.confirmed_count > 0
+        else ""
     )
     if counts.unable_count > 0:
         return _headline(
@@ -256,7 +256,7 @@ def _candidate_headline(counts: StatusCounts, needs_rerecord: bool) -> HeadlineS
 def get_headline_summary(
     counts: StatusCounts, checks: list, needs_rerecord: bool
 ) -> HeadlineSummary:
-    """7-Level priority headline hierarchy (no grades, no penalty points)."""
+    """Priority headline hierarchy (no grades, no penalty points)."""
     c = counts
     if c.total_checks == 0:
         return _headline(
@@ -275,30 +275,7 @@ def get_headline_summary(
             needs_rerecord=True,
             status_tone="unable",
             level="error",
-            reason="所有可自动检查项目均为证据不足或无法判定",
-        )
-    if (
-        c.candidate_count == 0
-        and c.not_observed_count == 0
-        and c.pending_rule_count > 0
-        and c.unable_count == 0
-    ):
-        return _headline(
-            "本次暂无自动检查结果",
-            "本次项目尚未启用自动检查；具体是待开发、待验证还是模型受限，请查看逐项说明。",
-            needs_rerecord,
-            "info",
-            "info",
-            "本次动作仅包含需人工复核项，无自动判断项",
-        )
-    if c.candidate_count == 0 and c.pending_rule_count > 0:
-        return _headline(
-            "已检查项目未发现问题，仍有待判断项目",
-            f"已完成检查的项未见异常，另有 {c.pending_rule_count} 项尚未启用自动检查，原因见逐项说明。",
-            needs_rerecord,
-            "notice",
-            "info",
-            "自动检查项目未见异常，部分项目尚未启用",
+            reason="所有检查项目均为证据不足或无法判定",
         )
     if c.candidate_count == 0 and c.unable_count > 0 and c.not_observed_count > 0:
         return _headline(
@@ -311,7 +288,7 @@ def get_headline_summary(
         )
     if c.candidate_count > 0:
         return _candidate_headline(c, needs_rerecord)
-    if c.unable_count == 0 and c.pending_rule_count == 0 and c.not_observed_count > 0:
+    if c.unable_count == 0 and c.not_observed_count > 0:
         return _headline(
             "已检查项目未发现问题",
             "已按现有规则检查完毕，未发现明显动作问题（二维规则仅供参考，不代表全部实战标准合格）。",
@@ -345,7 +322,7 @@ def group_checks_by_reason(checks: list[NormalizedCheck]) -> list[GroupedReason]
     """Group checks sharing identical reason within the same phase/view into collapsible clusters."""
     groups_dict: dict[tuple[str, str], list[NormalizedCheck]] = {}
     for c in checks:
-        key_reason = (c.reason or c.blocked_reason or "未知原因").strip()
+        key_reason = (c.reason or "未知原因").strip()
         key_phase = c.phase_label or c.phase
         groups_dict.setdefault((key_reason, key_phase), []).append(c)
 
@@ -409,7 +386,9 @@ def _build_header(record: dict, result: dict) -> ReportHeader:
         created_at_local=format_local_datetime(created_at_utc),
         record_id=_text_or(record.get("id"), "0" * 32),
         revision=revision,
-        rule_version=_text_or(result.get("ruleVersion"), "sanda-feedback-mediapipe-legacy"),
+        rule_version=_text_or(
+            result.get("ruleVersion"), "sanda-feedback-mediapipe-legacy"
+        ),
         backend_description=backend_desc,
     )
 
@@ -440,36 +419,34 @@ def _normalize_check(cid: str, c: dict, audit_logs: list[dict]) -> NormalizedChe
     fusion = c.get("fusion")
     if not isinstance(fusion, dict):
         fusion = None
-    availability = c.get("availability")
-    status_display = STATUS_LABELS[status]
-    if status == "pending_rule" and isinstance(availability, dict):
-        status_display = availability.get("label") or status_display
-    trial = isinstance(availability, dict) and availability.get("state") == "trial"
-    if trial:
-        status_display = "试用 · " + status_display
-        reason = "试用检查。" + availability.get("reason", "") + " " + reason
     return NormalizedCheck(
         id=cid,
         code=str(c.get("code") or ""),
-        name=_text_or(c.get("name"), "未命名检查项") + ("（试用）" if trial else ""),
+        name=_text_or(c.get("name"), "未命名检查项").removesuffix("（试用）"),
         body_part=_text_or(c.get("bodyPart"), "未指定部位"),
         segment=str(c.get("segment") or "stance"),
         segment_label=str(
-            c.get("segmentLabel") or ACTIONS.get(c.get("segment", ""), c.get("segment", ""))
+            c.get("segmentLabel")
+            or ACTIONS.get(c.get("segment", ""), c.get("segment", ""))
         ),
         phase=str(c.get("phase") or "motion"),
-        phase_label=str(c.get("phaseLabel") or PHASES.get(c.get("phase", ""), c.get("phase", ""))),
+        phase_label=str(
+            c.get("phaseLabel") or PHASES.get(c.get("phase", ""), c.get("phase", ""))
+        ),
         standard=str(c.get("standard") or ""),
         source=str(c.get("source") or ""),
         status=status,
-        status_display=status_display,
+        status_display=STATUS_LABELS[status],
         review=review,
         review_display=_REVIEW_LABELS.get(review, ""),
         reason=reason,
-        blocked_reason=blocked_reason,
-        evidence_refs=c.get("evidence", []) if isinstance(c.get("evidence"), list) else [],
+        evidence_refs=c.get("evidence", [])
+        if isinstance(c.get("evidence"), list)
+        else [],
         evidence_details=(
-            c.get("evidenceDetails", []) if isinstance(c.get("evidenceDetails"), list) else []
+            c.get("evidenceDetails", [])
+            if isinstance(c.get("evidenceDetails"), list)
+            else []
         ),
         measurements_summary=format_fusion(c) if fusion or measurements else "",
         measurements=measurements,
@@ -486,11 +463,12 @@ class _Buckets:
     revoked: list[NormalizedCheck] = field(default_factory=list)
     not_observed: list[NormalizedCheck] = field(default_factory=list)
     unable: list[NormalizedCheck] = field(default_factory=list)
-    pending_rule: list[NormalizedCheck] = field(default_factory=list)
 
     def add(self, check: NormalizedCheck) -> None:
         if check.status == "candidate":
-            (self.revoked if check.review == "revoked" else self.candidate).append(check)
+            (self.revoked if check.review == "revoked" else self.candidate).append(
+                check
+            )
         else:
             getattr(self, check.status).append(check)
 
@@ -504,7 +482,6 @@ class _Buckets:
             revoked_count=len(self.revoked),
             not_observed_count=len(self.not_observed),
             unable_count=len(self.unable),
-            pending_rule_count=len(self.pending_rule),
         )
 
 
@@ -527,7 +504,9 @@ def _phase_times(phase_windows: dict) -> dict[tuple[str, str], list[float]]:
                 key = (pw.get("segment", ""), pw.get("phase", ""))
                 for r in pw.get("ranges", []):
                     if len(r) >= 2:
-                        phase_times.setdefault(key, []).extend([float(r[0]), float(r[1])])
+                        phase_times.setdefault(key, []).extend(
+                            [float(r[0]), float(r[1])]
+                        )
     return phase_times
 
 
@@ -540,7 +519,9 @@ def build_phase_timeline(
     for seg, p_kind, stage_title in _ordered_stages(action):
         if p_kind == "segment":
             stage_checks = [
-                c for c in all_checks if c.segment == seg and c.phase not in {"start", "end"}
+                c
+                for c in all_checks
+                if c.segment == seg and c.phase not in {"start", "end"}
             ]
             times_list = [
                 stamp
@@ -549,7 +530,9 @@ def build_phase_timeline(
                 for stamp in stamps
             ]
         else:
-            stage_checks = [c for c in all_checks if c.segment == seg and c.phase == p_kind]
+            stage_checks = [
+                c for c in all_checks if c.segment == seg and c.phase == p_kind
+            ]
             times_list = phase_times.get((seg, p_kind), [])
         if times_list:
             t_min, t_max = min(times_list), max(times_list)
@@ -566,11 +549,14 @@ def build_phase_timeline(
                 start_seconds=t_min,
                 end_seconds=t_max,
                 candidate_count=sum(
-                    1 for c in stage_checks if c.status == "candidate" and c.review != "revoked"
+                    1
+                    for c in stage_checks
+                    if c.status == "candidate" and c.review != "revoked"
                 ),
                 unable_count=sum(1 for c in stage_checks if c.status == "unable"),
-                pending_count=sum(1 for c in stage_checks if c.status == "pending_rule"),
-                not_observed_count=sum(1 for c in stage_checks if c.status == "not_observed"),
+                not_observed_count=sum(
+                    1 for c in stage_checks if c.status == "not_observed"
+                ),
                 checks=stage_checks,
             )
         )
@@ -596,7 +582,9 @@ def build_report_model(record: dict) -> NormalizedReportModel:
         if cid:
             dedup[cid] = c
     review_map = _review_map(result)
-    all_checks = [_normalize_check(cid, c, review_map.get(cid, [])) for cid, c in dedup.items()]
+    all_checks = [
+        _normalize_check(cid, c, review_map.get(cid, [])) for cid, c in dedup.items()
+    ]
     buckets = _Buckets()
     for check in all_checks:
         buckets.add(check)
@@ -609,9 +597,7 @@ def build_report_model(record: dict) -> NormalizedReportModel:
     repetitions = _dict_field(result, "repetitions")
     if repetitions and repetitions["detected"] != repetitions["expected"]:
         # Tk 与 HTML 共用此横幅；只写原始 summary 不会进入结果页。
-        headline.subtitle += (
-            f" 检测到 {repetitions['detected']} 次动作，应做 {repetitions['expected']} 次。"
-        )
+        headline.subtitle += f" 检测到 {repetitions['detected']} 次动作，应做 {repetitions['expected']} 次。"
     if repetitions.get("incompleteRecovery"):
         headline.subtitle += " 存在打出后保持的动作，尚未观察到收回。"
 
@@ -624,13 +610,14 @@ def build_report_model(record: dict) -> NormalizedReportModel:
         header=header,
         headline=headline,
         counts=counts,
-        phases=build_phase_timeline(header.action, all_checks, _dict_field(result, "phaseWindows")),
+        phases=build_phase_timeline(
+            header.action, all_checks, _dict_field(result, "phaseWindows")
+        ),
         candidate_groups=group_checks_by_reason(buckets.candidate),
         candidate_checks=buckets.candidate,
         revoked_checks=buckets.revoked,
         not_observed_checks=buckets.not_observed,
         unable_checks=buckets.unable,
-        pending_rule_checks=buckets.pending_rule,
         all_checks=all_checks,
         evidence_catalog=evidence_catalog,
         diagnostics=_dict_field(result, "diagnostics"),

@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """图文报告的相位时间线：把相位时间线数据画成自包含的内联 SVG（2px 圆角描边、4px 网格、无外部资源）。"""
+
 from __future__ import annotations
 
 import html
@@ -11,8 +12,6 @@ from core.reporting.html.icons import (
     COLOR_CANDIDATE_BORDER,
     COLOR_NOT_OBSERVED,
     COLOR_NOT_OBSERVED_BG,
-    COLOR_PENDING,
-    COLOR_PENDING_BORDER,
     COLOR_UNABLE,
     COLOR_UNABLE_BG,
     COLOR_UNABLE_BORDER,
@@ -22,6 +21,8 @@ from core.reporting.practice_model import PhaseTimelineItem, StatusCounts
 _FONT = "font-family=\"-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei UI', sans-serif\""
 _NODE_H = 68
 _NODE_Y = 36
+_START_ACCENT = "#1D4ED8"
+_START_BORDER = "#BFDBFE"
 
 
 def _empty_svg(vb_w: int) -> str:
@@ -32,7 +33,7 @@ def _empty_svg(vb_w: int) -> str:
         '  <desc id="flow-desc">暂无记录的动作阶段时序信息。</desc>\n'
         '  <rect width="100%" height="100%" rx="6" fill="#F8FAFC" stroke="#D8E0EA" stroke-width="1"/>\n'
         f'  <text x="400" y="45" fill="#475569" font-size="12" text-anchor="middle" {_FONT}>未记录动作阶段时间</text>\n'
-        '</svg>'
+        "</svg>"
     )
 
 
@@ -42,57 +43,81 @@ def _svg_head(vb_w: int, vb_h: int) -> list[str]:
         'role="img" aria-labelledby="flow-title flow-desc">',
         '  <title id="flow-title">动作阶段时序流图</title>',
         '  <desc id="flow-desc">展示散打动作各阶段起止时间、检查项与疑似问题分布时序图。</desc>',
-        '  <defs>',
+        "  <defs>",
         '    <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">',
         '      <polygon points="0 0, 8 3, 0 6" fill="#475569"/>',
-        '    </marker>',
+        "    </marker>",
         '    <marker id="arrow-warn" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">',
         '      <polygon points="0 0, 8 3, 0 6" fill="#92400E"/>',
-        '    </marker>',
-        '  </defs>',
+        "    </marker>",
+        "  </defs>",
         '  <rect width="100%" height="100%" rx="6" fill="#F8FAFC" stroke="#D8E0EA" stroke-width="1"/>',
     ]
 
 
-def _node_style(i: int, phase: PhaseTimelineItem) -> tuple[str, str, str, str, str, str]:
+def _node_style(
+    i: int, phase: PhaseTimelineItem
+) -> tuple[str, str, str, str, str, str]:
     """节点的填充、描边、强调线、徽标文字、徽标底色与徽标描边。"""
     if phase.candidate_count > 0:
-        return (COLOR_CANDIDATE_BG, COLOR_CANDIDATE_BORDER, COLOR_CANDIDATE,
-                f"⚠ {phase.candidate_count}项", "#FEF3C7", COLOR_CANDIDATE)
+        return (
+            COLOR_CANDIDATE_BG,
+            COLOR_CANDIDATE_BORDER,
+            COLOR_CANDIDATE,
+            f"⚠ {phase.candidate_count}项",
+            "#FEF3C7",
+            COLOR_CANDIDATE,
+        )
     if phase.unable_count > 0:
-        return (COLOR_UNABLE_BG, COLOR_UNABLE_BORDER, COLOR_UNABLE,
-                f"? {phase.unable_count}项", "#E2E8F0", COLOR_UNABLE)
-    return ("#FFFFFF", COLOR_PENDING_BORDER if i == 0 else "#D8E0EA", COLOR_PENDING if i == 0 else "#10B981",
-            "✓", COLOR_NOT_OBSERVED_BG, COLOR_NOT_OBSERVED)
+        return (
+            COLOR_UNABLE_BG,
+            COLOR_UNABLE_BORDER,
+            COLOR_UNABLE,
+            f"? {phase.unable_count}项",
+            "#E2E8F0",
+            COLOR_UNABLE,
+        )
+    return (
+        "#FFFFFF",
+        _START_BORDER if i == 0 else "#D8E0EA",
+        _START_ACCENT if i == 0 else "#10B981",
+        "✓",
+        COLOR_NOT_OBSERVED_BG,
+        COLOR_NOT_OBSERVED,
+    )
 
 
 def _node(i: int, phase: PhaseTimelineItem, nx: int, node_w: int) -> list[str]:
     ny, node_h = _NODE_Y, _NODE_H
     step_num = f"{i + 1:02d}"
-    fill_color, stroke_color, accent_line, badge_text, badge_fill, badge_stroke = _node_style(i, phase)
+    fill_color, stroke_color, accent_line, badge_text, badge_fill, badge_stroke = (
+        _node_style(i, phase)
+    )
     badge_w = 40 if len(badge_text) > 2 else 22
     badge_x = nx + node_w - badge_w - 6
     return [
-        f'  <!-- Stage {step_num}: {html.escape(phase.title)} -->',
+        f"  <!-- Stage {step_num}: {html.escape(phase.title)} -->",
         f'  <rect x="{nx}" y="{ny}" width="{node_w}" height="{node_h}" rx="6" fill="#FFFFFF"/>',
         f'  <rect x="{nx}" y="{ny}" width="{node_w}" height="{node_h}" rx="6" '
         f'fill="{fill_color}" stroke="{stroke_color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
         f'  <line x1="{nx + 4}" y1="{ny + 8}" x2="{nx + 4}" y2="{ny + node_h - 8}" '
         f'stroke="{accent_line}" stroke-width="2" stroke-linecap="round"/>',
         f'  <text x="{nx + 12}" y="{ny + 20}" fill="#475569" font-size="10" font-weight="600" '
-        f'{_FONT}>{step_num}</text>',
+        f"{_FONT}>{step_num}</text>",
         f'  <rect x="{badge_x}" y="{ny + 8}" width="{badge_w}" height="16" rx="4" '
         f'fill="{badge_fill}" stroke="{badge_stroke}" stroke-width="1"/>',
         f'  <text x="{badge_x + badge_w // 2}" y="{ny + 20}" fill="{badge_stroke}" font-size="9" font-weight="600" '
         f'text-anchor="middle" {_FONT}>{html.escape(badge_text)}</text>',
         f'  <text x="{nx + 12}" y="{ny + 40}" fill="#1F2937" font-size="12" font-weight="600" '
-        f'{_FONT}>{html.escape(phase.title)}</text>',
+        f"{_FONT}>{html.escape(phase.title)}</text>",
         f'  <text x="{nx + 12}" y="{ny + 58}" fill="#64748B" font-size="10" '
-        f'{_FONT}>{html.escape(phase.time_range_text)}</text>',
+        f"{_FONT}>{html.escape(phase.time_range_text)}</text>",
     ]
 
 
-def generate_phase_timeline_svg(phases: list[PhaseTimelineItem], counts: StatusCounts) -> str:
+def generate_phase_timeline_svg(
+    phases: list[PhaseTimelineItem], counts: StatusCounts
+) -> str:
     """Generate self-contained inline SVG timeline compliant with diagram-design Process/Timeline standard.
 
     Adheres strictly to:
@@ -125,5 +150,5 @@ def generate_phase_timeline_svg(phases: list[PhaseTimelineItem], counts: StatusC
         )
     for i, phase in enumerate(phases):
         parts.extend(_node(i, phase, xs[i], node_w))
-    parts.append('</svg>')
-    return '\n'.join(parts)
+    parts.append("</svg>")
+    return "\n".join(parts)

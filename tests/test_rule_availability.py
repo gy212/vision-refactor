@@ -6,7 +6,7 @@
 ------------
 下游（考试结果、batch 报告）只读结构化字段判断一个检查项的结论，不解析中文 ``detail``：
 
-  - ``state ∈ {pass, violation, unable, pending_rule}``
+  - ``state ∈ {pass, violation, unable}``
   - ``unable`` 时 ``skip_reason ∈ {missing_landmarks, insufficient_valid_frames, phase_not_found}``
   - ``required_landmarks`` / ``required_capabilities`` / ``missing_landmarks``
 
@@ -33,7 +33,10 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from core.pose.validity import COCO17_SUPPORTED_CAPABILITIES, landmarks_missing_for_capabilities  # noqa: E402
+from core.pose.validity import (
+    COCO17_SUPPORTED_CAPABILITIES,
+    landmarks_missing_for_capabilities,
+)  # noqa: E402
 from core.evaluation import FeedbackConfig, judge_views, series_from_raw  # noqa: E402
 from core.evaluation.rules.spec import (  # noqa: E402
     RULE_STATE_UNABLE,
@@ -105,7 +108,9 @@ def _make_seq(n_valid: int, n_invalid: int) -> np.ndarray:
 
 def _judge(seq: np.ndarray, *, caps=None) -> dict:
     """左式实战式在正面的开始阶段各项结论（以检查项编码为键）。"""
-    series = series_from_raw(seq, {"width": 100, "height": 100, "fps": 30.0, "start_frame": 0})
+    series = series_from_raw(
+        seq, {"width": 100, "height": 100, "fps": 30.0, "start_frame": 0}
+    )
     checks = judge_views(
         {"front": series, "side": series},
         "stance",
@@ -113,21 +118,26 @@ def _judge(seq: np.ndarray, *, caps=None) -> dict:
         FeedbackConfig(),
         supported_capabilities=caps,
     )
-    return {c.code: c for view, _diag in checks.values() for c in view if c.phase == "start"}
-
-
-def _measured(by_code: dict) -> dict:
-    return {code: c for code, c in by_code.items() if c.state != "pending_rule"}
+    return {
+        c.code: c for view, _diag in checks.values() for c in view if c.phase == "start"
+    }
 
 
 # --------------------------------------------------------------------------- #
-# 1) 有效帧充足：给出 pass/violation，skip_reason=None
+# 1) 有效帧充足：全部实战式检查项直接正式启用，给出 pass/violation，skip_reason=None
 # --------------------------------------------------------------------------- #
 def test_judged_when_enough_valid_frames():
-    by_code = _measured(_judge(_make_seq(n_valid=10, n_invalid=0)))
-    assert {"stance_elbow", "stance_height", "stance_width", "stance_knee", "stance_toes"} <= set(
-        by_code
-    )
+    by_code = _judge(_make_seq(n_valid=10, n_invalid=0))
+    assert {
+        "stance_elbow",
+        "stance_height",
+        "stance_width",
+        "stance_knee",
+        "stance_toes",
+        "stance_rear_guard",
+        "stance_torso",
+        "guard_jaw",
+    } == set(by_code)
     for c in by_code.values():
         assert c.state in {"pass", "violation"}
         assert c.skip_reason is None
@@ -141,7 +151,7 @@ def test_judged_when_enough_valid_frames():
 # 2) skip_reason=phase_not_found：全程不可见，找不到实战式阶段
 # --------------------------------------------------------------------------- #
 def test_unable_phase_not_found_when_no_valid_frames():
-    by_code = _measured(_judge(_make_seq(n_valid=0, n_invalid=10)))
+    by_code = _judge(_make_seq(n_valid=0, n_invalid=10))
     assert by_code
     for c in by_code.values():
         assert c.state == RULE_STATE_UNABLE
@@ -168,7 +178,9 @@ def test_unable_insufficient_valid_frames():
 # 4) skip_reason=missing_landmarks：后端能力受限（COCO17）→ 缺点检查项 unable
 # --------------------------------------------------------------------------- #
 def test_unable_missing_landmarks_under_coco17():
-    by_code = _judge(_make_seq(n_valid=10, n_invalid=0), caps=COCO17_SUPPORTED_CAPABILITIES)
+    by_code = _judge(
+        _make_seq(n_valid=10, n_invalid=0), caps=COCO17_SUPPORTED_CAPABILITIES
+    )
 
     # 依赖 feet（脚跟/脚尖）的检查项在 COCO17 下结构性缺失。
     toes = by_code["stance_toes"]
@@ -183,7 +195,9 @@ def test_unable_missing_landmarks_under_coco17():
 
     # 依赖 mouth（嘴角）的检查项也缺点。
     rear = by_code["guard_jaw"]
-    assert rear.state == RULE_STATE_UNABLE and rear.skip_reason == SKIP_MISSING_LANDMARKS
+    assert (
+        rear.state == RULE_STATE_UNABLE and rear.skip_reason == SKIP_MISSING_LANDMARKS
+    )
     assert {"mouth_left", "mouth_right"} <= set(rear.missing_landmarks)
 
     # 仅依赖 arms/legs/face_center 的检查项在 COCO17 下仍可判定。
@@ -210,7 +224,11 @@ def test_required_landmarks_and_capabilities_declared():
 
     # 左式只看前手（左手），不再"任一手满足"。
     elbow = by_code["stance_elbow"]
-    assert set(elbow.required_landmarks) == {"left_shoulder", "left_elbow", "left_wrist"}
+    assert set(elbow.required_landmarks) == {
+        "left_shoulder",
+        "left_elbow",
+        "left_wrist",
+    }
     assert elbow.required_capabilities == ("arms",)
 
 

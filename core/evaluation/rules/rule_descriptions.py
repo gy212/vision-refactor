@@ -209,22 +209,10 @@ RULES = {
     ),
     "stance_toes": ("两脚内八或外八", "feet", "两脚大致平行、朝斜前方", ""),
     "stance_torso": ("躯干正向前方", "torso", "躯干侧向前方", ""),
-    "stance_head": (
-        "挺胸抬头",
-        "head_torso",
-        "下颚微收、含胸收腹",
-        "Pose33不足以可靠判定含胸收腹，需教师查看",
-    ),
     "guard_low": ("向下掉手", "hand", "护手保持在下颚附近", ""),
     "guard_back": ("向后拉手", "hand", "护手保持原护位，不向后拉", ""),
     "guard_elbow": ("向上抬肘", "arm", "护手侧保持护位，不向上抬肘", ""),
     "guard_shoulder": ("护手掉到肩膀以下", "hand", "出拳时护脸的手不低于肩膀", ""),
-    "vertical_fist": (
-        "出拳成立拳",
-        "hand",
-        "前手直拳出拳结束时拳背朝上",
-        "轻量Pose关键点不能可靠判断握拳朝向，需教师查看",
-    ),
     "shoulder_level": ("出拳未与肩部齐平", "arm", "出拳与肩部齐平", ""),
     "punch_extension": (
         "直拳出拳时肘未伸直",
@@ -300,7 +288,6 @@ PARTS = {
     "feet": "双脚",
     "torso": "躯干",
     "head": "头部",
-    "head_torso": "头部与胸腹",
 }
 
 PRIMARY_VIEW = {

@@ -3,6 +3,7 @@
 
 前 4 个用例原在 ``test_recording_postprocess.py``，P3 把评分策略移出 apps 层后随实现迁到这里（断言不变）。
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -22,12 +23,16 @@ def _d(name: str, score: float, start: int = 0, end: int = 10) -> dict:
 
 def test_merge_view_weighted_actions_paired_uses_registered_weights() -> None:
     # 两手攀足：侧 0.75 + 正 0.25（实测正面看不清前俯深度）。
-    out = exam_pool.merge_view_weighted_actions([_d("两手攀足_正面", 0.708), _d("两手攀足_侧面", 0.855)])
+    out = exam_pool.merge_view_weighted_actions(
+        [_d("两手攀足_正面", 0.708), _d("两手攀足_侧面", 0.855)]
+    )
     assert len(out) == 1
     assert out[0]["name"] == "两手攀足"
     assert out[0]["score"] == pytest.approx(0.75 * 0.855 + 0.25 * 0.708)
     # 攒拳怒目：50/50 去重双计数。
-    out = exam_pool.merge_view_weighted_actions([_d("攒拳怒目_正面", 0.812), _d("攒拳怒目_侧面", 0.807)])
+    out = exam_pool.merge_view_weighted_actions(
+        [_d("攒拳怒目_正面", 0.812), _d("攒拳怒目_侧面", 0.807)]
+    )
     assert len(out) == 1 and out[0]["score"] == pytest.approx(0.8095)
 
 
@@ -61,16 +66,24 @@ def test_score_squeeze_backhand_keeps_range_and_reproducible() -> None:
 
 
 def test_kick_geometry_weighted_with_dtw_and_squeeze_ignores_geometry() -> None:
-    assert exam_pool.action_score("高鞭腿", 0.8, 0.4) == pytest.approx(0.5 * 0.4 + 0.5 * 0.8)
+    assert exam_pool.action_score("高鞭腿", 0.8, 0.4) == pytest.approx(
+        0.5 * 0.4 + 0.5 * 0.8
+    )
     assert exam_pool.action_score("高鞭腿", 0.8, None) == 0.8
-    assert exam_pool.action_score("直拳", 0.8, 0.1) == pytest.approx(0.5 * 0.1 + 0.5 * 0.8)  # 是否算几何由池决定
+    assert exam_pool.action_score("直拳", 0.8, 0.1) == pytest.approx(
+        0.5 * 0.1 + 0.5 * 0.8
+    )  # 是否算几何由池决定
     assert exam_pool.action_score("背后七颠", 2.0, 0.0) == 0.90
 
 
-def _write(path: Path, *, variant="heavy", layout="pose33_v3", shape=(5, 22, 2)) -> Path:
+def _write(
+    path: Path, *, variant="heavy", layout="pose33_v3", shape=(5, 22, 2)
+) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     meta = {"pose_variant": variant, "feature_layout": layout}
-    np.savez_compressed(path, features=np.zeros(shape, np.float32), meta=np.array(meta, dtype=object))
+    np.savez_compressed(
+        path, features=np.zeros(shape, np.float32), meta=np.array(meta, dtype=object)
+    )
     return path
 
 
@@ -91,13 +104,26 @@ def test_score_exam_pools_reuses_one_extraction_per_view_and_merges(tmp_path) ->
 
     def compare(templates, video, **kwargs):
         calls.append((tuple(templates), video, kwargs["pose_variant"]))
-        return [SimpleNamespace(score=0.5 + 0.1 * i, start_frame=i, end_frame=i + 3) for i in range(len(templates))]
+        return [
+            SimpleNamespace(score=0.5 + 0.1 * i, start_frame=i, end_frame=i + 3)
+            for i in range(len(templates))
+        ]
 
-    res = exam_pool.score_exam_pools(tpls, side_tpls, Path("f.mp4"), Path("s.mp4"), compare=compare,
-                                     raw_series=lambda *_a, **_k: pytest.fail("无踢腿动作不该提原始序列"),
-                                     stop_evt=Event())
-    assert [c[1] for c in calls] == [Path("f.mp4"), Path("s.mp4")] and {c[2] for c in calls} == {"heavy"}
-    assert res.front_score == pytest.approx(0.55) and res.side_score == pytest.approx(0.5)
+    res = exam_pool.score_exam_pools(
+        tpls,
+        side_tpls,
+        Path("f.mp4"),
+        Path("s.mp4"),
+        compare=compare,
+        raw_series=lambda *_a, **_k: pytest.fail("无踢腿动作不该提原始序列"),
+        stop_evt=Event(),
+    )
+    assert [c[1] for c in calls] == [Path("f.mp4"), Path("s.mp4")] and {
+        c[2] for c in calls
+    } == {"heavy"}
+    assert res.front_score == pytest.approx(0.55) and res.side_score == pytest.approx(
+        0.5
+    )
     names = [a["name"] for a in res.action_scores]
     assert names == ["直拳", "两手攀足"]
     assert res.combined_score == pytest.approx((0.5 + 0.25 * 0.6 + 0.75 * 0.5) / 2)
@@ -112,9 +138,18 @@ def _raw_series(action: str, view: str):
     lm, detected = sp.landmarks(action, "left", view, 7)
     lm = lm.astype(np.float32)
     lm[~detected, :, 3] = 0.0
-    return Pose33RawSeries(landmarks=lm, meta={"video": f"{view}.mp4", "fps": sp.FPS, "frame_count": sp.N,
-                                               "width": sp.W, "height": sp.H, "start_frame": 0,
-                                               "valid_conf_thr": 0.5})
+    return Pose33RawSeries(
+        landmarks=lm,
+        meta={
+            "video": f"{view}.mp4",
+            "fps": sp.FPS,
+            "frame_count": sp.N,
+            "width": sp.W,
+            "height": sp.H,
+            "start_frame": 0,
+            "valid_conf_thr": 0.5,
+        },
+    )
 
 
 def test_catalog_actions_get_rule_checks_without_changing_the_score(tmp_path) -> None:
@@ -123,18 +158,37 @@ def test_catalog_actions_get_rule_checks_without_changing_the_score(tmp_path) ->
     side_tpls = [_write(tmp_path / "side" / "前手直拳.npz")]
 
     def compare(templates, video, **_kwargs):
-        return [SimpleNamespace(score=0.8, start_frame=30, end_frame=45) for _ in templates]
+        return [
+            SimpleNamespace(score=0.8, start_frame=30, end_frame=45) for _ in templates
+        ]
 
-    res = exam_pool.score_exam_pools(front_tpls, side_tpls, Path("front.mp4"), Path("side.mp4"), compare=compare,
-                                     raw_series=lambda video, **_k: _raw_series("front_straight", Path(video).stem),
-                                     stop_evt=Event())
+    res = exam_pool.score_exam_pools(
+        front_tpls,
+        side_tpls,
+        Path("front.mp4"),
+        Path("side.mp4"),
+        compare=compare,
+        raw_series=lambda video, **_k: _raw_series("front_straight", Path(video).stem),
+        stop_evt=Event(),
+    )
     assert res.combined_score == pytest.approx(0.8) and res.rule_error == ""
-    assert [(r["name"], r["view"], r["action"], r["stance"]) for r in res.rule_checks] == [
-        ("前手直拳", "front", "front_straight", "left"), ("前手直拳", "side", "front_straight", "left")]
-    front = res.rule_checks[0]
+    assert [
+        (r["name"], r["view"], r["action"], r["stance"]) for r in res.rule_checks
+    ] == [
+        ("前手直拳", "front", "front_straight", "left"),
+        ("前手直拳", "side", "front_straight", "left"),
+    ]
+    front, side = res.rule_checks[0], res.rule_checks[1]
     assert front["start"] == 0 and front["end"] == 75  # 匹配窗口前后各放宽 1 秒
-    codes = {c.code for c in front["checks"]}
-    assert {"stance_elbow", "stance_height", "stance_width", "punch_extension", "guard_low"} <= codes
-    assert "stance_width" not in {c.code for c in res.rule_checks[1]["checks"]}  # 站距只在正面测量
-    assert all(c.state in {"pass", "violation", "unable", "pending_rule"} for c in front["checks"])
-    assert any(c.state in {"pass", "violation"} for c in front["checks"] if c.phase == "start")
+    front_codes = {c.code for c in front["checks"]}
+    side_codes = {c.code for c in side["checks"]}
+    assert {"stance_height", "stance_width", "stance_torso", "guard_jaw"} <= front_codes
+    assert {"stance_elbow", "punch_extension", "guard_shoulder"} <= side_codes
+    assert "stance_width" not in side_codes  # 站距只在正面测量
+    assert all(
+        c.state in {"pass", "violation", "unable"}
+        for c in (*front["checks"], *side["checks"])
+    )
+    assert any(
+        c.state in {"pass", "violation"} for c in front["checks"] if c.phase == "start"
+    )

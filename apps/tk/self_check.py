@@ -3,6 +3,7 @@
 由 ``apps/desktop_launcher.py --offline-self-check <报告.json>`` 调用；每项检查是一个函数，
 通过后把检查名追加到报告的 ``checks``。
 """
+
 from __future__ import annotations
 
 import json
@@ -21,11 +22,13 @@ from apps.tk.build_info import load_build_info, package_root
 
 class _CameraSmokeCapture:
     """打包检查用驱动；不接触物理摄像头。"""
+
     def __init__(self, index, **kwargs):
         self.index, self.reads = index, 0
 
     def read(self):
         import numpy as np
+
         self.reads += 1
         if self.index == 1 and self.reads > 1:
             raise RuntimeError("simulated cv::Mat stride failure")
@@ -50,6 +53,7 @@ class _CameraSmokePreview(_CameraSmokeRecovered):
 
     def read(self):
         import numpy as np
+
         time.sleep(0.02)
         return True, np.zeros((self.height, self.width, 3), dtype=np.uint8)
 
@@ -57,21 +61,35 @@ class _CameraSmokePreview(_CameraSmokeRecovered):
         time.sleep(0.1)  # Realistic asynchronous driver shutdown across mode switches.
 
 
-# 结果页状态图标：4 种状态 × 2 种命名 × 3 种尺寸 = 24 个，结果页按 parent.parent 定位。
-FEEDBACK_ICON_STATES = ("candidate", "not_observed", "pending_rule", "unable")
+# 结果页状态图标：3 种状态 × 2 种命名 × 3 种尺寸 = 18 个，结果页按 parent.parent 定位。
+FEEDBACK_ICON_STATES = ("candidate", "not_observed", "unable")
 FEEDBACK_ICON_SIZES = (24, 32, 48)
 
 # 图文报告模板：随包分发到 ``core/reporting/html/templates``，缺一个渲染即失败。
 REPORT_TEMPLATES = (
-    "candidate_section", "count_pill", "diagnostics_section", "evidence_grid", "evidence_image",
-    "evidence_placeholder", "incomplete_row", "incomplete_section", "issue_card", "issue_details",
-    "no_candidates", "not_observed_row", "not_observed_section", "report", "revoked_row", "revoked_section",
+    "candidate_section",
+    "count_pill",
+    "diagnostics_section",
+    "evidence_grid",
+    "evidence_image",
+    "evidence_placeholder",
+    "incomplete_row",
+    "incomplete_section",
+    "issue_card",
+    "issue_details",
+    "no_candidates",
+    "not_observed_row",
+    "not_observed_section",
+    "report",
+    "revoked_row",
+    "revoked_section",
 )
 
 
 def check_feedback_icons(root: Path) -> int:
     """断言结果页的全部状态图标都能解码且尺寸正确，返回图标个数。"""
     from PIL import Image
+
     icon_dir = root / "assets" / "feedback"
     count = 0
     for state in FEEDBACK_ICON_STATES:
@@ -81,13 +99,16 @@ def check_feedback_icons(root: Path) -> int:
                 assert path.is_file(), f"包内缺少结果页图标：{path.name}"
                 with Image.open(path) as image:
                     image.load()
-                    assert image.size == (size, size), f"{path.name} 尺寸为 {image.size}"
+                    assert image.size == (size, size), (
+                        f"{path.name} 尺寸为 {image.size}"
+                    )
                 count += 1
     return count
 
 
 def block_network() -> None:
     """离线检查期间任何联网尝试都直接失败。"""
+
     def blocked(*args, **kwargs):
         raise RuntimeError("离线检查禁止网络访问")
 
@@ -100,6 +121,7 @@ def block_network() -> None:
 def check_build_info(report: dict) -> None:
     """冻结包必须带 ``build_info.json``，来自干净工作区且规则版本一致；同时检查结果页图标。"""
     from core.evaluation import RULE_VERSION
+
     build = load_build_info(package_root())
     report["buildInfo"] = build
     if report["frozen"]:
@@ -123,9 +145,15 @@ def check_models_and_inference(report: dict, temporary: Path) -> None:
     report["checks"].append("four_bundled_models_seeded")
     frame = np.zeros((240, 320, 3), dtype=np.uint8)
     for variant in ("lite", "full", "heavy"):
-        pipeline = create_engine(EngineSpec(
-            pose_variant=variant, enable_hands=True, delegate="cpu", running_mode="image"),
-            models_dir=model_dir)
+        pipeline = create_engine(
+            EngineSpec(
+                pose_variant=variant,
+                enable_hands=True,
+                delegate="cpu",
+                running_mode="image",
+            ),
+            models_dir=model_dir,
+        )
         try:
             pipeline.infer(frame)
         finally:
@@ -136,6 +164,7 @@ def check_models_and_inference(report: dict, temporary: Path) -> None:
 def check_templates_and_preferences(report: dict) -> None:
     """在线模板库可加载；摄像头选择与录像目录偏好能写入并读回。"""
     from core import evaluation, foundation
+
     templates = evaluation.load_template_library(foundation.templates_dir() / "online")
     assert len(templates) == 2
     foundation.save_camera_selection(0, None)
@@ -153,7 +182,8 @@ def check_video_record(report: dict) -> Path:
 
     frame = np.zeros((240, 320, 3), dtype=np.uint8)
     writer, video, _codec = media.open_video_writer(
-        foundation.outputs_dir() / "空白 测试.avi", fps=12, size=(320, 240))
+        foundation.outputs_dir() / "空白 测试.avi", fps=12, size=(320, 240)
+    )
     try:
         for _ in range(24):
             writer.write(frame)
@@ -172,9 +202,13 @@ def check_camera_recording_writer(report: dict) -> None:
     from core import foundation, media
 
     frame = np.zeros((240, 320, 3), dtype=np.uint8)
-    frame[:40, :40] = 255                       # 左上角白块：转正 90° 后在右上角
+    frame[:40, :40] = 255  # 左上角白块：转正 90° 后在右上角
     writer, video, codec = media.open_recording_writer(
-        foundation.outputs_dir() / "摄像头 录像.mp4", fps=30, size=(240, 320), rotation=90)
+        foundation.outputs_dir() / "摄像头 录像.mp4",
+        fps=30,
+        size=(240, 320),
+        rotation=90,
+    )
     try:
         for _ in range(24):
             writer.write(frame)
@@ -187,7 +221,9 @@ def check_camera_recording_writer(report: dict) -> None:
         images = [frame.bgr for frame in source]
     assert len(images) == 24, f"录像应有 24 帧，解码出 {len(images)} 帧"
     assert images[0].shape[:2] == (320, 240), f"录像方向不对：{images[0].shape[:2]}"
-    assert images[0][:40, -40:].mean() > 200 > images[0][:40, :40].mean(), "录像没有按旋转转正"
+    assert images[0][:40, -40:].mean() > 200 > images[0][:40, :40].mean(), (
+        "录像没有按旋转转正"
+    )
     report["checks"].append("camera_recording_writer_rotate_transcode_decode")
 
 
@@ -201,16 +237,27 @@ def check_practice_history(report: dict, video: Path) -> tuple[object, dict]:
     history = HistoryStore(renderers=practice_report_renderers())
     side_video = video.with_name("侧面 测试.mp4")
     shutil.copyfile(video, side_video)
-    record = history.add({"studentId": "offline-check", "studentName": "打包检查",
-                          "action": next(iter(ACTIONS)), "stance": next(iter(STANCES))}, video, side_video)
+    record = history.add(
+        {
+            "studentId": "offline-check",
+            "studentName": "打包检查",
+            "action": next(iter(ACTIONS)),
+            "stance": next(iter(STANCES)),
+        },
+        video,
+        side_video,
+    )
     result = record["result"]
     assert result["backend"] == "mediapipe"
     assert result["fusionMethod"] == "action_rule_quality_weighted_v1"
     assert result["inputViews"] == ["front", "side"]
     assert result["ruleVersion"] == RULE_VERSION
     assert result["poseVariant"] == "full"
-    assert all(c["status"] in {"unable", "pending_rule"} for c in result["checks"])
-    assert all(c["analyzedFrames"] == 24 and c["stride"] == 1 for c in result["capture"].values())
+    assert all(c["status"] == "unable" for c in result["checks"])
+    assert all(
+        c["analyzedFrames"] == 24 and c["stride"] == 1
+        for c in result["capture"].values()
+    )
     report["feedbackVersion"] = result["ruleVersion"]
     report["feedbackCapture"] = result["capture"]
     assert history.get(record["id"])["id"] == record["id"]
@@ -226,12 +273,18 @@ def check_html_report(report: dict, history, record: dict) -> None:
     from core import foundation
 
     template_dir = package_root() / "core" / "reporting" / "html" / "templates"
-    missing = [name for name in REPORT_TEMPLATES if not (template_dir / f"{name}.html").is_file()]
+    missing = [
+        name
+        for name in REPORT_TEMPLATES
+        if not (template_dir / f"{name}.html").is_file()
+    ]
     assert not missing, f"包内缺少图文报告模板：{missing}"
     target = foundation.outputs_dir() / "图文报告.html"
     history.export(record["id"], target)
     text = target.read_text(encoding="utf-8")
-    assert text.lstrip().lower().startswith("<!doctype html"), "图文报告不是完整的 HTML 文档"
+    assert text.lstrip().lower().startswith("<!doctype html"), (
+        "图文报告不是完整的 HTML 文档"
+    )
     assert "打包检查" in text and "${" not in text, "图文报告模板未填充"
     assert "http://" not in text and "https://" not in text, "图文报告引用了外部资源"
     assert str(foundation.repo_root()) not in text, "图文报告泄露了本机路径"
@@ -242,6 +295,7 @@ def check_html_report(report: dict, history, record: dict) -> None:
 def check_camera_spawn(report: dict) -> None:
     """采集子进程的异常传回主进程并清理；随后能重新打开，交出连续内存的帧。"""
     from core.media import ProcessCamera
+
     failed_camera = ProcessCamera(1, _factory=_CameraSmokeCapture)
     try:
         assert failed_camera.read()[0]
@@ -264,6 +318,28 @@ def check_camera_spawn(report: dict) -> None:
     report["checks"].append("camera_spawn_error_cleanup_and_reopen")
 
 
+def _pump_tk_until(root, app, predicate) -> None:
+    """驱动 Tk 主循环以派发工作线程回调，直到条件满足或超时。"""
+    deadline = time.monotonic() + 20
+    errors: list[Exception] = []
+
+    def poll() -> None:
+        try:
+            if predicate():
+                root.quit()
+                return
+            assert time.monotonic() < deadline, app.window.status.status_var.get()
+            root.after(10, poll)
+        except Exception as exc:
+            errors.append(exc)
+            root.quit()
+
+    root.after(0, poll)
+    root.mainloop()  # update() alone cannot dispatch worker-thread Tk calls.
+    if errors:
+        raise errors[0]
+
+
 def check_camera_mode_switch(app, root):
     """Exercise real Tk callbacks, pool, spawn and claim with simulated devices."""
     from unittest.mock import patch
@@ -275,24 +351,7 @@ def check_camera_mode_switch(app, root):
     FULL_HD = NORMAL.requirements.fmt.size  # D-17：三种模式同一采集格式
 
     def pump_until(predicate):
-        deadline = time.monotonic() + 20
-        errors = []
-
-        def poll():
-            try:
-                if predicate():
-                    root.quit()
-                    return
-                assert time.monotonic() < deadline, app.window.status.status_var.get()
-                root.after(10, poll)
-            except Exception as exc:
-                errors.append(exc)
-                root.quit()
-
-        root.after(0, poll)
-        root.mainloop()  # update() alone cannot dispatch worker-thread Tk calls.
-        if errors:
-            raise errors[0]
+        _pump_tk_until(root, app, predicate)
 
     def stopped():
         return app.session.finished()
@@ -309,27 +368,43 @@ def check_camera_mode_switch(app, root):
             app.window.recording.auto_compare_var.set(False)
             app.cameras.preferred_primary = 0
             app.cameras.preferred_secondary = 1
-            app.cameras.apply_entries([CameraEntry("摄像头 0", 0), CameraEntry("摄像头 1", 1)], True)
+            app.cameras.apply_entries(
+                [CameraEntry("摄像头 0", 0), CameraEntry("摄像头 1", 1)], True
+            )
             app.window.practice.controls.student_id.set("offline-switch")
             service = app.cameras.service
-            preview = {PRIMARY: CaptureSpec(0, *FULL_HD, policy="require"), SECONDARY: CaptureSpec(1, *FULL_HD, policy="require")}
+            preview = {
+                PRIMARY: CaptureSpec(0, *FULL_HD, policy="require"),
+                SECONDARY: CaptureSpec(1, *FULL_HD, policy="require"),
+            }
 
             def preview_warm():
                 # 会话结束后设备交回池（V-1）或重新预热，1080p 预览帧可用。
                 return service.open_stream(preview).snapshot() is not None
+
             for _ in range(2):
                 app.session.start()
                 pump_until(ready)
-                assert app.recording.service.session_sizes == {"front": FULL_HD, "side": FULL_HD}
+                assert app.recording.service.session_sizes == {
+                    "front": FULL_HD,
+                    "side": FULL_HD,
+                }
                 app.session.stop()
                 pump_until(stopped)
                 pump_until(preview_warm)
                 # 已有预热时进入学生练习：三种模式同为 1080p（D-17），池复用或重新协商后格式不变。
                 app.practice.enter()
                 app.practice.start()
-                pump_until(lambda: ready() and app.practice.practice.phase == "waiting_enter")
-                assert app.recording.service.session_sizes == {"front": FULL_HD, "side": FULL_HD}
-                assert app.recording.state == "idle"  # Blank frames cannot start a recording.
+                pump_until(
+                    lambda: ready() and app.practice.practice.phase == "waiting_enter"
+                )
+                assert app.recording.service.session_sizes == {
+                    "front": FULL_HD,
+                    "side": FULL_HD,
+                }
+                assert (
+                    app.recording.state == "idle"
+                )  # Blank frames cannot start a recording.
                 app.practice.exit()
                 pump_until(stopped)
                 pump_until(preview_warm)
@@ -346,7 +421,9 @@ def check_camera_mode_switch(app, root):
             app.cameras.secondary_selected()
             pump_until(lambda: not service.device_busy(1))
             app.session.start()
-            pump_until(lambda: app.recording.service.session_sizes == {"front": FULL_HD})
+            pump_until(
+                lambda: app.recording.service.session_sizes == {"front": FULL_HD}
+            )
             app.session.stop()
             pump_until(stopped)
         finally:
@@ -393,7 +470,7 @@ def run_checks(report: dict, temporary: Path) -> None:
     root = Tk()
     root.withdraw()
     try:
-        check_tk_desktop(report, root)   # 正常结束时由关窗协调器销毁窗口
+        check_tk_desktop(report, root)  # 正常结束时由关窗协调器销毁窗口
     except BaseException:
         try:
             root.destroy()
@@ -412,12 +489,16 @@ def run(report_path: Path) -> int:
         with tempfile.TemporaryDirectory(prefix="散打 离线检查-") as temporary:
             os.environ["LOCALAPPDATA"] = temporary
             # 窗口版没有 stdout/stderr；保留可读诊断日志。
-            with report_path.with_suffix(".log").open("w", encoding="utf-8", buffering=1) as log:
+            with report_path.with_suffix(".log").open(
+                "w", encoding="utf-8", buffering=1
+            ) as log:
                 sys.stdout = sys.stderr = log
                 run_checks(report, Path(temporary))
                 report["ok"] = True
     except Exception:
         report["error"] = traceback.format_exc()
     finally:
-        report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        report_path.write_text(
+            json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
     return 0 if report["ok"] else 1

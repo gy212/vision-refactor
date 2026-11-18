@@ -6,6 +6,7 @@ Challenges:
 3. Prohibited grading / score / penalty points / progress bar scanner.
 4. Height-normalized landmark coordinates robustness on non-square frames and extreme landmark inputs.
 """
+
 from dataclasses import asdict
 import itertools
 import math
@@ -28,15 +29,20 @@ from core.reporting import (
     extract_evidence_frame,
 )
 from core.reporting.html import render_html_report
-from tests.test_feedback_report import make_synthetic_check, make_synthetic_record, make_dummy_video
+from tests.test_feedback_report import (
+    make_synthetic_check,
+    make_synthetic_record,
+    make_dummy_video,
+)
 
 
 # ===========================================================================
 # 1. ITEM CONSERVATION INVARIANT STRESS TEST
 # ===========================================================================
 
+
 def generate_random_check(idx: int, edge_mode: str = "normal") -> dict:
-    statuses = ["candidate", "not_observed", "unable", "pending_rule"]
+    statuses = ["candidate", "not_observed", "unable"]
     reviews = ["pending", "confirmed", "revoked"]
 
     if edge_mode == "missing_id":
@@ -46,8 +52,16 @@ def generate_random_check(idx: int, edge_mode: str = "normal") -> dict:
     else:
         cid = f"check_{idx}"
 
-    status = random.choice(statuses) if edge_mode != "invalid_status" else "unknown_state_xyz"
-    review = random.choice(reviews) if edge_mode != "invalid_review" else "invalid_review_abc"
+    status = (
+        random.choice(statuses)
+        if edge_mode != "invalid_status"
+        else random.choice(["pending_rule", "unknown_state_xyz"])
+    )
+    review = (
+        random.choice(reviews)
+        if edge_mode != "invalid_review"
+        else "invalid_review_abc"
+    )
 
     chk: dict[str, Any] = {
         "code": f"code_{idx}",
@@ -59,7 +73,11 @@ def generate_random_check(idx: int, edge_mode: str = "normal") -> dict:
         chk["id"] = cid
 
     if edge_mode == "missing_fields":
-        keys_to_pop = [k for k in ["code", "name", "standard", "source", "reason"] if random.random() < 0.5]
+        keys_to_pop = [
+            k
+            for k in ["code", "name", "standard", "source", "reason"]
+            if random.random() < 0.5
+        ]
         for k in keys_to_pop:
             chk.pop(k, None)
     elif edge_mode == "malformed_fields":
@@ -88,7 +106,9 @@ def test_item_conservation_randomized_stress():
     for i in range(1200):
         mode = random.choice(edge_modes)
         num_checks = random.choice([0, 1, 2, 5, 20, 50, 100, 250])
-        raw_checks = [generate_random_check(j, edge_mode=mode) for j in range(num_checks)]
+        raw_checks = [
+            generate_random_check(j, edge_mode=mode) for j in range(num_checks)
+        ]
 
         rec = make_synthetic_record(checks=raw_checks)
         if random.random() < 0.1:
@@ -99,13 +119,14 @@ def test_item_conservation_randomized_stress():
         model = build_report_model(rec)
         counts = model.counts
 
-        assert counts.verify_conservation(), f"Conservation failed for mode={mode}, n={num_checks}: {counts}"
+        assert counts.verify_conservation(), (
+            f"Conservation failed for mode={mode}, n={num_checks}: {counts}"
+        )
         assert len(model.all_checks) == counts.total_checks
         assert len(model.candidate_checks) == counts.candidate_count
         assert len(model.revoked_checks) == counts.revoked_count
         assert len(model.not_observed_checks) == counts.not_observed_count
         assert len(model.unable_checks) == counts.unable_count
-        assert len(model.pending_rule_checks) == counts.pending_rule_count
 
         total_runs += 1
         conservation_successes += 1
@@ -114,15 +135,16 @@ def test_item_conservation_randomized_stress():
 
 
 # ===========================================================================
-# 2. 7-LEVEL HEADLINE HIERARCHY & PEDAGOGICAL NEUTRALITY GRID SEARCH
+# 2. HEADLINE HIERARCHY & PEDAGOGICAL NEUTRALITY GRID SEARCH
 # ===========================================================================
 
+
 def evaluate_headline_neutrality_violations():
-    """Grid search all combinations of (cand, rev, not_obs, unab, pend) in 0..10 (161,051 cases)."""
+    """Grid search all combinations of (cand, rev, not_obs, unab) in 0..10 (14,641 cases)."""
     violations = []
 
-    for cand, rev, not_obs, unab, pend in itertools.product(range(11), repeat=5):
-        total = cand + rev + not_obs + unab + pend
+    for cand, rev, not_obs, unab in itertools.product(range(11), repeat=4):
+        total = cand + rev + not_obs + unab
         counts = StatusCounts(
             total_checks=total,
             candidate_count=cand,
@@ -131,70 +153,75 @@ def evaluate_headline_neutrality_violations():
             revoked_count=rev,
             not_observed_count=not_obs,
             unable_count=unab,
-            pending_rule_count=pend
         )
 
         hl = get_headline_summary(counts, [], needs_rerecord=False)
 
         # Invariant 1: If total_checks == 0, never report success/green
         if total == 0:
-            if hl.level == "success" or hl.status_tone == "success" or "未发现问题" in hl.title:
-                violations.append({
-                    "type": "EMPTY_CHECKS_FALSE_SUCCESS",
-                    "counts": (cand, rev, not_obs, unab, pend),
-                    "headline": hl.title,
-                    "level": hl.level,
-                    "tone": hl.status_tone
-                })
+            if (
+                hl.level == "success"
+                or hl.status_tone == "success"
+                or "未发现问题" in hl.title
+            ):
+                violations.append(
+                    {
+                        "type": "EMPTY_CHECKS_FALSE_SUCCESS",
+                        "counts": (cand, rev, not_obs, unab),
+                        "headline": hl.title,
+                        "level": hl.level,
+                        "tone": hl.status_tone,
+                    }
+                )
                 continue
 
         # Invariant 2: If all non-revoked checks are unable (cand=0, not_obs=0, unab>0),
         # MUST NEVER report success/green or "未发现问题"
         if cand == 0 and not_obs == 0 and unab > 0:
-            if hl.level == "success" or hl.status_tone == "success" or "未发现问题" in hl.title:
-                violations.append({
-                    "type": "ALL_UNABLE_FALSE_SUCCESS",
-                    "counts": (cand, rev, not_obs, unab, pend),
-                    "headline": hl.title,
-                    "level": hl.level,
-                    "tone": hl.status_tone
-                })
+            if (
+                hl.level == "success"
+                or hl.status_tone == "success"
+                or "未发现问题" in hl.title
+            ):
+                violations.append(
+                    {
+                        "type": "ALL_UNABLE_FALSE_SUCCESS",
+                        "counts": (cand, rev, not_obs, unab),
+                        "headline": hl.title,
+                        "level": hl.level,
+                        "tone": hl.status_tone,
+                    }
+                )
                 continue
 
         # Invariant 3: If not_observed == 0 (no check was ever verified compliant),
         # headline should NEVER claim "已检查项目未发现问题" with success tone!
-        if not_obs == 0 and ("已检查项目未发现问题" in hl.title and hl.status_tone == "success"):
-            violations.append({
-                "type": "ZERO_NOT_OBSERVED_FALSE_SUCCESS",
-                "counts": (cand, rev, not_obs, unab, pend),
-                "headline": hl.title,
-                "level": hl.level,
-                "tone": hl.status_tone
-            })
+        if not_obs == 0 and (
+            "已检查项目未发现问题" in hl.title and hl.status_tone == "success"
+        ):
+            violations.append(
+                {
+                    "type": "ZERO_NOT_OBSERVED_FALSE_SUCCESS",
+                    "counts": (cand, rev, not_obs, unab),
+                    "headline": hl.title,
+                    "level": hl.level,
+                    "tone": hl.status_tone,
+                }
+            )
             continue
 
-        # Invariant 4: If pending_rule > 0 and cand == 0, never report success/green
-        if cand == 0 and pend > 0:
-            if hl.level == "success" or hl.status_tone == "success":
-                violations.append({
-                    "type": "PENDING_RULE_FALSE_SUCCESS",
-                    "counts": (cand, rev, not_obs, unab, pend),
-                    "headline": hl.title,
-                    "level": hl.level,
-                    "tone": hl.status_tone
-                })
-                continue
-
-        # Invariant 5: If cand > 0, never report success
+        # Invariant 4: If cand > 0, never report success
         if cand > 0:
             if hl.level == "success" or hl.status_tone == "success":
-                violations.append({
-                    "type": "CANDIDATE_FALSE_SUCCESS",
-                    "counts": (cand, rev, not_obs, unab, pend),
-                    "headline": hl.title,
-                    "level": hl.level,
-                    "tone": hl.status_tone
-                })
+                violations.append(
+                    {
+                        "type": "CANDIDATE_FALSE_SUCCESS",
+                        "counts": (cand, rev, not_obs, unab),
+                        "headline": hl.title,
+                        "level": hl.level,
+                        "tone": hl.status_tone,
+                    }
+                )
                 continue
 
     return violations
@@ -218,7 +245,6 @@ def test_reproduce_headline_neutrality_bug_all_unable_with_revoked():
         revoked_count=1,
         not_observed_count=0,
         unable_count=2,
-        pending_rule_count=0
     )
     assert counts.verify_conservation() is True
     hl = get_headline_summary(counts, [], needs_rerecord=False)
@@ -238,7 +264,6 @@ def test_reproduce_headline_neutrality_bug_empty_checks():
         revoked_count=0,
         not_observed_count=0,
         unable_count=0,
-        pending_rule_count=0
     )
     assert counts.verify_conservation() is True
     hl = get_headline_summary(counts, [], needs_rerecord=False)
@@ -249,6 +274,7 @@ def test_reproduce_headline_neutrality_bug_empty_checks():
 # ===========================================================================
 # 3. PROHIBIT GRADING ARTIFACTS ADVERSARIAL SCANNER
 # ===========================================================================
+
 
 def test_prohibit_grading_exhaustive_scan():
     """Verify absolutely no scores, penalty points, or progress bars in models or HTML reports."""
@@ -270,9 +296,23 @@ def test_prohibit_grading_exhaustive_scan():
 
     scenarios = [
         make_synthetic_record(checks=[]),
-        make_synthetic_record(checks=[make_synthetic_check(code=f"c_{i}", status="candidate") for i in range(15)]),
-        make_synthetic_record(checks=[make_synthetic_check(code=f"c_{i}", status="not_observed") for i in range(15)]),
-        make_synthetic_record(checks=[make_synthetic_check(code=f"c_{i}", status="unable") for i in range(15)]),
+        make_synthetic_record(
+            checks=[
+                make_synthetic_check(code=f"c_{i}", status="candidate")
+                for i in range(15)
+            ]
+        ),
+        make_synthetic_record(
+            checks=[
+                make_synthetic_check(code=f"c_{i}", status="not_observed")
+                for i in range(15)
+            ]
+        ),
+        make_synthetic_record(
+            checks=[
+                make_synthetic_check(code=f"c_{i}", status="unable") for i in range(15)
+            ]
+        ),
     ]
 
     for rec in scenarios:
@@ -283,31 +323,36 @@ def test_prohibit_grading_exhaustive_scan():
             model.headline.title,
             model.headline.subtitle,
             model.headline.reason,
-            html_out
+            html_out,
         ]
 
         for text in texts_to_check:
             for pat in prohibited_patterns:
                 match = pat.search(text)
-                assert match is None, f"Prohibited grading artifact matched '{match.group(0)}' in: {text[:200]}"
+                assert match is None, (
+                    f"Prohibited grading artifact matched '{match.group(0)}' in: {text[:200]}"
+                )
 
 
 # ===========================================================================
 # 4. HEIGHT-NORMALIZED LANDMARK COORDINATES & ASPECT RATIO SAFETY
 # ===========================================================================
 
+
 def test_landmark_height_normalization_aspect_ratios(tmp_path):
     """Test non-square aspect ratios (1920x1080, 640x480, 1080x1920, 200x50, 50x200)."""
     resolutions = [
         (1920, 1080),  # 16:9
-        (640, 480),    # 4:3
+        (640, 480),  # 4:3
         (1080, 1920),  # 9:16 vertical
-        (200, 50),     # 4:1 wide banner
-        (50, 200),     # 1:4 tall banner
+        (200, 50),  # 4:1 wide banner
+        (50, 200),  # 1:4 tall banner
     ]
 
     for w, h in resolutions:
-        vpath = make_dummy_video(tmp_path / f"test_{w}x{h}.avi", width=w, height=h, frames=5)
+        vpath = make_dummy_video(
+            tmp_path / f"test_{w}x{h}.avi", width=w, height=h, frames=5
+        )
 
         lms = [[0.0, 0.0, 0.0, 1.0] for _ in range(33)]
         lms[11] = [0.4, 0.3, 0.0, 1.0]
@@ -340,21 +385,29 @@ def test_landmark_height_normalization_aspect_ratios(tmp_path):
         ]
 
         for name, extreme_lms in safe_extreme_cases:
-            res_frame = extract_evidence_frame(vpath, 0, landmarks=extreme_lms, highlight_joints={11, 13, 15})
+            res_frame = extract_evidence_frame(
+                vpath, 0, landmarks=extreme_lms, highlight_joints={11, 13, 15}
+            )
             if extreme_lms is not None:
                 assert res_frame is not None
 
 
 def test_reproduce_extract_evidence_frame_crash_on_malformed_landmarks(tmp_path):
     """BUG REPRODUCTION 3: IndexError crash when landmark elements are empty or 1D."""
-    vpath = make_dummy_video(tmp_path / "crash_test.avi", width=640, height=480, frames=5)
+    vpath = make_dummy_video(
+        tmp_path / "crash_test.avi", width=640, height=480, frames=5
+    )
 
     # 1. Empty sublists: [[]] * 33 (should not raise IndexError)
-    res1 = extract_evidence_frame(vpath, 0, landmarks=[[] for _ in range(33)], highlight_joints={11, 13, 15})
+    res1 = extract_evidence_frame(
+        vpath, 0, landmarks=[[] for _ in range(33)], highlight_joints={11, 13, 15}
+    )
     assert res1 is not None
 
     # 2. 1D point: [[0.5]] * 33 (should not raise IndexError)
-    res2 = extract_evidence_frame(vpath, 0, landmarks=[[0.5] for _ in range(33)], highlight_joints={11, 13, 15})
+    res2 = extract_evidence_frame(
+        vpath, 0, landmarks=[[0.5] for _ in range(33)], highlight_joints={11, 13, 15}
+    )
     assert res2 is not None
 
     # 3. render_html_report unhandled crash prevented
@@ -365,15 +418,17 @@ def test_reproduce_extract_evidence_frame_crash_on_malformed_landmarks(tmp_path)
     make_dummy_video(video_path, width=640, height=480, frames=5)
 
     rec = make_synthetic_record(
-        evidence=[{
-            "id": "front:0",
-            "view": "front",
-            "frame": 0,
-            "timeSeconds": 0.1,
-            "landmarks": [[] for _ in range(33)],
-            "validMask": [True] * 33
-        }],
-        videos={"front": "front.mp4", "side": "side.mp4"}
+        evidence=[
+            {
+                "id": "front:0",
+                "view": "front",
+                "frame": 0,
+                "timeSeconds": 0.1,
+                "landmarks": [[] for _ in range(33)],
+                "validMask": [True] * 33,
+            }
+        ],
+        videos={"front": "front.mp4", "side": "side.mp4"},
     )
     rec["id"] = "e" * 32
 

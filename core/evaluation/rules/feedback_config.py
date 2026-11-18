@@ -58,7 +58,7 @@ class FeedbackConfig:
     guard_back: float = 0.18
     shoulder_height: float = 0.20
     elbow_raise: float = (
-        0.10  # 肘高于肩超过该值（躯干长度）即算抬肘；可为负，见 straight_policy
+        0.10  # 肘高于肩超过该值（躯干长度）即算抬肘；负值表示肘低于肩不足该距离即算抬肘
     )
     torso_front_ratio: float = 0.75
     foot_angle: float = 145.0
@@ -109,7 +109,7 @@ class FeedbackConfig:
         0.34  # 原地后低鞭腿前手护颚腕口距上限（正面，躯干长度）
     )
     front_weights: dict = field(default_factory=default_front_weights)
-    stance_elbow_min: float = 90.0  # 上步直拳容错由 straight_policy 单独覆盖
+    stance_elbow_min: float = 90.0  # 公共实战式与直拳容错由 PARAMS 覆盖
     stance_knee_max: float = 170.0
     punch_level_deviation: float = 5.0
 
@@ -164,7 +164,9 @@ class FeedbackConfig:
             raise ValueError("比例参数不能大于1")
         if not 0.5 < self.fusion_support <= 1:
             raise ValueError("融合支持阈值必须大于0.5且不超过1")
-        check_front_weights(self.front_weights, RULES)
+        check_front_weights(
+            self.front_weights, {*RULES, "stance_head", "vertical_fist"}
+        )
 
 
 def load_feedback_config() -> FeedbackConfig:
