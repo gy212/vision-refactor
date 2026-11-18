@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
-"""结果页头部：学员与记录信息卡片，以及按七级结论着色的核心结论横幅。"""
+"""结果页头部：学员与记录信息卡片，以及按结论级别着色的核心结论横幅。"""
+
 from __future__ import annotations
 
 import tkinter as tk
@@ -24,10 +25,18 @@ class HeaderCard:
         self.frame = card(parent)
         self.frame.pack(fill="x", pady=(0, 8))
         self.meta_var = StringVar(value="尚未加载记录")
-        label(self.frame, size=10, textvariable=self.meta_var, anchor="w", justify="left").pack(fill="x")
+        label(
+            self.frame, size=10, textvariable=self.meta_var, anchor="w", justify="left"
+        ).pack(fill="x")
         self.sub_var = StringVar(value="")
-        label(self.frame, size=8, fg=STYLE_A["text_secondary"], textvariable=self.sub_var,
-              anchor="w", justify="left").pack(fill="x", pady=(2, 0))
+        label(
+            self.frame,
+            size=8,
+            fg=STYLE_A["text_secondary"],
+            textvariable=self.sub_var,
+            anchor="w",
+            justify="left",
+        ).pack(fill="x", pady=(2, 0))
 
     def show(self, model: NormalizedReportModel) -> None:
         header = model.header
@@ -52,17 +61,31 @@ class HeadlineBanner:
         self.frame = card(parent)
         self.frame.pack(fill="x", pady=(0, 8))
         self.title_var = StringVar(value="等待分析记录…")
-        self.title_label = label(self.frame, size=12, bold=True, textvariable=self.title_var,
-                                 anchor="w", justify="left")
+        self.title_label = label(
+            self.frame,
+            size=12,
+            bold=True,
+            textvariable=self.title_var,
+            anchor="w",
+            justify="left",
+        )
         self.title_label.pack(fill="x")
         self.sub_var = StringVar(value="")
-        label(self.frame, fg=STYLE_A["text_secondary"], textvariable=self.sub_var,
-              anchor="w", justify="left", wraplength=850).pack(fill="x", pady=(3, 0))
+        label(
+            self.frame,
+            fg=STYLE_A["text_secondary"],
+            textvariable=self.sub_var,
+            anchor="w",
+            justify="left",
+            wraplength=850,
+        ).pack(fill="x", pady=(3, 0))
 
     def show(self, model: NormalizedReportModel) -> None:
         self.title_var.set(model.headline.title)
         self.sub_var.set(model.headline.subtitle)
-        self.title_label.configure(fg=_TITLE_COLORS.get(model.headline.level, STYLE_A["text_primary"]))
+        self.title_label.configure(
+            fg=_TITLE_COLORS.get(model.headline.level, STYLE_A["text_primary"])
+        )
 
     def show_error(self, exc: Exception) -> None:
         self.title_var.set("记录解析错误")

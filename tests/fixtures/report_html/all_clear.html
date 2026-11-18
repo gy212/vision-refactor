@@ -93,7 +93,6 @@
     .pill-candidate { background: var(--color-warn-bg); border-color: var(--color-warn-border); color: var(--color-warn); }
     .pill-not-observed { background: var(--color-ok-bg); border-color: var(--color-ok-border); color: var(--color-ok); }
     .pill-unable { background: var(--color-unable-bg); border-color: #E2E8F0; color: var(--color-unable); }
-    .pill-pending { background: var(--color-primary-bg); border-color: #BFDBFE; color: var(--color-primary); }
     .pill-revoked { background: #F9FAFB; border-color: #E5E7EB; color: #6B7280; }
     .timeline-section { margin-bottom: 28px; }
     .section-title {
@@ -245,7 +244,6 @@
       <div class="count-pill pill-candidate"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" role="img" aria-label="疑似问题"><path d="M12 4L4 19.5H20L12 4Z" stroke="#92400E" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="#FFF7ED"/><line x1="12" y1="9" x2="12" y2="13.5" stroke="#92400E" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="16.5" r="1" fill="#92400E"/></svg> 发现疑似问题：<strong>0</strong>项</div>
       <div class="count-pill pill-not-observed"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" role="img" aria-label="未发现问题"><circle cx="12" cy="12" r="9.5" stroke="#166534" stroke-width="2" fill="#F0FDF4"/><path d="M7 12L10.5 15.5L17 9" stroke="#166534" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg> 已检查未发现：<strong>2</strong>项</div>
       <div class="count-pill pill-unable"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" role="img" aria-label="暂无法判断"><circle cx="12" cy="12" r="9.5" stroke="#475569" stroke-width="2" fill="#F1F5F9"/><path d="M9.5 9.5C9.5 7.8 10.6 6.5 12 6.5C13.5 6.5 14.5 7.6 14.5 9C14.5 10.5 12 11.5 12 13" stroke="#475569" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="16.5" r="1" fill="#475569"/></svg> 暂无法判断：<strong>0</strong>项</div>
-      <div class="count-pill pill-pending"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" role="img" aria-label="需教师判断"><rect x="4.5" y="5.5" width="15" height="15" rx="2" stroke="#1D4ED8" stroke-width="2" fill="#EFF6FF"/><path d="M8.5 3.5H15.5V6.5H8.5V3.5Z" stroke="#1D4ED8" stroke-width="1.8" fill="#FFFFFF"/><path d="M7.5 12.5L10.5 15.5L16.5 9.5" stroke="#1D4ED8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg> 需教师判断：<strong>0</strong>项</div>
 
       <div class="count-pill">检查项总计：<strong>2</strong>项 (守恒)</div>
     </div>
@@ -304,7 +302,7 @@
               <div style="color: var(--color-ok);">已检查未发现</div>
             </li>
             <li class="item-row">
-              <div><svg width="14" height="14" viewBox="0 0 24 24" fill="none" role="img" aria-label="未发现问题"><circle cx="12" cy="12" r="9.5" stroke="#166534" stroke-width="2" fill="#F0FDF4"/><path d="M7 12L10.5 15.5L17 9" stroke="#166534" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg> <strong>实战式/动作过程</strong> · 测试问题-stance_knee</div>
+              <div><svg width="14" height="14" viewBox="0 0 24 24" fill="none" role="img" aria-label="未发现问题"><circle cx="12" cy="12" r="9.5" stroke="#166534" stroke-width="2" fill="#F0FDF4"/><path d="M7 12L10.5 15.5L17 9" stroke="#166534" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg> <strong>实战式/结束实战式</strong> · 测试问题-stance_knee</div>
               <div style="color: var(--color-ok);">已检查未发现</div>
             </li>
           </ul>
@@ -319,7 +317,7 @@
           <div>分析后端说明：MediaPipe关键点规则检查；二维投影与工程阈值待标定，不作为正式成绩。</div>
           <div>正面录像：录像640×480 / 30.0fps；可见躯干链 45/48 帧；分段原因：正常</div>
           <div>侧面录像：无元数据</div>
-          <div>时间对齐：action_peaks；侧面偏移 0.020s；可靠性：可靠</div>
+          <div>时间对应：出拳峰值；侧面时间偏移0.020秒；可对应。</div>
         </div>
       </details>
     </section>

@@ -161,7 +161,7 @@
     "front_rule_checks": [
       {
         "check_id": "stance:start:front:stance_height",
-        "detail": "试用检查。已改看手腕有没有低过肩。开始站姿仍有误报；旧的低拳录像也不都低于肩，可能报错或漏查。 ",
+        "detail": "",
         "skip_reason": null,
         "state": "pass",
         "total_frames": 7,
@@ -170,7 +170,7 @@
       },
       {
         "check_id": "stance:start::stance_toes",
-        "detail": "试用检查。已比较脚尖和脚跟间距。正确站姿仍有误报；两脚前后错开会影响画面距离。 ",
+        "detail": "",
         "skip_reason": null,
         "state": "pass",
         "total_frames": 7,
@@ -179,7 +179,7 @@
       },
       {
         "check_id": "stance:start::stance_width",
-        "detail": "试用检查。为减少误报，按正确对照样本试调为0.7～1.35倍。关键点偏差仍可能造成误报或漏查，继续试用。 缺少侧面视频",
+        "detail": "缺少侧面视频",
         "skip_reason": "phase_not_found",
         "state": "unable",
         "total_frames": 7,
@@ -197,7 +197,7 @@
       },
       {
         "check_id": "stance:start:rear:stance_rear_guard",
-        "detail": "试用检查。已把手肘贴身与护下巴分开。只看肘离身体的距离，仍没查出两段错误录像。 ",
+        "detail": "",
         "skip_reason": null,
         "state": "violation",
         "total_frames": 7,
@@ -224,7 +224,7 @@
       },
       {
         "check_id": "stance:end::stance_toes",
-        "detail": "试用检查。已比较脚尖和脚跟间距。正确站姿仍有误报；两脚前后错开会影响画面距离。 ",
+        "detail": "",
         "skip_reason": null,
         "state": "pass",
         "total_frames": 7,
@@ -233,7 +233,7 @@
       },
       {
         "check_id": "stance:end::stance_width",
-        "detail": "试用检查。为减少误报，按正确对照样本试调为0.7～1.35倍。关键点偏差仍可能造成误报或漏查，继续试用。 缺少侧面视频",
+        "detail": "缺少侧面视频",
         "skip_reason": "phase_not_found",
         "state": "unable",
         "total_frames": 7,
@@ -251,7 +251,7 @@
       },
       {
         "check_id": "stance:end:rear:stance_rear_guard",
-        "detail": "试用检查。已把手肘贴身与护下巴分开。只看肘离身体的距离，仍没查出两段错误录像。 ",
+        "detail": "",
         "skip_reason": null,
         "state": "violation",
         "total_frames": 7,
@@ -432,7 +432,7 @@
     "side_rule_checks": [
       {
         "check_id": "stance:start:front:stance_elbow",
-        "detail": "试用检查。已按用户确认把下限降到80°。肩肘位置仍可能找偏，继续试用。 ",
+        "detail": "",
         "skip_reason": null,
         "state": "pass",
         "total_frames": 7,
@@ -441,7 +441,7 @@
       },
       {
         "check_id": "stance:start::stance_knee",
-        "detail": "试用检查。已按用户确认增加容错：超过175°才提醒。接近伸直时仍可能看错，继续试用。 ",
+        "detail": "",
         "skip_reason": null,
         "state": "pass",
         "total_frames": 7,
@@ -450,7 +450,7 @@
       },
       {
         "check_id": "stance:end:front:stance_elbow",
-        "detail": "试用检查。已按用户确认把下限降到80°。肩肘位置仍可能找偏，继续试用。 ",
+        "detail": "",
         "skip_reason": null,
         "state": "pass",
         "total_frames": 7,
@@ -459,7 +459,7 @@
       },
       {
         "check_id": "stance:end::stance_knee",
-        "detail": "试用检查。已按用户确认增加容错：超过175°才提醒。接近伸直时仍可能看错，继续试用。 ",
+        "detail": "",
         "skip_reason": null,
         "state": "pass",
         "total_frames": 7,

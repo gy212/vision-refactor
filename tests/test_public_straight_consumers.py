@@ -6,7 +6,12 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from core.evaluation import ACTIONS, FeedbackConfig, compare_dual_streams, evaluate_series
+from core.evaluation import (
+    ACTIONS,
+    FeedbackConfig,
+    compare_dual_streams,
+    evaluate_series,
+)
 from core.evaluation.rule_checks import judge_views
 from core.evaluation.scoring.exam_pool import rule_reports
 from core.foundation.jsonable import to_jsonable
@@ -80,8 +85,12 @@ def _batch(views, action):
         ("step_straight_combo", "rear"),
     ],
 )
-@pytest.mark.parametrize(("angle", "status"), [(168.10, "not_observed"), (167.01, "candidate")])
-def test_visible_punch_is_judged_in_every_composition_and_public_entry(action, role, angle, status):
+@pytest.mark.parametrize(
+    ("angle", "status"), [(168.10, "not_observed"), (167.01, "candidate")]
+)
+def test_visible_punch_is_judged_in_every_composition_and_public_entry(
+    action, role, angle, status
+):
     views = _visible_side_punch(role, angle)
     check_id = f"{role}_straight:finish:{role}:punch_extension"
     practice = evaluate_series(action, "left", deepcopy(views))
@@ -90,7 +99,7 @@ def test_visible_punch_is_judged_in_every_composition_and_public_entry(action, r
     assert "168°" in check["standard"]
     assert check["fusion"]["baseWeights"] == {"front": 0.0, "side": 1.0}
     assert {item["view"] for item in check["measurements"]} == {"side"}
-    assert check["availability"]["state"] == "trial"
+    assert "availability" not in check
 
     judged = judge_views(deepcopy(views), action, "left", FeedbackConfig())
     exam = _exam(deepcopy(views), action)
@@ -106,7 +115,7 @@ def test_visible_punch_is_judged_in_every_composition_and_public_entry(action, r
         assert result.state == ("pass" if status == "not_observed" else "violation")
         assert result.view == "side"
         assert result.valid_frames == result.total_frames >= 3
-        assert "试用" in result.name
+        assert "试用" not in result.name
         assert [item["frame"] for item in result.evidence_details] == expected_frames
         assert result.measurements == tuple(check["measurements"][0]["values"])
 

@@ -36,10 +36,14 @@ def observed_phase_windows(
         grouped.setdefault(segment, []).append(event)
     diagnostics["eventDetails"] = records
     diagnostics["events"] = [record["segment"] for record in records]
-    diagnostics["incompleteRecovery"] = sum(event.motion.ending == "held" for event in observed)
+    diagnostics["incompleteRecovery"] = sum(
+        event.motion.ending == "held" for event in observed
+    )
     instances = diagnostics["phaseInstances"]
     windows = {}
-    radius = max(1, int(round(cfg.finish_window_seconds / float(np.median(np.diff(times))))))
+    radius = max(
+        1, int(round(cfg.finish_window_seconds / float(np.median(np.diff(times)))))
+    )
     for segment, events in grouped.items():
         parts: dict[str, list[np.ndarray]] = {"motion": [], "finish": []}
         for repetition, event in enumerate(events, 1):
@@ -53,11 +57,13 @@ def observed_phase_windows(
             }
             for phase, indices in phases.items():
                 parts[phase].append(indices)
-                instances.append(phase_instance(segment, phase, repetition, indices, times))
+                instances.append(
+                    phase_instance(segment, phase, repetition, indices, times)
+                )
         for phase, chunks in parts.items():
             if chunks:
                 windows[(segment, phase)] = np.unique(np.concatenate(chunks))
-        if segment.endswith("_straight"):
+        if segment.endswith(("_straight", "_hook")):
             windows.update(
                 punch_detail_windows(
                     times,
@@ -70,7 +76,9 @@ def observed_phase_windows(
     return windows
 
 
-def final_stance_window(observed: list[ActionEvent], stable: list[np.ndarray]) -> np.ndarray | None:
+def final_stance_window(
+    observed: list[ActionEvent], stable: list[np.ndarray]
+) -> np.ndarray | None:
     """结束实战式只取全部已观测动作之后的真实回收窗口。"""
     last = max(observed, key=lambda event: event.motion.end).motion
     if last.ending == "returned":

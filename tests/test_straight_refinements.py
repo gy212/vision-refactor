@@ -35,7 +35,9 @@ def test_stance_uses_first_settled_period_and_prefers_visible_points() -> None:
     clearer = settled_stance_windows(series, windows, reps, FeedbackConfig())
     assert clearer[("stance", "start")][0] >= 31
     assert clearer[("stance", "start")][-1] < 45
-    np.testing.assert_array_equal(windows[("stance", "start")], original[("stance", "start")])
+    np.testing.assert_array_equal(
+        windows[("stance", "start")], original[("stance", "start")]
+    )
     assert reps == [{"start": 3.0}]
 
 
@@ -47,7 +49,9 @@ def test_stance_selection_does_not_search_for_a_correct_guard() -> None:
     # 一只手持续偏低，另一只手已抬起。仍应检查同一段站姿，不寻找手更高的时刻。
     series["landmarks"][:, 16, 1] = 0.55
     after = settled_stance_windows(series, windows, reps, FeedbackConfig())
-    np.testing.assert_array_equal(before[("stance", "start")], after[("stance", "start")])
+    np.testing.assert_array_equal(
+        before[("stance", "start")], after[("stance", "start")]
+    )
     # 全部点看不到时，不能拿旧窗口冒充已站稳。
     series["valid_mask"][:] = False
     assert settled_stance_windows(series, windows, reps, FeedbackConfig()) == {}
@@ -58,7 +62,9 @@ def test_wrist_height_checks_shoulder_and_does_not_require_nose() -> None:
     lm[:, 15, 1] = [0.2, 0.3, 0.4]
     mask = np.ones(lm.shape[:2], bool)
     mask[:, 0] = False
-    ctx = RuleContext(view="front", action=ACTION, stance="left", params=FeedbackConfig())
+    ctx = RuleContext(
+        view="front", action=ACTION, stance="left", params=FeedbackConfig()
+    )
 
     bad, valid, _ = measure_posture("stance_height", "front", lm, mask, ctx)
 
@@ -94,7 +100,9 @@ def test_straight_arm_does_not_automatically_mean_shoulder_height() -> None:
 def test_grouped_reminders_keep_evidence_and_each_phase_verdict() -> None:
     record = make_html_test_record(action=ACTION)
     check = record["result"]["checks"][0]
-    check.update(code="guard_elbow", phase="motion", phaseLabel="出拳中", review="confirmed")
+    check.update(
+        code="guard_elbow", phase="motion", phaseLabel="出拳中", review="confirmed"
+    )
     finish = {
         **deepcopy(check),
         "id": "finish",
@@ -130,7 +138,10 @@ def test_unrecognized_combo_keeps_its_own_last_visible_stance() -> None:
     # 另一面能看到更晚的站姿，本面从第130张起看不清。
     series["valid_mask"][130:] = False
     series["landmarks"][80:130, 15, 1] = 0.42
-    windows = {("stance", "start"): np.arange(7), ("stance", "end"): np.arange(137, 144)}
+    windows = {
+        ("stance", "start"): np.arange(7),
+        ("stance", "end"): np.arange(137, 144),
+    }
     repetitions = []
 
     revised = settled_stance_windows(series, windows, repetitions, FeedbackConfig())
@@ -138,20 +149,22 @@ def test_unrecognized_combo_keeps_its_own_last_visible_stance() -> None:
     ending = revised[("stance", "end")]
     assert ending[0] >= 80 and ending[-1] < 130
     lm, mask = series["landmarks"][ending], series["valid_mask"][ending]
-    ctx = RuleContext(view="front", action=ACTION, stance="left", params=FeedbackConfig())
+    ctx = RuleContext(
+        view="front", action=ACTION, stance="left", params=FeedbackConfig()
+    )
     bad, valid, _ = measure_posture("stance_height", "front", lm, mask, ctx)
     assert bad.all() and valid.all()
     assert repetitions == []
 
 
-def test_end_wrist_height_is_enabled_without_copying_start_qualification() -> None:
+def test_stance_wrist_height_uses_front_view_across_models() -> None:
     from core.evaluation import build_checks
 
-    for model in ("full", "heavy"):
+    for model in ("lite", "full", "heavy"):
         checks = {c["id"]: c for c in build_checks(ACTION, "left", pose_variant=model)}
-        assert checks["stance:end:front:stance_height"]["availability"]["state"] == "enabled"
+        assert checks["stance:start:front:stance_height"]["primaryView"] == "front"
         assert checks["stance:end:front:stance_height"]["primaryView"] == "front"
-        assert checks["stance:start:front:stance_height"]["availability"]["state"] == "trial"
+        assert "availability" not in checks["stance:start:front:stance_height"]
 
 
 def test_guard_return_is_not_back_pull_and_body_tilt_does_not_change_verdict() -> None:
@@ -164,13 +177,17 @@ def test_guard_return_is_not_back_pull_and_body_tilt_does_not_change_verdict() -
     # 前两张收回到身旁。最后一张肘才明显退到身体后面。
     lm[:, 14, :2] = [(0.5, 0.5), (0.55, 0.5), (0.4, 0.5)]
     mask = np.ones(lm.shape[:2], bool)
-    ctx = RuleContext(view="side", action=ACTION, stance="left", params=FeedbackConfig())
+    ctx = RuleContext(
+        view="side", action=ACTION, stance="left", params=FeedbackConfig()
+    )
     bad, valid, _ = measure_guard_back("rear", lm, mask, baseline, mask, ctx)
     assert bad.tolist() == [False, False, True]
     assert valid.all()
 
     angle = np.deg2rad(20)
-    rotation = np.array([[np.cos(angle), -np.sin(angle)], [np.sin(angle), np.cos(angle)]])
+    rotation = np.array(
+        [[np.cos(angle), -np.sin(angle)], [np.sin(angle), np.cos(angle)]]
+    )
     tilted = lm.copy()
     tilted[:, :, :2] = lm[:, :, :2] @ rotation.T + (0.3, -0.1)
     moved = measure_guard_back("rear", tilted, mask, baseline, mask, ctx)
@@ -180,18 +197,15 @@ def test_guard_return_is_not_back_pull_and_body_tilt_does_not_change_verdict() -
     assert not measure_guard_back("rear", lm, mask, baseline, mask, ctx)[1].any()
 
 
-def test_guard_back_is_enabled_only_for_verified_model_and_phase() -> None:
+def test_guard_back_selects_expected_view_across_models() -> None:
     from core.evaluation import build_checks
 
-    for model in ("full", "heavy"):
+    for model in ("lite", "full", "heavy"):
         checks = {c["id"]: c for c in build_checks(ACTION, "left", pose_variant=model)}
-        motion = checks["front_straight:motion:rear:guard_back"]
-        finish = checks["front_straight:finish:rear:guard_back"]
-        assert motion["availability"]["state"] == "enabled"
-        assert motion["primaryView"] == "side"
-        assert (finish["availability"]["state"] == "enabled") == (model == "heavy")
-        assert checks["rear_straight:motion:front:guard_back"]["availability"]["state"] == "trial"
+        assert checks["front_straight:motion:rear:guard_back"]["primaryView"] == "side"
+        assert checks["front_straight:finish:rear:guard_back"]["primaryView"] == "side"
         assert checks["rear_straight:motion:front:guard_back"]["primaryView"] == "front"
+        assert checks["rear_straight:finish:front:guard_back"]["primaryView"] == "front"
 
 
 def test_punch_extension_checks_each_punch_at_its_fullest_reach() -> None:
@@ -227,7 +241,9 @@ def test_front_view_can_check_guard_elbow_and_missing_points_are_not_passes() ->
     baseline = lm.copy()
     lm[2, 13, 2] = 0.1
     mask = np.ones(lm.shape[:2], bool)
-    ctx = RuleContext(view="front", action=ACTION, stance="left", params=FeedbackConfig())
+    ctx = RuleContext(
+        view="front", action=ACTION, stance="left", params=FeedbackConfig()
+    )
     bad, valid, _ = measure_guard_back("front", lm, mask, baseline, mask, ctx)
     assert bad.tolist() == [False, False, True]
     assert valid.all()
@@ -235,32 +251,32 @@ def test_front_view_can_check_guard_elbow_and_missing_points_are_not_passes() ->
     assert not measure_guard_back("front", lm, mask, baseline, mask, ctx)[1].any()
 
 
-def test_trial_checks_retain_visible_trial_label_in_saved_reports() -> None:
-    record = make_html_test_record(action=ACTION)
-    check = record["result"]["checks"][0]
-    check["availability"] = {"state": "trial", "label": "试用中", "reason": "可能报错或漏查。"}
-    model = build_report_model(record)
-    trial = next(c for c in model.all_checks if c.id == check["id"])
-    assert trial.status_display.startswith("试用")
-    assert trial.reason.startswith("试用检查。")
-    assert "试用检查" in render_html_report(record)
-
-
 @pytest.mark.parametrize("status", ["candidate", "unable", "not_observed"])
-def test_text_report_preserves_trial_label_and_reason_for_each_result(status) -> None:
+def test_saved_reports_never_emit_legacy_trial_prefix(status) -> None:
     record = make_html_test_record(action=ACTION)
     check = record["result"]["checks"][0]
     check["status"] = status
-    check["availability"] = {"state": "trial", "label": "试用中", "reason": "可能报错或漏查。"}
+    check["availability"] = {
+        "state": "trial",
+        "label": "试用中",
+        "reason": "可能报错或漏查。",
+    }
     record["result"].update(
-        summary="分析完成", fusionMethod="action_rule_quality_weighted_v1", diagnostics={}
+        summary="分析完成",
+        fusionMethod="action_rule_quality_weighted_v1",
+        diagnostics={},
     )
     original = deepcopy(record)
 
+    model = build_report_model(record)
+    item = next(c for c in model.all_checks if c.id == check["id"])
     text = format_report(record)
 
-    assert check["name"] + "（试用）" in text
-    assert check["availability"]["reason"] in text
+    assert "试用" not in item.status_display
+    assert "试用" not in item.name
+    assert "试用检查" not in item.reason
+    assert "（试用）" not in text
+    assert "试用检查" not in render_html_report(record)
     assert record == original
 
 
@@ -272,14 +288,18 @@ def test_text_report_preserves_trial_label_and_reason_for_each_result(status) ->
         ("shoulder_level", [90, 102, 112]),
     ],
 )
-def test_straight_tolerance_accepts_small_deviation_and_keeps_clear_errors(code, angles) -> None:
+def test_straight_tolerance_accepts_small_deviation_and_keeps_clear_errors(
+    code, angles
+) -> None:
     from core.evaluation.rules.sanda_v5 import rule_profile
 
     lm = np.repeat(_base_pose()[None], 3, axis=0)
     angles = np.deg2rad(angles)
     if code == "stance_elbow":
         lm[:, 11, :2], lm[:, 13, :2] = (0.5, 0.3), (0.5, 0.5)
-        lm[:, 15, :2] = np.column_stack((0.5 + 0.2 * np.sin(angles), 0.5 - 0.2 * np.cos(angles)))
+        lm[:, 15, :2] = np.column_stack(
+            (0.5 + 0.2 * np.sin(angles), 0.5 - 0.2 * np.cos(angles))
+        )
     elif code == "stance_knee":
         for hip, knee, ankle in ((23, 25, 27), (24, 26, 28)):
             lm[:, hip, :2], lm[:, knee, :2] = (0.5, 0.3), (0.5, 0.5)
@@ -288,7 +308,9 @@ def test_straight_tolerance_accepts_small_deviation_and_keeps_clear_errors(code,
             )
     else:
         lm[:, 11, :2], lm[:, 23, :2] = (0.5, 0.3), (0.5, 0.6)
-        lm[:, 15, :2] = np.column_stack((0.5 + 0.2 * np.sin(angles), 0.3 + 0.2 * np.cos(angles)))
+        lm[:, 15, :2] = np.column_stack(
+            (0.5 + 0.2 * np.sin(angles), 0.3 + 0.2 * np.cos(angles))
+        )
     mask = np.ones(lm.shape[:2], bool)
     cfg = FeedbackConfig()
     profile = rule_profile(ACTION, "left", cfg)
@@ -302,9 +324,12 @@ def test_straight_tolerance_accepts_small_deviation_and_keeps_clear_errors(code,
     # 同一个基础段在单拳与组合拳中使用同一测量和参数。
     for action in ("front_straight", "rear_straight", "straight_combo"):
         same = next(
-            (r for r in rule_profile(action, "left", cfg).rules if r.code == rule.code), None
+            (r for r in rule_profile(action, "left", cfg).rules if r.code == rule.code),
+            None,
         )
         if same is not None:
-            actual, observed, _ = same.check(lm, np.ones_like(mask), lm, np.ones_like(mask), ctx)
+            actual, observed, _ = same.check(
+                lm, np.ones_like(mask), lm, np.ones_like(mask), ctx
+            )
             np.testing.assert_array_equal(actual, bad)
             assert observed.all()

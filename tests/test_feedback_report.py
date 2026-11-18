@@ -12,7 +12,7 @@ import numpy as np
 from PIL import Image
 import pytest
 
-from core.evaluation import ACTIONS, STANCES, build_checks
+from core.evaluation import ACTIONS, PHASES, STANCES, build_checks
 from core.reporting import practice_report_renderers
 from core.services import HistoryStore as FeedbackHistory
 from core.reporting import (
@@ -28,6 +28,7 @@ from core.reporting import (
     extract_evidence_frame,
     frame_to_data_uri,
     format_local_datetime,
+    format_report,
     resolve_record_video_path,
 )
 from core.reporting.html import generate_phase_timeline_svg, render_html_report
@@ -51,28 +52,37 @@ def make_synthetic_check(
         "segment": segment,
         "segmentLabel": ACTIONS.get(segment, segment),
         "phase": phase,
-        "phaseLabel": "开始实战式" if phase == "start" else "动作过程",
+        "phaseLabel": PHASES.get(phase, phase),
         "standard": "前手大小臂夹角90°～135°",
         "source": "武术散打得分点.docx",
         "status": status,
         "review": review,
         "reason": reason,
-        "blockedReason": "",
-        "evidence": evidence or ["front:0"],
+        "evidence": ["front:0"] if evidence is None else evidence,
         "measurements": [
             {
                 "view": "front",
                 "validFrames": 20,
                 "totalFrames": 24,
                 "violationRatio": 0.8,
-                "values": [{"name": "肘角", "median": 82.5, "min": 78.0, "max": 88.0, "unit": "°"}],
+                "values": [
+                    {
+                        "name": "肘角",
+                        "median": 82.5,
+                        "min": 78.0,
+                        "max": 88.0,
+                        "unit": "°",
+                    }
+                ],
             }
         ],
         "fusion": {
             "method": "action_rule_quality_weighted_v1",
             "baseWeights": {"front": 0.5, "side": 0.5},
-            "effectiveWeights": {"front": 0.5, "side": 0.5},
-            "support": 0.8,
+            "effectiveWeights": {}
+            if status == "unable"
+            else {"front": 0.5, "side": 0.5},
+            "support": None if status == "unable" else 0.8,
             "threshold": 0.5,
             "calibrationStatus": "unvalidated",
         },
@@ -95,7 +105,10 @@ def make_synthetic_record(
                 code="stance_elbow", phase="start", status="candidate", review="pending"
             ),
             make_synthetic_check(
-                code="guard_low", segment="front_straight", phase="motion", status="not_observed"
+                code="guard_low",
+                segment="front_straight",
+                phase="motion",
+                status="not_observed",
             ),
             make_synthetic_check(
                 code="guard_back",
@@ -105,11 +118,11 @@ def make_synthetic_record(
                 reason="侧面视角被遮挡",
             ),
             make_synthetic_check(
-                code="vertical_fist",
+                code="punch_extension",
                 segment="front_straight",
                 phase="finish",
-                status="pending_rule",
-                reason="需教师人工查看立拳",
+                status="unable",
+                reason="正面手肘关键点遮挡",
             ),
         ]
 
@@ -160,10 +173,26 @@ def make_synthetic_record(
             "phaseWindows": {
                 "front": [
                     {"segment": "stance", "phase": "start", "ranges": [[0.0, 0.35]]},
-                    {"segment": "front_straight", "phase": "motion", "ranges": [[0.35, 0.75]]},
-                    {"segment": "front_straight", "phase": "finish", "ranges": [[0.70, 0.80]]},
-                    {"segment": "rear_straight", "phase": "motion", "ranges": [[0.80, 1.20]]},
-                    {"segment": "rear_straight", "phase": "finish", "ranges": [[1.15, 1.25]]},
+                    {
+                        "segment": "front_straight",
+                        "phase": "motion",
+                        "ranges": [[0.35, 0.75]],
+                    },
+                    {
+                        "segment": "front_straight",
+                        "phase": "finish",
+                        "ranges": [[0.70, 0.80]],
+                    },
+                    {
+                        "segment": "rear_straight",
+                        "phase": "motion",
+                        "ranges": [[0.80, 1.20]],
+                    },
+                    {
+                        "segment": "rear_straight",
+                        "phase": "finish",
+                        "ranges": [[1.15, 1.25]],
+                    },
                     {"segment": "stance", "phase": "end", "ranges": [[1.25, 1.60]]},
                 ]
             },
@@ -188,13 +217,19 @@ def make_synthetic_record(
                     "analysisSeconds": 0.5,
                 }
             },
-            "alignment": {"method": "action_peaks", "sideOffsetSeconds": 0.02, "reliable": True},
+            "alignment": {
+                "method": "action_peaks",
+                "sideOffsetSeconds": 0.02,
+                "reliable": True,
+            },
             "reviewHistory": [],
         },
     }
 
 
-def make_dummy_video(path: Path, width: int = 120, height: int = 120, frames: int = 5) -> Path:
+def make_dummy_video(
+    path: Path, width: int = 120, height: int = 120, frames: int = 5
+) -> Path:
     """Create a minimal real OpenCV readable AVI/MP4 video file."""
     fourcc = cv2.VideoWriter_fourcc(*"MJPG")
     out = cv2.VideoWriter(str(path), fourcc, 10.0, (width, height))
@@ -213,7 +248,7 @@ def make_dummy_video(path: Path, width: int = 120, height: int = 120, frames: in
 
 def test_status_counts_conservation_law():
     """Verify strict conservation invariant across all categories and teacher review transitions."""
-    # 1. Initial synthetic record with 1 candidate, 1 not_observed, 1 unable, 1 pending_rule
+    # 1. Initial synthetic record with 1 candidate, 1 not_observed, 2 unable
     rec = make_synthetic_record()
     model = build_report_model(rec)
     c = model.counts
@@ -224,8 +259,7 @@ def test_status_counts_conservation_law():
     assert c.confirmed_count == 0
     assert c.revoked_count == 0
     assert c.not_observed_count == 1
-    assert c.unable_count == 1
-    assert c.pending_rule_count == 1
+    assert c.unable_count == 2
     assert c.verify_conservation()
 
     # 2. Teacher confirms the candidate
@@ -238,6 +272,7 @@ def test_status_counts_conservation_law():
     assert c_conf.unconfirmed_count == 0
     assert c_conf.revoked_count == 0
     assert c_conf.not_observed_count == 1
+    assert c_conf.unable_count == 2
     assert c_conf.verify_conservation()
 
     # 3. Teacher revokes the candidate
@@ -251,13 +286,14 @@ def test_status_counts_conservation_law():
     assert c_rev.revoked_count == 1
     # Revoked NEVER increases not_observed!
     assert c_rev.not_observed_count == 1
+    assert c_rev.unable_count == 2
     assert c_rev.verify_conservation()
     assert len(model_rev.candidate_checks) == 0
     assert len(model_rev.revoked_checks) == 1
 
 
 # ---------------------------------------------------------------------------
-# Test 2: 7-Level Priority Headline Hierarchy
+# Test 2: Priority Headline Hierarchy (Strict 3-State)
 # ---------------------------------------------------------------------------
 
 
@@ -274,27 +310,7 @@ def test_status_counts_conservation_law():
             "本次未能完成有效判断",
             "error",
         ),
-        # Level 2: Zero candidates, zero not_observed, only pending_rule
-        (
-            [
-                make_synthetic_check(code="c1", status="pending_rule"),
-                make_synthetic_check(code="c2", status="pending_rule"),
-            ],
-            False,
-            "本次暂无自动检查结果",
-            "info",
-        ),
-        # Level 3: Zero candidates, pending_rule > 0, not_observed > 0
-        (
-            [
-                make_synthetic_check(code="c1", status="not_observed"),
-                make_synthetic_check(code="c2", status="pending_rule"),
-            ],
-            False,
-            "已检查项目未发现问题，仍有待判断项目",
-            "info",
-        ),
-        # Level 4: Zero candidates, unable > 0, not_observed > 0
+        # Level 2: Zero candidates, unable > 0, not_observed > 0
         (
             [
                 make_synthetic_check(code="c1", status="not_observed"),
@@ -304,7 +320,7 @@ def test_status_counts_conservation_law():
             "分析完成，部分项目暂无法判断",
             "warning",
         ),
-        # Level 5: Candidate > 0, unable > 0
+        # Level 3: Candidate > 0, unable > 0
         (
             [
                 make_synthetic_check(code="c1", status="candidate"),
@@ -314,7 +330,7 @@ def test_status_counts_conservation_law():
             "分析完成，部分项目暂无法判断",
             "warning",
         ),
-        # Level 6: Candidate > 0, unable == 0
+        # Level 4: Candidate > 0, unable == 0
         (
             [
                 make_synthetic_check(code="c1", status="candidate"),
@@ -324,7 +340,7 @@ def test_status_counts_conservation_law():
             "发现疑似动作问题，请核对依据",
             "warning",
         ),
-        # Level 7: Candidate == 0, unable == 0, pending == 0
+        # Level 5: Candidate == 0, unable == 0, not_observed > 0
         (
             [
                 make_synthetic_check(code="c1", status="not_observed"),
@@ -334,9 +350,20 @@ def test_status_counts_conservation_law():
             "已检查项目未发现问题",
             "success",
         ),
+        # Level 6: Only teacher-revoked items remain
+        (
+            [
+                make_synthetic_check(code="c1", status="candidate", review="revoked"),
+            ],
+            False,
+            "候选问题已全部撤销",
+            "info",
+        ),
     ],
 )
-def test_headline_priority_hierarchy(checks, needs_rerecord, expected_title, expected_level):
+def test_headline_priority_hierarchy(
+    checks, needs_rerecord, expected_title, expected_level
+):
     rec = make_synthetic_record(checks=checks, needs_rerecord=needs_rerecord)
     model = build_report_model(rec)
     assert model.headline.title == expected_title
@@ -429,6 +456,64 @@ def test_legacy_record_compatibility():
     assert "002" in html_output
 
 
+def test_legacy_pending_rule_and_trial_degrade_to_unable_cleanly():
+    """存量旧版 record.json 含 status=pending_rule 或 availability=trial 时无损归入 unable、清洗试用标签且守恒。"""
+    legacy_checks = [
+        {
+            **make_synthetic_check(
+                code="hip_turn", segment="rear_low_kick", phase="motion"
+            ),
+            "status": "pending_rule",
+            "reason": "",
+            "blockedReason": "旧版门禁未启用说明",
+            "availability": {"state": "calibration_failed", "label": "样本验证未通过"},
+        },
+        {
+            **make_synthetic_check(
+                code="stance_torso", segment="stance", phase="start", status="candidate"
+            ),
+            "name": "躯干正向前方（试用）",
+            "availability": {"state": "trial", "reason": "待补充样本"},
+        },
+        make_synthetic_check(
+            code="arm_swing",
+            segment="rear_low_kick",
+            phase="finish",
+            status="not_observed",
+        ),
+    ]
+    rec = make_synthetic_record(action="rear_low_kick", checks=legacy_checks)
+    rec["result"]["fusionMethod"] = "action_rule_quality_weighted_v1"
+
+    model = build_report_model(rec)
+    assert model.counts.verify_conservation()
+    assert model.counts.total_checks == 3
+    assert model.counts.unable_count == 1
+    assert model.counts.candidate_count == 1
+    assert model.counts.not_observed_count == 1
+
+    degraded = model.unable_checks[0]
+    assert degraded.status == "unable"
+    assert degraded.status_display == "暂无法判断"
+    assert degraded.reason == "旧版门禁未启用说明"
+
+    cleaned_trial = model.candidate_checks[0]
+    assert cleaned_trial.name == "躯干正向前方"
+    assert "试用" not in cleaned_trial.status_display
+    assert "试用检查" not in cleaned_trial.reason
+
+    html_output = render_html_report(rec)
+    assert "未自动检查" not in html_output
+    assert "pill-pending" not in html_output
+    assert "（试用）" not in html_output
+    assert "暂无法判断的项目 (1项)" in html_output
+
+    text_output = format_report(rec)
+    assert "（试用）" not in text_output
+    assert "试用说明" not in text_output
+    assert "旧版门禁未启用说明" in text_output
+
+
 # ---------------------------------------------------------------------------
 # Test 6: Diagram-Design Compliant SVG Timeline
 # ---------------------------------------------------------------------------
@@ -469,7 +554,9 @@ def test_phase_timeline_svg_conformance():
 
 def test_safe_evidence_frame_extraction(tmp_path):
     """Verify OpenCV frame reading, height-normalized landmark coordinates, and boundary safety."""
-    video_file = make_dummy_video(tmp_path / "test_video.avi", width=160, height=120, frames=10)
+    video_file = make_dummy_video(
+        tmp_path / "test_video.avi", width=160, height=120, frames=10
+    )
 
     landmarks = [[0.5, 0.4, 0.0, 1.0] for _ in range(33)]
     landmarks[13] = [0.3, 0.6, 0.0, 1.0]  # Elbow
@@ -615,3 +702,92 @@ def test_feedback_history_export_html(tmp_path):
     # 4. Confinement: cannot export inside history root
     with pytest.raises(ValueError, match="受管历史目录之外"):
         store.export(record_id, history_root / "leak.html")
+
+
+def test_legacy_pending_rule_with_needs_rerecord_false_does_not_prompt_rerecord():
+    """旧历史记录 pending_rule 在 needsRerecord=False 时归入 unable，但不误导学生重录或归因遮挡。"""
+    legacy_check = make_synthetic_check(
+        code="hip_turn",
+        segment="rear_low_kick",
+        phase="motion",
+        role="rear",
+        status="pending_rule",
+        reason="待核验",
+    )
+    legacy_record = make_synthetic_record(checks=[legacy_check], needs_rerecord=False)
+    model = build_report_model(legacy_record)
+    assert model.headline.needs_rerecord is False
+    assert "未取得有效自动判定结论" in model.headline.subtitle
+    assert "重新录制" not in model.headline.subtitle
+    assert "未入画或遮挡" not in model.headline.subtitle
+
+    rerecord_model = build_report_model(
+        make_synthetic_record(
+            checks=[make_synthetic_check(status="unable", reason="未检测到关键点")],
+            needs_rerecord=True,
+        )
+    )
+    assert rerecord_model.headline.needs_rerecord is True
+    assert "重新录制" in rerecord_model.headline.subtitle
+
+
+def test_format_report_handles_unknown_status_missing_labels_and_timeline_empty_phase():
+    """纯文本报告在旧状态/缺省标签下不崩溃；时间轴 0 项阶段使用中性 '—' 而非绿色对勾。"""
+    unknown_check = {
+        "id": "rear_hook:motion:front:guard_low",
+        "code": "guard_low",
+        "name": "非手护位偏低（试用）",
+        "status": "legacy_unknown_state",
+        "review": "pending",
+        "reason": "旧状态提示",
+        "measurements": [],
+    }
+    text = format_report(
+        {
+            "action": "rear_hook",
+            "stance": "left",
+            "result": {"backend": "mediapipe", "checks": [unknown_check]},
+        }
+    )
+    assert "（试用）" not in text
+    assert "未完成判断的项目" in text
+    assert "后手摆拳 / 动作过程 / 全身：非手护位偏低；旧状态提示" in text
+
+    svg = generate_phase_timeline_svg(
+        [
+            PhaseTimelineItem(
+                segment="rear_hook",
+                phase="prepare",
+                title="后手摆拳 · 预摆",
+                time_range_text="0.0s-0.4s",
+                start_seconds=0.0,
+                end_seconds=0.4,
+                candidate_count=0,
+                not_observed_count=0,
+                unable_count=0,
+            ),
+            PhaseTimelineItem(
+                segment="rear_hook",
+                phase="motion",
+                title="后手摆拳 · 过程",
+                time_range_text="0.4s-1.0s",
+                start_seconds=0.4,
+                end_seconds=1.0,
+                candidate_count=0,
+                not_observed_count=1,
+                unable_count=0,
+            ),
+        ],
+        StatusCounts(
+            total_checks=1,
+            candidate_count=0,
+            confirmed_count=0,
+            unconfirmed_count=0,
+            revoked_count=0,
+            not_observed_count=1,
+            unable_count=0,
+        ),
+    )
+    assert "#F8FAFC" in svg
+    assert ">—<" in svg
+    assert ">✓<" in svg

@@ -32,7 +32,6 @@ from core.evaluation.rules.rule_descriptions import (
 from core.evaluation.rules.rule_definitions import describe_rule, resolve_rule
 from core.evaluation.rules.catalog_measurements import required_landmarks
 from core.evaluation.rules.spec import PhaseVerdict, RuleProfile, RuleSpec
-from core.evaluation.rules.qualification import apply_rule_qualification
 from core.evaluation.view_weights import practice_view_weights
 
 __all__ = [
@@ -54,7 +53,7 @@ __all__ = [
     "rule_profile",
 ]
 
-RULE_VERSION = "sanda-rules-mediapipe-2026-11-14-v5.17"
+RULE_VERSION = "sanda-rules-mediapipe-2026-11-18-v5.18"
 
 PROFILE_NAME = "sanda_v5"
 
@@ -62,13 +61,12 @@ DEFAULT_STANCE = (
     "left"  # 考试与 batch 的左右式：左手、左脚在前，右手护脸（D-3，配置值，以后可改）
 )
 
-KICK_SOURCE = "低鞭腿动作规则实证标定 2026-11-14"
+KICK_SOURCE = "低鞭腿动作规则标准 2026-11-14"
 
 STATE_LABELS = {
     "candidate": "待教师确认",
     "not_observed": "已检查帧中未发现",
     "unable": "证据不足",
-    "pending_rule": "未自动检查",
 }
 
 ABSENCE_RULES = frozenset({"hip_turn", "arm_swing", "pivot_heel"})
@@ -108,7 +106,6 @@ def _append_segment_checks(add: Callable[..., None], segment: str) -> None:
     front = segment.startswith("front_")
     role = "front" if front else "rear"
     guard = "rear" if front else "front"
-    hook = "hook" in segment
     straight = "straight" in segment
     source = f"{DOC} 第{10 if front else 11}行" if straight else SUMMARY
     for phase in ("motion", "finish"):
@@ -121,35 +118,17 @@ def _append_segment_checks(add: Callable[..., None], segment: str) -> None:
             # 后手摆拳前手回收未包含向后拉手，不扩展问卷清单。
             if segment == "rear_hook" and code == "guard_back":
                 continue
-            blocked = (
-                "原文摆拳阶段误写为直拳，需教师核对" if segment == "front_hook" else ""
-            )
-            if hook and code == "guard_elbow":
-                blocked = "摆拳要求抬肘与错误抬肘的幅度/阶段需区分"
-            add(code, segment, phase, guard, blocked, source)
+            add(code, segment, phase, guard, source=source)
         if segment == "rear_hook":
-            for code in ("guard_low", "guard_back", "guard_elbow"):
-                add(
-                    code,
-                    segment,
-                    phase,
-                    "rear",
-                    "教师已确认阶段标准；该动作仍需实现并验证出拳侧的分阶段测量",
-                    SUMMARY,
-                )
+            for code in ("guard_low", "guard_elbow"):
+                add(code, segment, phase, "rear", source=SUMMARY)
             add("guard_recover", segment, phase, "front")
         if phase == "finish" or front:
-            add(
-                "shoulder_level",
-                segment,
-                phase,
-                role,
-                "原文摆拳阶段误写为直拳，需教师核对" if hook else "",
-            )
+            add("shoulder_level", segment, phase, role)
         if straight and phase == "finish":
             add("punch_extension", segment, phase, role, source=FORMAL)
-        if segment == "front_straight" and phase == "finish":
-            add("vertical_fist", segment, phase, "front", source=source)
+    if segment == "rear_hook":
+        add("guard_back", segment, "prepare", "rear", source=SUMMARY)
 
 
 def build_checks(
@@ -163,6 +142,7 @@ def build_checks(
         or stance not in STANCES
     ):
         raise ValueError("请选择支持的动作和左式/右式")
+    _ = pose_variant
     checks: list[dict[str, Any]] = []
 
     def add(
@@ -170,10 +150,9 @@ def build_checks(
         segment: str,
         phase: str,
         role: str = "",
-        blocked: str = "",
         source: str = SUMMARY,
     ):
-        name, part, standard, reason = RULES[code]
+        name, part, standard, _reason = RULES[code]
         if part.startswith(("front_", "rear_")):
             role, part = part.split("_", 1)
         side = side_label(role, stance)
@@ -189,11 +168,8 @@ def build_checks(
             "phaseLabel": PHASES[phase],
             "standard": standard,
             "source": source,
-            "blockedReason": blocked or reason,
             "role": role,
         }
-        if code in {"stance_head", "vertical_fist"}:
-            return
         describe_rule(check, resolve_rule(check, stance))
         checks.append(check)
 
@@ -210,7 +186,6 @@ def build_checks(
         add("punch_recover", "rear_straight", "recovered", "rear")
     for code in STANCE_RULES:
         add(code, "stance", "end", source=f"{DOC} 第12～18行")
-    apply_rule_qualification(checks, pose_variant)
     # 保持开始→前手→后手→结束，再按各阶段身体部位排列；不统计重复次数。
     order = {name: i + 1 for i, name in enumerate(segments)}
     checks.sort(
@@ -241,7 +216,7 @@ def check_view_weights(check: dict, cfg: FeedbackConfig) -> dict[str, float]:
 
 
 def rule_profile(action: str, stance: str, cfg: FeedbackConfig) -> RuleProfile:
-    """动作引用公共检查定义；验证资格只决定是否执行。"""
+    """动作引用公共检查定义，所有已登记检查项在全模型下直接正式启用。"""
     rules = []
     for check in build_checks(action, stance, pose_variant=cfg.pose_variant):
         definition = resolve_rule(check, stance)
@@ -267,8 +242,7 @@ def rule_profile(action: str, stance: str, cfg: FeedbackConfig) -> RuleProfile:
                         absence=check["code"] in ABSENCE_RULES,
                     )
                 ),
-                authorization="blocked" if check["blockedReason"] else "candidate",
-                blocked_reason=check["blockedReason"],
+                authorization="candidate",
                 source=definition.source,
                 strategy=definition.strategy,
                 highlight_joints=definition.highlight_joints,

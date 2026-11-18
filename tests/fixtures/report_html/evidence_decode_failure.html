@@ -93,7 +93,6 @@
     .pill-candidate { background: var(--color-warn-bg); border-color: var(--color-warn-border); color: var(--color-warn); }
     .pill-not-observed { background: var(--color-ok-bg); border-color: var(--color-ok-border); color: var(--color-ok); }
     .pill-unable { background: var(--color-unable-bg); border-color: #E2E8F0; color: var(--color-unable); }
-    .pill-pending { background: var(--color-primary-bg); border-color: #BFDBFE; color: var(--color-primary); }
     .pill-revoked { background: #F9FAFB; border-color: #E5E7EB; color: #6B7280; }
     .timeline-section { margin-bottom: 28px; }
     .section-title {
@@ -245,7 +244,6 @@
       <div class="count-pill pill-candidate"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" role="img" aria-label="疑似问题"><path d="M12 4L4 19.5H20L12 4Z" stroke="#92400E" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="#FFF7ED"/><line x1="12" y1="9" x2="12" y2="13.5" stroke="#92400E" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="16.5" r="1" fill="#92400E"/></svg> 发现疑似问题：<strong>1</strong>项</div>
       <div class="count-pill pill-not-observed"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" role="img" aria-label="未发现问题"><circle cx="12" cy="12" r="9.5" stroke="#166534" stroke-width="2" fill="#F0FDF4"/><path d="M7 12L10.5 15.5L17 9" stroke="#166534" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg> 已检查未发现：<strong>0</strong>项</div>
       <div class="count-pill pill-unable"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" role="img" aria-label="暂无法判断"><circle cx="12" cy="12" r="9.5" stroke="#475569" stroke-width="2" fill="#F1F5F9"/><path d="M9.5 9.5C9.5 7.8 10.6 6.5 12 6.5C13.5 6.5 14.5 7.6 14.5 9C14.5 10.5 12 11.5 12 13" stroke="#475569" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="16.5" r="1" fill="#475569"/></svg> 暂无法判断：<strong>0</strong>项</div>
-      <div class="count-pill pill-pending"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" role="img" aria-label="需教师判断"><rect x="4.5" y="5.5" width="15" height="15" rx="2" stroke="#1D4ED8" stroke-width="2" fill="#EFF6FF"/><path d="M8.5 3.5H15.5V6.5H8.5V3.5Z" stroke="#1D4ED8" stroke-width="1.8" fill="#FFFFFF"/><path d="M7.5 12.5L10.5 15.5L16.5 9.5" stroke="#1D4ED8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg> 需教师判断：<strong>0</strong>项</div>
 
       <div class="count-pill">检查项总计：<strong>1</strong>项 (守恒)</div>
     </div>
@@ -278,29 +276,29 @@
   <text x="36" y="94" fill="#64748B" font-size="10" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei UI', sans-serif">0.00s ～ 0.35s</text>
   <!-- Stage 02: 前手直拳 -->
   <rect x="216" y="36" width="172" height="68" rx="6" fill="#FFFFFF"/>
-  <rect x="216" y="36" width="172" height="68" rx="6" fill="#FFFFFF" stroke="#D8E0EA" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-  <line x1="220" y1="44" x2="220" y2="96" stroke="#10B981" stroke-width="2" stroke-linecap="round"/>
+  <rect x="216" y="36" width="172" height="68" rx="6" fill="#F8FAFC" stroke="#D8E0EA" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <line x1="220" y1="44" x2="220" y2="96" stroke="#64748B" stroke-width="2" stroke-linecap="round"/>
   <text x="228" y="56" fill="#475569" font-size="10" font-weight="600" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei UI', sans-serif">02</text>
-  <rect x="360" y="44" width="22" height="16" rx="4" fill="#F0FDF4" stroke="#166534" stroke-width="1"/>
-  <text x="371" y="56" fill="#166534" font-size="9" font-weight="600" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei UI', sans-serif">✓</text>
+  <rect x="360" y="44" width="22" height="16" rx="4" fill="#F1F5F9" stroke="#64748B" stroke-width="1"/>
+  <text x="371" y="56" fill="#64748B" font-size="9" font-weight="600" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei UI', sans-serif">—</text>
   <text x="228" y="76" fill="#1F2937" font-size="12" font-weight="600" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei UI', sans-serif">前手直拳</text>
   <text x="228" y="94" fill="#64748B" font-size="10" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei UI', sans-serif">0.35s ～ 0.80s</text>
   <!-- Stage 03: 后手直拳 -->
   <rect x="408" y="36" width="172" height="68" rx="6" fill="#FFFFFF"/>
-  <rect x="408" y="36" width="172" height="68" rx="6" fill="#FFFFFF" stroke="#D8E0EA" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-  <line x1="412" y1="44" x2="412" y2="96" stroke="#10B981" stroke-width="2" stroke-linecap="round"/>
+  <rect x="408" y="36" width="172" height="68" rx="6" fill="#F8FAFC" stroke="#D8E0EA" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <line x1="412" y1="44" x2="412" y2="96" stroke="#64748B" stroke-width="2" stroke-linecap="round"/>
   <text x="420" y="56" fill="#475569" font-size="10" font-weight="600" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei UI', sans-serif">03</text>
-  <rect x="552" y="44" width="22" height="16" rx="4" fill="#F0FDF4" stroke="#166534" stroke-width="1"/>
-  <text x="563" y="56" fill="#166534" font-size="9" font-weight="600" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei UI', sans-serif">✓</text>
+  <rect x="552" y="44" width="22" height="16" rx="4" fill="#F1F5F9" stroke="#64748B" stroke-width="1"/>
+  <text x="563" y="56" fill="#64748B" font-size="9" font-weight="600" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei UI', sans-serif">—</text>
   <text x="420" y="76" fill="#1F2937" font-size="12" font-weight="600" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei UI', sans-serif">后手直拳</text>
   <text x="420" y="94" fill="#64748B" font-size="10" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei UI', sans-serif">0.80s ～ 1.25s</text>
   <!-- Stage 04: 结束实战式 -->
   <rect x="600" y="36" width="172" height="68" rx="6" fill="#FFFFFF"/>
-  <rect x="600" y="36" width="172" height="68" rx="6" fill="#FFFFFF" stroke="#D8E0EA" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-  <line x1="604" y1="44" x2="604" y2="96" stroke="#10B981" stroke-width="2" stroke-linecap="round"/>
+  <rect x="600" y="36" width="172" height="68" rx="6" fill="#F8FAFC" stroke="#D8E0EA" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  <line x1="604" y1="44" x2="604" y2="96" stroke="#64748B" stroke-width="2" stroke-linecap="round"/>
   <text x="612" y="56" fill="#475569" font-size="10" font-weight="600" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei UI', sans-serif">04</text>
-  <rect x="744" y="44" width="22" height="16" rx="4" fill="#F0FDF4" stroke="#166534" stroke-width="1"/>
-  <text x="755" y="56" fill="#166534" font-size="9" font-weight="600" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei UI', sans-serif">✓</text>
+  <rect x="744" y="44" width="22" height="16" rx="4" fill="#F1F5F9" stroke="#64748B" stroke-width="1"/>
+  <text x="755" y="56" fill="#64748B" font-size="9" font-weight="600" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei UI', sans-serif">—</text>
   <text x="612" y="76" fill="#1F2937" font-size="12" font-weight="600" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei UI', sans-serif">结束实战式</text>
   <text x="612" y="94" fill="#64748B" font-size="10" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei UI', sans-serif">1.25s ～ 1.60s</text>
 </svg>
@@ -317,12 +315,12 @@
         <div class="issue-reason"><strong>依据：</strong>前手大小臂夹角不足90°</div>
         <div class="evidence-grid">
           <div class="evidence-box">
-            <div class="evidence-placeholder">正面证据 · 50.000s · 第500帧（截帧解码失败）</div>
-            <div class="evidence-caption">正面证据 · 50.000s · 第500帧（截帧解码失败）</div>
+            <div class="evidence-placeholder">开始实战式 · 正面历史画面 · 50.000s · 第500帧（旧记录未保存测量部位，未加问题标记）（截帧解码失败）</div>
+            <div class="evidence-caption">开始实战式 · 正面历史画面 · 50.000s · 第500帧（旧记录未保存测量部位，未加问题标记）（截帧解码失败）</div>
           </div>
           <div class="evidence-box">
-            <img src="data:image/jpeg;sha256,1ecd260b2c9f0f44e2ac42bbbbd20806d52b7ff57d2abea32c3cdc057446412a" alt="侧面证据 · 0.100s · 第1帧">
-            <div class="evidence-caption">侧面证据 · 0.100s · 第1帧</div>
+            <img src="data:image/jpeg;sha256,add5c9662ff38feddb8687700c257a7833ae962597ed7dae081a379dfc3482ee" alt="开始实战式 · 侧面历史画面 · 0.100s · 第1帧（旧记录未保存测量部位，未加问题标记）">
+            <div class="evidence-caption">开始实战式 · 侧面历史画面 · 0.100s · 第1帧（旧记录未保存测量部位，未加问题标记）</div>
           </div>
         </div>
         <details>
@@ -344,7 +342,7 @@
           <div>分析后端说明：MediaPipe关键点规则检查；二维投影与工程阈值待标定，不作为正式成绩。</div>
           <div>正面录像：录像640×480 / 30.0fps；可见躯干链 45/48 帧；分段原因：正常</div>
           <div>侧面录像：无元数据</div>
-          <div>时间对齐：action_peaks；侧面偏移 0.020s；可靠性：可靠</div>
+          <div>时间对应：出拳峰值；侧面时间偏移0.020秒；可对应。</div>
         </div>
       </details>
     </section>

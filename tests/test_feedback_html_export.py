@@ -9,14 +9,17 @@
 - 打印样式支持: 包含 @media print、A4 纸张排版与分页防跨页规则
 - 导出文件原子性与路径越界防护
 """
+
 from __future__ import annotations
 
 from datetime import datetime, timezone
 import html
+from html.parser import HTMLParser
 import os
 from pathlib import Path
 import re
 from typing import Any
+from urllib.parse import urlsplit
 
 import cv2
 import numpy as np
@@ -30,6 +33,7 @@ from core.reporting import build_report_model  # noqa: E402
 # ---------------------------------------------------------------------------
 # 测试固件构造辅助
 # ---------------------------------------------------------------------------
+
 
 def make_html_test_record(
     *,
@@ -63,10 +67,23 @@ def make_html_test_record(
             "status": "candidate",
             "review": "pending",
             "reason": "左肘角180度超过标准",
-            "blockedReason": "",
             "role": "front",
-            "measurements": [{"view": "front", "validFrames": 25, "totalFrames": 30, "violationRatio": 0.8, "support": 0.8}],
-            "fusion": {"method": "action_rule_quality_weighted_v1", "baseWeights": {"front": 0.5, "side": 0.5}, "support": 0.8, "threshold": 0.5, "effectiveWeights": {"front": 0.5, "side": 0.5}},
+            "measurements": [
+                {
+                    "view": "front",
+                    "validFrames": 25,
+                    "totalFrames": 30,
+                    "violationRatio": 0.8,
+                    "support": 0.8,
+                }
+            ],
+            "fusion": {
+                "method": "action_rule_quality_weighted_v1",
+                "baseWeights": {"front": 0.5, "side": 0.5},
+                "support": 0.8,
+                "threshold": 0.5,
+                "effectiveWeights": {"front": 0.5, "side": 0.5},
+            },
             "evidence": ["front:10"],
         },
         {
@@ -83,7 +100,6 @@ def make_html_test_record(
             "status": "not_observed",
             "review": "pending",
             "reason": "护手保持在下颚附近",
-            "blockedReason": "",
             "role": "rear",
             "measurements": [],
             "fusion": None,
@@ -103,27 +119,25 @@ def make_html_test_record(
             "status": "unable",
             "review": "pending",
             "reason": "缺少侧面视角，无法准确判定肩平",
-            "blockedReason": "缺少侧面视角",
             "role": "front",
             "measurements": [],
             "fusion": None,
             "evidence": [],
         },
         {
-            "id": "front_straight:finish:front:vertical_fist",
-            "code": "vertical_fist",
-            "name": "拳峰朝向待人工核对",
-            "bodyPart": "前拳（左）",
+            "id": "front_straight:finish:front:punch_extension",
+            "code": "punch_extension",
+            "name": "出拳未充分伸直",
+            "bodyPart": "前侧臂肘（左）",
             "segment": "front_straight",
             "segmentLabel": "前手直拳",
             "phase": "finish",
             "phaseLabel": "动作结束瞬间",
-            "standard": "击中瞬间立拳或平拳",
+            "standard": "击中瞬间手臂充分伸展",
             "source": "散打规范 表1",
-            "status": "pending_rule",
+            "status": "not_observed",
             "review": "pending",
-            "reason": "当前轻量Pose未支持拳峰朝向自动识别",
-            "blockedReason": "模型不支持",
+            "reason": "击打瞬间手臂充分伸展",
             "role": "front",
             "measurements": [],
             "fusion": None,
@@ -166,14 +180,32 @@ def make_html_test_record(
             ],
             "reviewHistory": [],
             "diagnostics": {
-                "front": {"totalFrames": 30, "bodyValidFrames": 28, "phaseSource": "own_view", "reason": ""},
-                "side": {"totalFrames": 30, "bodyValidFrames": 27, "phaseSource": "own_view", "reason": ""},
+                "front": {
+                    "totalFrames": 30,
+                    "bodyValidFrames": 28,
+                    "phaseSource": "own_view",
+                    "reason": "",
+                },
+                "side": {
+                    "totalFrames": 30,
+                    "bodyValidFrames": 27,
+                    "phaseSource": "own_view",
+                    "reason": "",
+                },
             },
             "phaseWindows": {
                 "front": [
                     {"segment": "front_straight", "phase": "start", "ranges": [[0, 5]]},
-                    {"segment": "front_straight", "phase": "motion", "ranges": [[6, 18]]},
-                    {"segment": "front_straight", "phase": "finish", "ranges": [[19, 23]]},
+                    {
+                        "segment": "front_straight",
+                        "phase": "motion",
+                        "ranges": [[6, 18]],
+                    },
+                    {
+                        "segment": "front_straight",
+                        "phase": "finish",
+                        "ranges": [[19, 23]],
+                    },
                     {"segment": "front_straight", "phase": "end", "ranges": [[24, 29]]},
                 ]
             },
@@ -188,6 +220,7 @@ def make_html_test_record(
 # ===========================================================================
 # 1. 纯自包含与零外链断言测试
 # ===========================================================================
+
 
 def test_html_report_strictly_zero_external_links():
     """断言导出的单文件 HTML 报告严格为 100% 离线自包含，零外部网络资源。
@@ -208,21 +241,41 @@ def test_html_report_strictly_zero_external_links():
     scrubbed = html_content.replace("http://www.w3.org/2000/svg", "")
     scrubbed = scrubbed.replace("http://www.w3.org/1999/xlink", "")
 
+    class _AttrUrlCollector(HTMLParser):
+        def __init__(self) -> None:
+            super().__init__()
+            self.urls: list[str] = []
+
+        def handle_starttag(
+            self, tag: str, attrs: list[tuple[str, str | None]]
+        ) -> None:
+            for attr, val in attrs:
+                if attr in {"src", "href"} and val:
+                    self.urls.append(val)
+
+    collector = _AttrUrlCollector()
+    collector.feed(html_content)
+    for url in collector.urls:
+        parsed = urlsplit(url)
+        assert parsed.scheme in {"", "data"}, f"发现非自包含外链 scheme: {url}"
+        assert parsed.netloc == "", f"发现外部域名/协议相对外链: {url}"
+
     # 严格断言零 http:// 与 https:// 与 // 协议链接
     assert "http://" not in scrubbed, "HTML 报告中检测到外部 http:// 链接！"
     assert "https://" not in scrubbed, "HTML 报告中检测到外部 https:// 链接！"
-    assert "src=\"//" not in scrubbed, "HTML 报告中检测到外部 // 无协议外链！"
-    assert "href=\"//" not in scrubbed, "HTML 报告中检测到外部 // 无协议外链！"
+    assert 'src="//' not in scrubbed, "HTML 报告中检测到外部 // 无协议外链！"
+    assert 'href="//' not in scrubbed, "HTML 报告中检测到外部 // 无协议外链！"
 
     # 严禁任何外部 script 引用
     assert "<script src" not in scrubbed
     # 严禁外部样式表引用
-    assert "<link rel=\"stylesheet\"" not in scrubbed
+    assert '<link rel="stylesheet"' not in scrubbed
 
 
 # ===========================================================================
 # 2. XSS 注入防护与安全转义测试
 # ===========================================================================
+
 
 @pytest.mark.parametrize(
     "field_name, malicious_payload",
@@ -245,7 +298,11 @@ def test_html_report_xss_sanitization(field_name, malicious_payload):
     assert "<svg/onload=" not in html_content
 
     # 必须以合法转义实体形式存在
-    assert ("&lt;script&gt;" in html_content) or ("&lt;img" in html_content) or ("&lt;svg" in html_content)
+    assert (
+        ("&lt;script&gt;" in html_content)
+        or ("&lt;img" in html_content)
+        or ("&lt;svg" in html_content)
+    )
 
 
 def test_html_report_check_reasons_and_standards_escaped():
@@ -253,7 +310,9 @@ def test_html_report_check_reasons_and_standards_escaped():
     record = make_html_test_record()
     # 注入特殊字符到检查项
     record["result"]["checks"][0]["standard"] = "<b>严格肩平</b> & 击打高度 < 180cm"
-    record["result"]["checks"][0]["reason"] = "<a href='javascript:alert(1)'>点击查看</a>"
+    record["result"]["checks"][0]["reason"] = (
+        "<a href='javascript:alert(1)'>点击查看</a>"
+    )
     html_content = render_html_report(record)
 
     assert "<a href='javascript:alert" not in html_content
@@ -264,6 +323,7 @@ def test_html_report_check_reasons_and_standards_escaped():
 # ===========================================================================
 # 3. 隐私保护与本地绝对路径脱敏测试
 # ===========================================================================
+
 
 def test_html_report_privacy_no_absolute_paths():
     """断言导出的 HTML 报告绝不泄露用户本地或开发机的绝对机器物理路径。
@@ -292,6 +352,7 @@ def test_html_report_privacy_no_absolute_paths():
 # 4. 证据图像 Base64 Data URI 嵌入测试
 # ===========================================================================
 
+
 def test_html_report_images_as_base64_data_uri(tmp_path):
     """验证当存在证据视频时，提取的证据帧以 Base64 Data URI 嵌入，无文件路径泄露。"""
     # 创建真实受管历史目录结构
@@ -302,7 +363,9 @@ def test_html_report_images_as_base64_data_uri(tmp_path):
 
     # 写入小型测试视频
     vid_file = rec_dir / "front.mp4"
-    writer = cv2.VideoWriter(str(vid_file), cv2.VideoWriter_fourcc(*"MJPG"), 10, (120, 90))
+    writer = cv2.VideoWriter(
+        str(vid_file), cv2.VideoWriter_fourcc(*"MJPG"), 10, (120, 90)
+    )
     for i in range(15):
         writer.write(np.full((90, 120, 3), i * 15, dtype=np.uint8))
     writer.release()
@@ -314,7 +377,10 @@ def test_html_report_images_as_base64_data_uri(tmp_path):
     html_content = render_html_report(record, history_root=history_root)
 
     # 验证 Base64 嵌入标记
-    assert "data:image/jpeg;base64," in html_content or "data:image/png;base64," in html_content
+    assert (
+        "data:image/jpeg;base64," in html_content
+        or "data:image/png;base64," in html_content
+    )
 
     # 严禁出现本地 file:// 或本地裸路径图片 src
     assert 'src="file://' not in html_content
@@ -332,12 +398,19 @@ def test_html_report_missing_video_shows_graceful_fallback(tmp_path):
 
     # 验证不崩溃，且展示降级提示
     assert html_content is not None
-    assert ("原录像文件不可用" in html_content) or ("原视频已不可用" in html_content) or ("未包含" in html_content) or ("无关键点" in html_content) or ("不可用" in html_content)
+    assert (
+        ("原录像文件不可用" in html_content)
+        or ("原视频已不可用" in html_content)
+        or ("未包含" in html_content)
+        or ("无关键点" in html_content)
+        or ("不可用" in html_content)
+    )
 
 
 # ===========================================================================
 # 5. A4 打印样式与排版优化测试
 # ===========================================================================
+
 
 def test_html_report_a4_print_styles():
     """验证 HTML 包含完备的 @media print 打印样式规范。"""
@@ -351,7 +424,9 @@ def test_html_report_a4_print_styles():
     assert ("size: A4" in html_content) or ("size:a4" in html_content)
 
     # 分页防截断规则
-    assert ("page-break-inside: avoid" in html_content) or ("break-inside: avoid" in html_content)
+    assert ("page-break-inside: avoid" in html_content) or (
+        "break-inside: avoid" in html_content
+    )
 
     # 不打印元素隐藏 (如操作按钮)
     assert (".no-print" in html_content) or ("display: none" in html_content)
@@ -360,6 +435,7 @@ def test_html_report_a4_print_styles():
 # ===========================================================================
 # 6. 数据展示与规约一致性测试
 # ===========================================================================
+
 
 def test_html_report_data_consistency():
     """验证导出的 HTML 报告中的统计数值与 build_report_model 规约数据完全一致。"""
@@ -373,6 +449,9 @@ def test_html_report_data_consistency():
 
     # 验证主标题出现在报告中
     assert model.headline.title in html_content
+    assert "未自动检查" not in html_content
+    assert "pill-pending" not in html_content
+    assert f"暂无法判断的项目 ({model.counts.unable_count}项)" in html_content
 
     # 验证内嵌 SVG 时序流图存在
     assert "<svg" in html_content

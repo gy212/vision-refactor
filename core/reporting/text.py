@@ -107,14 +107,26 @@ def _diagnostic_lines(result: dict) -> list[str]:
     return lines
 
 
-def _check_description(check: dict) -> str:
-    """按保存时的启用状态显示检查名称与试用说明，兼容没有该字段的旧记录。"""
-    availability = check.get("availability")
-    if not isinstance(availability, dict) or availability.get("state") != "trial":
-        return check["name"]
-    name = check["name"] + "（试用）"
-    note = availability.get("reason", "")
-    return f"{name}；试用说明：{note}" if note else name
+def _effective_status(check: dict) -> str:
+    """将不在当前三态标签中的历史旧状态统一归入 ``unable``。"""
+    status = check.get("status")
+    return status if status in STATE_LABELS else "unable"
+
+
+def _check_name(check: dict) -> str:
+    return str(check.get("name") or "未命名检查项").removesuffix("（试用）")
+
+
+def _check_labels(check: dict) -> tuple[str, str, str]:
+    parts = str(check.get("id") or "").split(":")
+    seg = check.get("segment") or (parts[0] if parts else "")
+    phase = check.get("phase") or (parts[1] if len(parts) > 1 else "")
+    seg_label = (
+        check.get("segmentLabel") or SEGMENT_LABELS.get(seg) or ACTIONS.get(seg, seg)
+    )
+    phase_label = check.get("phaseLabel") or PHASES.get(phase, phase)
+    body_part = check.get("bodyPart") or "全身"
+    return seg_label, phase_label, body_part
 
 
 def format_report(record: dict) -> str:
@@ -143,7 +155,7 @@ def format_report(record: dict) -> str:
         lines += [
             "分析方式：正侧面按动作/检查项及有效帧比例加权；仅适用单视角公式的项目单独注明。",
             "；".join(
-                f"{label}：{sum(c['status'] == status for c in checks)}项"
+                f"{label}：{sum(_effective_status(c) == status for c in checks)}项"
                 for status, label in STATE_LABELS.items()
             ),
         ]
@@ -151,23 +163,28 @@ def format_report(record: dict) -> str:
         lines += _diagnostic_lines(result)
     lines += ["", "动作问题："]
     issues = [
-        c for c in checks if c["status"] == "candidate" and c["review"] != "revoked"
+        c
+        for c in checks
+        if _effective_status(c) == "candidate" and c.get("review") != "revoked"
     ]
     for i, c in enumerate(issues, 1):
-        state = "教师已确认" if c["review"] == "confirmed" else "待教师确认"
+        state = "教师已确认" if c.get("review") == "confirmed" else "待教师确认"
+        seg_label, phase_label, body_part = _check_labels(c)
         lines.append(
-            f"{i}. {c['segmentLabel']} / {c['phaseLabel']} / {c['bodyPart']}：{_check_description(c)}（{state}）"
+            f"{i}. {seg_label} / {phase_label} / {body_part}：{_check_name(c)}（{state}）"
         )
         if c.get("fusion"):
             lines.append(format_fusion(c))
     if not issues:
         lines.append("当前没有未撤销的候选问题；不代表所有项目均合格。")
-    incomplete = [c for c in checks if c["status"] in {"unable", "pending_rule"}]
+    incomplete = [c for c in checks if _effective_status(c) == "unable"]
     if incomplete:
         lines += ["", "未完成判断的项目："]
         for c in incomplete:
+            reason = c.get("reason") or c.get("blockedReason") or "暂无法判断"
+            seg_label, phase_label, body_part = _check_labels(c)
             lines.append(
-                f"- {c['segmentLabel']} / {c['phaseLabel']} / {c['bodyPart']}：{_check_description(c)}；{c['reason']}"
+                f"- {seg_label} / {phase_label} / {body_part}：{_check_name(c)}；{reason}"
             )
             if c.get("measurements"):
                 lines.append(format_fusion(c))
@@ -179,9 +196,10 @@ def format_report(record: dict) -> str:
     if result.get("fusionMethod"):
         lines += ["", "已检查未发现的问题项（不代表全部动作合格）："]
         for c in checks:
-            if c["status"] == "not_observed":
+            if _effective_status(c) == "not_observed":
+                seg_label, phase_label, _ = _check_labels(c)
                 lines += [
-                    f"- {c['segmentLabel']} / {c['phaseLabel']}：{_check_description(c)}",
+                    f"- {seg_label} / {phase_label}：{_check_name(c)}",
                     format_fusion(c),
                 ]
     return "\n".join(lines) + "\n"

@@ -40,7 +40,11 @@ _TEMPLATE_DIR = Path(__file__).resolve().parent / "templates"
 @lru_cache(maxsize=None)
 def _template(name: str) -> Template:
     """读取模板；去掉结尾换行，并把 CRLF 统一成 LF（Windows 检出可能转换行尾）。"""
-    text = (_TEMPLATE_DIR / f"{name}.html").read_text(encoding="utf-8").replace("\r\n", "\n")
+    text = (
+        (_TEMPLATE_DIR / f"{name}.html")
+        .read_text(encoding="utf-8")
+        .replace("\r\n", "\n")
+    )
     return Template(text[:-1] if text.endswith("\n") else text)
 
 
@@ -134,12 +138,10 @@ def _count_pills(model: NormalizedReportModel) -> str:
             "count-pill pill-unable",
             f"{status_icon('unable', 16)} 暂无法判断：<strong>{counts.unable_count}</strong>项",
         ),
-        (
-            "count-pill pill-pending",
-            f"{status_icon('pending_rule', 16)} 未自动检查：<strong>{counts.pending_rule_count}</strong>项",
-        ),
     ]
-    lines = [_fill("count_pill", css_class=cls, content=content) for cls, content in pills]
+    lines = [
+        _fill("count_pill", css_class=cls, content=content) for cls, content in pills
+    ]
     # 没有撤销项时保留一个空行，与旧版逐行拼接的输出逐字节一致
     lines.append(
         _fill(
@@ -165,7 +167,9 @@ def _evidence_grid(check: NormalizedCheck, embedder: _EvidenceEmbedder) -> str:
     for selected in select_evidence(check, embedder.catalog):
         data_uri, caption = embedder.data_uri(selected)
         if data_uri:
-            boxes.append(_fill("evidence_image", src=data_uri, caption=safe_clean(caption)))
+            boxes.append(
+                _fill("evidence_image", src=data_uri, caption=safe_clean(caption))
+            )
         else:
             boxes.append(_fill("evidence_placeholder", caption=safe_clean(caption)))
     return _fill("evidence_grid", boxes="\n".join(boxes))
@@ -175,13 +179,18 @@ def _issue_details(check: NormalizedCheck) -> str:
     lines = []
     for member in check.members:
         review = member.review_display or "待教师复核"
-        lines.append(f"<div>{safe_clean(member.phase_label)}：{safe_clean(review)}</div>")
+        lines.append(
+            f"<div>{safe_clean(member.phase_label)}：{safe_clean(review)}</div>"
+        )
     if check.measurements_summary:
         lines.extend(
-            f"<div>{safe_clean(line)}</div>" for line in check.measurements_summary.split("\n")
+            f"<div>{safe_clean(line)}</div>"
+            for line in check.measurements_summary.split("\n")
         )
     if check.audit_logs:
-        lines.append('<div style="margin-top: 8px; font-weight: 600;">复核历史记录：</div>')
+        lines.append(
+            '<div style="margin-top: 8px; font-weight: 600;">复核历史记录：</div>'
+        )
         for audit in check.audit_logs:
             decision = "已确认" if audit.get("after") == "confirmed" else "已撤销"
             when = safe_clean(format_local_datetime(audit.get("at", "")))
@@ -189,7 +198,9 @@ def _issue_details(check: NormalizedCheck) -> str:
                 f"<div>• {when} 由 {safe_clean(audit.get('teacher'))} 复核为「{decision}」；"
                 f"原因：{safe_clean(audit.get('reason'))}</div>"
             )
-    return _fill("issue_details", lines="".join(f"\n            {line}" for line in lines))
+    return _fill(
+        "issue_details", lines="".join(f"\n            {line}" for line in lines)
+    )
 
 
 def _issue_card(idx: int, check: NormalizedCheck, embedder: _EvidenceEmbedder) -> str:
@@ -218,7 +229,9 @@ def _issue_card(idx: int, check: NormalizedCheck, embedder: _EvidenceEmbedder) -
     )
 
 
-def _candidate_section(model: NormalizedReportModel, embedder: _EvidenceEmbedder) -> str:
+def _candidate_section(
+    model: NormalizedReportModel, embedder: _EvidenceEmbedder
+) -> str:
     issues = group_action_issues(model.candidate_checks, model.header.action)
     if issues:
         cards = "\n".join(_issue_card(i, c, embedder) for i, c in enumerate(issues, 1))
@@ -242,48 +255,54 @@ def _incomplete_details(check: NormalizedCheck, embedder: _EvidenceEmbedder) -> 
     images = _evidence_grid(check, embedder) if check.evidence_refs else ""
     measurements = _issue_details(check) if check.measurements_summary else ""
     return (
-        '<details style="flex-basis: 100%;"><summary>查看所选画面与测量</summary>'
+        "\n              "
+        + '<details style="flex-basis: 100%;"><summary>查看所选画面与测量</summary>'
         + images
         + measurements
         + "</details>"
     )
 
 
-def _status_sections(model: NormalizedReportModel, embedder: _EvidenceEmbedder) -> list[str]:
-    """未完成判断、已检查未发现、教师已撤销三个折叠区，各自只在有项目时输出。"""
+def _status_sections(
+    model: NormalizedReportModel, embedder: _EvidenceEmbedder
+) -> list[str]:
+    """暂无法判断、已检查未发现、教师已撤销三个折叠区，各自只在有项目时输出。"""
     sections = []
-    incomplete = model.unable_checks + model.pending_rule_checks
-    if incomplete:
+    if model.unable_checks:
         rows = [
             _fill(
                 "incomplete_row",
-                icon=status_icon(c.status, 14),
+                icon=status_icon("unable", 14),
                 body_part=safe_clean(c.body_part),
                 status=safe_clean(c.status_display),
                 reason=safe_clean(c.reason),
                 extras=_incomplete_details(c, embedder),
                 **_row_names(c),
             )
-            for c in incomplete
+            for c in model.unable_checks
         ]
         sections.append(
             _fill(
                 "incomplete_section",
                 open="open" if not model.candidate_checks else "",
-                total=len(incomplete),
-                unable=model.counts.unable_count,
-                pending=model.counts.pending_rule_count,
+                count=len(model.unable_checks),
                 rows="\n".join(rows),
             )
         )
     if model.not_observed_checks:
         rows = [
-            _fill("not_observed_row", icon=status_icon("not_observed", 14), **_row_names(c))
+            _fill(
+                "not_observed_row",
+                icon=status_icon("not_observed", 14),
+                **_row_names(c),
+            )
             for c in model.not_observed_checks
         ]
         sections.append(
             _fill(
-                "not_observed_section", count=len(model.not_observed_checks), rows="\n".join(rows)
+                "not_observed_section",
+                count=len(model.not_observed_checks),
+                rows="\n".join(rows),
             )
         )
     if model.revoked_checks:
@@ -292,7 +311,9 @@ def _status_sections(model: NormalizedReportModel, embedder: _EvidenceEmbedder) 
             for c in model.revoked_checks
         ]
         sections.append(
-            _fill("revoked_section", count=len(model.revoked_checks), rows="\n".join(rows))
+            _fill(
+                "revoked_section", count=len(model.revoked_checks), rows="\n".join(rows)
+            )
         )
     return sections
 
@@ -345,7 +366,9 @@ def render_html_report(
     """
     model = build_report_model(record)
     header = model.header
-    embedder = _EvidenceEmbedder(record, model, history_root, max_image_edge, max_images)
+    embedder = _EvidenceEmbedder(
+        record, model, history_root, max_image_edge, max_images
+    )
     student_id = safe_clean(header.student_id, "未登记学号")
     time_display = safe_clean(header.created_at_local)
     issues = group_action_issues(model.candidate_checks, model.header.action)

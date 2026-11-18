@@ -35,7 +35,19 @@ if TYPE_CHECKING:
 
 
 def _relative_to_baseline(
-    code, lm, mask, torso, baseline, baseline_mask, required, sh, wr, hip, cfg, details, issues
+    code,
+    lm,
+    mask,
+    torso,
+    baseline,
+    baseline_mask,
+    required,
+    sh,
+    wr,
+    hip,
+    cfg,
+    details,
+    issues,
 ):
     """相对起始护位的项（向后拉手、甩手、翻胯）的逐帧问题；基线不可用时为 None。"""
     baseline_torso = torso_measures.chain_torso(baseline, baseline_mask)
@@ -54,7 +66,9 @@ def _relative_to_baseline(
         details["估计髋轴转角"] = (rotation, "度（估计深度）")
         return rotation < cfg.hip_rotation
     position, _ = relative_position(lm, mask, torso, sh, wr)
-    base_position, _ = relative_position(baseline, baseline_mask, baseline_torso, sh, wr)
+    base_position, _ = relative_position(
+        baseline, baseline_mask, baseline_torso, sh, wr
+    )
     if code == "arm_swing":
         initial = np.median(base_position[:, 1])
         swing = position[:, 1] - initial
@@ -94,6 +108,7 @@ def required_landmarks(code: str, role: str, stance: str) -> tuple[int, ...]:
         "guard_shoulder": (wr, sh),
         "guard_elbow": (sh, el),
         "shoulder_level": (sh, wr),
+        "hook_arm_shoulder_level": (sh, el, wr),
         "stance_torso": (L_SHOULDER, R_SHOULDER),
         "foot_flexed": (knee, ankle, toe),
         "guard_back": (wr, sh, hip, NOSE),
@@ -130,6 +145,28 @@ def measure_leg_stance(
         details[label] = (arms.series_angles(lm, *joints), "度")
     for a, b in ((23, 25), (25, 27), (24, 26), (26, 28)):
         valid &= arms.segment_lengths(lm, a, b) > 1e-4
+    return bad, valid
+
+
+def measure_hook_shoulder_level(
+    role: str,
+    lm: np.ndarray,
+    mask: np.ndarray,
+    stance: str,
+    cfg: FeedbackConfig,
+    details: dict,
+) -> tuple[np.ndarray, np.ndarray]:
+    """摆拳齐肩判定：打到瞬间拳与肘均应大致与肩齐平，缺任一点均记为无效帧。"""
+    sh, el, wr, *_ = sides_for_stance(role, stance)
+    torso = torso_measures.chain_torso(lm, mask)
+    wrist_gap, _ = relative_height(lm, mask, wr, sh, torso)
+    elbow_gap, _ = relative_height(lm, mask, el, sh, torso)
+    wrist_abs = np.abs(wrist_gap)
+    elbow_abs = np.abs(elbow_gap)
+    details["拳肩高度差"] = (wrist_abs, "躯干长度")
+    details["肘肩高度差"] = (elbow_abs, "躯干长度")
+    bad = (wrist_abs > cfg.shoulder_height) | (elbow_abs > cfg.shoulder_height)
+    valid = mask[:, (sh, el, wr)].all(axis=1) & (torso > 1e-4)
     return bad, valid
 
 

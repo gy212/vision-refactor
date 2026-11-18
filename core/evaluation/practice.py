@@ -233,9 +233,6 @@ def _evaluate_check(
         evidence=[],
         review="pending",
     )
-    if c["blockedReason"]:
-        c.update(status="pending_rule", reason=c["blockedReason"])
-        return
     weights = check_view_weights(c, cfg)
     c["fusion"] = {
         "method": "weighted_support" if all(weights.values()) else "primary_view",
@@ -379,9 +376,7 @@ def evaluate_series(
         "diagnostics": _view_diagnostics(views, diagnostics, phase_sources),
         "phaseWindows": _phase_ranges(views, windows),
         "config": asdict(cfg),
-        "status": "partial"
-        if any(c["status"] in {"unable", "pending_rule"} for c in checks)
-        else "completed",
+        "status": "partial" if unable else "completed",
         "needsRerecord": unable,
         "scoreAuthorized": False,
         "calibrationStatus": "unvalidated",

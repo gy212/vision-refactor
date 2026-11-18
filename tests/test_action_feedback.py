@@ -76,18 +76,20 @@ def pose_series(n=32):
 
 
 def result(action="front_straight", stance="left"):
-    return evaluate_series(action, stance, {"front": pose_series(), "side": pose_series()})
+    return evaluate_series(
+        action, stance, {"front": pose_series(), "side": pose_series()}
+    )
 
 
 def fake_analyzer(action, stance, front, side, **kwargs):
     return result(action, stance)
 
 
-def video(path: Path):
+def video(path: Path, frames: int = 16):
     writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"MJPG"), 8, (96, 96))
     assert writer.isOpened()
-    for i in range(16):
-        writer.write(np.full((96, 96, 3), i * 10, dtype=np.uint8))
+    for i in range(frames):
+        writer.write(np.full((96, 96, 3), (i * 10) % 256, dtype=np.uint8))
     writer.release()
     return path
 
@@ -100,16 +102,22 @@ def test_catalog_covers_phases_sides_sources_and_no_scores(action):
     assert all(c["source"] and c["standard"] and c["bodyPart"] for c in checks)
     assert all("score" not in c and "penalty" not in c for c in checks)
     right = build_checks(action, "right")
-    assert next(c for c in checks if c["code"] == "stance_elbow")["bodyPart"].endswith("（左）")
-    assert next(c for c in right if c["code"] == "stance_elbow")["bodyPart"].endswith("（右）")
+    assert next(c for c in checks if c["code"] == "stance_elbow")["bodyPart"].endswith(
+        "（左）"
+    )
+    assert next(c for c in right if c["code"] == "stance_elbow")["bodyPart"].endswith(
+        "（右）"
+    )
     if action.endswith("combo"):
         segments = list(
-            dict.fromkeys(c["segment"] for c in checks if c["phase"] in {"motion", "finish"})
+            dict.fromkeys(
+                c["segment"] for c in checks if c["phase"] in {"motion", "finish"}
+            )
         )
         assert segments[0].startswith("front_") and segments[1].startswith("rear_")
 
 
-def test_rules_use_selected_front_arm_and_keep_uncalibrated_checks_pending():
+def test_rules_use_selected_front_arm_and_run_all_stance_checks():
     series = pose_series()
     series["landmarks"][:, 15, :2] = (0.4, 0.6)  # 左肘180度；右肘90度。
     left = evaluate_series("stance", "left", {"front": series, "side": series})
@@ -118,7 +126,9 @@ def test_rules_use_selected_front_arm_and_keep_uncalibrated_checks_pending():
     assert get(left, "stance_elbow")["status"] == "candidate"
     assert get(right, "stance_elbow")["status"] == "not_observed"
     # D-3：拳峰高度、站距按原正式规则的相对量判定，不再待定。
-    assert get(left, "stance_height")["status"] == "candidate"  # 前手腕低于鼻尖 1 倍躯干长
+    assert (
+        get(left, "stance_height")["status"] == "candidate"
+    )  # 前手腕低于鼻尖 1 倍躯干长
     assert get(left, "stance_width")["status"] == "candidate"  # 踝距/肩宽 = 1.5
     assert get(left, "stance_width")["fusion"]["method"] == "primary_view"
     assert left["backend"] == "mediapipe" and left["delegate"] == "cpu"
@@ -144,10 +154,10 @@ def test_missing_landmarks_or_view_or_motion_are_not_a_pass():
     series["valid_mask"][:] = False
     data = evaluate_series("front_straight", "left", {"front": series})
     assert data["needsRerecord"]
-    assert all(c["status"] in {"unable", "pending_rule"} for c in data["checks"])
+    assert all(c["status"] == "unable" for c in data["checks"])
     data = result()
     assert all(
-        c["status"] in {"unable", "pending_rule"} for c in data["checks"] if c["phase"] == "motion"
+        c["status"] == "unable" for c in data["checks"] if c["phase"] == "motion"
     )
 
 
@@ -187,7 +197,9 @@ def test_primary_view_is_not_overridden_by_old_fusion_weights():
     weights = _default_front_weights()
     weights["stance"]["stance_elbow"] = 0.99
     cfg = FeedbackConfig(front_weights=weights)
-    check = _check(evaluate_series("stance", "left", {"front": front, "side": side}, cfg))
+    check = _check(
+        evaluate_series("stance", "left", {"front": front, "side": side}, cfg)
+    )
     assert check["status"] == "candidate"
     assert check["fusion"]["effectiveWeights"] == {"side": 1.0}
 
@@ -266,7 +278,9 @@ def test_movement_windows_require_return_and_keep_observed_segments():
     assert "不完整" in diagnostics["reason"]
     assert ("front_straight", "finish") in reversed_windows
     assert ("rear_straight", "finish") in reversed_windows
-    series["valid_mask"][10, 15] = False  # 短暂漏点保留原无效标记，可以识别前后已观测到的运动。
+    series["valid_mask"][10, 15] = (
+        False  # 短暂漏点保留原无效标记，可以识别前后已观测到的运动。
+    )
     assert ("front_straight", "motion") in phase_windows(
         series, "straight_combo", "left", FeedbackConfig()
     )
@@ -289,7 +303,9 @@ def test_actual_video_sampling_uses_pipeline_and_does_not_repeat_lost_pose(tmp_p
             calls.append(timestamp_ms)
             if len(calls) == 2:
                 return None, []
-            return [SimpleNamespace(x=0.5, y=0.5, z=0, visibility=1) for _ in range(33)], []
+            return [
+                SimpleNamespace(x=0.5, y=0.5, z=0, visibility=1) for _ in range(33)
+            ], []
 
         def close(self):
             closed.append(True)
@@ -300,12 +316,19 @@ def test_actual_video_sampling_uses_pipeline_and_does_not_repeat_lost_pose(tmp_p
     assert calls == sorted(set(calls)) and closed == [True]
     with pytest.raises(InterruptedError):
         analyze_feedback(
-            "stance", "left", path, None, stopped=lambda: True, pipeline_factory=Pipeline
+            "stance",
+            "left",
+            path,
+            None,
+            stopped=lambda: True,
+            pipeline_factory=Pipeline,
         )
 
 
 @pytest.mark.parametrize("variant", ["lite", "full", "heavy"])
-def test_feedback_pipeline_uses_selected_cpu_model_without_hands(monkeypatch, tmp_path, variant):
+def test_feedback_pipeline_uses_selected_cpu_model_without_hands(
+    monkeypatch, tmp_path, variant
+):
     (tmp_path / f"pose_landmarker_{variant}.task").write_bytes(b"fixture")
     monkeypatch.setattr(practice_mod, "models_dir", lambda: tmp_path)
     captured = []
@@ -314,13 +337,19 @@ def test_feedback_pipeline_uses_selected_cpu_model_without_hands(monkeypatch, tm
     monkeypatch.setattr(engine, "PoseEngine", lambda **kw: captured.append(kw))
     _pipeline(FeedbackConfig(pose_variant=variant))
     config = captured[0]["cfg"]
-    assert config.pose_variant == variant and config.delegate == "cpu" and not config.enable_hands
+    assert (
+        config.pose_variant == variant
+        and config.delegate == "cpu"
+        and not config.enable_hands
+    )
     assert FeedbackConfig().pose_variant == "full"
 
 
 def test_feedback_pipeline_missing_model_keeps_message(monkeypatch, tmp_path):
     monkeypatch.setattr(practice_mod, "models_dir", lambda: tmp_path)
-    with pytest.raises(FileNotFoundError, match="缺少 MediaPipe heavy，请在设置的模型管理中安装。"):
+    with pytest.raises(
+        FileNotFoundError, match="缺少 MediaPipe heavy，请在设置的模型管理中安装。"
+    ):
         _pipeline(FeedbackConfig(pose_variant="heavy"))
 
 
@@ -342,16 +371,16 @@ def test_completed_hip_turn_and_arm_swing_are_not_missing_actions():
         c["status"] == "not_observed" for c in by_code["arm_swing"]
     )
     assert by_code["hip_turn"] and all(
-        c["status"] == "pending_rule"
-        and c["availability"]["state"] == "calibration_failed"
-        for c in by_code["hip_turn"]
+        c["status"] == "not_observed" for c in by_code["hip_turn"]
     )
 
 
 def test_personal_history_review_export_reanalysis_and_retention(tmp_path):
     now = [datetime(2026, 9, 18, tzinfo=timezone.utc)]
     store = FeedbackHistory(
-        tmp_path / "history", clock=lambda: now[0], renderers=practice_report_renderers()
+        tmp_path / "history",
+        clock=lambda: now[0],
+        renderers=practice_report_renderers(),
     )
     source = tmp_path / "source.avi"
     source.write_bytes(b"mock video, inference is injected")
@@ -421,7 +450,9 @@ def test_real_tk_panel_background_analysis_history_and_identity_switch(tmp_path)
     identity = controls.identity()
     try:
         controls.analysis.start(
-            lambda: controls.history().add(identity, source, None, analyzer=fake_analyzer)
+            lambda: controls.history().add(
+                identity, source, None, analyzer=fake_analyzer
+            )
         )
         deadline = time.monotonic() + 5
         while controls.busy and time.monotonic() < deadline:
@@ -436,7 +467,10 @@ def test_real_tk_panel_background_analysis_history_and_identity_switch(tmp_path)
         root.update()
         assert controls.history_window.check_tree.get_children()
         controls.student_id.set("002")
-        assert controls.current is None and str(controls.export_button.cget("state")) == "disabled"
+        assert (
+            controls.current is None
+            and str(controls.export_button.cget("state")) == "disabled"
+        )
     finally:
         controls.close()
         root.destroy()
@@ -454,12 +488,16 @@ def test_late_cancel_does_not_write_or_replace_result(tmp_path):
         return fake_analyzer(*args, **kwargs)
 
     with pytest.raises(InterruptedError):
-        store.add(identity, source, None, analyzer=cancel_after_inference, stopped=stop.is_set)
+        store.add(
+            identity, source, None, analyzer=cancel_after_inference, stopped=stop.is_set
+        )
     assert store.list("001") == []
     stop.clear()
     saved = store.add(identity, source, None, analyzer=fake_analyzer)
     with pytest.raises(InterruptedError):
-        store.reanalyze(saved["id"], analyzer=cancel_after_inference, stopped=stop.is_set)
+        store.reanalyze(
+            saved["id"], analyzer=cancel_after_inference, stopped=stop.is_set
+        )
     assert store.get(saved["id"])["revision"] == 1
 
 
@@ -473,11 +511,17 @@ def test_practice_judges_identity_bound_at_recording_start(waiting, tmp_path):
     current = {"identity": identity}
     practice = PracticeSession(lambda: current["identity"])
     practice.handle("start", now=0.0, session_ready=True)
-    assert [c.kind for c in practice.handle("enter_stable", now=1.0)] == ["BEGIN_SEGMENT"]
+    assert [c.kind for c in practice.handle("enter_stable", now=1.0)] == [
+        "BEGIN_SEGMENT"
+    ]
     practice.handle(
-        "record_started", now=1.0, segment=SimpleNamespace(segment_id="seg", directory=tmp_path)
+        "record_started",
+        now=1.0,
+        segment=SimpleNamespace(segment_id="seg", directory=tmp_path),
     )
-    current["identity"] = validate_identity("someone_else", "", "rear_low_kick", "right")
+    current["identity"] = validate_identity(
+        "someone_else", "", "rear_low_kick", "right"
+    )
     practice.handle("end")
     front, side = tmp_path / "front.mp4", tmp_path / "side.mp4"
     front.write_bytes(b"x")
@@ -528,7 +572,13 @@ def combo_series(n=80):
     series["landmarks"][:, 0, 0] = 0.56  # 侧面向+x出拳，鼻位于髋前。
     series["times"] = [i / 30 for i in range(n)]
     for start, wrist in ((12, 15), (30, 16)):
-        series["landmarks"][start : start + 5, wrist, 0] += [0.10, 0.20, 0.28, 0.20, 0.10]
+        series["landmarks"][start : start + 5, wrist, 0] += [
+            0.10,
+            0.20,
+            0.28,
+            0.20,
+            0.10,
+        ]
     return series
 
 
@@ -553,11 +603,15 @@ def test_fast_combo_shared_timing_keeps_independent_measurements_and_masks():
         for c in data["checks"]
         if c["code"] == "shoulder_level" and c["segment"] == "front_straight"
     )
-    assert check["status"] == "unable"  # 时间段可共享，主判画面缺少髋点，不能从另一面借。
+    assert (
+        check["status"] == "unable"
+    )  # 时间段可共享，主判画面缺少髋点，不能从另一面借。
     assert "侧面" in check["reason"] and "有效帧不足" in check["reason"]
 
 
-def test_small_front_motion_gets_side_timing_in_practice_exam_and_paired_batch(tmp_path):
+def test_small_front_motion_gets_side_timing_in_practice_exam_and_paired_batch(
+    tmp_path,
+):
     """正面位移小、同步侧面看得清的直拳：练习、考试与 batch paired 用同一套同步相位，适用机位的结论一致（#21）。"""
     from types import SimpleNamespace
 
@@ -588,9 +642,9 @@ def test_small_front_motion_gets_side_timing_in_practice_exam_and_paired_batch(t
     raws = {"front": raw(front, "front"), "side": raw(side, "side")}
     practice = next(
         c
-        for c in evaluate_series("straight_combo", "left", {"front": front, "side": side}, cfg)[
-            "checks"
-        ]
+        for c in evaluate_series(
+            "straight_combo", "left", {"front": front, "side": side}, cfg
+        )["checks"]
         if c["id"] == check_id
     )
     practice_side = next(m for m in practice["measurements"] if m["view"] == "side")
@@ -601,7 +655,10 @@ def test_small_front_motion_gets_side_timing_in_practice_exam_and_paired_batch(t
         tpls = {v: [tmp_path / v / f"{n}.npz"] for v, n in names.items()}
 
         def compare(templates, video, **_kwargs):
-            return [SimpleNamespace(score=0.8, start_frame=0, end_frame=79) for _ in templates]
+            return [
+                SimpleNamespace(score=0.8, start_frame=0, end_frame=79)
+                for _ in templates
+            ]
 
         res = exam_pool.score_exam_pools(
             tpls["front"],
@@ -626,7 +683,10 @@ def test_small_front_motion_gets_side_timing_in_practice_exam_and_paired_batch(t
         pose_variant="full",
         stop_evt=threading.Event(),
     )
-    for check in (exam_side_check(), next(c for c in batch_side if c.check_id == check_id)):
+    for check in (
+        exam_side_check(),
+        next(c for c in batch_side if c.check_id == check_id),
+    ):
         assert check.skip_reason != "phase_not_found"
         assert (check.valid_frames, check.total_frames) == (
             practice_side["validFrames"],
@@ -644,7 +704,8 @@ def test_occluded_far_side_does_not_block_visible_arm_but_hidden_arm_stays_unabl
     front["valid_mask"][:, 14] = False
     assert (
         _check(
-            evaluate_series("stance", "left", {"front": front, "side": side}), "stance_rear_guard"
+            evaluate_series("stance", "left", {"front": front, "side": side}),
+            "stance_rear_guard",
         )["status"]
         == "unable"
     )
@@ -664,7 +725,13 @@ def test_phase_search_ignores_lost_entry_and_exit_and_keeps_repeated_combos():
     series["valid_mask"][:5] = False
     series["valid_mask"][-6:] = False
     for start, wrist in ((55, 15), (73, 16)):
-        series["landmarks"][start : start + 5, wrist, 0] += [0.10, 0.20, 0.28, 0.20, 0.10]
+        series["landmarks"][start : start + 5, wrist, 0] += [
+            0.10,
+            0.20,
+            0.28,
+            0.20,
+            0.10,
+        ]
     windows = phase_windows(series, "straight_combo", "left", FeedbackConfig())
     assert windows[("stance", "start")][0] >= 5
     assert windows[("stance", "end")][-1] < 94
@@ -683,11 +750,19 @@ def test_shared_timestamps_are_not_guessed_from_separate_peak_detections():
         == data["diagnostics"]["side"]["phaseInstances"]
     )
     for start, wrist in ((50, 15), (67, 16)):
-        front["landmarks"][start : start + 5, wrist, 0] += [0.10, 0.20, 0.28, 0.20, 0.10]
+        front["landmarks"][start : start + 5, wrist, 0] += [
+            0.10,
+            0.20,
+            0.28,
+            0.20,
+            0.10,
+        ]
     revised = evaluate_series("straight_combo", "left", {"front": front, "side": side})
     for view in ("front", "side"):
         observed = lambda result: [
-            stage for stage in result["phaseWindows"][view] if stage["segment"] != "stance"
+            stage
+            for stage in result["phaseWindows"][view]
+            if stage["segment"] != "stance"
         ]
         assert observed(revised) == observed(data)
     assert revised["diagnostics"]["front"]["eventDetails"] == []
@@ -707,7 +782,9 @@ def test_target_view_motion_does_not_replace_shared_source_result():
 
 def test_1080p_30fps_analysis_keeps_every_frame(tmp_path):
     path = tmp_path / "full-resolution.avi"
-    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"MJPG"), 30, (1920, 1080))
+    writer = cv2.VideoWriter(
+        str(path), cv2.VideoWriter_fourcc(*"MJPG"), 30, (1920, 1080)
+    )
     assert writer.isOpened()
     try:
         for _ in range(12):
@@ -762,7 +839,11 @@ def test_real_tk_invalid_config_reports_analysis_not_started(tmp_path, monkeypat
     try:
         monkeypatch.setattr(panel, "load_feedback_config", broken_config)
         assert controls.analyze_recording(controls.identity(), source, None) is False
-        assert messages == ["feedback_config.json 格式错误"] and busy == [] and not controls.busy
+        assert (
+            messages == ["feedback_config.json 格式错误"]
+            and busy == []
+            and not controls.busy
+        )
         monkeypatch.undo()
         monkeypatch.setattr(panel, "analyze_feedback", fake_analyzer)
         assert controls.analyze_recording(controls.identity(), source, None) is True
@@ -799,15 +880,19 @@ def test_real_tk_evidence_frames_and_model_choice(tmp_path, monkeypatch):
     controls.student_id.set("evidence-test")
     controls.action.set(ACTIONS["stance"])
     try:
-        source = video(tmp_path / "source.avi")
-        side = video(tmp_path / "side.avi")
-        saved = controls.history().add(controls.identity(), source, side, analyzer=fake_analyzer)
+        source = video(tmp_path / "source.avi", frames=32)
+        side = video(tmp_path / "side.avi", frames=32)
+        saved = controls.history().add(
+            controls.identity(), source, side, analyzer=fake_analyzer
+        )
         controls.set_current(saved)
         controls.open_history()
         root.update()
         controls.history_window.history_tree.selection_set(saved["id"])
         root.update()
-        controls.history_window.check_tree.selection_set(_check(saved["result"])["id"])
+        controls.history_window.check_tree.selection_set(
+            _check(saved["result"], "stance_width")["id"]
+        )
         controls.history_window.show_evidence()
         root.update()
         window = next(
@@ -818,13 +903,17 @@ def test_real_tk_evidence_frames_and_model_choice(tmp_path, monkeypatch):
         assert len(window._photos) == 6
         captured = []
         monkeypatch.setattr(
-            panel, "analyze_feedback", lambda *args, **kwargs: captured.append(kwargs["config"])
+            panel,
+            "analyze_feedback",
+            lambda *args, **kwargs: captured.append(kwargs["config"]),
         )
         controls.analysis_model.set("Lite（快速对比）")
         analyze = controls.analysis.analyzer(controls.analysis_model.get())
         controls.analysis_model.set("Full（精细分析）")
         analyze()
-        assert captured[0].pose_variant == "lite"  # 主线程选择快照，不在工作线程读取Tk变量。
+        assert (
+            captured[0].pose_variant == "lite"
+        )  # 主线程选择快照，不在工作线程读取Tk变量。
     finally:
         controls.close()
         root.destroy()
@@ -884,4 +973,7 @@ def test_front_only_check_does_not_require_the_other_view(other_state, low):
     assert {m["view"] for m in check["measurements"]} == {"front"}
     assert all(ref.startswith("front:") for ref in check["evidence"])
     front["valid_mask"][:] = False
-    assert _check(evaluate_series("stance", "left", views), "stance_height")["status"] == "unable"
+    assert (
+        _check(evaluate_series("stance", "left", views), "stance_height")["status"]
+        == "unable"
+    )

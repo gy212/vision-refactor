@@ -2,12 +2,13 @@
 """Tkinter 学生练习分析结果主视图面板与生命周期集成自动化测试。
 
 涵盖：
-- Style A 布局与组件构建 (4态概览卡片、动态动作阶段选择栏、左侧问题列表、右侧正侧代表帧、底部操作)
+- Style A 布局与组件构建 (3态概览卡片、动态动作阶段选择栏、左侧问题列表、右侧正侧代表帧、底部操作)
 - View switching (列 0-1 跨列展示，录制预览 grid_remove 平滑隐藏且不抛出错误)
 - 摄像头预览连续性 (preview 隐藏时 _tick() 持续运行不崩溃，设备不争用)
 - 任务代次并发防御 (Generation token 防线：取消、切学生、再练一次后拦截迟到 worker 回调)
 - “再练一次”确定性行为 (重置状态，安全切回预览，绝不自动开启录制)
 """
+
 from __future__ import annotations
 
 from queue import Queue
@@ -43,6 +44,7 @@ from apps.tk.views.practice_result import FeedbackResultPanel
 # ---------------------------------------------------------------------------
 # 测试固件与替身
 # ---------------------------------------------------------------------------
+
 
 def make_dummy_record(
     student_id: str = "001",
@@ -88,7 +90,6 @@ def make_dummy_record(
                     "status": "candidate",
                     "review": "pending",
                     "reason": "左肘角180度超过标准",
-                    "blockedReason": "",
                     "role": "front",
                     "measurements": [],
                     "evidence": ["front:1"],
@@ -107,7 +108,6 @@ def make_dummy_record(
                     "status": "not_observed",
                     "review": "pending",
                     "reason": "护手保持在下颚附近",
-                    "blockedReason": "",
                     "role": "rear",
                     "measurements": [],
                     "evidence": [],
@@ -126,26 +126,24 @@ def make_dummy_record(
                     "status": "unable",
                     "review": "pending",
                     "reason": "缺少侧面视角",
-                    "blockedReason": "缺少侧面视角",
                     "role": "front",
                     "measurements": [],
                     "evidence": [],
                 },
                 {
-                    "id": "chk:end:front:vertical_fist",
-                    "code": "vertical_fist",
-                    "name": "拳峰朝向待人工核对",
-                    "bodyPart": "前拳（左）",
-                    "segment": "front_straight",
-                    "segmentLabel": "前手直拳",
+                    "id": "chk:end:front:stance_knee",
+                    "code": "stance_knee",
+                    "name": "结束实战式双膝过直",
+                    "bodyPart": "双腿膝关节",
+                    "segment": "stance",
+                    "segmentLabel": "实战式",
                     "phase": "end",
                     "phaseLabel": "结束实战式",
-                    "standard": "击中瞬间立拳或平拳",
+                    "standard": "双腿保持微屈",
                     "source": "散打规范",
-                    "status": "pending_rule",
+                    "status": "not_observed",
                     "review": "pending",
-                    "reason": "模型不支持",
-                    "blockedReason": "模型不支持",
+                    "reason": "双膝保持微屈",
                     "role": "front",
                     "measurements": [],
                     "evidence": [],
@@ -162,9 +160,14 @@ def make_dummy_record(
 
 def make_test_app(root):
     """已进入练习、最近片段可评判的应用；结果页、左侧控制区与预览面换成 Mock 以断言切换。"""
-    app = practice_app(root, identity=lambda: {"studentId": app.window.practice.controls.student_id.get()})
+    app = practice_app(
+        root,
+        identity=lambda: {"studentId": app.window.practice.controls.student_id.get()},
+    )
     app.recording.service = SimpleNamespace(state="idle")
-    app.practice.practice.segment = PracticeSegment("record_0", None, ready=True, terminal=True)
+    app.practice.practice.segment = PracticeSegment(
+        "record_0", None, ready=True, terminal=True
+    )
     app.window.left_container = Mock()
     app.window.preview.frame = Mock()
     app.window.result_panel = Mock()
@@ -186,6 +189,7 @@ def dispatch_analysis(app, token, student_id):
 # ===========================================================================
 # 1. FeedbackResultPanel 控件与 Style A 布局测试
 # ===========================================================================
+
 
 def test_result_panel_instantiation_and_style_a_structure():
     """验证 FeedbackResultPanel 能在真实 Tk 环境中无报错实例化并构建核心子部件。"""
@@ -213,11 +217,68 @@ def test_result_panel_instantiation_and_style_a_structure():
         # 验证能设置记录并不抛出异常
         record = make_dummy_record()
         panel.set_record(record)
+        assert set(panel.overview.count_labels) == {
+            "candidate",
+            "not_observed",
+            "unable",
+        }
+        assert panel.overview.revoked_var.get() == ""
+        assert "pending_rule" not in panel.check_list.filter_buttons
+
+        # 教师撤销后按需显示撤销说明
+        record["result"]["checks"][0]["review"] = "revoked"
+        panel.set_record(record)
+        assert "教师已撤销 1 项" in panel.overview.revoked_var.get()
 
         # 验证清空无异常
         panel.clear()
+        assert panel.overview.revoked_var.get() == ""
     finally:
         root.destroy()
+
+
+def test_history_view_handles_legacy_pending_rule_without_keyerror(tmp_path):
+    """存量历史记录含旧版 pending_rule 或（试用）后缀时，历史弹窗辅助函数自动归入 unable 且不抛 KeyError。"""
+    from apps.tk.views.practice_history import check_detail_text, check_state_text
+    from core.evaluation import STATE_LABELS
+
+    legacy_check = {
+        "id": "rear_low_kick:motion:rear:hip_turn",
+        "name": "未充分翻胯（试用）",
+        "standard": "充分翻胯转髋",
+        "source": "低鞭腿标准",
+        "status": "pending_rule",
+        "review": "pending",
+        "reason": "",
+        "blockedReason": "旧门禁拦截原因",
+    }
+    record = {"result": {"reviewHistory": []}}
+    assert check_state_text(legacy_check) == STATE_LABELS["unable"]
+    detail = check_detail_text(record, legacy_check)
+    assert "未充分翻胯\n" in detail
+    assert "（试用）" not in detail
+    assert "旧门禁拦截原因" in detail
+
+    # 缺少 reviewHistory / name 时不抛 KeyError 且安全降级
+    no_history_detail = check_detail_text({"result": {}}, {"status": "unable"})
+    assert "未命名检查项\n" in no_history_detail
+
+    win_root = tk.Tk()
+    win_root.withdraw()
+    try:
+        from apps.tk.views.practice_history import EvidenceWindow
+
+        win = EvidenceWindow(
+            win_root,
+            record={"result": {"evidence": []}},
+            check={"name": "抬手过慢（试用）", "evidence": []},
+            directory=tmp_path,
+        )
+        assert "抬手过慢" in win.window.title()
+        assert "（试用）" not in win.window.title()
+        win.window.destroy()
+    finally:
+        win_root.destroy()
 
 
 def test_result_panel_clear_resets_content():
@@ -245,6 +306,7 @@ def test_result_panel_clear_resets_content():
 # 2. View Switching: 录制预览 / 分析结果 平滑切换测试
 # ===========================================================================
 
+
 def test_view_switching_hides_preview_and_shows_result(root):
     """验证从录制预览切到分析结果视图时：left_container与_preview_right隐藏，result_panel跨列显示。"""
     app = make_test_app(root)
@@ -257,7 +319,9 @@ def test_view_switching_hides_preview_and_shows_result(root):
     app.window.preview.frame.grid_remove.assert_called_once()
 
     # 验证 feedback_result_panel 被 grid 到 (row=0, col=0, columnspan=2, sticky='nsew')
-    app.window.result_panel.grid.assert_called_once_with(row=0, column=0, columnspan=2, sticky="nsew")
+    app.window.result_panel.grid.assert_called_once_with(
+        row=0, column=0, columnspan=2, sticky="nsew"
+    )
     app.window.result_panel.set_record.assert_called_once_with(record)
 
 
@@ -278,6 +342,7 @@ def test_view_switching_restores_preview(root, monkeypatch):
 # ===========================================================================
 # 3. 摄像头预览连续性测试
 # ===========================================================================
+
 
 def test_camera_tick_continues_when_preview_hidden(monkeypatch):
     """验证当 preview 控件所在的 Frame 被 grid_remove 隐藏时，_tick() 持续运行绝不抛出 TclError。"""
@@ -314,6 +379,7 @@ def test_camera_tick_continues_when_preview_hidden(monkeypatch):
 # ===========================================================================
 # 4. 任务代次并发安全防御测试 (Generation Token Guard)
 # ===========================================================================
+
 
 def test_generation_token_drops_stale_callback_on_cancel(root, monkeypatch):
     """验证取消分析后，迟到的 worker 回调被代次拦截器丢弃，不刷新结果页。"""
@@ -383,6 +449,7 @@ def test_window_closing_drops_all_callbacks(root, monkeypatch):
 # 5. “再练一次” (Practice Again) 确定性非自启测试
 # ===========================================================================
 
+
 def test_practice_again_does_not_autostart_recording(root, monkeypatch):
     """验证点击“再练一次”时：安全切回录制预览，重置状态，但严格禁止自动开启摄像头录制。"""
     app = make_test_app(root)
@@ -413,7 +480,11 @@ def test_practice_again_does_not_autostart_recording(root, monkeypatch):
 
 
 def _buttons_with_text(widget, text):
-    found = [widget] if isinstance(widget, tk.Button) and text in str(widget.cget("text")) else []
+    found = (
+        [widget]
+        if isinstance(widget, tk.Button) and text in str(widget.cget("text"))
+        else []
+    )
     for child in widget.winfo_children():
         found.extend(_buttons_with_text(child, text))
     return found
@@ -427,7 +498,7 @@ def test_assembled_result_page_returns_to_preview_without_resetting_segment(root
     session.segment.front = "front.mp4"
     session.segment.side = "side.mp4"
     session.phase = "showing_result"
-    app.window.result_panel.set_record = Mock()   # 只验证导航，不渲染记录
+    app.window.result_panel.set_record = Mock()  # 只验证导航，不渲染记录
     app.practice.show_result_view({"id": "rec1"})
 
     buttons = _buttons_with_text(app.window.result_panel, "返回录制预览")
@@ -435,14 +506,21 @@ def test_assembled_result_page_returns_to_preview_without_resetting_segment(root
     buttons[0].invoke()
 
     assert not app.window.result_panel.grid_info()
-    assert app.window.left_container.grid_info() and app.window.preview.frame.grid_info()
-    assert session.segment.ready and session.segment.front == "front.mp4" and session.segment.side == "side.mp4"
+    assert (
+        app.window.left_container.grid_info() and app.window.preview.frame.grid_info()
+    )
+    assert (
+        session.segment.ready
+        and session.segment.front == "front.mp4"
+        and session.segment.side == "side.mp4"
+    )
     assert session.can_judge
 
 
 # ===========================================================================
 # 6. Result Panel 交互功能自动化测试
 # ===========================================================================
+
 
 def test_result_panel_phase_filtering():
     """验证阶段导航栏切换能够正确过滤左侧检查项列表。"""
