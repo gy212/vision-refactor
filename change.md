@@ -1,24 +1,15 @@
 ## 2026-11-20: [feat] 实施学生练习检查项全局统一开关（核心、报告与 Tk 桌面端）
 
-- 问题：学生练习检查项此前默认全开且无全局开关，无法关闭不想检查的项目；同时 `PrefKey` 哈希依赖 `default`/`parse`/`dump`/`fallback` 字段，且练习视频、序列、桌面入口缺少共用的前置筛选与全关校验。
+- 问题：学生练习检查项此前默认全开且无全局开关，无法关闭不想检查的项目；同时 `PrefKey` 哈希依赖 `default`/`parse`/`dump`/`fallback` 字段，偏好写入失败静默掩盖保存错误，练习视频、序列、桌面入口缺少共用的前置筛选、全关校验及锁定态/退出时的弹窗收口保护。
 - 修改：
-  1. **L0 偏好存储**（`core/foundation/prefs.py`、`core/foundation/__init__.py`）：`PrefKey` 的 `default`、`parse`、`dump`、`fallback` 设为 `field(..., compare=False)` 使哈希与相等性仅依赖 `name`；新增 `PRACTICE_DISABLED_CHECKS`（`practice_disabled_checks`）与 `_parse_disabled_checks`，导出 `load_practice_disabled_checks` 与 `save_practice_disabled_checks` 全局保序去重存储（不按动作区分、不设 `scope_ids`）。
+  1. **L0 偏好存储**（`core/foundation/prefs.py`、`core/foundation/__init__.py`）：`PrefKey` 的 `default`、`parse`、`dump`、`fallback` 设为 `field(..., compare=False)` 使哈希与相等性仅依赖 `name`；`PreferenceStore.update/set` 新增 `strict: bool = False`（默认维持尽力而为语义不变）；新增 `PRACTICE_DISABLED_CHECKS`（`practice_disabled_checks`）与 `_parse_disabled_checks`，导出 `load_practice_disabled_checks` 与 `save_practice_disabled_checks`（`strict=True`，写盘失败抛出 `OSError`）全局保序去重存储（不按动作区分、不设 `scope_ids`）。
   2. **L3 全量目录与评估源头过滤**（`core/evaluation/rules/sanda_v5.py`、`core/evaluation/__init__.py`、`core/evaluation/practice.py`）：新增并导出 `catalog_checks(stance=DEFAULT_STANCE)` 收集并排序全系统 99 个唯一检查项；新增并导出共用 `select_practice_checks()`，在 `evaluate_series()` 最开头及 `analyze_practice()` 视频校验与推理前拦截当前动作全关（抛 `ValueError("当前动作至少需要保留 1 个开启的检查项")`），自动忽略其他动作段及过期旧 ID；保留完整 `synchronized_windows()` / `shared_action_record()` / `_repetitions()`，过滤 `RuleProfile` 并按需跳过 `paired_torso_measurements()`，仅存在跳过项时写入 `disabledCheckIds` 与 `totalCatalogChecks`（默认全开不写新键）。
   3. **L4 报告只读说明**（`core/reporting/saved_results.py`、`core/reporting/practice_model.py`、`core/reporting/text.py`）：抽取共用 `skipped_checks_note()`，严格只读记录自带的 `disabledCheckIds` 与 `totalCatalogChecks`，在 `build_report_model()` 副标题与 `format_report()` 摘要下方追加跳过与启用比例说明（默认全开零新增文字）。
-  4. **Tk 桌面控制器、设置弹窗与入口护栏**（新建 `apps/tk/controllers/practice_checks.py`、`apps/tk/views/practice_checks_dialog.py`；修改 `apps/tk/views/__init__.py`、`apps/tk/controllers/practice_analysis.py`、`apps/tk/views/practice_controls.py`、`apps/tk/controllers/practice.py`、`apps/tk/dispatcher.py`、`apps/tk/shutdown.py`）：提供 9 组 99 项全局统一设置弹窗（含 `_set_vars` 批量切换与保存时动作 0 开启项非阻断提示）、按钮计数联动与录制锁定；主线程 `PracticeAnalysis.analyzer()` 快照透传并支持 `action` 校验；`PracticeController.start()`、`PracticeControls.import_video()` 与 `reanalyze()` 前置复用 `select_practice_checks` 拦截动作全关；`dispatcher.py`/`shutdown.py` 补全无 `tkinter` 环境 `TclError` 导入回退。
-  5. **单测与文档**（`tests/test_foundation_prefs.py`、新建 `tests/test_practice_check_toggles.py`、新建 `tests/test_tk_practice_checks.py`、`docs/plan.md`）：覆盖 `PrefKey` 哈希与偏好往返、99 项目录、跨动作复用、`select_practice_checks` 与双入口拦截、`phaseWindows` 保留、历史报告锁定以及 Tk 控制器/弹窗/入口护栏，并同步更新 `docs/plan.md`。
-- 验证（WSL `./.venv/wsl/bin/python`）：
-  - `ruff format --check`（19 个修改/新增 `.py` 文件）：`19 files already formatted`；`ruff check`（上述 19 个 `.py` 文件）：`All checks passed!`；`git -c core.whitespace=cr-at-eol diff --check`：0 报错；
-  - `pytest tests/test_architecture.py -q`：`18 passed`；
-  - `pytest tests/test_pose33_v3_golden.py tests/test_valid_mask_migration.py tests/test_tech_eval_contract.py tests/test_rule_availability.py -q`：`45 passed`；
-  - `pytest tests/test_foundation_prefs.py tests/test_practice_check_toggles.py tests/test_tk_practice_checks.py tests/test_feedback_report.py tests/test_feedback_html_export.py tests/test_report_html_golden.py tests/test_evidence_budget.py -q`：`86 passed, 3 skipped`（其中 `test_tk_practice_checks.py` 为 `6 passed, 3 skipped`，3 个真实 Tk GUI 用例在 WSL 按 `pytest.importorskip("tkinter")` 跳过）；
-  - `pytest tests/test_action_feedback.py -k "not real_tk" -q`：`49 passed, 3 deselected`（直接运行 `test_action_feedback.py` 时，3 个 `test_real_tk_*` 用例因 WSL 缺 `tkinter` 报 `ModuleNotFoundError: No module named 'tkinter'`）。
-
-## 2026-11-20 学生练习检查项开关方案审阅
-
-- 问题：核对 `docs/plan.md` 中按动作保存设置和练习入口至少开启一项的约定。
-- 审阅结果：建议补齐偏好键的可哈希表示及视频、序列两个入口共用的全关校验，再开始实施。详见 `outputs/review-plan/20261120/review.md`。
-- 验证：用临时偏好文件复现字典默认值导致保存失败。用合成关键点模拟检查项全部滤空，复现序列入口返回“已检查项目未发现明显问题”。
+  4. **Tk 桌面控制器、设置弹窗与入口护栏**（新建 `apps/tk/controllers/practice_checks.py`、`apps/tk/views/practice_checks_dialog.py`；修改 `apps/tk/views/__init__.py`、`apps/tk/controllers/practice_analysis.py`、`apps/tk/views/practice_controls.py`、`apps/tk/controllers/practice.py`、`apps/tk/dispatcher.py`、`apps/tk/shutdown.py`）：提供 9 组 99 项全局统一设置弹窗（含 `_set_vars` 批量切换、保存时动作 0 开启项非阻断提示，以及写盘 `OSError` 弹错保窗保留勾选）；`PracticeControls` 实现按钮计数联动、`_close_checks_dialog()`/`close_dialogs()`、`set_recording()` 锁定态自动关窗、`open_checks_dialog()` 禁点守卫、`_analyzer()` 同步 `set_status` 与 `show_result`；主线程 `PracticeAnalysis.analyzer()` 快照透传并支持 `action` 校验；`PracticeController.start()`、`start_practice_analysis()`（含 `ready_to_judge` 失败回退与 `showwarning`）、`exit()`（收口关闭双弹窗）及 `PracticeControls.import_video()`/`reanalyze()` 前置复用 `select_practice_checks` 拦截动作全关；`dispatcher.py`/`shutdown.py` 补全无 `tkinter` 环境 `TclError` 导入回退。
+  5. **单测**（`tests/test_foundation_prefs.py`、新建 `tests/test_practice_check_toggles.py`、新建 `tests/test_tk_practice_checks.py`）：覆盖 `PrefKey` 哈希、偏好往返与写盘 `OSError` 抛出、99 项目录、跨动作复用、`select_practice_checks` 与双入口拦截、`phaseWindows` 保留、历史报告锁定，以及 Tk 控制器、弹窗、锁定关窗、`ready_to_judge` 拦截和 `exit()` 收口测试。
+- 验证：
+  - WSL `./.venv/wsl/bin/python`：`ruff format --check`（19 个修改/新增 `.py` 文件：`19 files already formatted`）、`ruff check`（上述 19 个 `.py` 文件：`All checks passed!`）、`git -c core.whitespace=cr-at-eol diff --check origin/main`（0 报错）；`pytest tests/test_architecture.py tests/test_pose33_v3_golden.py tests/test_valid_mask_migration.py tests/test_tech_eval_contract.py tests/test_rule_availability.py tests/test_foundation_prefs.py tests/test_practice_check_toggles.py tests/test_feedback_report.py tests/test_feedback_html_export.py tests/test_report_html_golden.py tests/test_evidence_budget.py -q`（`144 passed`）。
+  - Windows `.venv/Scripts/python.exe`：`pytest tests/test_tk_practice_checks.py tests/test_action_feedback.py tests/test_feedback_result_panel.py -v`（`82 passed`，`0 failed, 0 skipped`；含 `test_tk_practice_checks.py` 11 项、`test_action_feedback.py` 52 项、`test_feedback_result_panel.py` 19 项真实 Tk 用例全部通过）。
 
 ## 2026-11-18: [fix] 修复 PR #67 审查指出的摆拳预摆阶段、肘点校验与旧记录横幅等问题
 

@@ -76,10 +76,12 @@ class PreferenceStore:
     def get(self, key: PrefKey[T]) -> T:
         return key.read(self.raw())
 
-    def set(self, key: PrefKey[T], value: T) -> None:
-        self.update({key: value})
+    def set(self, key: PrefKey[T], value: T, *, strict: bool = False) -> None:
+        self.update({key: value}, strict=strict)
 
-    def update(self, values: Mapping[PrefKey[Any], Any]) -> None:
+    def update(
+        self, values: Mapping[PrefKey[Any], Any], *, strict: bool = False
+    ) -> None:
         """一次读改写写入多个键，其余键（含未知键）保留。"""
         with self._lock:
             data = self.raw()
@@ -88,7 +90,8 @@ class PreferenceStore:
             try:
                 atomic_write_json(self.path(), data)
             except OSError:
-                pass
+                if strict:
+                    raise
 
 
 # --------------------------------------------------------------------------- #
@@ -269,8 +272,8 @@ def load_practice_disabled_checks(
 def save_practice_disabled_checks(
     disabled_ids: Iterable[str], *, store: PreferenceStore | None = None
 ) -> tuple[str, ...]:
-    """持久化学生练习全局关闭的检查项 ID（仅保留非空字符串并保序去重）。"""
+    """持久化学生练习全局关闭的检查项 ID（仅保留非空字符串并保序去重，写盘失败抛 OSError）。"""
     normalized = _normalize_check_ids(disabled_ids)
     target = PreferenceStore() if store is None else store
-    target.set(PRACTICE_DISABLED_CHECKS, normalized)
+    target.set(PRACTICE_DISABLED_CHECKS, normalized, strict=True)
     return normalized

@@ -306,14 +306,70 @@ def test_practice_controls_checks_button_single_instance_lock_and_close():
         assert reopened is not None and reopened.is_open()
         controls.set_recording(True)
         assert str(controls.checks_button.cget("state")) == "disabled"
+        assert not reopened.is_open()
+        assert controls.checks_dialog is None
+        controls.open_checks_dialog()
+        assert controls.checks_dialog is None
+
         controls.set_recording(False)
         assert str(controls.checks_button.cget("state")) == "normal"
+        controls.open_checks_dialog()
+        busy_dialog = controls.checks_dialog
+        assert busy_dialog is not None and busy_dialog.is_open()
+        controls.analysis.busy = True
+        controls.set_recording(False)
+        assert str(controls.checks_button.cget("state")) == "disabled"
+        assert not busy_dialog.is_open()
+        assert controls.checks_dialog is None
+        controls.open_checks_dialog()
+        assert controls.checks_dialog is None
+        controls.analysis.busy = False
+        controls.set_recording(False)
 
+        controls.open_checks_dialog()
+        final_dialog = controls.checks_dialog
+        assert final_dialog is not None and final_dialog.is_open()
         controls.close()
-        assert not reopened.is_open()
+        assert not final_dialog.is_open()
         assert controls.checks_dialog is None
     finally:
         controls.close()
+        root.destroy()
+
+
+def test_checks_dialog_save_oserror_keeps_dialog_open_and_preserves_state(monkeypatch):
+    root = _make_tk_root()
+    import apps.tk.views.practice_checks_dialog as dialog_mod
+    from apps.tk.views import PracticeChecksDialog
+
+    errors: list[tuple[str, str, object]] = []
+    monkeypatch.setattr(
+        dialog_mod.messagebox,
+        "showerror",
+        lambda title, msg, **kw: errors.append((title, msg, kw.get("parent"))),
+    )
+    monkeypatch.setattr(
+        dialog_mod,
+        "validate_and_save_checks",
+        lambda *_a, **_kw: (_ for _ in ()).throw(OSError("磁盘只读")),
+    )
+    saved_events: list[bool] = []
+    dialog = PracticeChecksDialog(
+        root, stance="left", on_saved=lambda: saved_events.append(True)
+    )
+    try:
+        cid = dialog.groups[0].items[0]["id"]
+        dialog.vars[cid].set(False)
+        assert dialog.save() is False
+        assert len(errors) == 1
+        assert errors[0][0] == "检查项设置"
+        assert "保存设置失败，请检查偏好文件读写权限：磁盘只读" == errors[0][1]
+        assert errors[0][2] is dialog._win
+        assert dialog.is_open()
+        assert dialog.vars[cid].get() is False
+        assert saved_events == []
+    finally:
+        dialog.close()
         root.destroy()
 
 
@@ -429,4 +485,127 @@ def test_practice_controls_import_reanalyze_and_start_preflight_block_zero_check
         assert warnings == [("学生练习", "当前动作至少需要保留 1 个开启的检查项")]
     finally:
         controls.close()
+        root.destroy()
+
+
+def test_practice_controller_judge_blocks_zero_checks_and_exit_closes_dialogs(
+    monkeypatch, tmp_path
+):
+    root = _make_tk_root()
+    from tkinter import StringVar
+    from types import SimpleNamespace
+
+    import apps.tk.controllers.practice as practice_mod
+    from apps.tk.controllers.practice import PracticeController
+    from apps.tk.views.practice_block import PracticeBlock
+    from core.live import LiveControls
+    from core.reporting import practice_report_renderers
+    from core.services import HistoryStore
+    from core.workflows import (
+        ModeManager,
+        PracticeSegment,
+        PreflightContext,
+        ScorebookRegistry,
+        WorkflowHost,
+    )
+
+    stance_ids = tuple(
+        item["id"]
+        for group in build_check_groups("left")
+        if group.key in {"stance:start", "stance:end"}
+        for item in group.items
+    )
+
+    block = PracticeBlock(root, root=root, post=lambda cb: cb())
+    block.controls.analysis.store = HistoryStore(
+        tmp_path / "history", renderers=practice_report_renderers()
+    )
+    warnings: list[tuple[str, str, object]] = []
+    monkeypatch.setattr(
+        practice_mod.messagebox,
+        "showwarning",
+        lambda title, msg, **kw: warnings.append((title, msg, kw.get("parent"))),
+    )
+    window = SimpleNamespace(
+        practice=block,
+        status=SimpleNamespace(status_var=StringVar(root, value="")),
+        result_panel=SimpleNamespace(clear=lambda: None, set_record=lambda _r: None),
+        show_practice=lambda _on: None,
+        show_preview_page=lambda: None,
+        capture=SimpleNamespace(
+            start_btn=SimpleNamespace(configure=lambda **_k: None),
+            stop_btn=SimpleNamespace(configure=lambda **_k: None),
+        ),
+        root=root,
+    )
+    controller = PracticeController(
+        window,
+        session=SimpleNamespace(
+            active=lambda: False,
+            start=lambda: None,
+            stop=lambda: None,
+            set_running_controls=lambda _b: None,
+        ),
+        cameras=SimpleNamespace(
+            dual_selection_problem=lambda: None,
+            sync_warmup=lambda: None,
+        ),
+        recording=SimpleNamespace(
+            state="idle",
+            finish=lambda **_k: None,
+            preflight_context=lambda *,
+            practice=False,
+            identity_error=None,
+            cameras_error=None: PreflightContext(
+                identity_error=identity_error,
+                cameras_error=cameras_error,
+            ),
+        ),
+        modes=ModeManager(),
+        workflows=WorkflowHost(ScorebookRegistry()),
+        controls=LiveControls(),
+        flags=SimpleNamespace(exam_locked=False, recording_ready=False, closing=False),
+        exam=lambda: None,
+        announcer_factory=lambda: SimpleNamespace(
+            announce=lambda _t: None, close=lambda: None
+        ),
+    )
+    try:
+        controller.enter()
+        block.controls.student_id.set("001")
+        block.controls.action.set(ACTIONS["stance"])
+        front = tmp_path / "front.mp4"
+        front.write_bytes(b"mock")
+        assert controller.practice is not None
+        controller.practice.identity = block.controls.identity()
+        controller.practice.segment = PracticeSegment(
+            segment_id="seg-1",
+            directory=tmp_path,
+            front=front,
+            ready=True,
+            terminal=True,
+        )
+        controller.practice.phase = "ready_to_judge"
+
+        save_practice_disabled_checks(stance_ids)
+        controller.judge()
+        assert warnings == [("动作评判", "当前动作至少需要保留 1 个开启的检查项", root)]
+        assert block.status_var.get() == "当前动作至少需要保留 1 个开启的检查项"
+        assert controller.practice.phase == "ready_to_judge"
+        assert controller.practice.active_token is None
+
+        block.controls.open_checks_dialog()
+        block.controls.open_history()
+        checks_dlg = block.controls.checks_dialog
+        history_win = block.controls.history_window
+        assert checks_dlg is not None and checks_dlg.is_open()
+        assert history_win is not None and history_win.exists()
+
+        controller.exit()
+        assert not checks_dlg.is_open()
+        assert block.controls.checks_dialog is None
+        assert not history_win.exists()
+        assert block.controls.history_window is None
+    finally:
+        block.controls.close()
         root.destroy()

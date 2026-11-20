@@ -173,12 +173,19 @@ class PracticeChecksDialog:
         self._set_vars(self._all_ids, True)
 
     def save(self) -> bool:
-        """校验并保存当前勾选结果；全部关闭时弹窗提示并保持窗口打开。"""
+        """校验并保存当前勾选结果；全部关闭或写盘失败时弹窗提示并保持窗口打开。"""
         enabled_ids = [cid for cid in self._all_ids if self.vars[cid].get()]
         try:
             saved = validate_and_save_checks(self._all_ids, enabled_ids)
         except ValueError as exc:
             messagebox.showwarning("检查项设置", str(exc), parent=self._win)
+            return False
+        except OSError as exc:
+            messagebox.showerror(
+                "检查项设置",
+                f"保存设置失败，请检查偏好文件读写权限：{exc}",
+                parent=self._win,
+            )
             return False
         zero_actions = zero_enabled_actions(saved)
         if zero_actions:

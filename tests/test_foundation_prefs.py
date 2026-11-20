@@ -264,3 +264,15 @@ def test_practice_disabled_checks_top_level_exports_are_isolated():
 
     after = real.read_bytes() if real.exists() else None
     assert after == before
+
+
+def test_save_practice_disabled_checks_raises_on_unwritable_path(tmp_path):
+    store = PreferenceStore(lambda: tmp_path)  # 目标是目录，写不进去
+
+    store.set(CAMERA_SELECTION, (1, None))
+    assert store.get(CAMERA_SELECTION) == (None, None)
+
+    with pytest.raises(OSError):
+        store.update({CAMERA_SELECTION: (1, None)}, strict=True)
+    with pytest.raises(OSError):
+        save_practice_disabled_checks(["stance:start:front:stance_elbow"], store=store)

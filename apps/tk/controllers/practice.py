@@ -12,6 +12,7 @@ from collections.abc import Callable
 from tkinter import messagebox
 from typing import Any
 
+from core.evaluation import DEFAULT_STANCE
 from core.foundation import EXAM_ROI, PreferenceStore
 from core.live import LiveControls
 from core.workflows import (
@@ -115,6 +116,7 @@ class PracticeController:
         if practice.busy:
             messagebox.showinfo("学生练习", "动作评判进行中，请稍候再退出。")
             return
+        self.analysis_controls.close_dialogs()
         self.workflows.dispatch("exit")  # 若仍在录制则先结束片段，再停会话
         self._close_announcer()
         if self.session.active():
@@ -276,6 +278,16 @@ class PracticeController:
         )
 
     def start_practice_analysis(self, request: dict) -> bool:
+        identity = request["identity"]
+        try:
+            validate_action_checks(
+                identity["action"], identity.get("stance", DEFAULT_STANCE)
+            )
+        except ValueError as exc:
+            self.status(str(exc))
+            self.block.set_result_text(str(exc))
+            messagebox.showwarning("动作评判", str(exc), parent=self.window.root)
+            return False
         token, student_id = request["token"], request["student_id"]
 
         def on_saved(record: dict) -> None:

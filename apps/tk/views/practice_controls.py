@@ -163,6 +163,8 @@ class PracticeControls:
         for widget, normal in self.fields:
             widget.configure(state="disabled" if locked else normal)
         self.checks_button.configure(state="disabled" if locked else "normal")
+        if locked:
+            self._close_checks_dialog()
         self.import_button.configure(state="disabled" if locked else "normal")
         self.history_button.configure(state="disabled" if locked else "normal")
         self.export_button.configure(
@@ -231,6 +233,7 @@ class PracticeControls:
                 self.analysis_model.get(), action=action, stance=stance
             )
         except (ValueError, OSError) as exc:
+            self.set_status(str(exc))
             self.show_result(str(exc))
             return None
 
@@ -263,11 +266,19 @@ class PracticeControls:
             except Exception:
                 pass
 
-    def close(self) -> None:
-        self.analysis.close()
+    def _close_checks_dialog(self) -> None:
         if self.checks_dialog is not None and self.checks_dialog.is_open():
             self.checks_dialog.close()
         self.checks_dialog = None
+
+    def close_dialogs(self) -> None:
+        """关闭已打开的检查项设置弹窗与个人历史窗口。"""
+        self._close_checks_dialog()
+        self._close_history()
+
+    def close(self) -> None:
+        self.analysis.close()
+        self.close_dialogs()
 
     # ------------------------------------------------------------------ 检查项设置、导入、导出与历史
     def _current_stance(self) -> str:
@@ -279,6 +290,8 @@ class PracticeControls:
         self.checks_button.configure(text=checks_button_text())
 
     def open_checks_dialog(self) -> None:
+        if self.busy or str(self.checks_button.cget("state")) == "disabled":
+            return
         if self.checks_dialog is not None and self.checks_dialog.is_open():
             self.checks_dialog.focus()
             return
