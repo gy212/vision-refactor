@@ -4,6 +4,7 @@
 练习流程本身在 ``core.workflows.PracticeSession``，经 ``WorkflowHost`` 驱动；本控制器同时是练习流程的界面端口
 （``WorkflowUi``）与分析端口（``AnalysisControl``）。晚到或作废的分析结果由练习流程按任务代次与学号拦截。
 """
+
 from __future__ import annotations
 
 import time
@@ -13,9 +14,18 @@ from typing import Any
 
 from core.foundation import EXAM_ROI, PreferenceStore
 from core.live import LiveControls
-from core.workflows import PRACTICE, Announcer, CommandExecutor, ModeManager, PracticeSession, WorkflowHost, WorkflowPorts
+from core.workflows import (
+    PRACTICE,
+    Announcer,
+    CommandExecutor,
+    ModeManager,
+    PracticeSession,
+    WorkflowHost,
+    WorkflowPorts,
+)
 
 from apps.tk.controllers.flags import LiveFlags
+from apps.tk.controllers.practice_checks import validate_action_checks
 from apps.tk.controllers.session import OccupancyPort
 from apps.tk.views.practice_block import READY_TEXT
 
@@ -31,9 +41,20 @@ PRACTICE_STATUS = "学生练习模式"
 class PracticeController:
     """``window`` 是主窗口（练习块、结果页、状态区）；``session``、``cameras``、``recording`` 是其余控制器。"""
 
-    def __init__(self, window: Any, *, session: Any, cameras: Any, recording: Any, modes: ModeManager,
-                 workflows: WorkflowHost, controls: LiveControls, flags: LiveFlags,
-                 exam: Callable[[], Any], announcer_factory: Callable[[], Any] = Announcer) -> None:
+    def __init__(
+        self,
+        window: Any,
+        *,
+        session: Any,
+        cameras: Any,
+        recording: Any,
+        modes: ModeManager,
+        workflows: WorkflowHost,
+        controls: LiveControls,
+        flags: LiveFlags,
+        exam: Callable[[], Any],
+        announcer_factory: Callable[[], Any] = Announcer,
+    ) -> None:
         self.window = window
         self.block = window.practice
         self.session = session
@@ -69,8 +90,13 @@ class PracticeController:
         self.modes.enter(PRACTICE)
         self.practice = PracticeSession(self.analysis_controls.identity)
         self.announcer = self._announcer_factory()
-        ports = WorkflowPorts(recorder=self.recording, occupancy=OccupancyPort(self.controls, "practice"),
-                              announcer=self.announcer, ui=self, analysis=self)
+        ports = WorkflowPorts(
+            recorder=self.recording,
+            occupancy=OccupancyPort(self.controls, "practice"),
+            announcer=self.announcer,
+            ui=self,
+            analysis=self,
+        )
         self.workflows.activate(self.practice, CommandExecutor(ports))
         self.window.result_panel.clear()
         self.show_preview_view()
@@ -89,7 +115,7 @@ class PracticeController:
         if practice.busy:
             messagebox.showinfo("学生练习", "动作评判进行中，请稍候再退出。")
             return
-        self.workflows.dispatch("exit")   # 若仍在录制则先结束片段，再停会话
+        self.workflows.dispatch("exit")  # 若仍在录制则先结束片段，再停会话
         self._close_announcer()
         if self.session.active():
             self.session.stop()
@@ -132,8 +158,11 @@ class PracticeController:
 
     def can_analyze(self) -> bool:
         practice = self.practice
-        return (practice is not None and not (practice.busy or practice.waiting)
-                and self.recording.state not in {"recording", "paused"})
+        return (
+            practice is not None
+            and not (practice.busy or practice.waiting)
+            and self.recording.state not in {"recording", "paused"}
+        )
 
     def start(self) -> None:
         """「开始」：预检通过后开启双摄（未开时），进入站位区域站稳后由练习流程开录。"""
@@ -141,21 +170,33 @@ class PracticeController:
         if practice is None or practice.busy or practice.waiting or practice.recording:
             return
         try:
-            self.analysis_controls.identity()
+            identity = self.analysis_controls.identity()
+            validate_action_checks(identity["action"], identity["stance"])
             identity_error = None
         except ValueError as exc:
             identity_error = str(exc)
-        problems = PRACTICE.requirements.preflight(self.recording.preflight_context(
-            practice=True, identity_error=identity_error, cameras_error=self.cameras.dual_selection_problem()))
+        problems = PRACTICE.requirements.preflight(
+            self.recording.preflight_context(
+                practice=True,
+                identity_error=identity_error,
+                cameras_error=self.cameras.dual_selection_problem(),
+            )
+        )
         if problems:
             messagebox.showwarning("学生练习", problems[0])
             return
         self.controls.set_roi(PreferenceStore().get(EXAM_ROI))
         if self.session.active():
-            self.dispatch("start", now=time.monotonic(), session_ready=bool(self.flags.recording_ready))
+            self.dispatch(
+                "start",
+                now=time.monotonic(),
+                session_ready=bool(self.flags.recording_ready),
+            )
             return
         # 会话冻结 1080p 请求；池发现预热格式不一致时会在旧进程释放后重开
-        self.dispatch("start", now=time.monotonic(), session_ready=False, launching=True)
+        self.dispatch(
+            "start", now=time.monotonic(), session_ready=False, launching=True
+        )
         try:
             self.session.start()
         except Exception as exc:
@@ -196,8 +237,13 @@ class PracticeController:
         """分析保存后的 Tk 线程回调：交给练习流程按任务代次与当前学号拦截晚到或作废的结果。"""
         if self.flags.closing:
             return
-        self.dispatch("analysis_saved", token=token, student_id=student_id, record=record,
-                      current_student_id=self.analysis_controls.student_id.get())
+        self.dispatch(
+            "analysis_saved",
+            token=token,
+            student_id=student_id,
+            record=record,
+            current_student_id=self.analysis_controls.student_id.get(),
+        )
 
     # ------------------------------------------------------------------ WorkflowUi / AnalysisControl
     def status(self, text: str) -> None:
@@ -222,8 +268,12 @@ class PracticeController:
             return
         judging, active = practice.busy, practice.recording or practice.waiting
         self.analysis_controls.set_recording(active)
-        self.block.set_buttons(start=not (judging or active), end=active and not judging,
-                               judge=practice.can_judge, exit=not judging)
+        self.block.set_buttons(
+            start=not (judging or active),
+            end=active and not judging,
+            judge=practice.can_judge,
+            exit=not judging,
+        )
 
     def start_practice_analysis(self, request: dict) -> bool:
         token, student_id = request["token"], request["student_id"]
@@ -233,8 +283,12 @@ class PracticeController:
             self.analysis_saved(token=token, student_id=student_id, record=record)
 
         return self.analysis_controls.analyze_recording(
-            request["identity"], request["front"], request["side"],
-            record_id=request["record_id"], on_saved=on_saved, token=token,
+            request["identity"],
+            request["front"],
+            request["side"],
+            record_id=request["record_id"],
+            on_saved=on_saved,
+            token=token,
         )
 
     # ------------------------------------------------------------------ 结果页
@@ -253,10 +307,14 @@ class PracticeController:
     def view_history(self) -> None:
         self.analysis_controls.open_history()
 
-    def review(self, record_id: str, check_id: str, decision: str, teacher: str, reason: str) -> None:
+    def review(
+        self, record_id: str, check_id: str, decision: str, teacher: str, reason: str
+    ) -> None:
         """教师在结果页切换复核状态并即时刷新结果页。"""
         try:
-            updated = self.analysis_controls.history().review(record_id, check_id, decision, teacher, reason)
+            updated = self.analysis_controls.history().review(
+                record_id, check_id, decision, teacher, reason
+            )
             if self.practice is not None:
                 self.practice.current_record = updated
             self.window.result_panel.set_record(updated)

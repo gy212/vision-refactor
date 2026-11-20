@@ -1,3 +1,25 @@
+## 2026-11-20: [feat] 实施学生练习检查项全局统一开关（核心、报告与 Tk 桌面端）
+
+- 问题：学生练习检查项此前默认全开且无全局开关，无法关闭不想检查的项目；同时 `PrefKey` 哈希依赖 `default`/`parse`/`dump`/`fallback` 字段，且练习视频、序列、桌面入口缺少共用的前置筛选与全关校验。
+- 修改：
+  1. **L0 偏好存储**（`core/foundation/prefs.py`、`core/foundation/__init__.py`）：`PrefKey` 的 `default`、`parse`、`dump`、`fallback` 设为 `field(..., compare=False)` 使哈希与相等性仅依赖 `name`；新增 `PRACTICE_DISABLED_CHECKS`（`practice_disabled_checks`）与 `_parse_disabled_checks`，导出 `load_practice_disabled_checks` 与 `save_practice_disabled_checks` 全局保序去重存储（不按动作区分、不设 `scope_ids`）。
+  2. **L3 全量目录与评估源头过滤**（`core/evaluation/rules/sanda_v5.py`、`core/evaluation/__init__.py`、`core/evaluation/practice.py`）：新增并导出 `catalog_checks(stance=DEFAULT_STANCE)` 收集并排序全系统 99 个唯一检查项；新增并导出共用 `select_practice_checks()`，在 `evaluate_series()` 最开头及 `analyze_practice()` 视频校验与推理前拦截当前动作全关（抛 `ValueError("当前动作至少需要保留 1 个开启的检查项")`），自动忽略其他动作段及过期旧 ID；保留完整 `synchronized_windows()` / `shared_action_record()` / `_repetitions()`，过滤 `RuleProfile` 并按需跳过 `paired_torso_measurements()`，仅存在跳过项时写入 `disabledCheckIds` 与 `totalCatalogChecks`（默认全开不写新键）。
+  3. **L4 报告只读说明**（`core/reporting/saved_results.py`、`core/reporting/practice_model.py`、`core/reporting/text.py`）：抽取共用 `skipped_checks_note()`，严格只读记录自带的 `disabledCheckIds` 与 `totalCatalogChecks`，在 `build_report_model()` 副标题与 `format_report()` 摘要下方追加跳过与启用比例说明（默认全开零新增文字）。
+  4. **Tk 桌面控制器、设置弹窗与入口护栏**（新建 `apps/tk/controllers/practice_checks.py`、`apps/tk/views/practice_checks_dialog.py`；修改 `apps/tk/views/__init__.py`、`apps/tk/controllers/practice_analysis.py`、`apps/tk/views/practice_controls.py`、`apps/tk/controllers/practice.py`、`apps/tk/dispatcher.py`、`apps/tk/shutdown.py`）：提供 9 组 99 项全局统一设置弹窗（含 `_set_vars` 批量切换与保存时动作 0 开启项非阻断提示）、按钮计数联动与录制锁定；主线程 `PracticeAnalysis.analyzer()` 快照透传并支持 `action` 校验；`PracticeController.start()`、`PracticeControls.import_video()` 与 `reanalyze()` 前置复用 `select_practice_checks` 拦截动作全关；`dispatcher.py`/`shutdown.py` 补全无 `tkinter` 环境 `TclError` 导入回退。
+  5. **单测与文档**（`tests/test_foundation_prefs.py`、新建 `tests/test_practice_check_toggles.py`、新建 `tests/test_tk_practice_checks.py`、`docs/plan.md`）：覆盖 `PrefKey` 哈希与偏好往返、99 项目录、跨动作复用、`select_practice_checks` 与双入口拦截、`phaseWindows` 保留、历史报告锁定以及 Tk 控制器/弹窗/入口护栏，并同步更新 `docs/plan.md`。
+- 验证（WSL `./.venv/wsl/bin/python`）：
+  - `ruff format --check`（19 个修改/新增 `.py` 文件）：`19 files already formatted`；`ruff check`（上述 19 个 `.py` 文件）：`All checks passed!`；`git -c core.whitespace=cr-at-eol diff --check`：0 报错；
+  - `pytest tests/test_architecture.py -q`：`18 passed`；
+  - `pytest tests/test_pose33_v3_golden.py tests/test_valid_mask_migration.py tests/test_tech_eval_contract.py tests/test_rule_availability.py -q`：`45 passed`；
+  - `pytest tests/test_foundation_prefs.py tests/test_practice_check_toggles.py tests/test_tk_practice_checks.py tests/test_feedback_report.py tests/test_feedback_html_export.py tests/test_report_html_golden.py tests/test_evidence_budget.py -q`：`86 passed, 3 skipped`（其中 `test_tk_practice_checks.py` 为 `6 passed, 3 skipped`，3 个真实 Tk GUI 用例在 WSL 按 `pytest.importorskip("tkinter")` 跳过）；
+  - `pytest tests/test_action_feedback.py -k "not real_tk" -q`：`49 passed, 3 deselected`（直接运行 `test_action_feedback.py` 时，3 个 `test_real_tk_*` 用例因 WSL 缺 `tkinter` 报 `ModuleNotFoundError: No module named 'tkinter'`）。
+
+## 2026-11-20 学生练习检查项开关方案审阅
+
+- 问题：核对 `docs/plan.md` 中按动作保存设置和练习入口至少开启一项的约定。
+- 审阅结果：建议补齐偏好键的可哈希表示及视频、序列两个入口共用的全关校验，再开始实施。详见 `outputs/review-plan/20261120/review.md`。
+- 验证：用临时偏好文件复现字典默认值导致保存失败。用合成关键点模拟检查项全部滤空，复现序列入口返回“已检查项目未发现明显问题”。
+
 ## 2026-11-18: [fix] 修复 PR #67 审查指出的摆拳预摆阶段、肘点校验与旧记录横幅等问题
 
 - 问题：PR #67 审查（`gy212` 3 条 P1 与 CodeRabbit 意见）指出：1) `rear_hook` 及 `hook_combo` 的 `guard_back`（`role="rear"`）错放在 `motion`/`finish`，且 `event_phases` 未给摆拳生成 `prepare`/`recovered` 窗口；2) 摆拳 `shoulder_level` 仅检查肩腕两点，缺失肘关键点仍判通过；3) 旧历史 `pending_rule` 记录（`needsRerecord=False`）全转 `unable` 后横幅硬编码 `needs_rerecord=True` 并提示重录与遮挡；4) `kick_measures._measure_baseline_relative_rule` 缺少 `stance:start` 守卫、`engine.py` 多段 `absence` 存在帧不足次时可能误判 `pass`、`text.py`/`timeline.py`/`practice_history.py`/`self_check.py` 存在缺省字段与 0 项时间轴绿勾等边界问题。

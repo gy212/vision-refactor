@@ -4,6 +4,7 @@
 分析任务的代次由本控制器的 ``Epoch`` 持有：改学号、点取消都推进代次，之前发起、带工作流 token 的分析结果
 回来时只恢复控件，不展示也不回调。结果经 dispatcher 回到 Tk 线程。
 """
+
 from __future__ import annotations
 
 import threading
@@ -12,16 +13,23 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from core.evaluation import analyze_practice as analyze_feedback
-from core.reporting import format_report
-from core.evaluation import load_feedback_config
-from core.foundation import Epoch, TaskGroup
-from core.reporting import practice_report_renderers
+from core.evaluation import (
+    DEFAULT_STANCE,
+    analyze_practice as analyze_feedback,
+    load_feedback_config,
+    select_practice_checks,
+)
+from core.reporting import format_report, practice_report_renderers
+from core.foundation import Epoch, TaskGroup, load_practice_disabled_checks
 from core.services import HistoryStore
 
 Post = Callable[[Callable[[], Any]], Any]
 
-MODEL_CHOICES = {"Full（精细分析）": "full", "Lite（快速对比）": "lite", "Heavy（较慢）": "heavy"}
+MODEL_CHOICES = {
+    "Full（精细分析）": "full",
+    "Lite（快速对比）": "lite",
+    "Heavy（较慢）": "heavy",
+}
 DEFAULT_MODEL = "Full（精细分析）"
 ANALYZING_TEXT = "正在用MediaPipe CPU提取关键点并检查规则，完成后保存到个人历史…"
 
@@ -36,7 +44,9 @@ def analysis_error_text(exc: Exception) -> str:
 
 
 def saved_status(record: dict) -> str:
-    return "问题说明已保存" + ("；部分证据不足，请重新录制" if record["result"]["needsRerecord"] else "")
+    return "问题说明已保存" + (
+        "；部分证据不足，请重新录制" if record["result"]["needsRerecord"] else ""
+    )
 
 
 class PracticeAnalysis:
@@ -73,13 +83,36 @@ class PracticeAnalysis:
             self.store = HistoryStore(renderers=practice_report_renderers())
         return self.store
 
-    def analyzer(self, model_label: str) -> Callable[..., Any]:
-        """在 Tk 线程按所选模型读一次配置，后台任务与本次选择绑定；配置损坏时抛 ``ValueError``/``OSError``。"""
-        config = replace(load_feedback_config(), pose_variant=MODEL_CHOICES[model_label])
-        return lambda *args, **kwargs: analyze_feedback(*args, config=config, **kwargs)
+    def analyzer(
+        self,
+        model_label: str,
+        *,
+        action: str | None = None,
+        stance: str = DEFAULT_STANCE,
+    ) -> Callable[..., Any]:
+        """在 Tk 线程按所选模型读一次配置与检查项开关，后台任务与本次选择绑定；配置损坏或动作全关时抛 ``ValueError``/``OSError``。"""
+        config = replace(
+            load_feedback_config(), pose_variant=MODEL_CHOICES[model_label]
+        )
+        disabled = load_practice_disabled_checks()
+        if action is not None:
+            select_practice_checks(
+                action,
+                stance,
+                pose_variant=config.pose_variant,
+                disabled_checks=disabled,
+            )
+        return lambda *args, **kwargs: analyze_feedback(
+            *args, config=config, disabled_checks=disabled, **kwargs
+        )
 
-    def start(self, work: Callable[[], dict], *, on_saved: Callable[[dict], None] | None = None,
-              token: Any = None) -> bool:
+    def start(
+        self,
+        work: Callable[[], dict],
+        *,
+        on_saved: Callable[[dict], None] | None = None,
+        token: Any = None,
+    ) -> bool:
         """启动后台分析；已有任务时返回 False。"""
         if self.busy:
             return False
@@ -94,21 +127,40 @@ class PracticeAnalysis:
                 outcome = (work(), None)
             except Exception as exc:
                 outcome = (None, analysis_error_text(exc))
-            self._post(lambda: self._finish(*outcome, stale=token is not None and not self.epoch.is_current(stamp),
-                                            on_saved=on_saved))
+            self._post(
+                lambda: self._finish(
+                    *outcome,
+                    stale=token is not None and not self.epoch.is_current(stamp),
+                    on_saved=on_saved,
+                )
+            )
 
         self._tasks.spawn("student-action-feedback", run, owner="practice")
         return True
 
-    def analyze(self, identity: dict, front: Path | None, side: Path | None, *, analyzer: Callable[..., Any],
-                record_id: str | None = None, on_saved: Callable[[dict], None] | None = None,
-                token: Any = None) -> bool:
+    def analyze(
+        self,
+        identity: dict,
+        front: Path | None,
+        side: Path | None,
+        *,
+        analyzer: Callable[..., Any],
+        record_id: str | None = None,
+        on_saved: Callable[[dict], None] | None = None,
+        token: Any = None,
+    ) -> bool:
         """分析新录像并保存，或对已有记录补充分析（``record_id``）。"""
         stopped = self.stop_event.is_set
-        if record_id:
-            work = lambda: self.history().reanalyze(record_id, stopped=stopped, analyzer=analyzer)  # noqa: E731
-        else:
-            work = lambda: self.history().add(identity, front, side, stopped=stopped, analyzer=analyzer)  # noqa: E731
+
+        def work() -> dict:
+            if record_id:
+                return self.history().reanalyze(
+                    record_id, stopped=stopped, analyzer=analyzer
+                )
+            return self.history().add(
+                identity, front, side, stopped=stopped, analyzer=analyzer
+            )
+
         return self.start(work, on_saved=on_saved, token=token)
 
     def invalidate(self) -> None:
@@ -126,8 +178,14 @@ class PracticeAnalysis:
         self.epoch.advance()
         self.stop_event.set()
 
-    def _finish(self, record: dict | None, error: str | None, *, stale: bool,
-                on_saved: Callable[[dict], None] | None) -> None:
+    def _finish(
+        self,
+        record: dict | None,
+        error: str | None,
+        *,
+        stale: bool,
+        on_saved: Callable[[dict], None] | None,
+    ) -> None:
         """Tk 线程：应用分析结果；面板已关、代次过期或已取消时只恢复控件。"""
         if self.closed:
             return

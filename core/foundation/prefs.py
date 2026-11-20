@@ -6,11 +6,12 @@
 - 写入尽力而为：文件不可写时静默放弃，与原先三套实现一致。
 - 偏好文件路径只由 ``_prefs_path()`` 提供，每次读写都现取；``tests/conftest.py`` 把它钉到临时文件。
 """
+
 from __future__ import annotations
 
 import json
 import threading
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Generic, TypeVar
@@ -34,10 +35,12 @@ class PrefKey(Generic[T]):
     """一个顶层键：``parse`` 把 JSON 值转成 T（非法值返回 ``default``），``dump`` 把 T 转回 JSON 值。"""
 
     name: str
-    default: T
-    parse: Callable[[Any], T]
-    dump: Callable[[T], Any] = field(default=_identity)
-    fallback: "PrefKey[T] | None" = None  # 本键缺失或为默认值时改读的旧格式键
+    default: T = field(compare=False)
+    parse: Callable[[Any], T] = field(compare=False)
+    dump: Callable[[T], Any] = field(default=_identity, compare=False)
+    fallback: "PrefKey[T] | None" = field(
+        default=None, compare=False
+    )  # 本键缺失或为默认值时改读的旧格式键
 
     def read(self, raw: Mapping[str, Any]) -> T:
         value = self.default
@@ -102,11 +105,18 @@ def _camera_index(value: Any) -> int | None:
 def _parse_camera_selection(raw: Any) -> tuple[int | None, int | None]:
     if not isinstance(raw, dict):
         return None, None
-    return _camera_index(raw.get("primary_index")), _camera_index(raw.get("secondary_index"))
+    return _camera_index(raw.get("primary_index")), _camera_index(
+        raw.get("secondary_index")
+    )
 
 
-def _dump_camera_selection(value: tuple[int | None, int | None]) -> dict[str, int | None]:
-    return {"primary_index": _camera_index(value[0]), "secondary_index": _camera_index(value[1])}
+def _dump_camera_selection(
+    value: tuple[int | None, int | None],
+) -> dict[str, int | None]:
+    return {
+        "primary_index": _camera_index(value[0]),
+        "secondary_index": _camera_index(value[1]),
+    }
 
 
 def _parse_text(raw: Any) -> str:
@@ -143,29 +153,58 @@ def _float_key(name: str, default: float) -> PrefKey[float]:
     return PrefKey(name, default, float)
 
 
+def _normalize_check_ids(items: Iterable[Any]) -> tuple[str, ...]:
+    """提取非空字符串并按首次出现顺序去重。"""
+    cleaned = (item.strip() for item in items if isinstance(item, str))
+    return tuple(dict.fromkeys(item for item in cleaned if item))
+
+
+def _parse_disabled_checks(raw: Any) -> tuple[str, ...]:
+    if not isinstance(raw, list):
+        return ()
+    return _normalize_check_ids(raw)
+
+
 CAMERA_SELECTION: PrefKey[tuple[int | None, int | None]] = PrefKey(
     "camera_selection", (None, None), _parse_camera_selection, _dump_camera_selection
 )
 RECORD_DIR: PrefKey[str] = PrefKey("record_dir", "", lambda raw: str(raw or ""), str)
 
 # 一条龙/考试的正、侧模板池；旧的单值键只读不写，作为列表键缺失时的回退。
-FRONT_TEMPLATE_LEGACY: PrefKey[tuple[Path, ...]] = PrefKey("auto_compare_front_template", (), _parse_single_path)
-SIDE_TEMPLATE_LEGACY: PrefKey[tuple[Path, ...]] = PrefKey("auto_compare_side_template", (), _parse_single_path)
+FRONT_TEMPLATE_LEGACY: PrefKey[tuple[Path, ...]] = PrefKey(
+    "auto_compare_front_template", (), _parse_single_path
+)
+SIDE_TEMPLATE_LEGACY: PrefKey[tuple[Path, ...]] = PrefKey(
+    "auto_compare_side_template", (), _parse_single_path
+)
 FRONT_TEMPLATES: PrefKey[tuple[Path, ...]] = PrefKey(
-    "auto_compare_front_templates", (), _parse_path_list, _dump_path_list, FRONT_TEMPLATE_LEGACY
+    "auto_compare_front_templates",
+    (),
+    _parse_path_list,
+    _dump_path_list,
+    FRONT_TEMPLATE_LEGACY,
 )
 SIDE_TEMPLATES: PrefKey[tuple[Path, ...]] = PrefKey(
-    "auto_compare_side_templates", (), _parse_path_list, _dump_path_list, SIDE_TEMPLATE_LEGACY
+    "auto_compare_side_templates",
+    (),
+    _parse_path_list,
+    _dump_path_list,
+    SIDE_TEMPLATE_LEGACY,
 )
 
 EXAM_ROSTER_PATH: PrefKey[str] = PrefKey("exam_roster_path", "", _parse_text, str)
-EXAM_ROI: PrefKey[tuple[float, float, float, float]] = PrefKey("exam_roi_norm", DEFAULT_EXAM_ROI, _parse_roi, list)
+EXAM_ROI: PrefKey[tuple[float, float, float, float]] = PrefKey(
+    "exam_roi_norm", DEFAULT_EXAM_ROI, _parse_roi, list
+)
 EXAM_ROI_ROTATE: PrefKey[int] = PrefKey("exam_roi_rotate", 0, int)
 EXAM_POST_CALL_GUARD_S = _float_key("exam_post_call_guard_s", 1.5)
 EXAM_INTER_STUDENT_GAP_S = _float_key("exam_inter_student_gap_s", 2.0)
 EXAM_ENTER_STABLE_S = _float_key("exam_enter_stable_s", 0.8)
 EXAM_EMPTY_HOLD_S = _float_key("exam_empty_hold_s", 2.0)
 EXAM_MIN_RECORD_S = _float_key("exam_min_record_s", 3.0)
+PRACTICE_DISABLED_CHECKS: PrefKey[tuple[str, ...]] = PrefKey(
+    "practice_disabled_checks", (), _parse_disabled_checks, list
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -178,7 +217,9 @@ def load_camera_selection() -> tuple[int | None, int | None]:
     return PreferenceStore().get(CAMERA_SELECTION)
 
 
-def save_camera_selection(primary_index: int | None, secondary_index: int | None) -> None:
+def save_camera_selection(
+    primary_index: int | None, secondary_index: int | None
+) -> None:
     """持久化主/次摄像头索引并保留其他用户偏好。"""
     PreferenceStore().set(CAMERA_SELECTION, (primary_index, secondary_index))
 
@@ -215,3 +256,21 @@ def save_template_pools(
         values[SIDE_TEMPLATES] = tuple(side)
     if values:
         PreferenceStore().update(values)
+
+
+def load_practice_disabled_checks(
+    store: PreferenceStore | None = None,
+) -> tuple[str, ...]:
+    """读取学生练习全局关闭的检查项 ID；默认空元组表示全部开启。"""
+    target = PreferenceStore() if store is None else store
+    return target.get(PRACTICE_DISABLED_CHECKS)
+
+
+def save_practice_disabled_checks(
+    disabled_ids: Iterable[str], *, store: PreferenceStore | None = None
+) -> tuple[str, ...]:
+    """持久化学生练习全局关闭的检查项 ID（仅保留非空字符串并保序去重）。"""
+    normalized = _normalize_check_ids(disabled_ids)
+    target = PreferenceStore() if store is None else store
+    target.set(PRACTICE_DISABLED_CHECKS, normalized)
+    return normalized

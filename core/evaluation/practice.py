@@ -7,10 +7,10 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict
+from collections.abc import Callable, Collection
+from dataclasses import asdict, replace
 import time
 from pathlib import Path
-from typing import Callable
 
 from core.evaluation.paired_torso import paired_torso_measurements
 from core.evaluation.action_record import shared_action_record
@@ -305,16 +305,50 @@ def _phase_ranges(views: dict, windows: dict) -> dict:
     }
 
 
+def select_practice_checks(
+    action: str,
+    stance: str,
+    *,
+    pose_variant: str = "full",
+    disabled_checks: Collection[str] = (),
+) -> tuple[list[dict], list[str], int]:
+    """按全局关闭 ID 过滤当前动作的检查项，并阻止当前动作全部检查项被关闭。"""
+    all_checks = build_checks(action, stance, pose_variant=pose_variant)
+    disabled_set = {
+        s.strip() for s in (disabled_checks or ()) if isinstance(s, str) and s.strip()
+    }
+    skipped_ids = [c["id"] for c in all_checks if c["id"] in disabled_set]
+    enabled_checks = [c for c in all_checks if c["id"] not in disabled_set]
+    if not enabled_checks:
+        raise ValueError("当前动作至少需要保留 1 个开启的检查项")
+    return enabled_checks, skipped_ids, len(all_checks)
+
+
 def evaluate_series(
-    action: str, stance: str, views: dict, cfg: FeedbackConfig | None = None
+    action: str,
+    stance: str,
+    views: dict,
+    cfg: FeedbackConfig | None = None,
+    *,
+    disabled_checks: Collection[str] = (),
 ) -> dict:
     """``views``（``{"front"/"side": extract_series 的结果}``）上的练习结果字典（``schemaVersion=1``）。"""
     cfg = cfg or FeedbackConfig()
-    checks = build_checks(action, stance, pose_variant=cfg.pose_variant)
+    checks, skipped_ids, total_catalog_checks = select_practice_checks(
+        action,
+        stance,
+        pose_variant=cfg.pose_variant,
+        disabled_checks=disabled_checks,
+    )
     windows, diagnostics, alignment, phase_sources = synchronized_windows(
         views, action, stance, cfg
     )
-    profile = rule_profile(action, stance, cfg)
+    base_profile = rule_profile(action, stance, cfg)
+    enabled_ids = {c["id"] for c in checks}
+    profile = replace(
+        base_profile,
+        rules=tuple(spec for spec in base_profile.rules if spec.code in enabled_ids),
+    )
     paired = (
         paired_torso_measurements(views)
         if any(len(s.required_views) > 1 for s in profile.rules)
@@ -343,20 +377,7 @@ def evaluate_series(
         _evaluate_check(
             c, views, windows, diagnostics, alignment, outcomes_by_view, cfg, evidence
         )
-    unable = any(c["status"] == "unable" for c in checks)
-    issues = any(c["status"] == "candidate" for c in checks)
-    summary = (
-        "规则检查发现待教师确认的问题"
-        if issues
-        else "证据不足，请重新录制"
-        if unable
-        else "已检查项目未发现明显问题，不代表全部项目合格"
-    )
-    repetitions = _repetitions(action, diagnostics)
-    if repetitions is not None and repetitions["detected"] != repetitions["expected"]:
-        summary += f"；检测到 {repetitions['detected']} 次动作，应做 {repetitions['expected']} 次"
-    if repetitions is not None and repetitions.get("incompleteRecovery"):
-        summary += "；存在打出后保持的动作，尚未观察到收回"
+    unable, summary, repetitions = _summarize_practice(action, checks, diagnostics)
     result = {
         "schemaVersion": 1,
         "ruleVersion": RULE_VERSION,
@@ -387,7 +408,31 @@ def evaluate_series(
     }
     if repetitions is not None:
         result["repetitions"] = repetitions
+    if skipped_ids:
+        result["disabledCheckIds"] = skipped_ids
+        result["totalCatalogChecks"] = total_catalog_checks
     return result
+
+
+def _summarize_practice(
+    action: str, checks: list[dict], diagnostics: dict
+) -> tuple[bool, str, dict | None]:
+    """根据检查结果与重复次数生成练习总评状态、摘要与次数记录。"""
+    unable = any(c["status"] == "unable" for c in checks)
+    issues = any(c["status"] == "candidate" for c in checks)
+    summary = (
+        "规则检查发现待教师确认的问题"
+        if issues
+        else "证据不足，请重新录制"
+        if unable
+        else "已检查项目未发现明显问题，不代表全部项目合格"
+    )
+    repetitions = _repetitions(action, diagnostics)
+    if repetitions is not None and repetitions["detected"] != repetitions["expected"]:
+        summary += f"；检测到 {repetitions['detected']} 次动作，应做 {repetitions['expected']} 次"
+    if repetitions is not None and repetitions.get("incompleteRecovery"):
+        summary += "；存在打出后保持的动作，尚未观察到收回"
+    return unable, summary, repetitions
 
 
 def _repetitions(action: str, diagnostics: dict) -> dict | None:
@@ -417,10 +462,16 @@ def analyze_practice(
     stopped=lambda: False,
     config=None,
     pipeline_factory=None,
+    disabled_checks: Collection[str] = (),
 ) -> dict:
     """正、侧两路练习视频（可缺一路）→ 练习结果字典；``config=None`` 时读 ``feedback_config.json``。"""
-    build_checks(action, stance)
     cfg = config or load_feedback_config()
+    select_practice_checks(
+        action,
+        stance,
+        pose_variant=cfg.pose_variant,
+        disabled_checks=disabled_checks,
+    )
     if front is not None and side is not None and Path(front).samefile(Path(side)):
         raise ValueError("正侧面不能使用同一个视频，请选择同次录制的两路视频")
     views = {}
@@ -431,4 +482,4 @@ def analyze_practice(
             views[view] = extract_series(Path(path), cfg, stopped, pipeline_factory)
     if stopped():
         raise InterruptedError("分析已取消")
-    return evaluate_series(action, stance, views, cfg)
+    return evaluate_series(action, stance, views, cfg, disabled_checks=disabled_checks)

@@ -11,7 +11,11 @@ from datetime import datetime, timezone
 from typing import Any
 
 from core.evaluation.rules.sanda_v5 import ACTION_SEGMENTS, ACTIONS, PHASES, STANCES
-from core.reporting.saved_results import MISSING_CHECKS_NOTE, saved_checks
+from core.reporting.saved_results import (
+    MISSING_CHECKS_NOTE,
+    saved_checks,
+    skipped_checks_note,
+)
 from core.reporting.text import format_fusion
 
 STATUS_LABELS = {
@@ -605,6 +609,9 @@ def build_report_model(record: dict) -> NormalizedReportModel:
         headline.subtitle += f" 检测到 {repetitions['detected']} 次动作，应做 {repetitions['expected']} 次。"
     if repetitions.get("incompleteRecovery"):
         headline.subtitle += " 存在打出后保持的动作，尚未观察到收回。"
+    skipped_note = skipped_checks_note(result, len(all_checks))
+    if skipped_note:
+        headline.subtitle += f" {skipped_note}"
 
     evidence_catalog: dict[str, dict] = {}
     for ev in result.get("evidence", []):

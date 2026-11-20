@@ -3,6 +3,7 @@
 
 分析任务与历史存储在 ``PracticeAnalysis``；本视图负责输入校验、弹框与按钮状态，历史窗口见 ``practice_history``。
 """
+
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -10,32 +11,61 @@ from pathlib import Path
 from tkinter import StringVar, filedialog, messagebox, ttk
 from typing import Any
 
-from core.evaluation import ACTIONS, STANCES
+from core.evaluation import ACTIONS, DEFAULT_STANCE, STANCES
 from core.services import HistoryStore, validate_identity
 
-from apps.tk.controllers.practice_analysis import DEFAULT_MODEL, MODEL_CHOICES, PracticeAnalysis
+from apps.tk.controllers.practice_analysis import (
+    DEFAULT_MODEL,
+    MODEL_CHOICES,
+    PracticeAnalysis,
+)
+from apps.tk.controllers.practice_checks import (
+    checks_button_text,
+    validate_action_checks,
+)
+from apps.tk.views.practice_checks_dialog import PracticeChecksDialog
 from apps.tk.views.practice_history import HistoryWindow
 
 _VIDEO_TYPES = [("视频", "*.mp4 *.avi *.mkv *.mov *.wmv *.m4v")]
 
 
 class PracticeControls:
-    def __init__(self, parent: Any, *, root: Any, post: Callable[[Callable[[], Any]], Any],
-                 set_busy: Callable[[bool], None], show_result: Callable[[str], None],
-                 set_status: Callable[[str], None], can_analyze: Callable[[], bool],
-                 on_identity_changed: Callable[[], None] | None = None,
-                 on_cancelled: Callable[[], None] | None = None) -> None:
+    def __init__(
+        self,
+        parent: Any,
+        *,
+        root: Any,
+        post: Callable[[Callable[[], Any]], Any],
+        set_busy: Callable[[bool], None],
+        show_result: Callable[[str], None],
+        set_status: Callable[[str], None],
+        can_analyze: Callable[[], bool],
+        on_identity_changed: Callable[[], None] | None = None,
+        on_cancelled: Callable[[], None] | None = None,
+    ) -> None:
         self.root = root
-        self.set_busy, self.show_result, self.set_status = set_busy, show_result, set_status
+        self.set_busy, self.show_result, self.set_status = (
+            set_busy,
+            show_result,
+            set_status,
+        )
         self.can_analyze = can_analyze
         self.on_identity_changed = on_identity_changed
         self.on_cancelled = on_cancelled
-        self.analysis = PracticeAnalysis(post, on_busy=set_busy, on_result=show_result, on_status=set_status,
-                                         on_finished=self._on_finished)
+        self.analysis = PracticeAnalysis(
+            post,
+            on_busy=set_busy,
+            on_result=show_result,
+            on_status=set_status,
+            on_finished=self._on_finished,
+        )
         self.history_window: HistoryWindow | None = None
+        self.checks_dialog: PracticeChecksDialog | None = None
         self.student_id = StringVar(root, value="")
         self.student_name = StringVar(root, value="")
-        self.action = StringVar(root, value=ACTIONS["step_straight_combo"])  # 第二批样本标定的动作（D-24）
+        self.action = StringVar(
+            root, value=ACTIONS["step_straight_combo"]
+        )  # 第二批样本标定的动作（D-24）
         self.stance = StringVar(root, value=STANCES["left"])
         self.analysis_model = StringVar(root, value=DEFAULT_MODEL)
         self.fields: list[tuple[Any, str]] = []
@@ -45,20 +75,38 @@ class PracticeControls:
     def _build(self, parent: Any) -> None:
         frame = ttk.Frame(parent)
         frame.pack(fill="x", pady=(6, 0))
-        for label, variable, values in (("学号", self.student_id, None), ("姓名（选填）", self.student_name, None),
-                                         ("动作", self.action, list(ACTIONS.values())), ("实战式", self.stance, list(STANCES.values())),
-                                         ("分析模型", self.analysis_model, list(MODEL_CHOICES))):
+        for label, variable, values in (
+            ("学号", self.student_id, None),
+            ("姓名（选填）", self.student_name, None),
+            ("动作", self.action, list(ACTIONS.values())),
+            ("实战式", self.stance, list(STANCES.values())),
+            ("分析模型", self.analysis_model, list(MODEL_CHOICES)),
+        ):
             row = ttk.Frame(frame)
             row.pack(fill="x", pady=2)
             ttk.Label(row, text=label, width=12).pack(side="left")
-            widget = ttk.Combobox(row, textvariable=variable, values=values, state="readonly") if values else ttk.Entry(row, textvariable=variable)
+            widget = (
+                ttk.Combobox(
+                    row, textvariable=variable, values=values, state="readonly"
+                )
+                if values
+                else ttk.Entry(row, textvariable=variable)
+            )
             widget.pack(side="left", fill="x", expand=True)
             self.fields.append((widget, "readonly" if values else "normal"))
+        self.checks_button = ttk.Button(
+            frame, text=checks_button_text(), command=self.open_checks_dialog
+        )
+        self.checks_button.pack(fill="x", pady=(4, 0))
         row = ttk.Frame(frame)
         row.pack(fill="x", pady=5)
-        self.history_button = ttk.Button(row, text="个人历史", command=self.open_history)
+        self.history_button = ttk.Button(
+            row, text="个人历史", command=self.open_history
+        )
         self.history_button.pack(side="left")
-        self.import_button = ttk.Button(row, text="导入旧视频", command=self.import_video)
+        self.import_button = ttk.Button(
+            row, text="导入旧视频", command=self.import_video
+        )
         self.import_button.pack(side="left", padx=4)
         self.export_button = ttk.Button(
             row,
@@ -67,9 +115,15 @@ class PracticeControls:
             state="disabled",
         )
         self.export_button.pack(side="left")
-        self.cancel_button = ttk.Button(frame, text="取消分析", command=self.cancel, state="disabled")
+        self.cancel_button = ttk.Button(
+            frame, text="取消分析", command=self.cancel, state="disabled"
+        )
         self.cancel_button.pack(fill="x")
-        ttk.Label(frame, text="按学号保存14天；规则检出问题可在历史中由教师复核。", wraplength=310).pack(anchor="w", pady=4)
+        ttk.Label(
+            frame,
+            text="按学号保存14天；规则检出问题可在历史中由教师复核。",
+            wraplength=310,
+        ).pack(anchor="w", pady=4)
 
     # ------------------------------------------------------------------ 状态
     @property
@@ -86,7 +140,9 @@ class PracticeControls:
     def identity(self) -> dict:
         action = next((k for k, v in ACTIONS.items() if v == self.action.get()), "")
         stance = next((k for k, v in STANCES.items() if v == self.stance.get()), "")
-        return validate_identity(self.student_id.get(), self.student_name.get(), action, stance)
+        return validate_identity(
+            self.student_id.get(), self.student_name.get(), action, stance
+        )
 
     def identity_changed(self, *_args: object) -> None:
         self.analysis.invalidate()
@@ -106,36 +162,83 @@ class PracticeControls:
         locked = recording or self.busy
         for widget, normal in self.fields:
             widget.configure(state="disabled" if locked else normal)
+        self.checks_button.configure(state="disabled" if locked else "normal")
         self.import_button.configure(state="disabled" if locked else "normal")
         self.history_button.configure(state="disabled" if locked else "normal")
-        self.export_button.configure(state="normal" if self.current and not self.busy else "disabled")
+        self.export_button.configure(
+            state="normal" if self.current and not self.busy else "disabled"
+        )
 
     # ------------------------------------------------------------------ 分析
-    def analyze_recording(self, identity: dict, front: Path | None, side: Path | None, *, record_id: str | None = None,
-                          on_saved: Callable[[dict], None] | None = None, token: Any = None) -> bool:
+    def analyze_recording(
+        self,
+        identity: dict,
+        front: Path | None,
+        side: Path | None,
+        *,
+        record_id: str | None = None,
+        on_saved: Callable[[dict], None] | None = None,
+        token: Any = None,
+    ) -> bool:
         """发起后台分析；配置错误或当前不可分析时返回 False，调用方据此恢复可重试状态。"""
-        analyzer = self._analyzer()
+        analyzer = self._analyzer(
+            action=identity.get("action"),
+            stance=identity.get("stance", DEFAULT_STANCE),
+        )
         if analyzer is None or not self._ready():
             return False
-        return self._begin(self.analysis.analyze(identity, front, side, analyzer=analyzer,
-                                                 record_id=record_id, on_saved=on_saved, token=token))
+        return self._begin(
+            self.analysis.analyze(
+                identity,
+                front,
+                side,
+                analyzer=analyzer,
+                record_id=record_id,
+                on_saved=on_saved,
+                token=token,
+            )
+        )
 
     def reanalyze(self, record_id: str) -> None:
-        analyzer = self._analyzer()
-        if analyzer is not None and self._ready():
-            self._begin(self.analysis.analyze({}, None, None, analyzer=analyzer, record_id=record_id))
-
-    def _analyzer(self) -> Callable[..., Any] | None:
-        """Tk 变量在主线程读取一次；配置损坏时展示原因并返回 None。"""
+        parent = (
+            self.history_window.window
+            if self.history_window is not None and self.history_window.exists()
+            else self.root
+        )
         try:
-            return self.analysis.analyzer(self.analysis_model.get())
+            record = self.history().get(record_id)
+            validate_action_checks(record["action"], record["stance"])
+        except (OSError, ValueError) as exc:
+            messagebox.showerror("补充分析", str(exc), parent=parent)
+            return
+        analyzer = self._analyzer(
+            action=record["action"],
+            stance=record["stance"],
+        )
+        if analyzer is not None and self._ready():
+            self._begin(
+                self.analysis.analyze(
+                    {}, None, None, analyzer=analyzer, record_id=record_id
+                )
+            )
+
+    def _analyzer(
+        self, *, action: str | None = None, stance: str = DEFAULT_STANCE
+    ) -> Callable[..., Any] | None:
+        """Tk 变量在主线程读取一次；配置损坏或动作全关时展示原因并返回 None。"""
+        try:
+            return self.analysis.analyzer(
+                self.analysis_model.get(), action=action, stance=stance
+            )
         except (ValueError, OSError) as exc:
             self.show_result(str(exc))
             return None
 
     def _ready(self) -> bool:
         if self.busy or not self.can_analyze():
-            messagebox.showinfo("动作问题说明", "请先结束录制并等待当前任务完成。", parent=self.root)
+            messagebox.showinfo(
+                "动作问题说明", "请先结束录制并等待当前任务完成。", parent=self.root
+            )
             return False
         return True
 
@@ -162,18 +265,50 @@ class PracticeControls:
 
     def close(self) -> None:
         self.analysis.close()
+        if self.checks_dialog is not None and self.checks_dialog.is_open():
+            self.checks_dialog.close()
+        self.checks_dialog = None
 
-    # ------------------------------------------------------------------ 导入、导出与历史
+    # ------------------------------------------------------------------ 检查项设置、导入、导出与历史
+    def _current_stance(self) -> str:
+        return next(
+            (k for k, v in STANCES.items() if v == self.stance.get()), DEFAULT_STANCE
+        )
+
+    def _refresh_checks_button(self) -> None:
+        self.checks_button.configure(text=checks_button_text())
+
+    def open_checks_dialog(self) -> None:
+        if self.checks_dialog is not None and self.checks_dialog.is_open():
+            self.checks_dialog.focus()
+            return
+        self.checks_dialog = PracticeChecksDialog(
+            self.root,
+            stance=self._current_stance(),
+            on_saved=self._refresh_checks_button,
+        )
+
     def import_video(self) -> None:
         try:
             identity = self.identity()
+            validate_action_checks(identity["action"], identity["stance"])
         except ValueError as exc:
             messagebox.showerror("导入旧视频", str(exc), parent=self.root)
             return
-        front = filedialog.askopenfilename(parent=self.root, title="选择正面原视频（没有可取消，下一步选择侧面）", filetypes=_VIDEO_TYPES)
-        side = filedialog.askopenfilename(parent=self.root, title="选择对应侧面视频（取消表示缺少侧面）", filetypes=_VIDEO_TYPES)
+        front = filedialog.askopenfilename(
+            parent=self.root,
+            title="选择正面原视频（没有可取消，下一步选择侧面）",
+            filetypes=_VIDEO_TYPES,
+        )
+        side = filedialog.askopenfilename(
+            parent=self.root,
+            title="选择对应侧面视频（取消表示缺少侧面）",
+            filetypes=_VIDEO_TYPES,
+        )
         if front or side:
-            self.analyze_recording(identity, Path(front) if front else None, Path(side) if side else None)
+            self.analyze_recording(
+                identity, Path(front) if front else None, Path(side) if side else None
+            )
 
     def export(self, record: dict | None = None) -> None:
         """工具栏、历史窗口与结果页共用 HTML 导出及历史库的安全写入。"""
