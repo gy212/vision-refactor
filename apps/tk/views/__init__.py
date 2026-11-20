@@ -2,7 +2,14 @@
 
 from apps.tk.views.compare_dialog import CompareDialog
 from apps.tk.views.exam_window import ExamWindow
+from apps.tk.views.practice_checks_dialog import PracticeChecksDialog
 from apps.tk.views.practice_controls import PracticeControls
 from apps.tk.views.settings_dialog import SettingsDialog
 
-__all__ = ["CompareDialog", "ExamWindow", "PracticeControls", "SettingsDialog"]
+__all__ = [
+    "CompareDialog",
+    "ExamWindow",
+    "PracticeChecksDialog",
+    "PracticeControls",
+    "SettingsDialog",
+]

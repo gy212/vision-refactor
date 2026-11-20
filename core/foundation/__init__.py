@@ -1,4 +1,5 @@
 """基础层（L0）的公共 API：几何与信号、原子写、偏好、路径、任务与取消、epoch、诊断、JSON 序列化、非模板 npz 读取、本机环境与耗时汇总。"""
+
 from core.foundation import diag, prefs
 from core.foundation.atomic_io import (
     atomic_target,
@@ -8,10 +9,21 @@ from core.foundation.atomic_io import (
     replace_file,
 )
 from core.foundation.epoch import Epoch
-from core.foundation.geometry import angle_deg, distance, landmark_xy, torso_length, unit
+from core.foundation.geometry import (
+    angle_deg,
+    distance,
+    landmark_xy,
+    torso_length,
+    unit,
+)
 from core.foundation.jsonable import to_jsonable
 from core.foundation.npz import load_npz, npz_meta
-from core.foundation.host import cpu_percent, desktop_dir, host_summary, system_cpu_times
+from core.foundation.host import (
+    cpu_percent,
+    desktop_dir,
+    host_summary,
+    system_cpu_times,
+)
 from core.foundation.memory import PagingCounter, memory_snapshot
 from core.foundation.power import power_status
 from core.foundation.paths import models_dir, outputs_dir, repo_root, templates_dir
@@ -26,14 +38,17 @@ from core.foundation.prefs import (
     EXAM_ROI_ROTATE,
     EXAM_ROSTER_PATH,
     FRONT_TEMPLATES,
+    PRACTICE_DISABLED_CHECKS,
     RECORD_DIR,
     SIDE_TEMPLATES,
     PreferenceStore,
     PrefKey,
     load_camera_selection,
+    load_practice_disabled_checks,
     load_record_dir,
     load_template_pools,
     save_camera_selection,
+    save_practice_disabled_checks,
     save_record_dir,
     save_template_pools,
 )
@@ -71,6 +86,7 @@ __all__ = [
     "EXAM_ROSTER_PATH",
     "Epoch",
     "FRONT_TEMPLATES",
+    "PRACTICE_DISABLED_CHECKS",
     "PrefKey",
     "PreferenceStore",
     "RECORD_DIR",
@@ -91,6 +107,7 @@ __all__ = [
     "landmark_xy",
     "load_camera_selection",
     "load_npz",
+    "load_practice_disabled_checks",
     "load_record_dir",
     "load_template_pools",
     "longest_segment",
@@ -103,6 +120,7 @@ __all__ = [
     "replace_file",
     "repo_root",
     "save_camera_selection",
+    "save_practice_disabled_checks",
     "save_record_dir",
     "save_template_pools",
     "smooth_1d",

@@ -49,6 +49,7 @@ __all__ = [
     "required_landmarks",
     "action_segments",
     "build_checks",
+    "catalog_checks",
     "check_view_weights",
     "rule_profile",
 ]
@@ -201,6 +202,34 @@ def build_checks(
         )
     )
     return checks
+
+
+def catalog_checks(stance: str = DEFAULT_STANCE) -> list[dict[str, Any]]:
+    """全系统全部唯一检查项目录：开始实战式 → 各动作段 → 结束实战式（按 id 去重，不复制规则定义）。"""
+    if not isinstance(stance, str) or stance not in STANCES:
+        raise ValueError("请选择支持的左式/右式")
+    seen: dict[str, dict[str, Any]] = {}
+    segment_order: dict[str, int] = {}
+    for action in ACTIONS:
+        for check in build_checks(action, stance):
+            cid = check["id"]
+            if cid in seen:
+                continue
+            seen[cid] = check
+            seg = check["segment"]
+            if seg != "stance" and seg not in segment_order:
+                segment_order[seg] = len(segment_order) + 1
+    end_rank = len(segment_order) + 1
+    return sorted(
+        seen.values(),
+        key=lambda c: (
+            0
+            if c["segment"] == "stance" and c["phase"] == "start"
+            else end_rank
+            if c["segment"] == "stance" and c["phase"] == "end"
+            else segment_order[c["segment"]]
+        ),
+    )
 
 
 def check_view_weights(check: dict, cfg: FeedbackConfig) -> dict[str, float]:

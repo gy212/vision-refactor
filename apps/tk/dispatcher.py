@@ -7,13 +7,22 @@
   窗口销毁（``destroy()``）后拒绝一切回调。
 - 每次排空之后依次调用 ``every_tick`` 登记的逐帧工作（渲染最新预览帧等），它们同样在 Tk 主线程运行。
 """
+
 from __future__ import annotations
 
 import threading
 import traceback
 from collections import deque
 from collections.abc import Callable
-from tkinter import TclError
+
+try:
+    from tkinter import TclError
+except ImportError:  # pragma: no cover - 无 tkinter 环境仅运行非 GUI 单测
+
+    class TclError(Exception):
+        pass
+
+
 from typing import Any
 
 from core.foundation import Epoch
@@ -51,7 +60,13 @@ class UiDispatcher:
     def destroyed(self) -> bool:
         return self._destroyed
 
-    def post(self, callback: Callable[[], Any], token: Token | None = None, *, during_close: bool = False) -> bool:
+    def post(
+        self,
+        callback: Callable[[], Any],
+        token: Token | None = None,
+        *,
+        during_close: bool = False,
+    ) -> bool:
         """任意线程可调用：把回调排进队列，下次排空时在 Tk 主线程执行。已拒收时返回 False。"""
         with self._lock:
             if self._destroyed or (self._closing and not during_close):
@@ -102,7 +117,7 @@ class UiDispatcher:
         cancel = getattr(self._root, "after_cancel", None)
         if self._after_id is not None and cancel is not None:
             try:
-                cancel(self._after_id)   # 不留下指向已销毁窗口的排空回调
+                cancel(self._after_id)  # 不留下指向已销毁窗口的排空回调
             except (TclError, RuntimeError):
                 pass
 

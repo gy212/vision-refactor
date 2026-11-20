@@ -6,7 +6,11 @@ from __future__ import annotations
 from core.evaluation.action_catalog import SEGMENT_LABELS
 from core.evaluation.rules.sanda_v5 import ACTIONS, PHASES, STANCES, STATE_LABELS
 from core.reporting.timing_diagnostics import format_timing_diagnostics
-from core.reporting.saved_results import MISSING_CHECKS_NOTE, saved_checks
+from core.reporting.saved_results import (
+    MISSING_CHECKS_NOTE,
+    saved_checks,
+    skipped_checks_note,
+)
 
 
 def format_fusion(check: dict) -> str:
@@ -151,6 +155,10 @@ def format_report(record: dict) -> str:
     ]
     if not checks:
         lines.append(MISSING_CHECKS_NOTE)
+    enabled_n = len({c["id"] for c in checks if c.get("id")})
+    skipped_note = skipped_checks_note(result, enabled_n)
+    if skipped_note:
+        lines.append(f"检查项范围：{skipped_note}")
     if result.get("fusionMethod"):
         lines += [
             "分析方式：正侧面按动作/检查项及有效帧比例加权；仅适用单视角公式的项目单独注明。",

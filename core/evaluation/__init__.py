@@ -56,6 +56,7 @@ from core.evaluation.practice import (
     create_practice_engine,
     evaluate_series,
     extract_series,
+    select_practice_checks,
 )
 from core.evaluation.rule_checks import (
     ACTION_BY_NAME,
@@ -76,6 +77,7 @@ from core.evaluation.rules.sanda_v5 import (
     STATE_LABELS,
     FeedbackConfig,
     build_checks,
+    catalog_checks,
     load_feedback_config,
     rule_profile,
 )
@@ -198,6 +200,7 @@ __all__ = [
     "avg_cost_of",
     "baseline_for",
     "build_checks",
+    "catalog_checks",
     "rule_profile",
     "rule_series",
     "judge_view",
@@ -252,6 +255,7 @@ __all__ = [
     "score_from_avg_cost",
     "score_kick_quality",
     "score_view",
+    "select_practice_checks",
     "select_representative_cycle",
     "side_label",
     "sides_for_stance",
