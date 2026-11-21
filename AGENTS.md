@@ -6,9 +6,9 @@
 
 ## 规范文档索引（以 Square 契约为准）
 
-- **常驻遵循契约**（需求分析、沟通、编码与写测时遵循）：
-  - 工程与测试核心契约：[specs/engineering_contract.md](specs/engineering_contract.md)
-  - 人机协作与沟通契约：[specs/communication_contract.md](specs/communication_contract.md)
+- **强制必读契约**（开始任何任务、需求分析、沟通、编码与写测前必须先完整阅读并严格遵循）：
+  - 工程与测试核心契约：[specs/engineering_contract.md](specs/engineering_contract.md)（**强制必读**）
+  - 人机协作与沟通契约：[specs/communication_contract.md](specs/communication_contract.md)（**强制必读**）
 - **技术栈样例包**（排查 Python / CLI / AST 静态分析边界时查阅，`square review` 会自动挂载）：
   - Python / CLI / 静态分析边界样例包：[specs/packs/python_cli.md](specs/packs/python_cli.md)
 - **按需读取契约**（仅进入对应环节时读取，日常编码与问答严禁预读；产出须通过 `square contract-check` 校验）：
