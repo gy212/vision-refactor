@@ -1,0 +1,98 @@
+{
+  "version": "1.0.0",
+  "project_name": "vision-refactor",
+  "rules": {
+    "max_module_lines": 800,
+    "warn_module_lines": 600,
+    "max_function_lines": 100,
+    "warn_test_module_lines": 800,
+    "ban_utils": true,
+    "ban_defensive_getattr": true,
+    "ban_silent_swallowing": true,
+    "ban_compression_cheating": true,
+    "ban_mechanical_slicing": true,
+    "pure_init_only": true,
+    "require_docstring_responsibility": true,
+    "enforce_private_symbols": true,
+    "enforce_test_contract": true,
+    "allowed_layers": [
+      "core.foundation",
+      "core.media",
+      "core.pose",
+      "core.evaluation",
+      "core.services",
+      "core.recording",
+      "core.live",
+      "core.reporting",
+      "core.workflows",
+      "apps"
+    ],
+    "atomic_io_allowed_paths": [],
+    "subprocess_allowed_paths": [],
+    "exclude_paths": [
+      "outputs",
+      "models",
+      "templates",
+      "assets",
+      "docs",
+      "img",
+      "vido",
+      "20261021",
+      "20261022",
+      "20261023",
+      "标准样本",
+      "学员样本",
+      "标准动作要点",
+      "标准动作视频--分解版"
+    ],
+    "baseline_path": ".harness-baseline.json",
+    "ratchet_ceiling": null
+  },
+  "gates": {
+    "fast_path_extensions": [
+      ".md",
+      ".txt",
+      ".rst",
+      ".toml",
+      ".json",
+      ".yaml",
+      ".yml"
+    ],
+    "fast_path_patterns": [
+      "docs/*",
+      "specs/*",
+      "*.md",
+      "ruff.toml"
+    ],
+    "strict_gate_extensions": [
+      ".py",
+      ".sh"
+    ],
+    "intercept_hash_checks": true,
+    "intercept_unscoped_tests": true,
+    "intercept_repeated_checks": true
+  },
+  "review": {
+    "enforce_unanchored_baseline": true,
+    "enforce_inverted_pyramid": true,
+    "active_blades": [
+      "root_cause",
+      "abstraction_granularity",
+      "evolution_thoroughness",
+      "complexity_roi",
+      "independent_verification"
+    ],
+    "strictness": "strict",
+    "enable_repo_analysis": true,
+    "llm_provider": null,
+    "llm_model": null,
+    "llm_base_url": null,
+    "llm_api_key_env": null,
+    "llm_timeout_seconds": 60,
+    "llm_max_tokens": 4096
+  },
+  "cases": {
+    "registry_path": ".harness/cases.jsonl",
+    "max_few_shot_examples": 5
+  }
+}

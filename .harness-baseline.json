@@ -1,0 +1,79 @@
+{
+  "schema_version": "1.0",
+  "entry_ceiling": 63,
+  "entries": {
+    "anti_cheat_compression.nested_ternary": {
+      "analysis/bench_annotate_metrics.py::nested_ternary@timing_metrics": 1,
+      "apps/tk/views/practice_checks_dialog.py::nested_ternary@PracticeChecksDialog._build_scroll_area": 1,
+      "core/evaluation/practice.py::nested_ternary@_fuse": 1,
+      "core/evaluation/practice.py::nested_ternary@_summarize_practice": 1,
+      "core/evaluation/rules/rule_definitions.py::nested_ternary@resolve_rule": 1,
+      "core/evaluation/rules/sanda_v5.py::nested_ternary@_append_segment_checks": 1,
+      "core/evaluation/rules/sanda_v5.py::nested_ternary@build_checks": 1,
+      "core/evaluation/rules/sanda_v5.py::nested_ternary@build_checks.<locals>.add": 1,
+      "core/evaluation/rules/sanda_v5.py::nested_ternary@catalog_checks": 1,
+      "core/evaluation/scoring/kick_quality.py::nested_ternary@_height_map_score": 1,
+      "core/evaluation/techeval/evaluate.py::nested_ternary@_with_contracts": 2,
+      "core/pose/backends/yolo/adapter.py::nested_ternary@_read_series": 1,
+      "core/reporting/evidence_selection.py::nested_ternary@_legacy_selection": 1,
+      "core/reporting/practice_model.py::nested_ternary@group_checks_by_reason": 1,
+      "core/reporting/text.py::nested_ternary@_diagnostic_lines": 1
+    },
+    "fail_fast_defensive_getattr": {
+      "core/foundation/paths.py::getattr:_MEIPASS": 1,
+      "core/media/ffmpeg.py::getattr:_MEIPASS": 1
+    },
+    "fail_fast_silent_swallowing": {
+      "analysis/bench_annotate_fps.py::silent_except": 1,
+      "analysis/calibrate_body_core.py::silent_except": 2,
+      "analysis/offline_matching_profile.py::silent_except": 1,
+      "apps/tk/controllers/cameras.py::silent_except": 2,
+      "apps/tk/controllers/exam.py::silent_except": 8,
+      "apps/tk/controllers/exam_host.py::silent_except": 3,
+      "apps/tk/controllers/session.py::silent_except": 1,
+      "apps/tk/controllers/template_pools.py::silent_except": 1,
+      "apps/tk/self_check.py::silent_except": 1,
+      "apps/tk/shutdown.py::silent_except": 1,
+      "apps/tk/views/benchmark_dialog.py::silent_except": 3,
+      "apps/tk/views/compare_dialog.py::silent_except": 1,
+      "apps/tk/views/exam_window.py::silent_except": 1,
+      "apps/tk/views/main_window.py::silent_except": 1,
+      "apps/tk/views/practice_checks_dialog.py::silent_except": 1,
+      "apps/tk/views/practice_controls.py::silent_except": 2,
+      "apps/tk/views/settings_dialog.py::silent_except": 1,
+      "core/evaluation/matching/online.py::silent_except": 1,
+      "core/foundation/diag.py::silent_except": 1,
+      "core/foundation/host.py::silent_except": 1,
+      "core/live/presence.py::silent_except": 1,
+      "core/live/runner.py::silent_except": 1,
+      "core/live/stages.py::silent_except": 2,
+      "core/media/camera/devices.py::silent_except": 3,
+      "core/media/camera/pool.py::silent_except": 1,
+      "core/media/camera/service.py::silent_except": 1,
+      "core/media/camera/slot_lifecycle.py::silent_except": 1,
+      "core/media/writer_opener.py::silent_except": 1,
+      "core/pose/parallel.py::silent_except": 1,
+      "core/recording/controller.py::silent_except": 3,
+      "core/recording/finalizer.py::silent_except": 1,
+      "core/recording/worker.py::silent_except": 2,
+      "core/reporting/evidence.py::silent_except": 1,
+      "core/services/recording_benchmark.py::silent_except": 2,
+      "core/workflows/announcer.py::silent_except": 2,
+      "core/workflows/exam/scorebook.py::silent_except": 3,
+      "core/workflows/practice/session.py::silent_except": 1,
+      "core/workflows/presence.py::silent_except": 1
+    },
+    "test_private_import": {
+      "tests/test_exam_roster.py::priv_import:core.workflows.exam.roster._display_text_from_number_format": 1,
+      "tests/test_shared_action_records.py::priv_import:batch.batch_dual_compare._write_pose33_jsonl": 1
+    },
+    "test_vacuous_assertion": {
+      "tests/test_camera_service.py::fn:test_device_name_is_not_checked_without_media_foundation": 1,
+      "tests/test_feedback_result_panel.py::fn:test_camera_tick_continues_when_preview_hidden": 1,
+      "tests/test_feedback_result_panel.py::fn:test_result_panel_clear_resets_content": 1,
+      "tests/test_foundation_diag.py::fn:test_event_never_raises": 1,
+      "tests/test_packaging_build_info.py::fn:test_changes_outside_packaged_paths_do_not_block_build": 1,
+      "tests/test_recording_benchmark.py::tautology": 1
+    }
+  }
+}
