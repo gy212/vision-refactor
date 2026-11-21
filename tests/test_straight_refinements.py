@@ -1,14 +1,21 @@
 """直拳逐项改进的站稳取帧、独立姿势判断与提醒合并契约。"""
 
 from copy import deepcopy
+from dataclasses import replace
 
 import numpy as np
 import pytest
 
+from core.evaluation.rules.guard_rules import measure_guard_back
+from core.evaluation.rules.rule_descriptions import PARAMS
 from core.evaluation.rules.sanda_v5 import FeedbackConfig
-from core.evaluation.rules.rule_definitions import standard_config
 from core.evaluation.rules.spec import RuleContext
-from core.evaluation.rules.straight_posture import measure_posture
+from core.evaluation.rules.stance_rules import measure_stance_height
+from core.evaluation.rules.straight_rules import (
+    measure_arm_torso_angle,
+    measure_extension_at_peak,
+    measure_punch_extension,
+)
 from core.evaluation.stance_windows import settled_stance_windows
 from core.reporting import (
     build_report_model,
@@ -35,9 +42,7 @@ def test_stance_uses_first_settled_period_and_prefers_visible_points() -> None:
     clearer = settled_stance_windows(series, windows, reps, FeedbackConfig())
     assert clearer[("stance", "start")][0] >= 31
     assert clearer[("stance", "start")][-1] < 45
-    np.testing.assert_array_equal(
-        windows[("stance", "start")], original[("stance", "start")]
-    )
+    np.testing.assert_array_equal(windows[("stance", "start")], original[("stance", "start")])
     assert reps == [{"start": 3.0}]
 
 
@@ -49,9 +54,7 @@ def test_stance_selection_does_not_search_for_a_correct_guard() -> None:
     # 一只手持续偏低，另一只手已抬起。仍应检查同一段站姿，不寻找手更高的时刻。
     series["landmarks"][:, 16, 1] = 0.55
     after = settled_stance_windows(series, windows, reps, FeedbackConfig())
-    np.testing.assert_array_equal(
-        before[("stance", "start")], after[("stance", "start")]
-    )
+    np.testing.assert_array_equal(before[("stance", "start")], after[("stance", "start")])
     # 全部点看不到时，不能拿旧窗口冒充已站稳。
     series["valid_mask"][:] = False
     assert settled_stance_windows(series, windows, reps, FeedbackConfig()) == {}
@@ -62,16 +65,14 @@ def test_wrist_height_checks_shoulder_and_does_not_require_nose() -> None:
     lm[:, 15, 1] = [0.2, 0.3, 0.4]
     mask = np.ones(lm.shape[:2], bool)
     mask[:, 0] = False
-    ctx = RuleContext(
-        view="front", action=ACTION, stance="left", params=FeedbackConfig()
-    )
+    ctx = RuleContext(view="front", action=ACTION, stance="left", params=FeedbackConfig())
 
-    bad, valid, _ = measure_posture("stance_height", "front", lm, mask, ctx)
+    bad, valid, _ = measure_stance_height("front", lm, mask, ctx)
 
     assert bad.tolist() == [False, False, True]
     assert valid.all()
     mask[:, 15] = False
-    assert not measure_posture("stance_height", "front", lm, mask, ctx)[1].any()
+    assert not measure_stance_height("front", lm, mask, ctx)[1].any()
 
 
 def test_straight_arm_does_not_automatically_mean_shoulder_height() -> None:
@@ -83,26 +84,24 @@ def test_straight_arm_does_not_automatically_mean_shoulder_height() -> None:
         view="side",
         action=ACTION,
         stance="left",
-        params=standard_config(FeedbackConfig(), "front_straight"),
+        params=replace(FeedbackConfig(), **PARAMS),
     )
 
-    extension, valid, _ = measure_posture("punch_extension", "front", lm, mask, ctx)
-    height, height_valid, _ = measure_posture("shoulder_level", "front", lm, mask, ctx)
+    extension, valid, _ = measure_punch_extension("front", lm, mask, ctx)
+    height, height_valid, _ = measure_arm_torso_angle("front", lm, mask, ctx)
 
     assert valid.all() and height_valid.all()
     assert extension.tolist() == [False, True]
     assert height.tolist() == [True, False]
     mask[:, 13] = False
-    assert not measure_posture("punch_extension", "front", lm, mask, ctx)[1].any()
-    assert measure_posture("shoulder_level", "front", lm, mask, ctx)[1].all()
+    assert not measure_punch_extension("front", lm, mask, ctx)[1].any()
+    assert measure_arm_torso_angle("front", lm, mask, ctx)[1].all()
 
 
 def test_grouped_reminders_keep_evidence_and_each_phase_verdict() -> None:
     record = make_html_test_record(action=ACTION)
     check = record["result"]["checks"][0]
-    check.update(
-        code="guard_elbow", phase="motion", phaseLabel="出拳中", review="confirmed"
-    )
+    check.update(code="guard_elbow", phase="motion", phaseLabel="出拳中", review="confirmed")
     finish = {
         **deepcopy(check),
         "id": "finish",
@@ -149,10 +148,8 @@ def test_unrecognized_combo_keeps_its_own_last_visible_stance() -> None:
     ending = revised[("stance", "end")]
     assert ending[0] >= 80 and ending[-1] < 130
     lm, mask = series["landmarks"][ending], series["valid_mask"][ending]
-    ctx = RuleContext(
-        view="front", action=ACTION, stance="left", params=FeedbackConfig()
-    )
-    bad, valid, _ = measure_posture("stance_height", "front", lm, mask, ctx)
+    ctx = RuleContext(view="front", action=ACTION, stance="left", params=FeedbackConfig())
+    bad, valid, _ = measure_stance_height("front", lm, mask, ctx)
     assert bad.all() and valid.all()
     assert repetitions == []
 
@@ -168,8 +165,6 @@ def test_stance_wrist_height_uses_front_view_across_models() -> None:
 
 
 def test_guard_return_is_not_back_pull_and_body_tilt_does_not_change_verdict() -> None:
-    from core.evaluation.rules.straight_motion import measure_guard_back
-
     baseline = np.repeat(_base_pose()[None], 3, axis=0)
     baseline[:, 0, 0] = 0.8
     baseline[:, 14, :2] = (0.8, 0.5)
@@ -177,17 +172,13 @@ def test_guard_return_is_not_back_pull_and_body_tilt_does_not_change_verdict() -
     # 前两张收回到身旁。最后一张肘才明显退到身体后面。
     lm[:, 14, :2] = [(0.5, 0.5), (0.55, 0.5), (0.4, 0.5)]
     mask = np.ones(lm.shape[:2], bool)
-    ctx = RuleContext(
-        view="side", action=ACTION, stance="left", params=FeedbackConfig()
-    )
+    ctx = RuleContext(view="side", action=ACTION, stance="left", params=FeedbackConfig())
     bad, valid, _ = measure_guard_back("rear", lm, mask, baseline, mask, ctx)
     assert bad.tolist() == [False, False, True]
     assert valid.all()
 
     angle = np.deg2rad(20)
-    rotation = np.array(
-        [[np.cos(angle), -np.sin(angle)], [np.sin(angle), np.cos(angle)]]
-    )
+    rotation = np.array([[np.cos(angle), -np.sin(angle)], [np.sin(angle), np.cos(angle)]])
     tilted = lm.copy()
     tilted[:, :, :2] = lm[:, :, :2] @ rotation.T + (0.3, -0.1)
     moved = measure_guard_back("rear", tilted, mask, baseline, mask, ctx)
@@ -209,8 +200,6 @@ def test_guard_back_selects_expected_view_across_models() -> None:
 
 
 def test_punch_extension_checks_each_punch_at_its_fullest_reach() -> None:
-    from core.evaluation.rules.straight_posture import measure_extension_at_peak
-
     lm = np.repeat(_base_pose()[None], 6, axis=0)
     lm[:, 11, :2], lm[:, 13, :2], lm[:, 15, :2] = (0.4, 0.3), (0.6, 0.3), (0.6, 0.5)
     lm[1, 15, :2] = (0.8, 0.3)
@@ -219,7 +208,7 @@ def test_punch_extension_checks_each_punch_at_its_fullest_reach() -> None:
         view="side",
         action=ACTION,
         stance="left",
-        params=standard_config(FeedbackConfig(), "front_straight"),
+        params=replace(FeedbackConfig(), **PARAMS),
         phase_windows={"front_straight:finish": np.array([10, 11, 12, 30, 31, 32])},
     )
     bad, valid, _ = measure_extension_at_peak("front", lm, mask, ctx)
@@ -231,8 +220,6 @@ def test_punch_extension_checks_each_punch_at_its_fullest_reach() -> None:
 
 
 def test_front_view_can_check_guard_elbow_and_missing_points_are_not_passes() -> None:
-    from core.evaluation.rules.straight_motion import measure_guard_back
-
     lm = np.repeat(_base_pose()[None], 3, axis=0)
     lm[:, 11, :3], lm[:, 12, :3] = (0.4, 0.3, 0), (0.6, 0.3, 0)
     lm[:, 23, :3], lm[:, 24, :3] = (0.4, 0.6, 0), (0.6, 0.6, 0)
@@ -241,9 +228,7 @@ def test_front_view_can_check_guard_elbow_and_missing_points_are_not_passes() ->
     baseline = lm.copy()
     lm[2, 13, 2] = 0.1
     mask = np.ones(lm.shape[:2], bool)
-    ctx = RuleContext(
-        view="front", action=ACTION, stance="left", params=FeedbackConfig()
-    )
+    ctx = RuleContext(view="front", action=ACTION, stance="left", params=FeedbackConfig())
     bad, valid, _ = measure_guard_back("front", lm, mask, baseline, mask, ctx)
     assert bad.tolist() == [False, False, True]
     assert valid.all()
@@ -288,18 +273,14 @@ def test_saved_reports_never_emit_legacy_trial_prefix(status) -> None:
         ("shoulder_level", [90, 102, 112]),
     ],
 )
-def test_straight_tolerance_accepts_small_deviation_and_keeps_clear_errors(
-    code, angles
-) -> None:
+def test_straight_tolerance_accepts_small_deviation_and_keeps_clear_errors(code, angles) -> None:
     from core.evaluation.rules.sanda_v5 import rule_profile
 
     lm = np.repeat(_base_pose()[None], 3, axis=0)
     angles = np.deg2rad(angles)
     if code == "stance_elbow":
         lm[:, 11, :2], lm[:, 13, :2] = (0.5, 0.3), (0.5, 0.5)
-        lm[:, 15, :2] = np.column_stack(
-            (0.5 + 0.2 * np.sin(angles), 0.5 - 0.2 * np.cos(angles))
-        )
+        lm[:, 15, :2] = np.column_stack((0.5 + 0.2 * np.sin(angles), 0.5 - 0.2 * np.cos(angles)))
     elif code == "stance_knee":
         for hip, knee, ankle in ((23, 25, 27), (24, 26, 28)):
             lm[:, hip, :2], lm[:, knee, :2] = (0.5, 0.3), (0.5, 0.5)
@@ -308,9 +289,7 @@ def test_straight_tolerance_accepts_small_deviation_and_keeps_clear_errors(
             )
     else:
         lm[:, 11, :2], lm[:, 23, :2] = (0.5, 0.3), (0.5, 0.6)
-        lm[:, 15, :2] = np.column_stack(
-            (0.5 + 0.2 * np.sin(angles), 0.3 + 0.2 * np.cos(angles))
-        )
+        lm[:, 15, :2] = np.column_stack((0.5 + 0.2 * np.sin(angles), 0.3 + 0.2 * np.cos(angles)))
     mask = np.ones(lm.shape[:2], bool)
     cfg = FeedbackConfig()
     profile = rule_profile(ACTION, "left", cfg)
@@ -328,8 +307,6 @@ def test_straight_tolerance_accepts_small_deviation_and_keeps_clear_errors(
             None,
         )
         if same is not None:
-            actual, observed, _ = same.check(
-                lm, np.ones_like(mask), lm, np.ones_like(mask), ctx
-            )
+            actual, observed, _ = same.check(lm, np.ones_like(mask), lm, np.ones_like(mask), ctx)
             np.testing.assert_array_equal(actual, bad)
             assert observed.all()

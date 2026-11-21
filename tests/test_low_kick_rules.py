@@ -33,19 +33,19 @@ from core.evaluation.kick_events import (  # noqa: E402
     kick_repetitions,
     segment_kick_events,
 )
+from core.evaluation.measures.guard import measure_guard_elbow_flare  # noqa: E402
 from core.evaluation.measures.kicks import (  # noqa: E402
     kicking_leg_side_safe,
-    measure_body_lean,
     measure_foot_flexed,
-    measure_kick_guard_elbow,
     measure_kick_height,
     measure_kick_retract_segment,
     measure_pad_step_missing,
     measure_pad_step_overtake,
     measure_pad_step_pause,
 )
+from core.evaluation.measures.posture import measure_body_lean  # noqa: E402
 from core.evaluation.rule_checks import ACTION_BY_NAME  # noqa: E402
-from core.evaluation.rules.kick_measures import kick_landmarks  # noqa: E402
+from core.evaluation.rules.kick_rules import kick_landmarks  # noqa: E402
 from core.evaluation.rules.rule_descriptions import KICK_PARAMS  # noqa: E402
 from core.evaluation.rules.sanda_v5 import build_checks  # noqa: E402
 from core.evaluation.scoring import exam_pool  # noqa: E402
@@ -187,9 +187,7 @@ def _make_kick_sequence(
                     ank_y = 0.65 + 0.25 * u
                     end_x = 0.50 + retract_offset * dir_x
                     if u < 0.7:
-                        ank_x = (
-                            0.50 + (0.36 - (u / 0.7) * (0.36 - retract_offset)) * dir_x
-                        )
+                        ank_x = 0.50 + (0.36 - (u / 0.7) * (0.36 - retract_offset)) * dir_x
                     else:
                         ank_x = end_x if not in_place_landing else land_x
                 kn_x = ank_x - 0.08 * dir_x
@@ -299,12 +297,8 @@ def test_kick_segment_reuse_and_strategy_isolation():
         for c in build_checks("front_low_kick", "left")
         if c["segment"] == "front_low_kick" and c["code"] == "guard_elbow"
     ]
-    assert straight_elbow and all(
-        c["strategy"] == "elbow_shoulder_height" for c in straight_elbow
-    )
-    assert kick_elbow and all(
-        c["strategy"] == "upper_arm_torso_flare" for c in kick_elbow
-    )
+    assert straight_elbow and all(c["strategy"] == "elbow_shoulder_height" for c in straight_elbow)
+    assert kick_elbow and all(c["strategy"] == "upper_arm_torso_flare" for c in kick_elbow)
 
 
 def test_kick_checks_enabled_across_all_models():
@@ -317,59 +311,36 @@ def test_kick_checks_enabled_across_all_models():
         assert len(full_checks) == expected_total
         assert build_checks(action, "left", pose_variant="lite") == full_checks
         assert build_checks(action, "left", pose_variant="heavy") == full_checks
-        assert all(
-            "availability" not in c and "blockedReason" not in c for c in full_checks
-        )
+        assert all("availability" not in c and "blockedReason" not in c for c in full_checks)
 
 
 def test_kick_side_repetition_splitting_and_exam_pool_compat():
     for stance in ("left", "right"):
         lm_side, meta = _make_kick_sequence(stance=stance, view="side", n_kicks=2)
-        reps = kick_repetitions(
-            series_from_raw(lm_side, meta), "step_front_low_kick", stance
-        )
+        reps = kick_repetitions(series_from_raw(lm_side, meta), "step_front_low_kick", stance)
         assert len(reps) == 2
 
     lm_single, meta = _make_kick_sequence(stance="left", view="side", n_kicks=1)
     assert (
-        len(
-            kick_repetitions(
-                series_from_raw(lm_single, meta), "step_front_low_kick", "left"
-            )
-        )
-        == 1
+        len(kick_repetitions(series_from_raw(lm_single, meta), "step_front_low_kick", "left")) == 1
     )
 
     lm_head, meta = _make_kick_sequence(
         stance="left", view="side", n_kicks=2, missing_head_frames=12
     )
-    assert (
-        len(
-            kick_repetitions(
-                series_from_raw(lm_head, meta), "step_front_low_kick", "left"
-            )
-        )
-        == 2
-    )
+    assert len(kick_repetitions(series_from_raw(lm_head, meta), "step_front_low_kick", "left")) == 2
 
     lm_masked, meta = _make_kick_sequence(
         stance="left", view="side", n_kicks=2, mask_ankle_on_first_peak=True
     )
     assert (
-        len(
-            kick_repetitions(
-                series_from_raw(lm_masked, meta), "step_front_low_kick", "left"
-            )
-        )
-        == 2
+        len(kick_repetitions(series_from_raw(lm_masked, meta), "step_front_low_kick", "left")) == 2
     )
 
     lm_inplace, meta = _make_kick_sequence(
         stance="left", view="side", n_kicks=2, in_place_landing=True
     )
-    events = segment_kick_events(
-        series_from_raw(lm_inplace, meta), "step_front_low_kick", "left"
-    )
+    events = segment_kick_events(series_from_raw(lm_inplace, meta), "step_front_low_kick", "left")
     assert len(events) == 2
     assert all(ev["closed"] for ev in events)
 
@@ -378,10 +349,7 @@ def test_kick_side_repetition_splitting_and_exam_pool_compat():
     cfg = FeedbackConfig(pose_variant="heavy")
     # 兼容原有双参数 side_repetitions 与统一入口 action_side_repetitions
     assert exam_pool.side_repetitions(raw_series, cfg) == []
-    assert (
-        len(exam_pool.action_side_repetitions(raw_series, "step_front_low_kick", cfg))
-        == 2
-    )
+    assert len(exam_pool.action_side_repetitions(raw_series, "step_front_low_kick", cfg)) == 2
     assert exam_pool.action_side_repetitions(raw_series, "front_low_kick", cfg) == []
 
 
@@ -409,23 +377,13 @@ def test_kick_geometry_thresholds_and_anti_swap_masking():
     lm_good = lm.copy()
     lm_good[:, 28, 0] = np.linspace(0.40, 0.58, n)
     bad, valid, _ = measure_pad_step_missing(lm_good, mask, times, "left", facing=1.0)
-    assert (
-        isinstance(valid, np.ndarray)
-        and valid.shape == (n,)
-        and valid.all()
-        and not bad
-    )
+    assert isinstance(valid, np.ndarray) and valid.shape == (n,) and valid.all() and not bad
 
     # pad_step_overtake：允许两脚并齐(=0.0)，>0.20 判超越
     lm_flush = lm.copy()
     lm_flush[:, 28, 0] = 0.60
     bad, valid, _ = measure_pad_step_overtake(lm_flush, mask, times, "left", facing=1.0)
-    assert (
-        isinstance(valid, np.ndarray)
-        and valid.shape == (n,)
-        and valid.all()
-        and not bad
-    )
+    assert isinstance(valid, np.ndarray) and valid.shape == (n,) and valid.all() and not bad
     lm_over = lm.copy()
     lm_over[:, 28, 0] = 0.70  # (0.70 - 0.60) / 0.30 = 0.33 > 0.20
     bad, valid, _ = measure_pad_step_overtake(lm_over, mask, times, "left", facing=1.0)
@@ -439,9 +397,7 @@ def test_kick_geometry_thresholds_and_anti_swap_masking():
     bad, valid, _ = measure_pad_step_pause(
         lm_pause, np.ones((36, 33), dtype=bool), t_long, "left", facing=1.0
     )
-    assert (
-        isinstance(valid, np.ndarray) and valid.shape == (36,) and valid.all() and bad
-    )
+    assert isinstance(valid, np.ndarray) and valid.shape == (36,) and valid.all() and bad
 
     # kick_height：高过同侧髋 (< -0.06) 或明显低于支撑膝 (> +0.08) 均违规
     torso = np.full(n, 0.30)
@@ -458,9 +414,7 @@ def test_kick_geometry_thresholds_and_anti_swap_masking():
     lm_ret = lm.copy()
     lm_ret[:, 27, 0] = 0.70  # (0.70 - 0.50)/0.30 = 0.67 > 0.40
     bad_r, val_r, _ = measure_kick_retract_segment(lm_ret, mask, torso, 27, 23, 1.0)
-    assert (
-        isinstance(val_r, np.ndarray) and val_r.shape == (n,) and val_r.all() and bad_r
-    )
+    assert isinstance(val_r, np.ndarray) and val_r.shape == (n,) and val_r.all() and bad_r
 
     # 锁定角度：foot_flexed < 165°、body_lean > 35°、guard_elbow > 30°
     lm_ang = lm.copy()
@@ -482,9 +436,9 @@ def test_kick_geometry_thresholds_and_anti_swap_masking():
     lm_el[:, 12, :2] = (0.60, 0.25)  # R_SHOULDER
     lm_el[:, 24, :2] = (0.60, 0.55)  # R_HIP
     lm_el[:, 14, :2] = (0.78, 0.45)  # R_ELBOW (~42° > 30°)
-    assert measure_kick_guard_elbow(lm_el, mask, torso, 14, 12, 24)[0].all()
+    assert measure_guard_elbow_flare(lm_el, mask, torso, 14, 12, 24)[0].all()
     lm_el[:, 14, :2] = (0.65, 0.45)  # ~14° <= 30°
-    assert not measure_kick_guard_elbow(lm_el, mask, torso, 14, 12, 24)[0].any()
+    assert not measure_guard_elbow_flare(lm_el, mask, torso, 14, 12, 24)[0].any()
 
     # 抗侧视互换掩码：支撑脚踝显著高于踢腿脚踝 (>0.15*torso) 时清除 23..32 关键点
     lm_sw = lm.copy()
@@ -603,12 +557,8 @@ def test_kick_remediation_regression_cases():
     cfg = FeedbackConfig(pose_variant="heavy")
 
     # 1. arm_swing 需肩-肘-腕 3 点齐全：遮挡肘点（即使手腕下垂）必须判为 unable 而非静默通过
-    lm_f_arm, mf = _make_kick_sequence(
-        stance="left", view="front", n_kicks=2, omit_arm_swing=True
-    )
-    lm_s_arm, ms = _make_kick_sequence(
-        stance="left", view="side", n_kicks=2, omit_arm_swing=True
-    )
+    lm_f_arm, mf = _make_kick_sequence(stance="left", view="front", n_kicks=2, omit_arm_swing=True)
+    lm_s_arm, ms = _make_kick_sequence(stance="left", view="side", n_kicks=2, omit_arm_swing=True)
     lm_f_arm[:, 15, 1] = 0.40
     lm_f_arm[:, 13, 3] = 0.0
     lm_s_arm[:, 13, 3] = 0.0
@@ -655,9 +605,7 @@ def test_kick_remediation_regression_cases():
         cfg,
     )
     assert not [
-        c
-        for c in hd_res["checks"]
-        if c["segment"] == "stance" and c["status"] == "candidate"
+        c for c in hd_res["checks"] if c["segment"] == "stance" and c["status"] == "candidate"
     ]
 
     # 3. 单独 front_low_kick 统一走 side_kick 标定阶段（无 repetitions 分段且结论与 step_front_low_kick 一致）
@@ -676,35 +624,27 @@ def test_kick_remediation_regression_cases():
     assert "repetitions" not in single_res
     assert "repetitions" in step_res
     single_map = {
-        c["id"]: c["status"]
-        for c in single_res["checks"]
-        if c["segment"] == "front_low_kick"
+        c["id"]: c["status"] for c in single_res["checks"] if c["segment"] == "front_low_kick"
     }
     step_map = {
-        c["id"]: c["status"]
-        for c in step_res["checks"]
-        if c["segment"] == "front_low_kick"
+        c["id"]: c["status"] for c in step_res["checks"] if c["segment"] == "front_low_kick"
     }
     assert single_map and single_map == step_map
 
     # 缺侧面视频提示按是否含上步区分 NEEDS_KICK_SIDE 与 NEEDS_SIDE
     front_only = {"front": series_from_raw(lm_f_ok, mf)}
     assert (
-        evaluate_series("rear_low_kick", "left", front_only, cfg)["diagnostics"][
-            "front"
-        ]["reason"]
+        evaluate_series("rear_low_kick", "left", front_only, cfg)["diagnostics"]["front"]["reason"]
         == NEEDS_KICK_SIDE
     )
     assert (
-        evaluate_series("front_low_kick", "left", front_only, cfg)["diagnostics"][
-            "front"
-        ]["reason"]
+        evaluate_series("front_low_kick", "left", front_only, cfg)["diagnostics"]["front"]["reason"]
         == NEEDS_KICK_SIDE
     )
     assert (
-        evaluate_series("step_front_low_kick", "left", front_only, cfg)["diagnostics"][
-            "front"
-        ]["reason"]
+        evaluate_series("step_front_low_kick", "left", front_only, cfg)["diagnostics"]["front"][
+            "reason"
+        ]
         == NEEDS_SIDE
     )
 
@@ -733,9 +673,7 @@ def test_coderabbit_pr66_review_regressions():
     lm_drop[43:59, 27, 1] = 0.72
     lm_drop[43:59, 25, 1] = 0.58
     lm_drop[43:59, 31, 1] = 0.72
-    ev_drop = segment_kick_events(
-        series_from_raw(lm_drop, meta_30), "step_front_low_kick", "left"
-    )
+    ev_drop = segment_kick_events(series_from_raw(lm_drop, meta_30), "step_front_low_kick", "left")
     assert len(ev_drop) == 1 and not ev_drop[0]["closed"]
 
     # CR-2：间隔 7/30s (< 0.35s) 的两次各自闭合完整抬腿，不得合并为一次
@@ -752,9 +690,7 @@ def test_coderabbit_pr66_review_regressions():
         lm_two[sl, 27, 1] = 0.72
         lm_two[sl, 25, 1] = 0.58
         lm_two[sl, 31, 1] = 0.72
-    ev_two = segment_kick_events(
-        series_from_raw(lm_two, meta_30), "step_front_low_kick", "left"
-    )
+    ev_two = segment_kick_events(series_from_raw(lm_two, meta_30), "step_front_low_kick", "left")
     assert len(ev_two) == 2 and all(ev["closed"] for ev in ev_two)
 
     # CR-3：后踝坐标静止而躯干投影缩短时，仍必须检出垫步缺失
@@ -778,9 +714,7 @@ def test_coderabbit_pr66_review_regressions():
     assert det_pad["垫步后脚前推距离"][0] == pytest.approx(0.0, abs=1e-6)
 
     # CR-4：arm_swing 缺省按次独立判定——第 1 次摆臂、第 2 次未摆臂仍报违规且证据指明第 2 次
-    lm_f_one, mf1 = _make_kick_sequence(
-        stance="left", view="front", n_kicks=2, omit_arm_swing=True
-    )
+    lm_f_one, mf1 = _make_kick_sequence(stance="left", view="front", n_kicks=2, omit_arm_swing=True)
     lm_f_one[39:62, 13, :2] = (0.40, 0.37)
     lm_f_one[39:62, 15, :2] = (0.40, 0.49)
     lm_s_one, ms1 = _make_kick_sequence(stance="left", view="side", n_kicks=2)
@@ -797,15 +731,11 @@ def test_coderabbit_pr66_review_regressions():
     assert arm_checks and all(c["status"] == "candidate" for c in arm_checks)
     jv_one = judge_views(views_one, "step_front_low_kick", "left", cfg)
     arm_out = next(
-        c
-        for c in jv_one["front"][0]
-        if c.check_id == "front_low_kick:motion:front:arm_swing"
+        c for c in jv_one["front"][0] if c.check_id == "front_low_kick:motion:front:arm_swing"
     )
     assert arm_out.state == "violation"
     assert {
-        item["repetition"]
-        for item in arm_out.evidence_details
-        if item["purpose"] == "violation"
+        item["repetition"] for item in arm_out.evidence_details if item["purpose"] == "violation"
     } == {2}
 
     # CR-5：垫步/收腿仅少量散点有效时不得广播整段 valid[sub]，必须输出 unable
@@ -824,9 +754,7 @@ def test_coderabbit_pr66_review_regressions():
         "front": series_from_raw(lm_f_sp, mf_s),
         "side": series_from_raw(lm_s_sp, ms_s),
     }
-    wins_sp, _, _, _ = shared_timeline(
-        base_views_sp, "step_front_low_kick", "left", cfg
-    )
+    wins_sp, _, _, _ = shared_timeline(base_views_sp, "step_front_low_kick", "left", cfg)
     pad_idx = wins_sp["side"][("pad_step", "prepare")]
     ret_idx = wins_sp["side"][("front_low_kick", "retract")]
     lm_s_sp[pad_idx[5:-1], 28, 3] = 0.0  # 后踝有效占比远低于 valid_ratio=0.6
@@ -847,9 +775,7 @@ def test_coderabbit_pr66_review_regressions():
         "front_low_kick:retract:front:kick_retract",
     }
     sparse_checks = [c for c in res_sp["checks"] if c["id"] in sparse_ids]
-    assert len(sparse_checks) == 4 and all(
-        c["status"] == "unable" for c in sparse_checks
-    )
+    assert len(sparse_checks) == 4 and all(c["status"] == "unable" for c in sparse_checks)
 
     # CR-6：自定义踢腿参数不能绕过已标定参数，且 parameterOverrides 篡改时剥夺 enabled 资格
     lm_f_k, mf_k = _make_kick_sequence(stance="left", view="front", n_kicks=2)
@@ -867,9 +793,7 @@ def test_coderabbit_pr66_review_regressions():
         FeedbackConfig(pose_variant="heavy", kick_guard_back_side=1.0),
     )
     gb_chk = next(
-        c
-        for c in res_custom["checks"]
-        if c["id"] == "front_low_kick:finish:rear:guard_back"
+        c for c in res_custom["checks"] if c["id"] == "front_low_kick:finish:rear:guard_back"
     )
     assert gb_chk["status"] == "candidate"
     assert gb_chk["parameterOverrides"]["kick_guard_back_side"] == pytest.approx(
@@ -915,20 +839,12 @@ def _make_hook_sequence(
             p = math.sin(math.pi * (t - start) / (end - start))
             if view == "side":
                 lm[t, wr, :2] = (0.62 + 0.36 * p, 0.20 + 0.08 * p)
-                el_y = (
-                    (0.36 + 0.24 * p)
-                    if (front and drop_front_elbow)
-                    else (0.36 - 0.08 * p)
-                )
+                el_y = (0.36 + 0.24 * p) if (front and drop_front_elbow) else (0.36 - 0.08 * p)
                 lm[t, el, :2] = (0.55 + 0.26 * p, el_y)
             else:
                 dx = -0.32 * p if front else 0.32 * p
                 lm[t, wr, :2] = ((0.62 if front else 0.42) + dx, 0.20 + 0.08 * p)
-                el_y = (
-                    (0.36 + 0.24 * p)
-                    if (front and drop_front_elbow)
-                    else (0.36 - 0.08 * p)
-                )
+                el_y = (0.36 + 0.24 * p) if (front and drop_front_elbow) else (0.36 - 0.08 * p)
                 lm[t, el, :2] = ((0.55 if front else 0.45) + 0.6 * dx, el_y)
         if front and mask_front_elbow:
             lm[start : end + 1, el, 3] = 0.0
@@ -941,12 +857,8 @@ def test_pr67_hook_prepare_pullback_and_shoulder_level_require_elbow():
     """验证 [P1-1] 后手摆拳准备预摆检出 与 [P1-2] 摆拳肘手同高缺失肘点判定 unable。"""
     cfg = FeedbackConfig(pose_variant="heavy")
     for action in ("rear_hook", "hook_combo"):
-        lm_f_ok, mf = _make_hook_sequence(
-            action=action, view="front", pullback_rear=False
-        )
-        lm_s_ok, ms = _make_hook_sequence(
-            action=action, view="side", pullback_rear=False
-        )
+        lm_f_ok, mf = _make_hook_sequence(action=action, view="front", pullback_rear=False)
+        lm_s_ok, ms = _make_hook_sequence(action=action, view="side", pullback_rear=False)
         res_ok = evaluate_series(
             action,
             "left",
@@ -957,18 +869,12 @@ def test_pr67_hook_prepare_pullback_and_shoulder_level_require_elbow():
             cfg,
         )
         gb_ok = next(
-            c
-            for c in res_ok["checks"]
-            if c["id"] == "rear_hook:prepare:rear:guard_back"
+            c for c in res_ok["checks"] if c["id"] == "rear_hook:prepare:rear:punch_prepull"
         )
         assert gb_ok["status"] == "not_observed"
 
-        lm_f_bad, mf = _make_hook_sequence(
-            action=action, view="front", pullback_rear=True
-        )
-        lm_s_bad, ms = _make_hook_sequence(
-            action=action, view="side", pullback_rear=True
-        )
+        lm_f_bad, mf = _make_hook_sequence(action=action, view="front", pullback_rear=True)
+        lm_s_bad, ms = _make_hook_sequence(action=action, view="side", pullback_rear=True)
         res_bad = evaluate_series(
             action,
             "left",
@@ -979,19 +885,13 @@ def test_pr67_hook_prepare_pullback_and_shoulder_level_require_elbow():
             cfg,
         )
         gb_bad = next(
-            c
-            for c in res_bad["checks"]
-            if c["id"] == "rear_hook:prepare:rear:guard_back"
+            c for c in res_bad["checks"] if c["id"] == "rear_hook:prepare:rear:punch_prepull"
         )
         assert gb_bad["status"] == "candidate"
 
     # [P1-2]: front_hook / hook_combo 拳在肩高但肘部明显下沉时应检出，缺失肘关键点时应为 unable
-    lm_f_drop, mf = _make_hook_sequence(
-        action="hook_combo", view="front", drop_front_elbow=True
-    )
-    lm_s_drop, ms = _make_hook_sequence(
-        action="hook_combo", view="side", drop_front_elbow=True
-    )
+    lm_f_drop, mf = _make_hook_sequence(action="hook_combo", view="front", drop_front_elbow=True)
+    lm_s_drop, ms = _make_hook_sequence(action="hook_combo", view="side", drop_front_elbow=True)
     res_drop = evaluate_series(
         "hook_combo",
         "left",
@@ -1002,18 +902,12 @@ def test_pr67_hook_prepare_pullback_and_shoulder_level_require_elbow():
         cfg,
     )
     sl_drop = next(
-        c
-        for c in res_drop["checks"]
-        if c["id"] == "front_hook:motion:front:shoulder_level"
+        c for c in res_drop["checks"] if c["id"] == "front_hook:motion:front:shoulder_level"
     )
     assert sl_drop["status"] == "candidate"
 
-    lm_f_miss, mf = _make_hook_sequence(
-        action="hook_combo", view="front", mask_front_elbow=True
-    )
-    lm_s_miss, ms = _make_hook_sequence(
-        action="hook_combo", view="side", mask_front_elbow=True
-    )
+    lm_f_miss, mf = _make_hook_sequence(action="hook_combo", view="front", mask_front_elbow=True)
+    lm_s_miss, ms = _make_hook_sequence(action="hook_combo", view="side", mask_front_elbow=True)
     res_miss = evaluate_series(
         "hook_combo",
         "left",
@@ -1024,16 +918,14 @@ def test_pr67_hook_prepare_pullback_and_shoulder_level_require_elbow():
         cfg,
     )
     sl_miss = next(
-        c
-        for c in res_miss["checks"]
-        if c["id"] == "front_hook:motion:front:shoulder_level"
+        c for c in res_miss["checks"] if c["id"] == "front_hook:motion:front:shoulder_level"
     )
     assert sl_miss["status"] == "unable"
 
 
 def test_kick_measure_without_stance_start_records_issue_and_returns_empty():
     """缺少 stance:start 窗口时，低鞭腿相对基线测量不抛 KeyError 且安全返回空结果。"""
-    from core.evaluation.rules.kick_measures import measure_kick
+    from core.evaluation.rules.body_posture_rules import measure_head_down_rule
     from core.evaluation.rules.spec import RuleContext
 
     lm, _ = _make_kick_sequence(stance="left", view="front", n_kicks=1)
@@ -1047,15 +939,12 @@ def test_kick_measure_without_stance_start_records_issue_and_returns_empty():
         phase_windows={},
         measurement_issues=issues,
     )
-    bad, valid, _vals = measure_kick(
-        "nose_shoulder_drop",
-        "front",
+    bad, valid, _vals = measure_head_down_rule(
         lm,
         mask,
         lm[:8],
         mask[:8],
         ctx,
-        "rear_low_kick:motion",
     )
     assert not bad.any()
     assert not valid.any()

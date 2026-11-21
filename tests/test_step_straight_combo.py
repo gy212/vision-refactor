@@ -20,6 +20,12 @@ from core.evaluation.motion_events import MotionEvent
 from core.evaluation.punch_events import reach_events, settled_returns
 from core.evaluation.action_timing import NEEDS_SIDE
 from core.evaluation.rule_checks import judge_views, rule_series, view_outcomes
+from core.evaluation.rules.guard_rules import measure_guard_back, measure_guard_jaw
+from core.evaluation.rules.punch_rules import (
+    measure_punch_predrop,
+    measure_punch_prepull,
+    measure_punch_recover,
+)
 from core.evaluation.rules.sanda_v5 import (
     ACTIONS,
     FeedbackConfig,
@@ -28,8 +34,7 @@ from core.evaluation.rules.sanda_v5 import (
     rule_profile,
 )
 from core.evaluation.rules.spec import RuleContext
-from core.evaluation.rules.straight_measures import measure_straight
-from core.evaluation.rules.straight_motion import measure_guard_back
+from core.evaluation.rules.straight_rules import measure_punch_preelbow
 from core.evaluation.scoring import exam_pool
 from core.evaluation.step_reps import EXPECTED_REPETITIONS, step_combo_windows
 from core.reporting import build_report_model, render_html_report
@@ -99,9 +104,7 @@ def test_completed_front_punch_survives_a_long_pause_without_bridging_missing_po
     lm = series["landmarks"].copy()
     lm[:, [FRONT_WRIST, 13], 0] = _base_pose()[[FRONT_WRIST, 13], 0]
     moving = (times >= 0.7) & (times <= 1.0)
-    lm[moving, FRONT_WRIST, 0] += 0.2 * (
-        1 - np.abs(2 * (times[moving] - 0.7) / 0.3 - 1)
-    )
+    lm[moving, FRONT_WRIST, 0] += 0.2 * (1 - np.abs(2 * (times[moving] - 0.7) / 0.3 - 1))
     if lost_return:
         lm[(times >= 0.9) & (times <= 1.3), FRONT_WRIST, 3] = 0
     diagnostics = {}
@@ -123,9 +126,7 @@ def test_completed_front_punch_survives_a_long_pause_without_bridging_missing_po
 @pytest.mark.parametrize("reps", [1, 3])
 def test_wrong_rep_count_is_judged_on_what_was_found(reps: int) -> None:
     diagnostics: dict = {}
-    windows = step_combo_windows(
-        _series(reps, seconds=8.0), "left", FeedbackConfig(), diagnostics
-    )
+    windows = step_combo_windows(_series(reps, seconds=8.0), "left", FeedbackConfig(), diagnostics)
     assert len(diagnostics["repetitions"]) == reps
     assert (
         diagnostics["reason"]
@@ -172,17 +173,12 @@ def test_stable_withdrawal_ends_before_exit_without_faking_a_held_return() -> No
     assert result[1] == events[1]
     assert settled_returns(events, reach, times, stable[:2], cfg, rise=0.3) == events
     assert (
-        settled_returns(
-            events, reach, times, stable, FeedbackConfig(min_valid=8), rise=0.3
-        )
+        settled_returns(events, reach, times, stable, FeedbackConfig(min_valid=8), rise=0.3)
         == events
     )
     assert settled_returns(events, reach, times / 10, stable, cfg, rise=0.3) == events
     reach[8] = 0.5
-    assert (
-        settled_returns(events, reach, times, [np.arange(6, 8)], cfg, rise=0.3)
-        == events
-    )
+    assert settled_returns(events, reach, times, [np.arange(6, 8)], cfg, rise=0.3) == events
 
 
 @pytest.mark.parametrize("last_frame_jitter", [0.0, 0.001])
@@ -221,18 +217,14 @@ def test_missing_points_cannot_bridge_into_a_held_punch() -> None:
     assert found == []
 
 
-def test_guard_back_tracks_elbow_relative_to_body_and_preserves_missing_points() -> (
-    None
-):
+def test_guard_back_tracks_elbow_relative_to_body_and_preserves_missing_points() -> None:
     baseline = np.repeat(_base_pose()[None], 6, axis=0)
     lm = baseline.copy()
     # 上步让全身平移，不能当成拉手；只有后三张肘相对肩后移。
     lm[:, :, 0] += 0.1
     lm[3:, 14, 0] -= 0.1
     mask = np.ones(lm.shape[:2], bool)
-    context = RuleContext(
-        view="side", action=ACTION, stance="left", params=FeedbackConfig()
-    )
+    context = RuleContext(view="side", action=ACTION, stance="left", params=FeedbackConfig())
 
     bad, valid, _ = measure_guard_back("rear", lm, mask, baseline, mask, context)
 
@@ -269,9 +261,7 @@ def test_front_view_shares_side_timing_and_needs_side() -> None:
         FPS,
         1.0,
     )
-    judged = judge_views(
-        {"front": front, "side": side}, ACTION, "left", FeedbackConfig()
-    )
+    judged = judge_views({"front": front, "side": side}, ACTION, "left", FeedbackConfig())
     assert judged["front"][1]["phaseSource"] == "side_synchronized_timing"
     assert len(judged["front"][1]["repetitions"]) == 2
     alone = judge_views({"front": front}, ACTION, "left", FeedbackConfig())
@@ -296,12 +286,8 @@ def test_all_combo_checks_run_directly_across_models() -> None:
         for c in checks
         if c["segment"] != "stance" and c["code"] in {"guard_shoulder", "guard_elbow"}
     ]
-    assert all(
-        c["primaryView"] == ("side" if c["role"] == "rear" else "front") for c in guards
-    )
-    assert {c["primaryView"] for c in checks if c["code"] == "shoulder_level"} == {
-        "side"
-    }
+    assert all(c["primaryView"] == ("side" if c["role"] == "rear" else "front") for c in guards)
+    assert {c["primaryView"] for c in checks if c["code"] == "shoulder_level"} == {"side"}
     for model in ("lite", "full", "heavy"):
         assert build_checks(ACTION, "left", pose_variant=model) == checks
     assert build_checks("straight_combo", "left") == checks
@@ -318,17 +304,12 @@ def test_paired_torso_requires_synchronized_evidence() -> None:
         views[view] = rule_series(lm, series["frames"], FPS, 1.0)
 
     def torso_check(result):
-        return next(
-            c for c in result["checks"] if c["id"] == "stance:start::stance_torso"
-        )
+        return next(c for c in result["checks"] if c["id"] == "stance:start::stance_torso")
 
     full = torso_check(evaluate_series(ACTION, "left", views))
     assert full["status"] == "candidate"
     judged = judge_views(views, ACTION, "left", FeedbackConfig())
-    assert (
-        next(c for c in judged["front"][0] if c.code == "stance_torso").state
-        == "violation"
-    )
+    assert next(c for c in judged["front"][0] if c.code == "stance_torso").state == "violation"
 
     targets = {
         view: {
@@ -341,14 +322,9 @@ def test_paired_torso_requires_synchronized_evidence() -> None:
         }
         for view, series in views.items()
     }
-    exam_reports = exam_pool.rule_reports(
-        [targets["front"]], [targets["side"]], FeedbackConfig()
-    )
+    exam_reports = exam_pool.rule_reports([targets["front"]], [targets["side"]], FeedbackConfig())
     torso_reports = [
-        c
-        for report in exam_reports
-        for c in report["checks"]
-        if c.code == "stance_torso"
+        c for report in exam_reports for c in report["checks"] if c.code == "stance_torso"
     ]
     assert torso_reports
     assert all(c.state == "violation" and "试用" not in c.detail for c in torso_reports)
@@ -359,9 +335,7 @@ def test_paired_torso_requires_synchronized_evidence() -> None:
     assert heavy["status"] == "candidate"
 
     views["side"]["landmarks"][:, [11, 12], 0] = (0.4, 0.6)
-    assert (
-        torso_check(evaluate_series(ACTION, "left", views))["status"] == "not_observed"
-    )
+    assert torso_check(evaluate_series(ACTION, "left", views))["status"] == "not_observed"
     views["side"]["times"] = [time + 0.001 for time in views["side"]["times"]]
     assert torso_check(evaluate_series(ACTION, "left", views))["status"] == "unable"
 
@@ -369,9 +343,7 @@ def test_paired_torso_requires_synchronized_evidence() -> None:
     views["side"]["valid_mask"][:, 11] = False
     assert torso_check(evaluate_series(ACTION, "left", views))["status"] == "unable"
     assert (
-        torso_check(evaluate_series(ACTION, "left", {"front": views["front"]}))[
-            "status"
-        ]
+        torso_check(evaluate_series(ACTION, "left", {"front": views["front"]}))["status"]
         == "unable"
     )
 
@@ -415,25 +387,27 @@ def test_straight_measurements_keep_validity_and_direction(
     lm[:3, joint, axis] = wrong
     lm[3:, joint, axis] = normal
     mask = np.ones(lm.shape[:2], bool)
-    context = RuleContext(
-        view="side", action=ACTION, stance="left", params=FeedbackConfig()
-    )
+    context = RuleContext(view="side", action=ACTION, stance="left", params=FeedbackConfig())
 
-    bad, valid, _ = measure_straight(code, "rear", lm, mask, baseline, mask, context)
+    dispatch = {
+        "punch_predrop": lambda r, pts, m, b, bm, c: measure_punch_predrop(r, pts, m, b, bm, c),
+        "punch_prepull": lambda r, pts, m, b, bm, c: measure_punch_prepull(r, pts, m, b, bm, c),
+        "punch_preelbow": lambda r, pts, m, _b, _bm, c: measure_punch_preelbow(r, pts, m, c),
+        "punch_recover": lambda r, pts, m, _b, _bm, c: measure_punch_recover(r, pts, m, c),
+        "guard_jaw": lambda r, pts, m, _b, _bm, c: measure_guard_jaw(r, pts, m, c),
+    }
+    measure_fn = dispatch[code]
+    bad, valid, _ = measure_fn("rear", lm, mask, baseline, mask, context)
 
     assert bad.tolist() == [True] * 3 + [False] * 3
     assert valid.all()
     mask[:, joint] = False
-    _, valid, _ = measure_straight(
-        code, "rear", lm, mask, baseline, np.ones_like(mask), context
-    )
+    _, valid, _ = measure_fn("rear", lm, mask, baseline, np.ones_like(mask), context)
     assert not valid.any()
 
 
 def test_legacy_pending_check_falls_back_to_unable_with_recorded_reason() -> None:
-    check = next(
-        c for c in build_checks(ACTION, "left") if c["code"] == "punch_predrop"
-    )
+    check = next(c for c in build_checks(ACTION, "left") if c["code"] == "punch_predrop")
     check.update(
         status="pending_rule",
         reason="教师已确认，旧记录尚未开启",
@@ -459,10 +433,7 @@ def test_practice_reports_repetition_count() -> None:
         1.0,
     )
     result = evaluate_series(ACTION, "left", {"front": front, "side": side})
-    assert (
-        result["repetitions"]["expected"] == 2
-        and result["repetitions"]["detected"] == 1
-    )
+    assert result["repetitions"]["expected"] == 2 and result["repetitions"]["detected"] == 1
     assert "检测到 1 次动作，应做 2 次" in result["summary"]
     elbow = next(c for c in result["checks"] if c["code"] == "guard_elbow")
     assert elbow["parameterOverrides"]["elbow_raise"] == pytest.approx(-0.18)
@@ -521,9 +492,7 @@ def test_match_video_windows_matches_each_range_with_whole_video_frames(
 ) -> None:
     seq = np.zeros((100, 3), np.float32)
     seen = []
-    monkeypatch.setattr(
-        engine, "template_features", lambda *a, **k: (seq, 30.0, None, "heavy", 1)
-    )
+    monkeypatch.setattr(engine, "template_features", lambda *a, **k: (seq, 30.0, None, "heavy", 1))
 
     def match(window, templates, **_kw):
         seen.append(len(window))
@@ -589,9 +558,7 @@ def pool(monkeypatch, tmp_path):
 
 
 def test_exam_scores_each_rep_and_averages(monkeypatch, pool) -> None:
-    monkeypatch.setattr(
-        exam_pool, "side_repetitions", lambda series, cfg: [(1.0, 2.0), (3.0, 4.0)]
-    )
+    monkeypatch.setattr(exam_pool, "side_repetitions", lambda series, cfg: [(1.0, 2.0), (3.0, 4.0)])
     res = exam_pool.score_exam_pools(
         pool.tpls,
         pool.tpls,
@@ -617,9 +584,7 @@ def test_exam_scores_each_rep_and_averages(monkeypatch, pool) -> None:
     assert res.front_score == pytest.approx((0.7 + 0.4) / 2)
 
 
-def test_exam_notes_incomplete_reps_and_missing_window_compare(
-    monkeypatch, pool
-) -> None:
+def test_exam_notes_incomplete_reps_and_missing_window_compare(monkeypatch, pool) -> None:
     monkeypatch.setattr(exam_pool, "side_repetitions", lambda series, cfg: [(1.0, 2.0)])
     res = exam_pool.score_exam_pools(
         pool.tpls[:1],

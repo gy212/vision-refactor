@@ -1,8 +1,7 @@
-"""按动作编排绑定公共检查定义，提供统一规则目录。"""
+"""按动作编排绑定声明式蓝图，提供全系统唯一规则目录 sanda_v5。"""
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from typing import Any
 
 from core.evaluation.action_catalog import (
@@ -16,22 +15,21 @@ from core.evaluation.action_catalog import (
 from core.evaluation.body_sides import side_label
 from core.evaluation.rules.feedback_config import (
     FeedbackConfig,
-    load_feedback_config,
     default_front_weights,
+    load_feedback_config,
 )
-from core.evaluation.rules.kick_measures import KICK_SEGMENTS, kick_phase_verdict
-from core.evaluation.rules.rule_descriptions import (
-    RULES,
-    STANCE_RULES,
-    PARTS,
-    PRIMARY_VIEW,
-    DOC,
-    SUMMARY,
-    FORMAL,
+from core.evaluation.rules.rule_definitions import (
+    SEGMENT_CHECK_BLUEPRINTS,
+    STANCE_END_BLUEPRINTS,
+    STANCE_START_BLUEPRINTS,
+    CheckBlueprint,
+    describe_rule,
+    required_landmarks,
+    resolve_blueprint,
+    resolve_rule,
 )
-from core.evaluation.rules.rule_definitions import describe_rule, resolve_rule
-from core.evaluation.rules.catalog_measurements import required_landmarks
-from core.evaluation.rules.spec import PhaseVerdict, RuleProfile, RuleSpec
+from core.evaluation.rules.rule_descriptions import PARTS, PRIMARY_VIEW, RULES
+from core.evaluation.rules.spec import RuleProfile, RuleSpec
 from core.evaluation.view_weights import practice_view_weights
 
 __all__ = [
@@ -54,15 +52,11 @@ __all__ = [
     "rule_profile",
 ]
 
-RULE_VERSION = "sanda-rules-mediapipe-2026-11-18-v5.18"
+RULE_VERSION = "sanda-rules-mediapipe-2026-11-21-v5.19"
 
 PROFILE_NAME = "sanda_v5"
 
-DEFAULT_STANCE = (
-    "left"  # 考试与 batch 的左右式：左手、左脚在前，右手护脸（D-3，配置值，以后可改）
-)
-
-KICK_SOURCE = "低鞭腿动作规则标准 2026-11-14"
+DEFAULT_STANCE = "left"  # 考试与 batch 的左右式：左手、左脚在前，右手护脸（D-3，配置值，以后可改）
 
 STATE_LABELS = {
     "candidate": "待教师确认",
@@ -70,71 +64,54 @@ STATE_LABELS = {
     "unable": "证据不足",
 }
 
-ABSENCE_RULES = frozenset({"hip_turn", "arm_swing", "pivot_heel"})
+_ROLE_PREFIX = {"front": "前侧", "rear": "后侧"}
+_PHASE_ORDER = tuple(PHASES)
 
 
-def _append_low_kick_checks(add: Callable[..., None], segment: str) -> None:
-    """按基础低鞭腿动作段组装过程、发力端与收腿阶段检查。"""
-    front = segment == "front_low_kick"
-    role = "front" if front else "rear"
-    guard = "rear" if front else "front"
-    for phase in ("motion", "finish"):
-        for code in ("guard_shoulder", "guard_back", "guard_elbow"):
-            add(code, segment, phase, guard, source=KICK_SOURCE)
-        if not front:
-            add("guard_jaw", segment, phase, "front", source=KICK_SOURCE)
-        for code in ("foot_flexed", "hip_turn", "arm_swing"):
-            add(code, segment, phase, role, source=KICK_SOURCE)
-        for code in ("head_down", "body_lean"):
-            add(code, segment, phase, "", source=KICK_SOURCE)
-    add("pivot_heel", segment, "finish", guard, source=KICK_SOURCE)
-    add("kick_height", segment, "finish", role, source=KICK_SOURCE)
-    if front:
-        add("kick_retract", segment, "retract", "front", source=KICK_SOURCE)
+def _body_part_label(part: str, role: str, stance: str) -> str:
+    prefix = _ROLE_PREFIX.get(role, "")
+    side = side_label(role, stance)
+    suffix = f"（{side}）" if side else ""
+    return f"{prefix}{PARTS[part]}{suffix}"
 
 
-def _append_segment_checks(add: Callable[..., None], segment: str) -> None:
-    """按动作成员和明确标准组装过程与结束检查。"""
-    if segment == "stance":
-        return
-    if segment == "pad_step":
-        for code in ("pad_step_missing", "pad_step_overtake", "pad_step_pause"):
-            add(code, segment, "prepare", "rear", source=KICK_SOURCE)
-        return
-    if segment in {"front_low_kick", "rear_low_kick"}:
-        _append_low_kick_checks(add, segment)
-        return
-    front = segment.startswith("front_")
-    role = "front" if front else "rear"
-    guard = "rear" if front else "front"
-    straight = "straight" in segment
-    source = f"{DOC} 第{10 if front else 11}行" if straight else SUMMARY
-    for phase in ("motion", "finish"):
-        guard_codes = (
-            ("guard_shoulder", "guard_back", "guard_elbow")
-            if straight
-            else ("guard_low", "guard_back", "guard_elbow")
-        )
-        for code in guard_codes:
-            # 后手摆拳前手回收未包含向后拉手，不扩展问卷清单。
-            if segment == "rear_hook" and code == "guard_back":
-                continue
-            add(code, segment, phase, guard, source=source)
-        if segment == "rear_hook":
-            for code in ("guard_low", "guard_elbow"):
-                add(code, segment, phase, "rear", source=SUMMARY)
-            add("guard_recover", segment, phase, "front")
-        if phase == "finish" or front:
-            add("shoulder_level", segment, phase, role)
-        if straight and phase == "finish":
-            add("punch_extension", segment, phase, role, source=FORMAL)
-    if segment == "rear_hook":
-        add("guard_back", segment, "prepare", "rear", source=SUMMARY)
+def _build_check_dict(segment: str, bp: CheckBlueprint, stance: str) -> dict[str, Any]:
+    default_name, part, default_standard = RULES[bp.code]
+    check: dict[str, Any] = {
+        "id": f"{segment}:{bp.phase}:{bp.role}:{bp.code}",
+        "code": bp.code,
+        "name": bp.name or default_name,
+        "bodyPart": _body_part_label(part, bp.role, stance),
+        "segment": segment,
+        "segmentLabel": SEGMENT_LABELS[segment],
+        "phase": bp.phase,
+        "phaseLabel": PHASES[bp.phase],
+        "standard": bp.standard or default_standard,
+        "source": bp.source,
+        "role": bp.role,
+    }
+    describe_rule(check, resolve_blueprint(segment, bp, stance))
+    return check
 
 
-def build_checks(
-    action: str, stance: str, *, pose_variant: str = "full"
-) -> list[dict[str, Any]]:
+def _segment_rank(check: dict[str, Any], order: dict[str, int]) -> int:
+    phase = check["phase"]
+    if phase == "start":
+        return 0
+    if phase == "end":
+        return 99
+    return order[check["segment"]]
+
+
+def _catalog_rank(check: dict[str, Any], segment_order: dict[str, int], end_rank: int) -> int:
+    if check["segment"] == "stance" and check["phase"] == "start":
+        return 0
+    if check["segment"] == "stance" and check["phase"] == "end":
+        return end_rank
+    return segment_order[check["segment"]]
+
+
+def build_checks(action: str, stance: str, *, pose_variant: str = "full") -> list[dict[str, Any]]:
     """所选动作与左右式的检查清单（开始实战式 → 各动作段 → 结束实战式）；多次动作合并在同一检查项里判定。"""
     if (
         not isinstance(action, str)
@@ -144,59 +121,17 @@ def build_checks(
     ):
         raise ValueError("请选择支持的动作和左式/右式")
     _ = pose_variant
-    checks: list[dict[str, Any]] = []
-
-    def add(
-        code: str,
-        segment: str,
-        phase: str,
-        role: str = "",
-        source: str = SUMMARY,
-    ):
-        name, part, standard, _reason = RULES[code]
-        if part.startswith(("front_", "rear_")):
-            role, part = part.split("_", 1)
-        side = side_label(role, stance)
-        prefix = "前侧" if role == "front" else "后侧" if role == "rear" else ""
-        check = {
-            "id": f"{segment}:{phase}:{role}:{code}",
-            "code": code,
-            "name": name,
-            "bodyPart": f"{prefix}{PARTS[part]}" + (f"（{side}）" if side else ""),
-            "segment": segment,
-            "segmentLabel": SEGMENT_LABELS[segment],
-            "phase": phase,
-            "phaseLabel": PHASES[phase],
-            "standard": standard,
-            "source": source,
-            "role": role,
-        }
-        describe_rule(check, resolve_rule(check, stance))
-        checks.append(check)
-
-    for code in STANCE_RULES:
-        add(code, "stance", "start", source=f"{DOC} 第3～9行")
     segments = list(action_segments(action))
+    checks = [_build_check_dict("stance", bp, stance) for bp in STANCE_START_BLUEPRINTS]
     for segment in segments:
-        _append_segment_checks(add, segment)
-    for phase in ("start", "end"):
-        add("guard_jaw", "stance", phase, "rear")
-    if "rear_straight" in segments:
-        for code in ("punch_predrop", "punch_prepull", "punch_preelbow"):
-            add(code, "rear_straight", "prepare", "rear")
-        add("punch_recover", "rear_straight", "recovered", "rear")
-    for code in STANCE_RULES:
-        add(code, "stance", "end", source=f"{DOC} 第12～18行")
-    # 保持开始→前手→后手→结束，再按各阶段身体部位排列；不统计重复次数。
+        for bp in SEGMENT_CHECK_BLUEPRINTS[segment]:
+            checks.append(_build_check_dict(segment, bp, stance))
+    checks.extend(_build_check_dict("stance", bp, stance) for bp in STANCE_END_BLUEPRINTS)
     order = {name: i + 1 for i, name in enumerate(segments)}
     checks.sort(
         key=lambda c: (
-            0
-            if c["phase"] == "start"
-            else 99
-            if c["phase"] == "end"
-            else order[c["segment"]],
-            list(PHASES).index(c["phase"]),
+            _segment_rank(c, order),
+            _PHASE_ORDER.index(c["phase"]),
             c["bodyPart"],
             c["id"],
         )
@@ -220,16 +155,7 @@ def catalog_checks(stance: str = DEFAULT_STANCE) -> list[dict[str, Any]]:
             if seg != "stance" and seg not in segment_order:
                 segment_order[seg] = len(segment_order) + 1
     end_rank = len(segment_order) + 1
-    return sorted(
-        seen.values(),
-        key=lambda c: (
-            0
-            if c["segment"] == "stance" and c["phase"] == "start"
-            else end_rank
-            if c["segment"] == "stance" and c["phase"] == "end"
-            else segment_order[c["segment"]]
-        ),
-    )
+    return sorted(seen.values(), key=lambda c: _catalog_rank(c, segment_order, end_rank))
 
 
 def check_view_weights(check: dict, cfg: FeedbackConfig) -> dict[str, float]:
@@ -239,9 +165,7 @@ def check_view_weights(check: dict, cfg: FeedbackConfig) -> dict[str, float]:
         if "primaryView" in check
         else PRIMARY_VIEW
     )
-    return practice_view_weights(
-        check["code"], check["segment"], cfg.front_weights, primary
-    )
+    return practice_view_weights(check["code"], check["segment"], cfg.front_weights, primary)
 
 
 def rule_profile(action: str, stance: str, cfg: FeedbackConfig) -> RuleProfile:
@@ -257,20 +181,7 @@ def rule_profile(action: str, stance: str, cfg: FeedbackConfig) -> RuleProfile:
                 required=definition.required,
                 view=definition.view,
                 scope=f"{check['segment']}:{check['phase']}",
-                aggregation=(
-                    kick_phase_verdict(
-                        definition.strategy,
-                        cfg,
-                        absence=check["code"] in ABSENCE_RULES,
-                    )
-                    if check["segment"] in KICK_SEGMENTS
-                    else PhaseVerdict(
-                        cfg.min_valid,
-                        cfg.valid_ratio,
-                        cfg.trigger_ratio,
-                        absence=check["code"] in ABSENCE_RULES,
-                    )
-                ),
+                aggregation=definition.build_verdict(cfg),
                 authorization="candidate",
                 source=definition.source,
                 strategy=definition.strategy,
