@@ -101,7 +101,7 @@ def _stance_frame(stance: str = "left", view: str = "side") -> np.ndarray:
 
 
 def test_opt1_and_opt2_knee_179_and_guard_elbow_flare_45_shared_thresholds():
-    assert RULE_VERSION == "sanda-rules-mediapipe-2026-11-22-v5.21"
+    assert RULE_VERSION == "sanda-rules-mediapipe-2026-11-22-v5.22"
     assert PARAMS["stance_knee_max"] == 179.0
     assert KICK_PARAMS["kick_guard_elbow_flare"] == 45.0
     assert FeedbackConfig().kick_guard_elbow_flare == 45.0
@@ -185,7 +185,7 @@ def test_opt3_and_opt6_shared_foot_projection_for_pivot_inward_and_stance_rear_t
     for action in ("front_low_kick", "rear_low_kick"):
         piv_chk = next(c for c in build_checks(action, stance) if c["code"] == "pivot_heel")
         assert piv_chk["name"] == "支撑脚未碾脚内旋"
-        assert "内旋碾转" in piv_chk["standard"] and "脚跟转至领先于脚尖" in piv_chk["standard"]
+        assert "内旋碾地" in piv_chk["standard"] and "脚跟要转到脚尖前面" in piv_chk["standard"]
 
     # 优化 ⑥：实战式后脚外撇仅看侧面后脚（toe_proj < 0 判错，重合 0.0 通过），前脚不查
     bad_spl, val_spl, det_spl = measure_rear_foot_splay(lm, mask, torso, r_hl, r_to, dir_x)
@@ -196,7 +196,10 @@ def test_opt3_and_opt6_shared_foot_projection_for_pivot_inward_and_stance_rear_t
     for phase in ("start", "end"):
         item = stance_checks[f"stance:{phase}::stance_toes"]
         assert item["name"] == "后脚外撇过度（脚尖落后于脚跟）"
-        assert item["standard"] == "实战式后脚斜向前方，侧面看后脚尖不落后于后脚跟（不查前脚）"
+        assert (
+            item["standard"]
+            == "实战式后脚保持斜向前方，不能过度向外撇；侧面看后脚尖落后到后脚跟后面就算错（不查前脚）"
+        )
         assert item["primaryView"] == "side"
         assert item["requiredLandmarks"] == [r_hl, r_to]
 
@@ -384,7 +387,7 @@ def test_opt5_kick_height_upper_bound_uses_support_hip_not_kick_hip(
     )
 
     chk = next(c for c in build_checks(action, stance) if c["code"] == "kick_height")
-    assert "支撑腿髋" in chk["standard"] and "同侧髋" not in chk["standard"]
+    assert "支撑腿胯部" in chk["standard"] and "同侧髋" not in chk["standard"]
 
     # 故意拉开两髋高度：kick_hip=0.50（更高），sup_hip=0.60（更低），sup_knee=0.78，torso=0.30
     # 令 kick_toe=0.55：低于 kick_hip（旧规则会误通过），但高于 sup_hip 达 0.167*torso > 0.06（新规则必判违规）

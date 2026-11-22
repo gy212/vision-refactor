@@ -78,6 +78,22 @@ def _stance_phase_blueprints(phase: str, doc_rows: str) -> tuple[CheckBlueprint,
     )
 
 
+_FRONT_GUARD_JAW_STD = (
+    "发力时前手要及时收回来护住下巴；手腕离嘴边超过约三分之一上身长"
+    f"（{KICK_PARAMS['kick_guard_jaw_dist']:.2f} 倍）算没护住"
+)
+_KICK_GUARD_DROP_STD = (
+    "踢腿时护脸的手不能明显往下掉；前低鞭腿手腕掉到肩下超过约三分之一上身长"
+    f"（{KICK_PARAMS['kick_guard_drop_side']:.2f} 倍）、"
+    f"后低鞭腿超过四分之一上身长（{KICK_PARAMS['kick_guard_drop_front']:.2f} 倍）算掉手"
+)
+_KICK_GUARD_BACK_STD = (
+    "踢腿时护手肘不能明显往背后拉；前低鞭腿退到背后超过约三分之一上身长"
+    f"（{KICK_PARAMS['kick_guard_back_side']:.2f} 倍）、"
+    f"后低鞭腿超过五分之一上身长（{KICK_PARAMS['kick_guard_back_front']:.2f} 倍）算后拉"
+)
+
+
 def _punch_guard_blueprints(
     guard_role: str,
     *,
@@ -85,11 +101,6 @@ def _punch_guard_blueprints(
     param_overrides: Mapping[str, float],
     include_jaw: bool = False,
 ) -> tuple[CheckBlueprint, ...]:
-    back_standard = (
-        "正面看清护手肘，试算肘有没有明显退到身体后方；允许正常收回"
-        if guard_role == "front"
-        else None
-    )
     items: list[CheckBlueprint] = []
     for phase in ("motion", "finish"):
         items.append(
@@ -105,7 +116,6 @@ def _punch_guard_blueprints(
                 "elbow_behind_body",
                 USER_20261105_SOURCE,
                 param_overrides,
-                standard=back_standard,
             )
         )
         items.append(
@@ -123,7 +133,7 @@ def _punch_guard_blueprints(
                     source,
                     param_overrides,
                     name="前手未护住下颚",
-                    standard="后手出拳过程中前手保持护住下颚（手腕距口部不超过0.34倍躯干长）",
+                    standard=_FRONT_GUARD_JAW_STD,
                 )
             )
     return tuple(items)
@@ -164,10 +174,14 @@ def _punch_posture_blueprints(att_role: str) -> tuple[CheckBlueprint, ...]:
     """全部 4 个拳法段共用的 10 项公共姿态与发力规则包。"""
     knee_params = {"stance_knee_max": PARAMS["stance_knee_max"]}
     hip_view = "front" if att_role == "front" else "side"
-    hip_side_word = "正面看前手" if att_role == "front" else "侧面看后手"
-    hip_std = f"{hip_side_word}出拳时两髋水平宽相对起始护位需明显收窄（比值不高于0.80）"
-    head_std = "侧面观察出拳过程中鼻相对双肩中点垂向位置相对起始护位下压不超过0.030倍躯干长"
-    knee_std = f"出拳时两膝保持微屈；任一膝角超过{PARAMS['stance_knee_max']:g}°才提醒"
+    hip_std = (
+        None
+        if att_role == "front"
+        else (
+            "打后手拳要充分拧腰送胯；侧面看两胯宽度没比站好时收窄到 "
+            f"{KICK_PARAMS['hip_turn_width_ratio'] * 100:g}% 以内，算没充分转腰"
+        )
+    )
     items: list[CheckBlueprint] = [
         CheckBlueprint(
             "punch_unrecovered",
@@ -194,7 +208,6 @@ def _punch_posture_blueprints(att_role: str) -> tuple[CheckBlueprint, ...]:
                     "nose_shoulder_drop",
                     HOOK_STEP_SOURCE,
                     name="出拳时低头",
-                    standard=head_std,
                 ),
                 CheckBlueprint(
                     "stance_knee",
@@ -204,7 +217,6 @@ def _punch_posture_blueprints(att_role: str) -> tuple[CheckBlueprint, ...]:
                     HOOK_STEP_SOURCE,
                     knee_params,
                     name="出拳时单腿或双腿伸得过直",
-                    standard=knee_std,
                 ),
                 CheckBlueprint(
                     "hip_turn",
@@ -226,7 +238,7 @@ def _punch_posture_blueprints(att_role: str) -> tuple[CheckBlueprint, ...]:
             "punch_heel_lift_pivot",
             HOOK_STEP_SOURCE,
             name="出拳发力脚未蹬转提踵",
-            standard="侧面看出拳打到瞬间发力脚相对起始护位应蹬转提踵（提踵增量不少于0.05倍躯干长）",
+            standard="出拳发力时同侧脚要蹬地提跟拧转；侧面看发力脚脚跟没比站好时明显抬起（提跟不足 0.05 倍上身长）算没蹬转",
         )
     )
     return tuple(items)
@@ -259,7 +271,6 @@ def _kick_guard_blueprints(
     guard_back_key: str,
     include_jaw: bool,
 ) -> list[CheckBlueprint]:
-    side_word = "侧面" if guard_role == "rear" else "正面"
     drop_params = {**KICK_PARAMS, "guard_shoulder_drop": KICK_PARAMS[guard_drop_key]}
     back_params = {**KICK_PARAMS, "guard_back": KICK_PARAMS[guard_back_key]}
     jaw_params = {**KICK_PARAMS, "punch_recovery": KICK_PARAMS["kick_guard_jaw_dist"]}
@@ -271,10 +282,7 @@ def _kick_guard_blueprints(
             "wrist_shoulder_drop",
             KICK_SOURCE,
             drop_params,
-            standard=(
-                f"{side_word}看非踢腿侧护手腕相对同侧肩向下掉落不超过"
-                f"{KICK_PARAMS[guard_drop_key]:.2f}倍躯干长"
-            ),
+            standard=_KICK_GUARD_DROP_STD,
         ),
         CheckBlueprint(
             "guard_back",
@@ -283,10 +291,7 @@ def _kick_guard_blueprints(
             "elbow_behind_body",
             KICK_SOURCE,
             back_params,
-            standard=(
-                f"{side_word}看非踢腿侧护手肘退到身体后方不超过"
-                f"{KICK_PARAMS[guard_back_key]:.2f}倍躯干长"
-            ),
+            standard=_KICK_GUARD_BACK_STD,
             trigger_ratio_override=0.01,
         ),
         CheckBlueprint(
@@ -298,7 +303,8 @@ def _kick_guard_blueprints(
             KICK_PARAMS,
             name="护手开肘亮肋",
             standard=(
-                f"正面非踢腿侧大臂与躯干夹角不超过{KICK_PARAMS['kick_guard_elbow_flare']:g}°"
+                "踢腿时护手大臂贴近上身护住肋部；正面看大臂和身体夹角张开超过 "
+                f"{KICK_PARAMS['kick_guard_elbow_flare']:g}° 算开肘亮肋"
             ),
         ),
     ]
@@ -312,10 +318,7 @@ def _kick_guard_blueprints(
                 KICK_SOURCE,
                 jaw_params,
                 name="前手未护住下颚",
-                standard=(
-                    f"原地后低鞭腿起腿过程中前手腕距口部不超过"
-                    f"{KICK_PARAMS['kick_guard_jaw_dist']:.2f}倍躯干长"
-                ),
+                standard=_FRONT_GUARD_JAW_STD,
             )
         )
     return items
@@ -393,10 +396,14 @@ def _low_kick_blueprints(
 
 
 _FRONT_STRAIGHT_LEVEL_STD = (
-    f"侧面看出拳手臂与身体的夹角；{90 - PARAMS['punch_level_deviation']:g}°"
-    f"到{90 + PARAMS['punch_level_deviation']:g}°不提示高低偏差"
+    "前手直拳平直往前打，手臂大约与身体成直角；侧面看手臂和身体夹角低于 "
+    f"{90 - PARAMS['punch_level_deviation']:g}°（打太低）或高于 "
+    f"{90 + PARAMS['punch_level_deviation']:g}°（打太高）算偏离肩平"
 )
-_HOOK_LEVEL_STD = "摆拳打到瞬间手腕与同侧肩大致齐平（高度差不超过0.20倍躯干长）"
+_HOOK_LEVEL_STD = (
+    "摆拳打到瞬间拳头要和肩膀大致齐平；手腕高于或低于肩膀超过约五分之一上身长"
+    f"（{HOOK_SHOULDER_PARAMS['shoulder_height']:.2f} 倍）算偏高或偏低"
+)
 
 STANCE_START_BLUEPRINTS: tuple[CheckBlueprint, ...] = _stance_phase_blueprints("start", "第3～9行")
 STANCE_END_BLUEPRINTS: tuple[CheckBlueprint, ...] = _stance_phase_blueprints("end", "第12～18行")

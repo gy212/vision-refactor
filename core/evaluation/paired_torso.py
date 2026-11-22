@@ -1,4 +1,5 @@
 """同步双机位的肩线投影比，用于上步直拳的实战式朝向检查。"""
+
 from __future__ import annotations
 
 import math
@@ -39,13 +40,14 @@ def paired_torso_measurements(views: dict) -> dict[str, tuple[np.ndarray, np.nda
 
 def paired_torso_check(scope: str) -> PhaseCheck:
     """把共同证据交给现有相位引擎聚合；单视角入口保持无法判断。"""
+
     def check(lm, mask, baseline, baseline_mask, ctx):
         if ctx.paired_torso is None:
             return np.zeros(len(lm), bool), np.zeros(len(lm), bool), {}
         values, observed = ctx.paired_torso
         indices = ctx.phase_windows[scope]
         ratio, valid = values[indices], observed[indices]
-        details = {"双视角归一肩宽比（正/侧）": (ratio, "倍（正交机位近似）")}
+        details = {"正面与侧面肩宽比": (ratio, "倍")}
         return ratio > FRONTAL_PROJECTION_RATIO, valid, details
 
     return check

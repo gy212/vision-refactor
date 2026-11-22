@@ -1,3 +1,12 @@
+## 2026-11-22: [docs] 改写全量 46 条检查标准为大白话并简化双摄肩宽比显示（v5.22）
+
+- 问题：12 类动作全部 149 条检查项的 `standard` 文案与双摄肩宽比测量项显示名此前仍含“倍躯干长”“正交机位近似”“垂向位置”“归一肩宽比”“锁定角”等程序术语，不利于教练与学生直接阅读。
+- 修改：
+  1. **全量 46 条大白话标准改写（纯文案层，零公式/阈值/视角/点位/check id 变动）**：按已确认对照表逐条更新 `core/evaluation/rules/rule_descriptions.py` 与 `core/evaluation/rules/segment_blueprints.py` 的全部 46 条唯一共享标准（保留 `PARAMS`/`KICK_PARAMS`/`HOOK_SHOULDER_PARAMS` 单一事实来源插值，统一去掉拳法/低鞭腿不必要的重复覆盖），覆盖全部 12 动作 149 条目录检查项。
+  2. **简化双摄肩宽比显示名与版本升级**：`core/evaluation/paired_torso.py` 将 `"双视角归一肩宽比（正/侧）"`（单位 `"倍（正交机位近似）"`）简化为 `"正面与侧面肩宽比"`（单位 `"倍"`）；升级 `core/evaluation/rules/sanda_v5.py` `RULE_VERSION = "sanda-rules-mediapipe-2026-11-22-v5.22"`。
+  3. **结构化护栏与单测同步**：在 `tests/test_rule_reuse.py` 新增 `test_catalog_standards_are_plain_language_and_paired_torso_label_simplified` 护栏（断言全量 149 项零黑话、精确 46 条唯一共享标准及 `paired_torso` 显示名与单位），同步更新 `tests/test_rule_evidence_entries.py` 与 `tests/test_stance_and_kick_rules.py` 的新标准子串断言，并修补 `tests/test_timing_reference_selection.py` 中 `capture` 桩未透传 `**kwargs` 致 `step_combo_windows(..., action=...)` 报错的回归问题；确认 `pose33_v3/golden.json` 与 14 份 HTML golden 零漂移。
+- 验证：WSL `./.venv/wsl/bin/python` 运行 `square check .`、`ruff format --check --line-length 100`、`ruff check`、`git -c core.whitespace=cr-at-eol diff --check` 与 `test_timing_reference_selection.py` 及 26 套门禁/规则/黄金基线/报告/考试/开关 pytest 全部通过。
+
 ## 2026-11-22: [feat] 实施实战式与低鞭腿 6 项既有规则优化（v5.21）
 
 - 问题：客户与用户复核旧规则后锁定 6 项优化：实战式/拳法膝角 175° 略严、低鞭腿护手开肘 30° 过严、低鞭腿支撑脚碾脚实为内旋（脚跟转至领先于脚尖）而非外旋、低鞭腿 `finish` 锚点帧未对准侧面腿蹬出最远帧且 `arm_swing` 不应在 `motion` 误报、低鞭腿踢高上限应以支撑腿髋（异侧髋）为准而非同侧髋、实战式 `stance_toes` 应改为侧面只查后脚尖是否落后于后脚跟（不查前脚）。

@@ -360,3 +360,38 @@ def test_hook_common_guard_issues_group_across_motion_and_finish():
         grouped = group_action_issues(model.candidate_checks, segment)
         assert len(grouped) == 1
         assert len(grouped[0].members) == 2
+
+
+def test_catalog_standards_are_plain_language_and_paired_torso_label_simplified():
+    """护栏：全量 149 条目录标准均为大白话（零程序黑话，46 条唯一共享标准），且双摄肩宽比显示名已简化。"""
+    from core.evaluation.paired_torso import paired_torso_check
+    from core.evaluation.rules.spec import RuleContext
+
+    forbidden_jargon = ("躯干长", "正交机位", "垂向位置", "归一肩宽比", "锁定角")
+    left_catalog = catalog_checks("left")
+    right_catalog = catalog_checks("right")
+    assert len(left_catalog) == 149
+    for item in (*left_catalog, *right_catalog):
+        std = item["standard"]
+        assert std, f"{item['id']} 缺少标准文案"
+        for term in forbidden_jargon:
+            assert term not in std, f"{item['id']} 的标准仍含程序黑话 {term!r}: {std}"
+
+    unique_standards = {item["standard"] for item in left_catalog}
+    assert unique_standards == {item["standard"] for item in right_catalog}
+    assert len(unique_standards) == 46
+
+    # 验证 paired_torso 测量项显示名与单位同步简化（不再出现“双视角归一肩宽比/正交机位近似”）
+    lm = np.zeros((4, 33, 4), dtype=float)
+    mask = np.ones((4, 33), dtype=bool)
+    ctx = RuleContext(
+        view="front",
+        action="stance",
+        stance="left",
+        phase_windows={"stance:start": np.arange(4)},
+        paired_torso=(np.full(4, 2.0), np.ones(4, dtype=bool)),
+    )
+    bad, valid, details = paired_torso_check("stance:start")(lm, mask, lm, mask, ctx)
+    assert bad.all() and valid.all()
+    assert list(details.keys()) == ["正面与侧面肩宽比"]
+    assert details["正面与侧面肩宽比"][1] == "倍"
