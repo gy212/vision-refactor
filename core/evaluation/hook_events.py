@@ -24,6 +24,7 @@ HOOK_SIDE_REAR_REACH = 0.25
 HOOK_FRONT_FRONT_REACH = 0.20
 HOOK_FRONT_REAR_REACH = 0.25
 HOOK_RETURN_REACH = 0.10
+_HOOK_PEAK_LEADING_SECONDS = 0.25
 
 
 @dataclass(frozen=True)
@@ -66,9 +67,25 @@ def hook_reference(
     return HookReference(points, motion_frames, direction_frames, facing, reason)
 
 
+def _leading_arc_mask(
+    arc_all: np.ndarray,
+    values: np.ndarray,
+    thresh: float,
+    times: np.ndarray,
+) -> np.ndarray:
+    """返回首次到达峰值平台带后前沿区间内的布尔掩码，隔离长滞留尾端微抖。"""
+    plateau = arc_all[values >= thresh]
+    t_plateau = float(times[plateau[0]]) if plateau.size else float(times[arc_all[0]])
+    keep = times[arc_all] <= t_plateau + _HOOK_PEAK_LEADING_SECONDS + 1e-9
+    if not keep.any():
+        keep[0] = True
+    return keep
+
+
 def _refine_hook_peak(
     event: MotionEvent,
     signal: np.ndarray,
+    times: np.ndarray,
     base: float,
     lm: np.ndarray,
     mask: np.ndarray,
@@ -77,38 +94,51 @@ def _refine_hook_peak(
     stance: str,
     view: str,
 ) -> MotionEvent:
-    """在有效出拳弧段内精修打到瞬间峰值：正面取最内摆顶点，侧面取小臂投影最短帧。"""
+    """在首次到达峰值平台的前沿弧段内精修打到瞬间：正面取最内摆顶点，侧面取小臂投影最短帧。"""
     peak_val = float(signal[event.peak])
     if not np.isfinite(peak_val) or peak_val <= base:
         return event
     arc_thresh = base + 0.65 * (peak_val - base)
     span = np.arange(event.start, event.end + 1)
-    arc = span[np.isfinite(signal[span]) & (signal[span] >= arc_thresh)]
-    if arc.size == 0:
+    arc_all = span[np.isfinite(signal[span]) & (signal[span] >= arc_thresh)]
+    if arc_all.size == 0:
         return event
+    plateau_thresh = base + 0.85 * (peak_val - base)
     att_sh, el, wr, *_ = sides_for_stance(role, stance)
     if view == "front":
         opp_role = "rear" if role == "front" else "front"
         opp_sh = sides_for_stance(opp_role, stance)[0]
-        sh_dx = lm[arc, opp_sh, 0] - lm[arc, att_sh, 0]
-        sh_width = segment_lengths(lm[arc], att_sh, opp_sh)
+        sh_dx = lm[arc_all, opp_sh, 0] - lm[arc_all, att_sh, 0]
+        sh_width = segment_lengths(lm[arc_all], att_sh, opp_sh)
         ok = (
-            mask[arc][:, (att_sh, opp_sh, wr)].all(axis=1)
+            mask[arc_all][:, (att_sh, opp_sh, wr)].all(axis=1)
             & (np.abs(sh_dx) > 1e-4)
             & (sh_width > 1e-4)
         )
         if not ok.any():
-            return event
-        cand = arc[ok]
-        mid_x = 0.5 * (lm[cand, att_sh, 0] + lm[cand, opp_sh, 0])
-        inward = np.sign(lm[cand, opp_sh, 0] - lm[cand, att_sh, 0])
-        cw = segment_lengths(lm[cand], att_sh, opp_sh)
-        signed_cross = (lm[cand, wr, 0] - mid_x) * inward / cw
-        refined = int(cand[int(np.argmax(signed_cross))])
+            arc = arc_all[_leading_arc_mask(arc_all, signal[arc_all], plateau_thresh, times)]
+            fallback_peak = int(arc[int(np.argmax(signal[arc]))])
+            return MotionEvent(event.start, fallback_peak, event.end, event.ending)
+        cand_all = arc_all[ok]
+        mid_x = 0.5 * (lm[cand_all, att_sh, 0] + lm[cand_all, opp_sh, 0])
+        inward = np.sign(lm[cand_all, opp_sh, 0] - lm[cand_all, att_sh, 0])
+        cw = segment_lengths(lm[cand_all], att_sh, opp_sh)
+        signed_cross = (lm[cand_all, wr, 0] - mid_x) * inward / cw
+        max_cross = float(np.max(signed_cross))
+        if max_cross > 0.0:
+            keep = _leading_arc_mask(cand_all, signed_cross, 0.85 * max_cross, times)
+        else:
+            min_cross = float(np.min(signed_cross))
+            cross_thresh = min_cross + 0.85 * (max_cross - min_cross)
+            keep = _leading_arc_mask(cand_all, signed_cross, cross_thresh, times)
+        cand = cand_all[keep]
+        refined = int(cand[int(np.argmax(signed_cross[keep]))])
         return MotionEvent(event.start, refined, event.end, event.ending)
+    arc = arc_all[_leading_arc_mask(arc_all, signal[arc_all], plateau_thresh, times)]
+    fallback_peak = int(arc[int(np.argmax(signal[arc]))])
     ok = mask[arc][:, (el, wr)].all(axis=1) & (torso[arc] > 1e-4)
     if not ok.any():
-        return event
+        return MotionEvent(event.start, fallback_peak, event.end, event.ending)
     cand = arc[ok]
     forearm_norm = segment_lengths(lm[cand], el, wr) / torso[cand]
     refined = int(cand[int(np.argmin(forearm_norm))])
@@ -145,7 +175,7 @@ def _observe_front_hook(
     )
     events = settled_returns(events, distance, times, stable, cfg, rise=rise)
     refined = [
-        _refine_hook_peak(ev, distance, 0.0, lm, mask, torso, role, stance, "front")
+        _refine_hook_peak(ev, distance, times, 0.0, lm, mask, torso, role, stance, "front")
         for ev in events
     ]
     return PunchObservation(distance, 0.0, refined)
@@ -188,7 +218,7 @@ def observe_hook(
     )
     events = settled_returns(events, reach, times, stable, cfg, rise=initial + rise)
     refined = [
-        _refine_hook_peak(ev, reach, initial, lm, mask, torso, role, stance, "side")
+        _refine_hook_peak(ev, reach, times, initial, lm, mask, torso, role, stance, "side")
         for ev in events
     ]
     return PunchObservation(reach, initial, refined)

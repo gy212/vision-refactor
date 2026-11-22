@@ -209,6 +209,10 @@ def _make_step_hook_views(
     }
 
 
+stance_pose = _stance_pose
+make_step_hook_views = _make_step_hook_views
+
+
 @pytest.mark.parametrize("stance,facing", [("left", 1.0), ("right", -1.0)])
 def test_hook_arm_bend_distinguishes_tight_normal_and_straight(stance, facing):
     lm = np.repeat(_stance_pose(stance, "side")[None], 4, axis=0)

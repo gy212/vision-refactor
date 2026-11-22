@@ -62,30 +62,40 @@ def step_footwork_windows(
     times: np.ndarray,
     diagnostics: dict,
 ) -> dict[tuple[str, str], np.ndarray]:
-    """为每次上步组合生成共享步法窗口，向后留足余量覆盖落脚滞后且不越入相邻次。"""
+    """为每次上步组合生成共享步法窗口，相邻两次按中点截断并保证帧区间严格不相交。"""
     if not repetitions or len(times) == 0:
         return {}
-    parts: list[np.ndarray] = []
-    instances = diagnostics["phaseInstances"]
     last_idx = len(times) - 1
-    for idx, rep in enumerate(repetitions):
-        prev_end = repetitions[idx - 1]["end"] if idx > 0 else float(times[0])
-        next_start = (
-            repetitions[idx + 1]["start"] if idx + 1 < len(repetitions) else float(times[-1])
-        )
-        start_t = max(prev_end, float(rep["start"]) - STEP_PRE_LEAD_SECONDS)
+    spans: list[tuple[int, int]] = []
+    for rep in repetitions:
+        start_t = max(float(times[0]), float(rep["start"]) - STEP_PRE_LEAD_SECONDS)
         end_t = min(
-            next_start,
+            float(times[-1]),
             max(float(rep["end"]), float(rep["rearPeak"]) + STEP_POST_TAIL_SECONDS),
         )
         lo = min(last_idx, max(0, int(np.searchsorted(times, start_t, side="left"))))
         hi = min(last_idx, max(lo, int(np.searchsorted(times, end_t, side="right")) - 1))
+        spans.append((lo, hi))
+    for idx in range(1, len(spans)):
+        prev_lo, prev_hi = spans[idx - 1]
+        cur_lo, cur_hi = spans[idx]
+        mid_t = 0.5 * (float(repetitions[idx - 1]["end"]) + float(repetitions[idx]["start"]))
+        # 中点帧只归后一次（-1e-9 消浮点误差），严格保证相邻两次步法帧区间互不相交。
+        boundary = int(np.searchsorted(times, mid_t - 1e-9, side="left"))
+        if prev_lo < cur_hi:
+            boundary = min(max(boundary, prev_lo + 1), cur_hi)
+        spans[idx - 1] = (prev_lo, min(prev_hi, boundary - 1))
+        spans[idx] = (max(cur_lo, boundary), cur_hi)
+    parts: list[np.ndarray] = []
+    instances = diagnostics["phaseInstances"]
+    for rep, (lo, hi) in zip(repetitions, spans):
+        if hi < lo:
+            continue
         indices = np.arange(lo, hi + 1)
-        if indices.size:
-            parts.append(indices)
-            instances.append(
-                phase_instance("step_footwork", "motion", int(rep["index"]), indices, times)
-            )
+        parts.append(indices)
+        instances.append(
+            phase_instance("step_footwork", "motion", int(rep["index"]), indices, times)
+        )
     if not parts:
         return {}
     return {("step_footwork", "motion"): np.unique(np.concatenate(parts))}

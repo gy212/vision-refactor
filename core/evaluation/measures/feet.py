@@ -220,7 +220,45 @@ def foot_forward_progression(
     return FootProgression(True, ok, disp, rx_sm, times, torso, best_start, best_end)
 
 
-def foot_settle_index(progression: FootProgression) -> int:
+def _first_planted_plateau(
+    fin_idx: np.ndarray,
+    rx_sm: np.ndarray,
+    vx_eff: np.ndarray,
+    times: np.ndarray,
+    min_progress: float,
+    peak_time: float,
+) -> int | None:
+    """定位推进后首次跨过出拳峰值且持续静止的落稳平台，避免窗尾下一次预迈步抬高目标位置。"""
+    n_fin = len(fin_idx)
+    for pos in range(n_fin):
+        k = int(fin_idx[pos])
+        if float(rx_sm[k]) < min_progress or abs(float(vx_eff[k])) >= 0.08:
+            continue
+        run_min = run_max = float(rx_sm[k])
+        end_pos = pos
+        while end_pos + 1 < n_fin:
+            nxt = int(fin_idx[end_pos + 1])
+            if abs(float(vx_eff[nxt])) >= 0.08:
+                break
+            val = float(rx_sm[nxt])
+            cand_min = min(run_min, val)
+            cand_max = max(run_max, val)
+            if cand_max - cand_min > 0.015:
+                break
+            run_min, run_max = cand_min, cand_max
+            end_pos += 1
+        t_start = float(times[k])
+        t_end = float(times[int(fin_idx[end_pos])])
+        if end_pos - pos + 1 >= 3 and t_end - t_start >= 0.20 - 1e-9 and t_end >= peak_time - 1e-9:
+            return k
+    return None
+
+
+def foot_settle_index(
+    progression: FootProgression,
+    *,
+    peak_time: float | None = None,
+) -> int:
     """在单步前推序列中定位速度峰值后首次落稳的有限帧下标。"""
     rx_sm = progression.smoothed_x
     times = progression.times
@@ -245,13 +283,24 @@ def foot_settle_index(progression: FootProgression) -> int:
         vx_eff[fin_idx[miss_fin]] = fwd_vx[miss_fin]
     start_idx = progression.start_idx
     peak_idx = progression.peak_idx
+    plateau_idx = None
+    if peak_time is not None:
+        min_progress = max(0.15, 0.5 * progression.displacement)
+        plateau_idx = _first_planted_plateau(
+            fin_idx[fin_idx >= start_idx], rx_sm, vx_eff, times, min_progress, peak_time
+        )
+    cap_idx = plateau_idx if plateau_idx is not None else peak_idx
     step_fin = (
-        fin_idx[(fin_idx >= start_idx) & (fin_idx <= peak_idx)] if peak_idx > start_idx else fin_idx
+        fin_idx[(fin_idx >= start_idx) & (fin_idx <= cap_idx)] if cap_idx > start_idx else fin_idx
     )
     if step_fin.size == 0:
         step_fin = fin_idx
     pk_v_idx = int(step_fin[int(np.argmax(vx_eff[step_fin]))])
-    tail_fin = fin_idx[fin_idx >= pk_v_idx]
+    tail_fin = (
+        fin_idx[(fin_idx >= pk_v_idx) & (fin_idx <= plateau_idx)]
+        if plateau_idx is not None and plateau_idx >= pk_v_idx
+        else fin_idx[fin_idx >= pk_v_idx]
+    )
     rx_target = float(np.max(rx_sm[tail_fin]))
     for idx in tail_fin:
         k = int(idx)
@@ -351,6 +400,118 @@ def measure_step_feet_together(
     return feet_ratio < min_ratio, valid, {"侧身帧两脚跟水平距与侧肩宽比": (feet_ratio, "倍侧肩宽")}
 
 
+def _single_foot_lag(
+    lm: np.ndarray,
+    mask: np.ndarray,
+    times: np.ndarray,
+    ankle: int,
+    peak: float,
+    *,
+    facing: float | None,
+    min_step_disp: float,
+    cutoff_after_peak: float | None = None,
+    min_valid_ratio: float = 0.6,
+) -> tuple[bool, float, np.ndarray, np.ndarray]:
+    """测量单只脚相对对应出拳峰值的落稳正向滞后，返回 (是否可测, 滞后秒数, 覆盖掩码, 证据掩码)。"""
+    n = len(lm)
+    empty = np.zeros(n, dtype=bool)
+    torso = chain_torso(lm, mask)
+    foot_valid = mask[:, ankle] & (torso > 1e-4)
+    used_cut = False
+    in_cut = np.ones(n, dtype=bool)
+    if cutoff_after_peak is not None:
+        cut = np.flatnonzero(times <= peak + cutoff_after_peak)
+        if cut.size >= 5:
+            used_cut = True
+            in_cut = np.zeros(n, dtype=bool)
+            in_cut[cut] = True
+            prog = foot_forward_progression(lm[cut], mask[cut], times[cut], ankle, facing)
+        else:
+            prog = foot_forward_progression(lm, mask, times, ankle, facing)
+    else:
+        prog = foot_forward_progression(lm, mask, times, ankle, facing)
+    if not prog.ok:
+        return False, float("nan"), empty, empty
+    if used_cut and float(prog.valid_mask.mean()) < min_valid_ratio:
+        return False, float("nan"), empty, empty
+    lag = 0.0
+    if prog.displacement >= min_step_disp:
+        settle_t = float(prog.times[foot_settle_index(prog, peak_time=float(peak))])
+        lag = max(0.0, settle_t - float(peak))
+    if used_cut:
+        evidence_mask = foot_valid & in_cut
+        coverage_mask = evidence_mask | ~in_cut
+    else:
+        evidence_mask = foot_valid
+        coverage_mask = foot_valid
+    return True, lag, coverage_mask, evidence_mask
+
+
+def measure_step_landing_frames(
+    lm: np.ndarray,
+    mask: np.ndarray,
+    times: np.ndarray,
+    front_ankle: int,
+    rear_ankle: int,
+    *,
+    front_peak: float | None,
+    rear_peak: float | None,
+    max_lag: float = 0.20,
+    min_step_disp: float = 0.15,
+    facing: float | None = None,
+    min_valid_ratio: float = 0.6,
+) -> tuple[np.ndarray, np.ndarray, dict[str, tuple[float, str]]]:
+    """脚步落稳同步帧级测量：返回 (违规证据帧掩码, 有效覆盖掩码, 测量明细)，隔离截断尾窗无关遮挡。"""
+    n = len(lm)
+    invalid = np.zeros(n, dtype=bool)
+    label = "脚步落稳滞后出拳峰值"
+    if n < 2 or (front_peak is None and rear_peak is None):
+        return invalid, invalid.copy(), {label: (float("nan"), "秒")}
+    measured: list[tuple[bool, float, np.ndarray, np.ndarray]] = []
+    if front_peak is not None:
+        measured.append(
+            _single_foot_lag(
+                lm,
+                mask,
+                times,
+                front_ankle,
+                front_peak,
+                facing=facing,
+                min_step_disp=min_step_disp,
+                cutoff_after_peak=0.60,
+                min_valid_ratio=min_valid_ratio,
+            )
+        )
+    if rear_peak is not None:
+        measured.append(
+            _single_foot_lag(
+                lm,
+                mask,
+                times,
+                rear_ankle,
+                rear_peak,
+                facing=facing,
+                min_step_disp=min_step_disp,
+                min_valid_ratio=min_valid_ratio,
+            )
+        )
+    violated = [(lag, cov, ev) for ok, lag, cov, ev in measured if ok and lag > max_lag]
+    if violated:
+        valid_mask = np.zeros(n, dtype=bool)
+        bad_mask = np.zeros(n, dtype=bool)
+        for _, cov, ev in violated:
+            valid_mask |= cov
+            bad_mask |= ev
+        return bad_mask, valid_mask, {label: (max(lag for lag, _, _ in violated), "秒")}
+    if any(not ok for ok, _, _, _ in measured):
+        return invalid, invalid.copy(), {label: (float("nan"), "秒")}
+    pass_mask = np.ones(n, dtype=bool)
+    for _, _, cov, _ in measured:
+        pass_mask &= cov
+    max_observed = max(lag for _, lag, _, _ in measured)
+    return invalid, pass_mask, {label: (max_observed, "秒")}
+
+
 def measure_step_landing_lag(
     lm: np.ndarray,
     mask: np.ndarray,
@@ -363,47 +524,20 @@ def measure_step_landing_lag(
     max_lag: float = 0.20,
     min_step_disp: float = 0.15,
     facing: float | None = None,
+    min_valid_ratio: float = 0.6,
 ) -> tuple[bool, np.ndarray, dict[str, tuple[float, str]]]:
     """脚步落稳同步测量：对比前后脚落稳时刻与对应出拳峰值时刻的最大正向滞后。"""
-    n = len(lm)
-    invalid = np.zeros(n, dtype=bool)
-    label = "脚步落稳滞后出拳峰值"
-    if n < 2 or (front_peak is None and rear_peak is None):
-        return False, invalid, {label: (float("nan"), "秒")}
-    front_prog = None
-    if front_peak is not None:
-        front_cut = np.flatnonzero(times <= front_peak + 0.60)
-        if front_cut.size >= 5:
-            front_prog = foot_forward_progression(
-                lm[front_cut], mask[front_cut], times[front_cut], front_ankle, facing
-            )
-        else:
-            front_prog = foot_forward_progression(lm, mask, times, front_ankle, facing)
-    rear_prog = (
-        foot_forward_progression(lm, mask, times, rear_ankle, facing)
-        if rear_peak is not None
-        else None
+    bad_mask, valid_mask, details = measure_step_landing_frames(
+        lm,
+        mask,
+        times,
+        front_ankle,
+        rear_ankle,
+        front_peak=front_peak,
+        rear_peak=rear_peak,
+        max_lag=max_lag,
+        min_step_disp=min_step_disp,
+        facing=facing,
+        min_valid_ratio=min_valid_ratio,
     )
-    torso = chain_torso(lm, mask)
-    if front_peak is not None and rear_peak is not None:
-        valid_mask = mask[:, front_ankle] & mask[:, rear_ankle] & (torso > 1e-4)
-    elif rear_peak is not None:
-        valid_mask = mask[:, rear_ankle] & (torso > 1e-4)
-    else:
-        valid_mask = mask[:, front_ankle] & (torso > 1e-4)
-    has_prog = (front_prog is not None and front_prog.ok) or (
-        rear_prog is not None and rear_prog.ok
-    )
-    if not has_prog:
-        return False, invalid, {label: (float("nan"), "秒")}
-    lags: list[float] = []
-    if front_peak is not None and front_prog is not None and front_prog.ok:
-        if front_prog.displacement >= min_step_disp:
-            settle_t = float(front_prog.times[foot_settle_index(front_prog)])
-            lags.append(max(0.0, settle_t - float(front_peak)))
-    if rear_peak is not None and rear_prog is not None and rear_prog.ok:
-        if rear_prog.displacement >= min_step_disp:
-            settle_t = float(rear_prog.times[foot_settle_index(rear_prog)])
-            lags.append(max(0.0, settle_t - float(rear_peak)))
-    max_observed = max(lags) if lags else 0.0
-    return bool(max_observed > max_lag), valid_mask, {label: (max_observed, "秒")}
+    return bool(bad_mask.any()), valid_mask, details

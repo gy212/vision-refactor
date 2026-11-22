@@ -101,12 +101,11 @@ def combo_transition_windows(
     parts: list[np.ndarray] = []
     instances = diagnostics["phaseInstances"]
     previous_end = int(baseline[-1])
-    for rear in rear_motions:
+    for rep_idx, rear in enumerate(rear_motions, 1):
         paired = preceding_punch(front_motions, previous_end + 1, rear.start, rear_peak=rear.peak)
         previous_end = rear.end
         if paired is None:
             continue
-        rep_idx = len(pairs) + 1
         pairs.append(
             {
                 "repetition": rep_idx,

@@ -68,6 +68,7 @@ class StrategySpec:
     default_view: str | Callable[[str], str]
     paired: bool = False
     absence: bool = False
+    per_instance: bool = False
     valid_ratio_override: float | None = None
     trigger_ratio_override: float | None = None
 
@@ -87,6 +88,7 @@ class RuleDefinition:
     required_views: tuple[str, ...]
     evidence_joints_by_view: Mapping[str, tuple[int, ...]]
     absence: bool = False
+    per_instance: bool = False
     valid_ratio_override: float | None = None
     trigger_ratio_override: float | None = None
 
@@ -104,7 +106,13 @@ class RuleDefinition:
             if self.trigger_ratio_override is None
             else self.trigger_ratio_override
         )
-        return PhaseVerdict(cfg.min_valid, valid_ratio, trigger_ratio, absence=self.absence)
+        return PhaseVerdict(
+            cfg.min_valid,
+            valid_ratio,
+            trigger_ratio,
+            absence=self.absence,
+            per_instance=self.per_instance,
+        )
 
 
 def _register(*specs: StrategySpec) -> dict[str, StrategySpec]:
@@ -159,6 +167,7 @@ STRATEGY_REGISTRY: dict[str, StrategySpec] = _register(
         punch_landmarks,
         build_punch_check,
         "side",
+        per_instance=True,
         trigger_ratio_override=0.01,
     ),
     StrategySpec(
@@ -167,6 +176,7 @@ STRATEGY_REGISTRY: dict[str, StrategySpec] = _register(
         punch_landmarks,
         build_punch_check,
         "side",
+        per_instance=True,
         trigger_ratio_override=0.01,
     ),
     # --- 公共域：通用人体姿态与发力转体（body_posture_rules） ---
@@ -224,6 +234,7 @@ STRATEGY_REGISTRY: dict[str, StrategySpec] = _register(
         step_landmarks,
         build_step_check,
         "side",
+        per_instance=True,
         trigger_ratio_override=0.01,
     ),
     StrategySpec(
@@ -232,6 +243,7 @@ STRATEGY_REGISTRY: dict[str, StrategySpec] = _register(
         step_landmarks,
         build_step_check,
         "side",
+        per_instance=True,
         valid_ratio_override=0.5,
         trigger_ratio_override=0.01,
     ),
@@ -250,6 +262,7 @@ STRATEGY_REGISTRY: dict[str, StrategySpec] = _register(
         step_landmarks,
         build_step_check,
         "side",
+        per_instance=True,
         trigger_ratio_override=0.01,
     ),
     # --- 动作独有私有域：直拳（straight_rules） ---
@@ -281,6 +294,7 @@ STRATEGY_REGISTRY: dict[str, StrategySpec] = _register(
         kick_landmarks,
         build_kick_check,
         "side",
+        per_instance=True,
         trigger_ratio_override=0.01,
     ),
     StrategySpec(
@@ -298,6 +312,7 @@ STRATEGY_REGISTRY: dict[str, StrategySpec] = _register(
         kick_landmarks,
         build_kick_check,
         "side",
+        per_instance=True,
         trigger_ratio_override=0.01,
     ),
     StrategySpec(
@@ -450,6 +465,7 @@ def resolve_blueprint(segment: str, bp: CheckBlueprint, stance: str) -> RuleDefi
         required_views=_required_views(view, spec.paired),
         evidence_joints_by_view=evidence_points,
         absence=spec.absence,
+        per_instance=spec.per_instance,
         valid_ratio_override=valid_override,
         trigger_ratio_override=trigger_override,
     )

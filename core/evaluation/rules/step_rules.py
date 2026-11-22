@@ -10,7 +10,7 @@ from core.evaluation.measures.feet import (
     measure_foot_forward_displacement,
     measure_rear_foot_overtake,
     measure_step_feet_together,
-    measure_step_landing_lag,
+    measure_step_landing_frames,
 )
 from core.evaluation.rules.spec import PhaseCheck, RuleContext
 from core.evaluation.rules.window_context import (
@@ -166,7 +166,7 @@ def measure_step_landing_sync_rule(
             rep = ctx.repetitions[0]
         if rep is None:
             continue
-        bad_seg, valid_seg, seg_details = measure_step_landing_lag(
+        bad_seg, valid_seg, seg_details = measure_step_landing_frames(
             lm[sub],
             mask[sub],
             sub_times,
@@ -176,9 +176,10 @@ def measure_step_landing_sync_rule(
             rear_peak=rep.get("rearPeak"),
             max_lag=ctx.params.step_late_landing_max,
             facing=facing,
+            min_valid_ratio=ctx.params.valid_ratio,
         )
         valid[sub] = valid_seg
-        bad[sub] = valid_seg if bad_seg else False
+        bad[sub] = bad_seg
         write_segment_details(detail_arrays, sub, n_frames, seg_details)
     return bad, valid, detail_arrays
 

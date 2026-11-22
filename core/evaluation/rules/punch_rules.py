@@ -217,6 +217,8 @@ def measure_combo_punch_pause(
         ctx.measurement_issues.append("未检测到成对的前后手组合衔接，无法测量两拳停顿空档")
         return empty_result(n_frames)
     pair_by_rep = {int(p["repetition"]): p for p in ctx.combo_pairs if "repetition" in p}
+    f_sh, _, f_wr, *_ = sides_for_stance("front", ctx.stance)
+    r_sh, _, r_wr, *_ = sides_for_stance("rear", ctx.stance)
     torso = chain_torso(lm, mask)
     bad = np.zeros(n_frames, dtype=bool)
     valid = np.zeros(n_frames, dtype=bool)
@@ -228,9 +230,9 @@ def measure_combo_punch_pause(
         if pair is None:
             continue
         pause_s = max(0.0, float(pair["rearStart"]) - float(pair["frontEnd"]))
-        valid_seg = mask[sub][:, [L_SHOULDER, R_SHOULDER, L_WRIST, R_WRIST]].all(axis=1) & (
-            torso[sub] > 1e-4
-        )
+        sub_mask = mask[sub]
+        arm_ok = (sub_mask[:, f_sh] & sub_mask[:, f_wr]) | (sub_mask[:, r_sh] & sub_mask[:, r_wr])
+        valid_seg = (torso[sub] > 1e-4) & arm_ok
         bad_seg = bool(pause_s > ctx.params.combo_punch_pause_max)
         valid[sub] = valid_seg
         bad[sub] = valid_seg if bad_seg else False

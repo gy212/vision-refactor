@@ -237,6 +237,9 @@ def _make_kick_sequence(
     return lm, meta
 
 
+make_kick_sequence = _make_kick_sequence
+
+
 def test_kick_catalog_and_aliases():
     assert action_definition("step_front_low_kick").segments == (
         "pad_step",

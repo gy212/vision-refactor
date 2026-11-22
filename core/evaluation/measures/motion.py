@@ -67,12 +67,20 @@ def measure_punch_post_peak_hold(
     if valid_idx.size == 0:
         return False, valid, {label: (float("nan"), "秒")}
     reach = rel[:, 0] * dir_x - base_reach
-    peak_local = int(valid_idx[int(np.argmax(reach[valid_idx]))])
+    max_reach = float(np.max(reach[valid_idx]))
+    plateau_thresh = max(return_reach, 0.85 * max_reach)
+    plateau_idx = valid_idx[reach[valid_idx] >= plateau_thresh]
+    hold_start = (
+        int(plateau_idx[0])
+        if plateau_idx.size
+        else int(valid_idx[int(np.argmax(reach[valid_idx]))])
+    )
     ret_idx = int(valid_idx[-1])
-    for k in valid_idx:
-        if k > peak_local and reach[k] <= return_reach:
-            ret_idx = int(k)
-            break
-    hold_s = max(0.0, float(times[ret_idx] - times[peak_local]))
+    if not held_ending:
+        for k in valid_idx:
+            if k > hold_start and reach[k] <= return_reach:
+                ret_idx = int(k)
+                break
+    hold_s = max(0.0, float(times[ret_idx] - times[hold_start]))
     bad = bool(held_ending or hold_s > hold_max)
     return bad, valid, {label: (hold_s, "秒")}
