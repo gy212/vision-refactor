@@ -1,4 +1,4 @@
-"""通用人体姿态、转体与脚跟蹬转规则策略（低头、侧倾、前后倾、转胯、碾脚外旋与出拳提踵）。"""
+"""通用人体姿态、转体与脚跟蹬转规则策略（低头、侧倾、前后倾、转胯、碾脚内旋与出拳提踵）。"""
 
 from __future__ import annotations
 
@@ -129,7 +129,7 @@ def measure_pivot_heel_rule(
     *,
     mask_filter: MaskFilter | None = None,
 ) -> tuple[np.ndarray, np.ndarray, dict]:
-    """支撑脚碾脚外旋规则判定；支持由特定动作挂载可选掩码过滤钩子。"""
+    """支撑脚碾脚内旋规则判定；支持由特定动作挂载可选掩码过滤钩子。"""
     torso = chain_torso(lm, mask)
     safe_mask = mask if mask_filter is None else mask_filter(role, lm, mask, torso, ctx, scope)
     facing = resolve_window_facing(lm, mask, baseline, baseline_mask)

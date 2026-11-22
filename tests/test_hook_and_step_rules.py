@@ -709,7 +709,7 @@ def test_c48_guard_jaw_on_rear_punches_three_state_boundaries_and_punch_vs_kick_
     assert punch_checks["rear_straight:motion::head_down"]["name"] == "出拳时低头"
     assert kick_checks["front_low_kick:motion::head_down"]["name"] == "踢腿时低头"
     assert punch_checks["rear_straight:finish:rear:pivot_heel"]["name"] == "出拳发力脚未蹬转提踵"
-    assert kick_checks["front_low_kick:finish:rear:pivot_heel"]["name"] == "支撑脚未碾脚外旋"
+    assert kick_checks["front_low_kick:finish:rear:pivot_heel"]["name"] == "支撑脚未碾脚内旋"
     jaw_std = punch_checks["rear_straight:finish:front:guard_jaw"]["standard"]
     assert "摆拳" not in jaw_std and "0.34" in jaw_std
 

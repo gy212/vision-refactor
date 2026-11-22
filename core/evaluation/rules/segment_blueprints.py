@@ -71,7 +71,7 @@ def _stance_phase_blueprints(phase: str, doc_rows: str) -> tuple[CheckBlueprint,
             USER_20261108_SOURCE,
             PARAMS,
         ),
-        CheckBlueprint("stance_toes", phase, "", "toe_heel_spread", doc_source, PARAMS),
+        CheckBlueprint("stance_toes", phase, "", "rear_foot_toe_projection", doc_source, PARAMS),
         CheckBlueprint(
             "stance_torso", phase, "", "paired_shoulder_projection_ratio", doc_source, PARAMS
         ),
@@ -355,9 +355,6 @@ def _low_kick_blueprints(
                     "hip_turn", phase, role, "frontal_hip_width_ratio", KICK_SOURCE, KICK_PARAMS
                 ),
                 CheckBlueprint(
-                    "arm_swing", phase, role, "arm_downward_extension", KICK_SOURCE, KICK_PARAMS
-                ),
-                CheckBlueprint(
                     "head_down", phase, "", "nose_shoulder_drop", KICK_SOURCE, KICK_PARAMS
                 ),
                 CheckBlueprint(
@@ -365,6 +362,11 @@ def _low_kick_blueprints(
                 ),
             )
         )
+    items.append(
+        CheckBlueprint(
+            "arm_swing", "finish", role, "arm_downward_extension", KICK_SOURCE, KICK_PARAMS
+        )
+    )
     items.append(
         CheckBlueprint(
             "pivot_heel",

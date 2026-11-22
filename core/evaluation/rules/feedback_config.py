@@ -85,7 +85,7 @@ class FeedbackConfig:
     pad_step_min_disp: float = 0.45  # 垫步后脚前推距离下限（侧面，躯干长度）
     pad_step_overtake_max: float = 0.20  # 垫步末端后脚越前上限（允许并齐，躯干长度）
     pad_step_pause_max: float = 0.60  # 垫步落稳至起脚停顿上限（秒）
-    kick_height_hip_margin: float = 0.06  # 低鞭腿脚尖高过同侧髋容差（侧面，躯干长度）
+    kick_height_hip_margin: float = 0.06  # 低鞭腿脚尖高过支撑腿髋容差（侧面，躯干长度）
     kick_height_knee_margin: float = 0.08  # 低鞭腿脚尖低于支撑膝容差（侧面，躯干长度）
     kick_retract_max_x: float = 0.40  # 收腿落地前踝髋最小前伸上限（侧面，躯干长度）
     foot_flexed_min_angle: float = 165.0  # 踢腿脚背绷直锁定角下限（度）
@@ -98,7 +98,7 @@ class FeedbackConfig:
     kick_guard_drop_front: float = 0.25  # 原地后低鞭腿护手掉落阈值（正面，躯干长度）
     kick_guard_back_side: float = 0.32  # 上步前低鞭腿护肘后拉阈值（侧面，躯干长度）
     kick_guard_back_front: float = 0.18  # 原地后低鞭腿护肘后拉阈值（正面，躯干长度）
-    kick_guard_elbow_flare: float = 30.0  # 踢腿护手开肘大臂与躯干夹角锁定上限（正面，度）
+    kick_guard_elbow_flare: float = 45.0  # 踢腿护手开肘大臂与躯干夹角锁定上限（正面，度）
     kick_guard_jaw_dist: float = 0.34  # 原地后低鞭腿前手护颚腕口距上限（正面，躯干长度）
     hook_bend_tight_ratio: float = 0.50  # 摆拳打到瞬间腕在肘后小臂投影/大臂长上限（防弯太紧）
     hook_bend_straight_ratio: float = (

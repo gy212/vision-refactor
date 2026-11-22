@@ -73,7 +73,7 @@ def measure_guard_elbow_flare(
     guard_elbow: int,
     guard_shoulder: int,
     guard_hip: int,
-    max_flare: float = 30.0,
+    max_flare: float = 45.0,
 ) -> tuple[np.ndarray, np.ndarray, dict]:
     """公共护手正面开肘测量：大臂与躯干夹角大于 max_flare 度判开肘亮肋。"""
     angles, valid = joint_angle(lm, mask, (guard_elbow, guard_shoulder, guard_hip), torso)

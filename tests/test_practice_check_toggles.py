@@ -78,13 +78,13 @@ def _wrap_record(action: str, stance: str, result: dict) -> dict:
     }
 
 
-def test_catalog_checks_returns_151_unique_items_with_stance_bookends():
+def test_catalog_checks_returns_149_unique_items_with_stance_bookends():
     left_catalog = catalog_checks("left")
     right_catalog = catalog_checks("right")
 
-    assert len(left_catalog) == 151
-    assert len(right_catalog) == 151
-    assert len({c["id"] for c in left_catalog}) == 151
+    assert len(left_catalog) == 149
+    assert len(right_catalog) == 149
+    assert len({c["id"] for c in left_catalog}) == 149
     assert [c["id"] for c in left_catalog] == [c["id"] for c in right_catalog]
 
     assert all(c["segment"] == "stance" and c["phase"] == "start" for c in left_catalog[:8])

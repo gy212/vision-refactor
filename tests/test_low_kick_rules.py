@@ -173,7 +173,7 @@ def _make_kick_sequence(
                 lm[pad_end + 1 : kick_start, r_hl, 0] = rear_target_x - 0.01 * dir_x
                 lm[pad_end + 1 : kick_start, r_to, 0] = rear_target_x + 0.03 * dir_x
 
-            # 垫步落稳后支撑脚站在落点并碾脚外旋（toe 转至不领先于 heel），踢腿抬膝绷脚背
+            # 垫步落稳后支撑脚站在落点并碾脚内旋（heel 领先于 toe），踢腿抬膝绷脚背
             lm[kick_start : kick_end + 1, r_ak, 0] = rear_target_x
             lm[kick_start : kick_end + 1, r_kn, 0] = rear_target_x + 0.02 * dir_x
             lm[kick_start : kick_end + 1, r_hl, 0] = rear_target_x - 0.01 * dir_x
@@ -305,9 +305,9 @@ def test_kick_segment_reuse_and_strategy_isolation():
 
 def test_kick_checks_enabled_across_all_models():
     for action, expected_total in (
-        ("step_front_low_kick", 38),
-        ("front_low_kick", 35),
-        ("rear_low_kick", 36),
+        ("step_front_low_kick", 37),
+        ("front_low_kick", 34),
+        ("rear_low_kick", 35),
     ):
         full_checks = build_checks(action, "left", pose_variant="full")
         assert len(full_checks) == expected_total
@@ -409,16 +409,16 @@ def test_kick_geometry_thresholds_and_anti_swap_masking():
     )
     assert isinstance(valid, np.ndarray) and valid.shape == (36,) and valid.all() and bad
 
-    # kick_height：高过同侧髋 (< -0.06) 或明显低于支撑膝 (> +0.08) 均违规
+    # kick_height：高过支撑腿髋 (< -0.06) 或明显低于支撑膝 (> +0.08) 均违规
     torso = np.full(n, 0.30)
     lm_h = lm.copy()
-    lm_h[:, 31, 1] = 0.66  # 处于髋 0.55 与支撑膝 0.75 之间
-    bad_arr, val_arr, _ = measure_kick_height(lm_h, mask, torso, 31, 23, 26)
-    assert val_arr.all() and not bad_arr.any()
+    lm_h[:, 31, 1] = 0.66  # 处于支撑腿髋 0.55 与支撑膝 0.75 之间
+    bad_arr, val_arr, det_h = measure_kick_height(lm_h, mask, torso, 31, 24, 26)
+    assert val_arr.all() and not bad_arr.any() and "脚尖相对支撑腿髋高度" in det_h
     lm_h[:, 31, 1] = 0.50  # (0.50 - 0.55)/0.30 = -0.167 < -0.06
-    assert measure_kick_height(lm_h, mask, torso, 31, 23, 26)[0].all()
+    assert measure_kick_height(lm_h, mask, torso, 31, 24, 26)[0].all()
     lm_h[:, 31, 1] = 0.80  # (0.80 - 0.75)/0.30 = +0.167 > +0.08
-    assert measure_kick_height(lm_h, mask, torso, 31, 23, 26)[0].all()
+    assert measure_kick_height(lm_h, mask, torso, 31, 24, 26)[0].all()
 
     # kick_retract：落地前未收脚 > 0.40 违规
     lm_ret = lm.copy()
@@ -426,7 +426,7 @@ def test_kick_geometry_thresholds_and_anti_swap_masking():
     bad_r, val_r, _ = measure_kick_retract_segment(lm_ret, mask, torso, 27, 23, 1.0)
     assert isinstance(val_r, np.ndarray) and val_r.shape == (n,) and val_r.all() and bad_r
 
-    # 锁定角度：foot_flexed < 165°、body_lean > 35°、guard_elbow > 30°
+    # 锁定角度：foot_flexed < 165°、body_lean > 35°、guard_elbow > 45°
     lm_ang = lm.copy()
     lm_ang[:, 25, :2] = (0.0, 0.0)
     lm_ang[:, 27, :2] = (0.3, 0.0)
@@ -445,9 +445,9 @@ def test_kick_geometry_thresholds_and_anti_swap_masking():
     lm_el = lm.copy()
     lm_el[:, 12, :2] = (0.60, 0.25)  # R_SHOULDER
     lm_el[:, 24, :2] = (0.60, 0.55)  # R_HIP
-    lm_el[:, 14, :2] = (0.78, 0.45)  # R_ELBOW (~42° > 30°)
+    lm_el[:, 14, :2] = (0.85, 0.44)  # R_ELBOW (~52.8° > 45°)
     assert measure_guard_elbow_flare(lm_el, mask, torso, 14, 12, 24)[0].all()
-    lm_el[:, 14, :2] = (0.65, 0.45)  # ~14° <= 30°
+    lm_el[:, 14, :2] = (0.78, 0.45)  # ~42° <= 45°
     assert not measure_guard_elbow_flare(lm_el, mask, torso, 14, 12, 24)[0].any()
 
     # 抗侧视互换掩码：支撑脚踝显著高于踢腿脚踝 (>0.15*torso) 时清除 23..32 关键点
@@ -743,7 +743,7 @@ def test_coderabbit_pr66_review_regressions():
     assert arm_checks and all(c["status"] == "candidate" for c in arm_checks)
     jv_one = judge_views(views_one, "step_front_low_kick", "left", cfg)
     arm_out = next(
-        c for c in jv_one["front"][0] if c.check_id == "front_low_kick:motion:front:arm_swing"
+        c for c in jv_one["front"][0] if c.check_id == "front_low_kick:finish:front:arm_swing"
     )
     assert arm_out.state == "violation"
     assert {

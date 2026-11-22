@@ -281,8 +281,8 @@ def test_straight_hook_and_kick_share_common_guard_and_punch_definitions():
             assert {c["strategy"] for c in items} == {strategy}
             assert {c["primaryView"] for c in items} == {expected_view}
 
-    # 验证摆拳与步法/姿态/衔接接入公共层后的唯一目录数与各动作检查数。
-    assert len(catalog_checks("left")) == 151
+    # 验证摆拳与步法/姿态/衔接接入公共层、低鞭腿甩手收口到 finish 后的唯一目录数与各动作检查数。
+    assert len(catalog_checks("left")) == 149
     assert len(build_checks("front_hook", "left")) == 36
     assert len(build_checks("rear_hook", "left")) == 41
     assert len(build_checks("hook_combo", "left")) == 62

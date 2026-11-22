@@ -30,8 +30,8 @@ def kick_landmarks(strategy: str, role: str, stance: str, view: str = "side") ->
     sh, el, wr, hip, kn, ank, _, toe = sides_for_stance(role, stance)
     if strategy == "kick_peak_height_band":
         other = "rear" if role == "front" else "front"
-        sup_kn = sides_for_stance(other, stance)[4]
-        return toe, hip, sup_kn
+        _, _, _, sup_hip, sup_kn, *_ = sides_for_stance(other, stance)
+        return toe, sup_hip, sup_kn
     mapping = {
         "retract_ankle_reach": (ank, hip),
         "kick_ankle_extension_angle": (kn, ank, toe),
@@ -75,7 +75,7 @@ def support_foot_anti_swap(
     ctx: RuleContext,
     scope: str,
 ) -> np.ndarray:
-    """供低鞭腿碾脚外旋注入的支撑脚侧视防左右腿互换掩码过滤器。"""
+    """供低鞭腿碾脚内旋注入的支撑脚侧视防左右腿互换掩码过滤器。"""
     kick_role = "rear" if sup_role == "front" else "front"
     kick_ankle = sides_for_stance(kick_role, ctx.stance)[5]
     sup_ankle = sides_for_stance(sup_role, ctx.stance)[5]
@@ -169,8 +169,8 @@ def _measure_kick_leg_rule(
     cfg = ctx.params
     torso = chain_torso(lm, mask)
     sup_role = "rear" if role == "front" else "front"
-    _, _, _, kick_hip, kick_kn, kick_ank, _, kick_toe = sides_for_stance(role, ctx.stance)
-    _, _, _, _, sup_kn, sup_ank, _, _ = sides_for_stance(sup_role, ctx.stance)
+    _, _, _, _, kick_kn, kick_ank, _, kick_toe = sides_for_stance(role, ctx.stance)
+    _, _, _, sup_hip, sup_kn, sup_ank, _, _ = sides_for_stance(sup_role, ctx.stance)
     safe_mask = apply_finish_anti_swap(lm, mask, kick_ank, sup_ank, torso, ctx, scope)
     if strategy == "kick_peak_height_band":
         return measure_kick_height(
@@ -178,7 +178,7 @@ def _measure_kick_leg_rule(
             safe_mask,
             torso,
             kick_toe,
-            kick_hip,
+            sup_hip,
             sup_kn,
             hip_margin=cfg.kick_height_hip_margin,
             knee_margin=cfg.kick_height_knee_margin,

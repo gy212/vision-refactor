@@ -269,7 +269,7 @@ def test_saved_reports_never_emit_legacy_trial_prefix(status) -> None:
     ("code", "angles"),
     [
         ("stance_elbow", [100, 85, 65]),
-        ("stance_knee", [165, 172, 178]),
+        ("stance_knee", [165, 178, 179.5]),
         ("shoulder_level", [90, 102, 112]),
     ],
 )

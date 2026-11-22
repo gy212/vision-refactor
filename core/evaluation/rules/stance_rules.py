@@ -6,7 +6,7 @@ import numpy as np
 
 from core.evaluation.body_sides import sides_for_stance
 from core.evaluation.measures import arms, legs
-from core.evaluation.measures.feet import FEET, measure_toe_spread
+from core.evaluation.measures.feet import FEET, measure_rear_foot_splay
 from core.evaluation.measures.posture import (
     elbow_body_distance,
     joint_angle,
@@ -15,6 +15,7 @@ from core.evaluation.measures.posture import (
 from core.evaluation.measures.torso import chain_torso
 from core.evaluation.paired_torso import paired_torso_check
 from core.evaluation.rules.spec import PhaseCheck, RuleContext
+from core.evaluation.rules.window_context import empty_result, resolve_window_facing
 from core.pose.landmarks import (
     L_ANKLE,
     L_FOOT_INDEX,
@@ -37,13 +38,14 @@ def stance_landmarks(strategy: str, role: str, stance: str, view: str = "front")
     """返回公共实战式策略所需的关键点下标。"""
     del view
     sh, el, wr, hip, *_ = sides_for_stance(role, stance)
+    _, _, _, _, _, _, rear_hl, rear_toe = sides_for_stance("rear", stance)
     mapping = {
         "elbow_angle_range": (sh, el, wr),
         "wrist_shoulder_floor": (sh, wr),
         "elbow_body_distance": (sh, el, hip),
         "knee_angle_limit": LEGS,
         "feet_paired_shoulder_ratio": (*FEET, L_SHOULDER, R_SHOULDER),
-        "toe_heel_spread": FEET,
+        "rear_foot_toe_projection": (rear_hl, rear_toe),
         "paired_shoulder_projection_ratio": (L_SHOULDER, R_SHOULDER),
     }
     if strategy not in mapping:
@@ -136,14 +138,33 @@ def stance_width_check(scope: str) -> PhaseCheck:
     return check
 
 
+def measure_stance_toes(
+    lm: np.ndarray,
+    mask: np.ndarray,
+    baseline: np.ndarray,
+    baseline_mask: np.ndarray,
+    ctx: RuleContext,
+) -> tuple[np.ndarray, np.ndarray, dict]:
+    """实战式后脚外撇判定（侧面）：后脚尖落后于后脚跟即判错，不查前脚。"""
+    facing = resolve_window_facing(lm, mask, baseline, baseline_mask)
+    if facing is None:
+        ctx.measurement_issues.append("实战式窗口关键点不足以确定面朝方向，无法判断后脚外撇")
+        return empty_result(len(lm))
+    _, _, _, _, _, _, rear_hl, rear_toe = sides_for_stance("rear", ctx.stance)
+    torso = chain_torso(lm, mask)
+    return measure_rear_foot_splay(lm, mask, torso, rear_hl, rear_toe, facing)
+
+
 def build_stance_check(strategy: str, role: str, scope: str) -> PhaseCheck:
     """按实战式策略名构造对应的相位判定函数。"""
     if strategy == "paired_shoulder_projection_ratio":
         return paired_torso_check(scope)
     if strategy == "feet_paired_shoulder_ratio":
         return stance_width_check(scope)
-    if strategy == "toe_heel_spread":
-        return lambda lm, mask, _b, _bm, _ctx: measure_toe_spread(lm, mask)
+    if strategy == "rear_foot_toe_projection":
+        return lambda lm, mask, base, base_mask, ctx: measure_stance_toes(
+            lm, mask, base, base_mask, ctx
+        )
     if strategy == "knee_angle_limit":
         return lambda lm, mask, _b, _bm, ctx: measure_stance_knee(lm, mask, ctx)
     if strategy == "elbow_angle_range":

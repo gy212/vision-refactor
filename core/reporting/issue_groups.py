@@ -29,7 +29,7 @@ _GROUPED_ATTACK_CODES = frozenset(
         "stance_knee",
     }
 )
-_GROUPED_KICK_CODES = frozenset({"arm_swing", "body_lean", "foot_flexed"})
+_GROUPED_KICK_CODES = frozenset({"body_lean", "foot_flexed"})
 
 
 def group_action_issues(checks: list[NormalizedCheck], action: str) -> list[NormalizedCheck]:

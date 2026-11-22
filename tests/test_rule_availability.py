@@ -33,10 +33,10 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from core.pose.validity import (
+from core.pose.validity import (  # noqa: E402
     COCO17_SUPPORTED_CAPABILITIES,
     landmarks_missing_for_capabilities,
-)  # noqa: E402
+)
 from core.evaluation import FeedbackConfig, judge_views, series_from_raw  # noqa: E402
 from core.evaluation.rules.spec import (  # noqa: E402
     RULE_STATE_UNABLE,
@@ -108,9 +108,7 @@ def _make_seq(n_valid: int, n_invalid: int) -> np.ndarray:
 
 def _judge(seq: np.ndarray, *, caps=None) -> dict:
     """左式实战式在正面的开始阶段各项结论（以检查项编码为键）。"""
-    series = series_from_raw(
-        seq, {"width": 100, "height": 100, "fps": 30.0, "start_frame": 0}
-    )
+    series = series_from_raw(seq, {"width": 100, "height": 100, "fps": 30.0, "start_frame": 0})
     checks = judge_views(
         {"front": series, "side": series},
         "stance",
@@ -118,9 +116,7 @@ def _judge(seq: np.ndarray, *, caps=None) -> dict:
         FeedbackConfig(),
         supported_capabilities=caps,
     )
-    return {
-        c.code: c for view, _diag in checks.values() for c in view if c.phase == "start"
-    }
+    return {c.code: c for view, _diag in checks.values() for c in view if c.phase == "start"}
 
 
 # --------------------------------------------------------------------------- #
@@ -187,26 +183,20 @@ def test_unable_insufficient_valid_frames():
 # 4) skip_reason=missing_landmarks：后端能力受限（COCO17）→ 缺点检查项 unable
 # --------------------------------------------------------------------------- #
 def test_unable_missing_landmarks_under_coco17():
-    by_code = _judge(
-        _make_seq(n_valid=10, n_invalid=0), caps=COCO17_SUPPORTED_CAPABILITIES
-    )
+    by_code = _judge(_make_seq(n_valid=10, n_invalid=0), caps=COCO17_SUPPORTED_CAPABILITIES)
 
-    # 依赖 feet（脚跟/脚尖）的检查项在 COCO17 下结构性缺失。
+    # 依赖 feet（左式后脚跟/脚尖）的检查项在 COCO17 下结构性缺失。
     toes = by_code["stance_toes"]
     assert toes.state == RULE_STATE_UNABLE
     assert toes.skip_reason == SKIP_MISSING_LANDMARKS
     assert set(toes.missing_landmarks) == {
-        "left_heel",
-        "left_foot_index",
         "right_heel",
         "right_foot_index",
     }
 
     # 依赖 mouth（嘴角）的检查项也缺点。
     rear = by_code["guard_jaw"]
-    assert (
-        rear.state == RULE_STATE_UNABLE and rear.skip_reason == SKIP_MISSING_LANDMARKS
-    )
+    assert rear.state == RULE_STATE_UNABLE and rear.skip_reason == SKIP_MISSING_LANDMARKS
     assert {"mouth_left", "mouth_right"} <= set(rear.missing_landmarks)
 
     # 仅依赖 arms/legs/face_center 的检查项在 COCO17 下仍可判定。
@@ -224,8 +214,6 @@ def test_required_landmarks_and_capabilities_declared():
 
     toes = by_code["stance_toes"]
     assert set(toes.required_landmarks) == {
-        "left_heel",
-        "left_foot_index",
         "right_heel",
         "right_foot_index",
     }

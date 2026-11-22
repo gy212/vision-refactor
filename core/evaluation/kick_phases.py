@@ -17,7 +17,7 @@ from core.evaluation.phase_instances import PhaseInstance, phase_instance
 _EXPECTED_REPETITIONS = 2
 _PAD_CONTEXT_S = 2.0
 _PAD_POST_SETTLE_S = 0.15
-_FINISH_PAD_S = 0.12
+_FINISH_PAD_S = 0.06
 _RETRACT_TAIL_TRIM_S = 0.03
 
 
@@ -118,7 +118,7 @@ def _append_rep_phases(
 
     mot_idx = _span_indices(times, t_start, hi_peak, s_idx, b_idx, min_frames)
     fin_lo = max(t_start, t_ext - _FINISH_PAD_S)
-    fin_hi = min(t_end, hi_peak + _FINISH_PAD_S)
+    fin_hi = min(t_end, t_ext + _FINISH_PAD_S)
     fin_idx = _span_indices(times, fin_lo, fin_hi, s_idx, b_idx, min_frames)
     ret_idx = _span_indices(
         times, t_ext, max(t_ext, t_end - _RETRACT_TAIL_TRIM_S), s_idx, b_idx, min_frames
@@ -145,15 +145,11 @@ def _collect_rep_outputs(
     label = SEGMENT_LABELS.get(kick_seg, kick_seg)
 
     for rep_idx, ev in enumerate(events, 1):
-        _append_rep_phases(
-            parts, instances, times, events, rep_idx, kick_seg, has_pad, min_frames
-        )
+        _append_rep_phases(parts, instances, times, events, rep_idx, kick_seg, has_pad, min_frames)
         ending = "recovered" if ev["closed"] else "unrecovered"
         if not ev["closed"]:
             incomplete.append(rep_idx)
-        event_texts.append(
-            f"第{rep_idx}次{label} {ev['t_start']:.2f}～{ev['t_end']:.2f}s"
-        )
+        event_texts.append(f"第{rep_idx}次{label} {ev['t_start']:.2f}～{ev['t_end']:.2f}s")
         item = {
             "id": f"{kick_seg}_{rep_idx}",
             "segment": kick_seg,
@@ -163,17 +159,13 @@ def _collect_rep_outputs(
             "ext": ev["t_ext"],
             "end": ev["t_end"],
         }
-        event_details.append(
-            {**item, "ending": ending, "recovered": bool(ev["closed"])}
-        )
+        event_details.append({**item, "ending": ending, "recovered": bool(ev["closed"])})
         repetitions.append(
             {**{k: item[k] for k in item if k != "id"}, "closed": bool(ev["closed"])}
         )
 
     rep_windows = {
-        key: np.unique(np.concatenate(chunks))
-        for key, chunks in parts.items()
-        if chunks
+        key: np.unique(np.concatenate(chunks)) for key, chunks in parts.items() if chunks
     }
     records = {
         "events": event_texts,
@@ -236,9 +228,7 @@ def kick_combo_windows(
     if end_win is not None:
         windows[("stance", "end")] = end_win
 
-    rep_windows, records = _collect_rep_outputs(
-        events, kick_seg, has_pad, times, min_frames
-    )
+    rep_windows, records = _collect_rep_outputs(events, kick_seg, has_pad, times, min_frames)
     windows.update(rep_windows)
     incomplete = records.pop("incomplete")
     diagnostics.update(records)

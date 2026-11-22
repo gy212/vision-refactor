@@ -1,3 +1,13 @@
+## 2026-11-22: [feat] 实施实战式与低鞭腿 6 项既有规则优化（v5.21）
+
+- 问题：客户与用户复核旧规则后锁定 6 项优化：实战式/拳法膝角 175° 略严、低鞭腿护手开肘 30° 过严、低鞭腿支撑脚碾脚实为内旋（脚跟转至领先于脚尖）而非外旋、低鞭腿 `finish` 锚点帧未对准侧面腿蹬出最远帧且 `arm_swing` 不应在 `motion` 误报、低鞭腿踢高上限应以支撑腿髋（异侧髋）为准而非同侧髋、实战式 `stance_toes` 应改为侧面只查后脚尖是否落后于后脚跟（不查前脚）。
+- 修改：
+  1. **实战式与公共护手阈值优化**：`rule_descriptions.py` 将 `PARAMS["stance_knee_max"]` 调至 `179.0`（统一作用于 `stance:start`/`stance:end` 及全部拳法复用段）；`rule_descriptions.py`、`feedback_config.py` 与 `measures/guard.py` 将 `kick_guard_elbow_flare` 调至 `45.0`（前/后低鞭腿统一共用）。
+  2. **足部前后投影公共原语共用（优化 ③ + ⑥）**：在 `core/evaluation/measures/feet.py` 抽离共享原语 `foot_heel_toe_forward_projection` 并清理废弃的 `measure_toe_spread`/`foot_vectors`/`vector_lengths`/`vector_angle_deg`；`measure_pivot_heel` 改为内旋判定 `proj = (heel_x - toe_x) * dir_x / safe_t <= 0.0`（指标名 `"支撑脚跟相对脚尖前向投影"`，文案改为 `"支撑脚未碾脚内旋"`）；`stance_rules.py` 与 `rule_definitions.py` 将 `stance_toes` 改为侧面 `rear_foot_toe_projection`（`PRIMARY_VIEW["stance_toes"] = "side"`、`required = (rear_heel, rear_toe)`、`resolve_window_facing` 缺失走 `unable`，`toe_proj < 0.0` 判错，保留 `id` 不变兼容旧开关）。
+  3. **低鞭腿 `finish` 锚点收紧、甩手收口与支撑腿髋上限（优化 ④ + ⑤）**：`kick_events.py` 结合 `kicking_leg_side_safe` 与抬腿区间按侧面脚尖相对踢腿髋前向伸展（缺脚尖退踝、无朝向退欧氏距离）定位腿蹬出最远帧 `ext_idx`/`t_ext`；`kick_phases.py` 将 `finish` 收紧至 `t_ext ± 0.06s` 并按 `min_frames` 在事件内扩足；`segment_blueprints.py` 将 `arm_swing` 收口为仅在 `finish` 检查（目录总数 `151 → 149`），同步清理 `issue_groups.py`；`kick_rules.py` 与 `measures/kicks.py` 将 `kick_height` 上限改为支撑腿髋 `sup_hip`（指标名 `"脚尖相对支撑腿髋高度"`）；升级 `sanda_v5.py` `RULE_VERSION = "sanda-rules-mediapipe-2026-11-22-v5.21"`。
+  4. **Golden 与单测更新**：经逐行核对 `tests/fixtures/pose33_v3/golden.json` 仅 `stance:start/end::stance_toes` 从 `front_rule_checks` 迁至 `side_rule_checks`（其余分数/切分/检查项零漂移）后按规程刷新 `golden.json`；新建 `tests/test_stance_and_kick_rules.py` 覆盖 6 项优化正反等价类、左右式对称与缺帧/缺朝向/互换/低帧率边界，同步更新受影响既有单测。
+- 验证：WSL `./.venv/wsl/bin/python` 运行 `square check .`、`ruff format --check --line-length 100`、`ruff check`、`git -c core.whitespace=cr-at-eol diff --check` 与全量受影响/门禁 pytest 全部通过。
+
 ## 2026-11-22: [feat] 落地摆拳独有规则、上步前后手摆拳组合与公共步法/姿态/衔接全量规则
 
 - 问题：系统尚缺 `step_hook_combo`（上步前后手摆拳组合）动作编排与逐次切分；摆拳事件仍走旧 `action_events` 脆弱兜底（基线缺帧即失效、不支持 `held` 保持且未精修打到瞬间峰值）并缺少 C61–C67 独有规则；同时公共拳法（C40 峰值后未收回、C47 组合拳衔接停顿、C48 后直拳前手护颚）、公共姿态发力（C44/C45 躯干前后倾、拳法低头/屈膝/分视角转胯/提踵蹬转）与公共步法（C22 双摄侧身并脚、C23 未跟步、C24 后脚超前脚、C25 落脚滞后）尚未跨直拳/摆拳/垫步统一接通。经本地实拍核验，C38 贴下颚在正面 2D X 轴投影 100% 落入 `[肩线中点, 前侧肩]`，按约定本轮不做 C38。

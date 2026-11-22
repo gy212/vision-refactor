@@ -18,7 +18,7 @@ PARAMS = {
     "shoulder_height": 0.17,
     "punch_elbow": 168.0,
     "stance_elbow_min": 80.0,
-    "stance_knee_max": 175.0,
+    "stance_knee_max": 179.0,
     "stance_width_min": 0.7,
     "stance_width_max": 1.35,
     "punch_level_deviation": 15.0,
@@ -54,7 +54,7 @@ KICK_PARAMS = {
     "kick_guard_drop_front": 0.25,
     "kick_guard_back_side": 0.32,
     "kick_guard_back_front": 0.18,
-    "kick_guard_elbow_flare": 30.0,
+    "kick_guard_elbow_flare": 45.0,
     "kick_guard_jaw_dist": 0.34,
 }
 
@@ -87,9 +87,9 @@ STANCE_CHECK_META: dict[str, tuple[str, str, str]] = {
         f"应在{PARAMS['stance_width_min']:.1f}到{PARAMS['stance_width_max']:g}倍",
     ),
     "stance_toes": (
-        "两脚内八或外八",
-        "feet",
-        "正面比较两脚尖与两脚跟的间距；保留原35°对应的容许范围",
+        "后脚外撇过度（脚尖落后于脚跟）",
+        "step_foot",
+        "实战式后脚斜向前方，侧面看后脚尖不落后于后脚跟（不查前脚）",
     ),
     "stance_torso": (
         "躯干正向前方",
@@ -177,9 +177,9 @@ BODY_POSTURE_CHECK_META: dict[str, tuple[str, str, str]] = {
         f"正面两髋水平宽相对起始护位需明显收窄（比值不高于{KICK_PARAMS['hip_turn_width_ratio']:.2f}）",
     ),
     "pivot_heel": (
-        "支撑脚未碾脚外旋",
+        "支撑脚未碾脚内旋",
         "step_foot",
-        "踢腿击打过程中支撑脚应充分外旋拧转，脚尖转至不领先于脚跟",
+        "踢腿击打过程中支撑脚应以前脚掌为轴充分内旋碾转，脚跟转至领先于脚尖",
     ),
 }
 
@@ -260,7 +260,7 @@ KICK_PRIVATE_META: dict[str, tuple[str, str, str]] = {
     "kick_height": (
         "踢击高度过低或过高",
         "leg",
-        "踢腿脚尖高度应不高过同侧髋，且不明显低于支撑膝高度",
+        "踢腿脚尖高度应不高过支撑腿髋，且不明显低于支撑膝高度",
     ),
     "kick_retract": (
         "踢后未及时收腿直接落地",
@@ -306,7 +306,7 @@ PARTS = {
 
 PRIMARY_VIEW = {
     "guard_back": "side",
-    "stance_toes": "front",
+    "stance_toes": "side",
     "stance_torso": "front",
     "stance_width": "front",
 }

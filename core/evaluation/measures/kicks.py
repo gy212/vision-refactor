@@ -70,18 +70,18 @@ def measure_kick_height(
     safe_mask: np.ndarray,
     torso: np.ndarray,
     kick_toe: int,
-    kick_hip: int,
+    sup_hip: int,
     sup_knee: int,
     hip_margin: float = 0.06,
     knee_margin: float = 0.08,
 ) -> tuple[np.ndarray, np.ndarray, dict]:
-    """低鞭腿击打高度双边界：不高过同侧髋，且不明显低于支撑膝。"""
-    toe_hip_dy, valid_hip = relative_height(lm, safe_mask, kick_toe, kick_hip, torso)
+    """低鞭腿击打高度双边界：不高过支撑腿髋，且不明显低于支撑膝。"""
+    toe_hip_dy, valid_hip = relative_height(lm, safe_mask, kick_toe, sup_hip, torso)
     toe_knee_dy, valid_knee = relative_height(lm, safe_mask, kick_toe, sup_knee, torso)
     valid = valid_hip & valid_knee
     bad = (toe_hip_dy < -hip_margin) | (toe_knee_dy > knee_margin)
     details = {
-        "脚尖相对同侧髋高度": (toe_hip_dy, "躯干长度"),
+        "脚尖相对支撑腿髋高度": (toe_hip_dy, "躯干长度"),
         "脚尖相对支撑膝高度": (toe_knee_dy, "躯干长度"),
     }
     return bad, valid, details

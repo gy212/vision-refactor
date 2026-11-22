@@ -125,7 +125,9 @@ STRATEGY_REGISTRY: dict[str, StrategySpec] = _register(
         "front",
         paired=True,
     ),
-    StrategySpec("toe_heel_spread", "stance", stance_landmarks, build_stance_check, "front"),
+    StrategySpec(
+        "rear_foot_toe_projection", "stance", stance_landmarks, build_stance_check, "side"
+    ),
     StrategySpec(
         "paired_shoulder_projection_ratio",
         "stance",
@@ -323,7 +325,7 @@ _DEFAULT_STRATEGY_BY_CODE: dict[str, str] = {
     "stance_rear_guard": "elbow_body_distance",
     "stance_knee": "knee_angle_limit",
     "stance_width": "feet_paired_shoulder_ratio",
-    "stance_toes": "toe_heel_spread",
+    "stance_toes": "rear_foot_toe_projection",
     "stance_torso": "paired_shoulder_projection_ratio",
     "guard_shoulder": "wrist_shoulder_drop",
     "guard_back": "elbow_behind_body",
