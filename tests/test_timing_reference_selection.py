@@ -22,9 +22,9 @@ def test_unusable_side_reference_selects_executable_front_before_detection(
     detected = []
     original = action_timing.phase_windows
 
-    def capture(series, *args):
+    def capture(series, *args, **kwargs):
         detected.append(series)
-        return original(series, *args)
+        return original(series, *args, **kwargs)
 
     monkeypatch.setattr(action_timing, "phase_windows", capture)
     result = evaluate_series(action, "left", {"front": front, "side": side})
@@ -49,9 +49,9 @@ def test_side_only_timing_policy_does_not_borrow_front_after_reference_failure(m
     detected = []
     original = action_timing.step_combo_windows
 
-    def capture(series, *args):
+    def capture(series, *args, **kwargs):
         detected.append(series)
-        return original(series, *args)
+        return original(series, *args, **kwargs)
 
     monkeypatch.setattr(action_timing, "step_combo_windows", capture)
     result = evaluate_series("step_straight_combo", "left", {"front": front, "side": side})

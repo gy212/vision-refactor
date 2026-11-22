@@ -169,15 +169,6 @@
         "violation_ratio": 0.0
       },
       {
-        "check_id": "stance:start::stance_toes",
-        "detail": "",
-        "skip_reason": null,
-        "state": "pass",
-        "total_frames": 7,
-        "valid_frames": 7,
-        "violation_ratio": 0.0
-      },
-      {
         "check_id": "stance:start::stance_width",
         "detail": "缺少侧面视频",
         "skip_reason": "phase_not_found",
@@ -215,15 +206,6 @@
       },
       {
         "check_id": "stance:end:front:stance_height",
-        "detail": "",
-        "skip_reason": null,
-        "state": "pass",
-        "total_frames": 7,
-        "valid_frames": 7,
-        "violation_ratio": 0.0
-      },
-      {
-        "check_id": "stance:end::stance_toes",
         "detail": "",
         "skip_reason": null,
         "state": "pass",
@@ -449,6 +431,15 @@
         "violation_ratio": 0.0
       },
       {
+        "check_id": "stance:start::stance_toes",
+        "detail": "",
+        "skip_reason": null,
+        "state": "pass",
+        "total_frames": 7,
+        "valid_frames": 7,
+        "violation_ratio": 0.0
+      },
+      {
         "check_id": "stance:end:front:stance_elbow",
         "detail": "",
         "skip_reason": null,
@@ -459,6 +450,15 @@
       },
       {
         "check_id": "stance:end::stance_knee",
+        "detail": "",
+        "skip_reason": null,
+        "state": "pass",
+        "total_frames": 7,
+        "valid_frames": 7,
+        "violation_ratio": 0.0
+      },
+      {
+        "check_id": "stance:end::stance_toes",
         "detail": "",
         "skip_reason": null,
         "state": "pass",

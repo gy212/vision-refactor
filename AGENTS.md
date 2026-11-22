@@ -6,9 +6,9 @@
 
 ## 规范文档索引（以 Square 契约为准）
 
-- **常驻遵循契约**（需求分析、沟通、编码与写测时遵循）：
-  - 工程与测试核心契约：[specs/engineering_contract.md](specs/engineering_contract.md)
-  - 人机协作与沟通契约：[specs/communication_contract.md](specs/communication_contract.md)
+- **强制必读契约**（开始任何任务、需求分析、沟通、编码与写测前必须先完整阅读并严格遵循）：
+  - 工程与测试核心契约：[specs/engineering_contract.md](specs/engineering_contract.md)（**强制必读**）
+  - 人机协作与沟通契约：[specs/communication_contract.md](specs/communication_contract.md)（**强制必读**）
 - **技术栈样例包**（排查 Python / CLI / AST 静态分析边界时查阅，`square review` 会自动挂载）：
   - Python / CLI / 静态分析边界样例包：[specs/packs/python_cli.md](specs/packs/python_cli.md)
 - **按需读取契约**（仅进入对应环节时读取，日常编码与问答严禁预读；产出须通过 `square contract-check` 校验）：
@@ -142,7 +142,7 @@ CI（`.github/workflows/gates.yml`，检查名 `gates`）在每个 PR 和 `main`
 | **L0** | `core/foundation/` | **系统基础能力**<br>• `paths.py`：应用数据与临时目录统一解析<br>• `prefs.py`：用户偏好设置持久化与隔离接口<br>• `atomic_io.py` / `npz.py` / `jsonable.py`：原子写盘与格式序列化<br>• `geometry.py` / `signal.py`：通用几何基元与信号去抖<br>• `host.py` / `power.py` / `memory.py` / `volume.py` / `winapi.py`：宿主机软硬件环境探针 |
 | **L1** | `core/media/` | **媒体流采集与处理**<br>• `camera/`：摄像头硬件管理（`devices.py` 枚举、`service.py` 统一服务、`pool.py` 租约池、`reader.py` 独立读帧线程、`capture_process.py` 隔离子进程）<br>• `frames.py` / `frame_clock.py` / `pacing.py`：帧契约、采集时钟与录像节奏控制<br>• `writer.py` / `mjpeg_writer.py` / `ffmpeg.py`：视频写入与随包 ffmpeg 转码管道 |
 | **L2** | `core/pose/` | **姿态识别与特征提取（专注 MediaPipe）**<br>• `engine.py` / `mediapipe_runtime.py`：MediaPipe Tasks 推理引擎运行时<br>• `extract.py` / `sequence.py`：姿态序列提取与时间序列封装<br>• `validity.py`：`derive_valid_mask` 关键点有效性判定准绳<br>• `layouts.py` / `features.py` / `normalize.py`：`pose33_v3` 关键点布局、归一化与特征对齐<br>• `render.py` / `annotate.py`：姿态骨架平滑与骨架视频导出 |
-| **L3** | `core/evaluation/` | **动作编排、统一计时、对比与公共规则引擎**<br>• `action_catalog.py`：11 类动作编排、动作段组成与命名策略声明<br>• `action_timing.py` / `action_record.py` / `phase_alignment.py` / `phase_instances.py`：同步录像唯一计时来源选定、四入口共享动作记录与逐次机位覆盖核对<br>• `motion_events.py` / `punch_events.py` / `punch_phases.py` / `step_reps.py` / `stance_windows.py`：通用往返位移与保持识别、直拳事件/相位、上步组合逐次切分与稳定实战式取窗<br>• `measures/` / `paired_torso.py`：臂腿脚躯干、姿态与运动公共几何测量及双摄同步躯干朝向<br>• `rules/`：公共规则引擎（`engine.py` 调度、`rule_definitions.py` 统一规则定义、`catalog_measurements.py` / `kick_measures.py` / `kick_step.py` 公共测量、`sanda_v5.py` 目录编排、`evidence.py` 统一证据构建）<br>• `templates.py` / `matching/` / `scoring/` / `techeval/`：标准模板、`dtw.py` / `dual.py` / `repetition.py` 匹配、考试动作池评分与力序分析 |
+| **L3** | `core/evaluation/` | **动作编排、统一计时、对比与公共规则引擎**<br>• `action_catalog.py`：12 类动作编排、基础/派生动作段组成与命名策略声明<br>• `action_timing.py` / `action_record.py` / `phase_alignment.py` / `phase_instances.py`：同步录像唯一计时来源选定、四入口共享动作记录与逐次机位覆盖核对<br>• `motion_events.py` / `punch_events.py` / `hook_events.py` / `punch_phases.py` / `event_phases.py` / `step_reps.py` / `stance_windows.py`：通用往返位移与保持识别、直拳/摆拳事件与峰值精修、组合衔接与上步组合逐次切分、稳定实战式取窗<br>• `measures/`（`arms.py`、`legs.py`、`feet.py`、`torso.py`、`guard.py`、`posture.py`、`motion.py`、`hooks.py`、`kicks.py`）与 `paired_torso.py`：公共与动作独有底层几何测量及双摄同步躯干朝向<br>• `rules/`：公共规则引擎（`engine.py` 调度、`window_context.py` 切片上下文、公共域 `stance_rules.py` / `guard_rules.py` / `punch_rules.py` / `body_posture_rules.py` / `step_rules.py`、动作私有域 `straight_rules.py` / `hook_rules.py` / `kick_rules.py`、声明式蓝图 `rule_definitions.py` / `segment_blueprints.py` / `rule_descriptions.py`、`sanda_v5.py` 目录编排、`evidence.py` 统一证据构建）<br>• `templates.py` / `matching/` / `scoring/` / `techeval/`：标准模板、`dtw.py` / `dual.py` / `repetition.py` 匹配、考试动作池评分与力序分析 |
 | **L4** | `core/services/`<br>`core/recording/`<br>`core/live/`<br>`core/reporting/` | **领域服务层（平级自治，互不导入）**<br>• `services/`：离线分析服务（`analyze.py`）、模板生成（`templates.py`）、练习历史（`practice_history.py`）、录制基准评测（`recording_benchmark.py`）<br>• `recording/`：双摄录制控制（`recorder.py`）、录像工作线程（`worker.py`）、后处理链与骨架成片（`finalizer.py`、`steps.py`、`skeleton.py`）<br>• `live/`：实时交互会话（`runner.py`）、站位监测与 ROI 判定（`presence.py`）、实时预览流（`preview.py`）<br>• `reporting/`：结构化评测模型（`practice_model.py`）、公共优先级选图与证据预算（`evidence_selection.py`、`evidence.py`）、计时诊断与问题分组（`timing_diagnostics.py`、`issue_groups.py`）、文本与 HTML 报告生成（`text.py`、`html/`） |
 | **L5** | `core/workflows/` | **业务工作流编排**<br>• `exam/`：考试考务完整状态机编排（`session.py` 考场状态、`roster.py` 名册台账、`clip.py` 动作剪裁、`scorebook.py` 成绩台账）<br>• `practice/`：学生练习会话编排（`session.py`）<br>• `presence.py` / `executor.py` / `plans.py`：考生进退场闸门与异步任务执行流 |
 

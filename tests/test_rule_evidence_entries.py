@@ -107,7 +107,8 @@ def test_all_final_outputs_keep_the_same_paired_measurement_evidence(width_ratio
     batch = _check(_batch(deepcopy(views)).front_rule_checks)
 
     assert practice_check["status"] == status
-    assert "0.7到1.35倍" in practice_check["standard"]
+    assert "0.7 倍肩宽" in practice_check["standard"]
+    assert "1.35 倍肩宽" in practice_check["standard"]
     for action in ("stance", "rear_straight"):
         sibling = evaluate_series(action, "left", deepcopy(views))
         check = next(c for c in sibling["checks"] if c["id"] == CHECK_ID)

@@ -5,8 +5,9 @@ from __future__ import annotations
 
 import numpy as np
 
-from core.evaluation.body_sides import sides_for_stance
+from core.evaluation.body_sides import facing_direction, sides_for_stance
 from core.evaluation.measures.arms import series_angles
+from core.evaluation.measures.kicks import kicking_leg_side_safe
 from core.foundation.geometry import torso_length
 
 _ENTER_TH = 0.25
@@ -16,6 +17,7 @@ _MIN_DUR_S = 0.35
 _MERGE_GAP_S = 0.35
 _KNEE_FALLBACK_TH = 0.35
 _TOE_FALLBACK_TH = 0.25
+_EXT_LIFT_RATIO = 0.50
 _EXT_RATIO = 0.80
 _EXT_KNEE_DEG = 155.0
 
@@ -63,14 +65,8 @@ def _baseline_offset(values: np.ndarray, low_limit: float = 0.28) -> float:
     return float(np.median(values[low[:20]]))
 
 
-def _safe_torso(
-    lm: np.ndarray, mask: np.ndarray, raw_torso: np.ndarray | None
-) -> np.ndarray:
-    torso = (
-        raw_torso
-        if raw_torso is not None
-        else torso_length(lm, mask, "visible_side_chain")
-    )
+def _safe_torso(lm: np.ndarray, mask: np.ndarray, raw_torso: np.ndarray | None) -> np.ndarray:
+    torso = raw_torso if raw_torso is not None else torso_length(lm, mask, "visible_side_chain")
     ok = torso > 1e-4
     vals = torso[ok]
     ref = float(np.median(vals)) if len(vals) else 0.25
@@ -101,6 +97,66 @@ def _normalized_height_diff(
     return raw, filled - base, base
 
 
+def _leg_extension_signal(
+    lm: np.ndarray,
+    mask: np.ndarray,
+    torso: np.ndarray,
+    kh: int,
+    ka: int,
+    kt: int,
+    sa: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """侧面踢腿前向伸展信号（抗左右腿互换）：分别返回脚尖与脚踝相对踢腿髋伸展序列，无朝向退欧氏距离。"""
+    safe_mask = kicking_leg_side_safe(lm, mask, ka, sa, torso)
+    dirs = [d for row, m_row in zip(lm, mask) if (d := facing_direction(row, m_row)) is not None]
+    facing: float | None = None
+    if dirs:
+        facing = 1.0 if sum(dirs) >= 0.0 else -1.0
+    if facing is not None:
+        toe_ext = np.where(
+            safe_mask[:, kt] & safe_mask[:, kh],
+            (lm[:, kt, 0] - lm[:, kh, 0]) * facing,
+            np.nan,
+        )
+        ank_ext = np.where(
+            safe_mask[:, ka] & safe_mask[:, kh],
+            (lm[:, ka, 0] - lm[:, kh, 0]) * facing,
+            np.nan,
+        )
+    else:
+        toe_ext = np.where(
+            safe_mask[:, kt] & safe_mask[:, kh],
+            np.hypot(lm[:, kt, 0] - lm[:, kh, 0], lm[:, kt, 1] - lm[:, kh, 1]),
+            np.nan,
+        )
+        ank_ext = np.where(
+            safe_mask[:, ka] & safe_mask[:, kh],
+            np.hypot(lm[:, ka, 0] - lm[:, kh, 0], lm[:, ka, 1] - lm[:, kh, 1]),
+            np.nan,
+        )
+    return toe_ext, ank_ext
+
+
+def _aligned_event_extension(
+    toe_seg: np.ndarray,
+    ank_seg: np.ndarray,
+    seg_h: np.ndarray,
+    peak_val: float,
+    ref_torso: float,
+) -> np.ndarray:
+    """在单次事件内用中位脚长偏移对齐脚踝伸展，消除最远帧脚尖短暂丢点时的尺度跳变。"""
+    both = np.isfinite(toe_seg) & np.isfinite(ank_seg)
+    lift_both = both & np.isfinite(seg_h) & (seg_h >= max(_ENTER_TH, _EXT_LIFT_RATIO * peak_val))
+    if lift_both.any():
+        offset = float(np.median(toe_seg[lift_both] - ank_seg[lift_both]))
+    elif both.any():
+        offset = float(np.median(toe_seg[both] - ank_seg[both]))
+    else:
+        offset = 0.0
+    merged = np.where(np.isfinite(toe_seg), toe_seg, ank_seg + offset)
+    return merged / ref_torso
+
+
 def _prepare_signals(
     series: dict,
     action: str,
@@ -117,9 +173,7 @@ def _prepare_signals(
     _, _, _, _, sk, sa, _, _ = sides_for_stance(sup_role, stance)
 
     sup_raw, sup_rel, base_sup = _normalized_height_diff(lm, mask, torso, sa, ka, 0.28)
-    abs_fill = _interpolate_gaps(
-        _median_filter(np.abs(sup_raw) - abs(base_sup), 3), max_gap=5
-    )
+    abs_fill = _interpolate_gaps(_median_filter(np.abs(sup_raw) - abs(base_sup), 3), max_gap=5)
     seg_sig = np.where(
         np.isfinite(sup_rel) & np.isfinite(abs_fill),
         np.maximum(sup_rel, abs_fill * 0.9),
@@ -128,12 +182,8 @@ def _prepare_signals(
 
     _, knee_rel, _ = _normalized_height_diff(lm, mask, torso, sk, kk, 0.28)
     _, toe_rel, _ = _normalized_height_diff(lm, mask, torso, sa, kt, 0.35)
-    knee_lift = np.where(
-        np.isfinite(knee_rel) & (knee_rel >= _KNEE_FALLBACK_TH), knee_rel, np.nan
-    )
-    toe_lift = np.where(
-        np.isfinite(toe_rel) & (toe_rel >= _TOE_FALLBACK_TH), toe_rel, np.nan
-    )
+    knee_lift = np.where(np.isfinite(knee_rel) & (knee_rel >= _KNEE_FALLBACK_TH), knee_rel, np.nan)
+    toe_lift = np.where(np.isfinite(toe_rel) & (toe_rel >= _TOE_FALLBACK_TH), toe_rel, np.nan)
     fallback = np.fmax(knee_lift, toe_lift)
 
     ankle_missing = ~np.isfinite(seg_sig)
@@ -147,26 +197,26 @@ def _prepare_signals(
 
     k_ang_raw = series_angles(lm, kh, kk, ka)
     k_ang = np.where(mask[:, kh] & mask[:, kk] & mask[:, ka], k_ang_raw, np.nan)
+    toe_ext, ank_ext = _leg_extension_signal(lm, mask, torso, kh, ka, kt, sa)
     return {
         "times": times,
+        "torso": torso,
         "sup_rel": sup_rel,
         "signed_sig": signed_sig,
         "hold_sig": hold_sig,
         "low_return": low_return,
         "knee_angle": k_ang,
+        "toe_ext": toe_ext,
+        "ank_ext": ank_ext,
     }
 
 
-def _qualifies_interval(
-    hold_sig: np.ndarray, times: np.ndarray, a: int, b: int
-) -> bool:
+def _qualifies_interval(hold_sig: np.ndarray, times: np.ndarray, a: int, b: int) -> bool:
     """判断单个原始事件区间是否独立满足峰值与最短持续时长要求。"""
     seg = hold_sig[a : b + 1]
     if not np.isfinite(seg).any():
         return False
-    return (
-        float(np.nanmax(seg)) >= _PEAK_TH and float(times[b] - times[a]) >= _MIN_DUR_S
-    )
+    return float(np.nanmax(seg)) >= _PEAK_TH and float(times[b] - times[a]) >= _MIN_DUR_S
 
 
 def _merge_raw_intervals(
@@ -254,11 +304,7 @@ def _hysteresis_intervals(
             trig = s_val if np.isfinite(s_val) else val
             if trig >= _ENTER_TH or val >= _PEAK_TH:
                 s0 = i
-                while (
-                    s0 > 0
-                    and np.isfinite(hold_sig[s0 - 1])
-                    and hold_sig[s0 - 1] > _EXIT_TH
-                ):
+                while s0 > 0 and np.isfinite(hold_sig[s0 - 1]) and hold_sig[s0 - 1] > _EXIT_TH:
                     s0 -= 1
                 in_ev = True
                 start = s0
@@ -284,8 +330,24 @@ def _select_ext_idx(
     peak_idx: int,
     seg_h: np.ndarray,
     ka_seg: np.ndarray,
+    ext_seg: np.ndarray,
     peak_val: float,
 ) -> int:
+    fin_ext = np.isfinite(ext_seg)
+    lift_th = max(_ENTER_TH, _EXT_LIFT_RATIO * peak_val)
+    cand = np.flatnonzero(np.isfinite(seg_h) & (seg_h >= lift_th) & fin_ext)
+    if not cand.size:
+        cand = np.flatnonzero(np.isfinite(seg_h) & (seg_h >= _ENTER_TH) & fin_ext)
+    if cand.size:
+        vals = ext_seg[cand]
+        max_ext = float(np.max(vals))
+        near = cand[vals >= max_ext - 1e-4]
+        if near.size > 1:
+            h_near = np.where(np.isfinite(seg_h[near]), seg_h[near], -np.inf)
+            max_h = float(np.max(h_near))
+            best = near[h_near >= max_h - 1e-4]
+            return start + int(best[int(np.argmin(np.abs((start + best) - peak_idx)))])
+        return start + int(near[0])
     ext_mask = np.isfinite(seg_h) & (seg_h >= _EXT_RATIO * peak_val)
     if np.isfinite(ka_seg).any():
         ext_k = ext_mask & np.isfinite(ka_seg) & (ka_seg >= _EXT_KNEE_DEG)
@@ -309,10 +371,13 @@ def segment_kick_events(
 
     raw_torso = prepared.torso if prepared is not None else None
     sig = _prepare_signals(series, action, stance, raw_torso=raw_torso)
+    torso = sig["torso"]
     hold_sig = sig["hold_sig"]
     signed_sig = sig["signed_sig"]
     sup_rel = sig["sup_rel"]
     knee_angle = sig["knee_angle"]
+    toe_ext = sig["toe_ext"]
+    ank_ext = sig["ank_ext"]
 
     events: list[dict] = []
     for a, b, closed in _hysteresis_intervals(
@@ -335,13 +400,15 @@ def segment_kick_events(
             continue
 
         peak_idx = a + int(fin_h[int(np.argmax(seg_h[fin_h]))])
-        ext_idx = _select_ext_idx(a, peak_idx, seg_h, knee_angle[a : b + 1], peak_val)
+        ref_torso = max(float(np.median(torso[a : b + 1])), 1e-4)
+        ext_seg = _aligned_event_extension(
+            toe_ext[a : b + 1], ank_ext[a : b + 1], seg_h, peak_val, ref_torso
+        )
+        ext_idx = _select_ext_idx(a, peak_idx, seg_h, knee_angle[a : b + 1], ext_seg, peak_val)
         after_hold = hold_sig[b + 1 : min(n, b + 30)]
         fin_after = after_hold[np.isfinite(after_hold)]
         landed_after = bool(
-            fin_after.size
-            and fin_after[0] < _ENTER_TH
-            and (fin_after <= _EXIT_TH).any()
+            fin_after.size and fin_after[0] < _ENTER_TH and (fin_after <= _EXIT_TH).any()
         )
         events.append(
             {
@@ -362,12 +429,7 @@ def segment_kick_events(
     return events
 
 
-def kick_repetitions(
-    series: dict, action: str, stance: str, cfg=None
-) -> list[tuple[float, float]]:
+def kick_repetitions(series: dict, action: str, stance: str, cfg=None) -> list[tuple[float, float]]:
     """返回侧视角低鞭腿每次重复的 ``(起, 止)``（秒）。"""
     del cfg
-    return [
-        (ev["t_start"], ev["t_end"])
-        for ev in segment_kick_events(series, action, stance)
-    ]
+    return [(ev["t_start"], ev["t_end"]) for ev in segment_kick_events(series, action, stance)]

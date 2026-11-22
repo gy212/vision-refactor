@@ -6,10 +6,14 @@
 
 from __future__ import annotations
 
+from core.evaluation.action_catalog import action_segments, motion_segments
 from core.evaluation.action_events import action_events
-from core.evaluation.action_catalog import action_segments
+from core.evaluation.event_phases import (
+    combo_transition_windows,
+    final_stance_window,
+    observed_phase_windows,
+)
 from core.evaluation.motion_input import MotionInput, prepare_motion_input
-from core.evaluation.event_phases import final_stance_window, observed_phase_windows
 
 
 def phase_windows(
@@ -24,7 +28,11 @@ def phase_windows(
     """单路序列的相位窗口 ``{(段, 相位): 帧下标}``；``diagnostics`` 写入检测结论与事件序列。"""
     diagnostics = diagnostics if diagnostics is not None else {}
     diagnostics.update(
-        reason="没有找到持续稳定的起始护位", events=[], eventDetails=[], phaseInstances=[]
+        reason="没有找到持续稳定的起始护位",
+        events=[],
+        eventDetails=[],
+        phaseInstances=[],
+        comboPairs=[],
     )
     lm, mask = series["landmarks"], series["valid_mask"]
     prepared = prepared or prepare_motion_input(series, cfg)
@@ -34,11 +42,18 @@ def phase_windows(
     baseline = stable[0]
     diagnostics["reason"] = "未检测到完整离开并回收的动作"
     windows = {("stance", "start"): baseline, ("stance", "end"): stable[-1]}
-    segments = list(action_segments(action))
+    all_segments = action_segments(action)
+    segments = list(motion_segments(action))
     observed = action_events(
         lm, mask, times, torso, baseline, tuple(segments), stance, cfg, stable, diagnostics, view
     )
     windows.update(observed_phase_windows(observed, times, stable, cfg, diagnostics))
+    if "combo_transition" in all_segments and len(segments) >= 2:
+        windows.update(
+            combo_transition_windows(
+                observed, baseline, times, segments[0], segments[1], cfg, diagnostics
+            )
+        )
     if not observed:
         return windows
     diagnostics["reason"] = "已检测到完整动作"

@@ -1,17 +1,12 @@
 {
   "schema_version": "1.0",
-  "entry_ceiling": 63,
+  "entry_ceiling": 58,
   "entries": {
     "anti_cheat_compression.nested_ternary": {
       "analysis/bench_annotate_metrics.py::nested_ternary@timing_metrics": 1,
       "apps/tk/views/practice_checks_dialog.py::nested_ternary@PracticeChecksDialog._build_scroll_area": 1,
       "core/evaluation/practice.py::nested_ternary@_fuse": 1,
       "core/evaluation/practice.py::nested_ternary@_summarize_practice": 1,
-      "core/evaluation/rules/rule_definitions.py::nested_ternary@resolve_rule": 1,
-      "core/evaluation/rules/sanda_v5.py::nested_ternary@_append_segment_checks": 1,
-      "core/evaluation/rules/sanda_v5.py::nested_ternary@build_checks": 1,
-      "core/evaluation/rules/sanda_v5.py::nested_ternary@build_checks.<locals>.add": 1,
-      "core/evaluation/rules/sanda_v5.py::nested_ternary@catalog_checks": 1,
       "core/evaluation/scoring/kick_quality.py::nested_ternary@_height_map_score": 1,
       "core/evaluation/techeval/evaluate.py::nested_ternary@_with_contracts": 2,
       "core/pose/backends/yolo/adapter.py::nested_ternary@_read_series": 1,

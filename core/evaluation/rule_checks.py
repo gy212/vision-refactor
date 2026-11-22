@@ -42,18 +42,11 @@ def aspect_corrected(landmarks: np.ndarray, width: int, height: int) -> np.ndarr
     return lm.astype(np.float32)
 
 
-def rule_series(
-    landmarks: np.ndarray, frames: Sequence[int], fps: float, aspect: float
-) -> dict:
+def rule_series(landmarks: np.ndarray, frames: Sequence[int], fps: float, aspect: float) -> dict:
     """规则输入序列：``landmarks`` 为宽高比修正坐标 ``(T,33,4)``，``aspect`` 为画面宽高比（x 的上界）。"""
     lm = np.asarray(landmarks)
     mask = derive_valid_mask(lm) & np.isfinite(lm[:, :, :3]).all(axis=2)
-    mask &= (
-        (lm[:, :, 0] >= 0)
-        & (lm[:, :, 0] <= aspect)
-        & (lm[:, :, 1] >= 0)
-        & (lm[:, :, 1] <= 1)
-    )
+    mask &= (lm[:, :, 0] >= 0) & (lm[:, :, 0] <= aspect) & (lm[:, :, 1] >= 0) & (lm[:, :, 1] <= 1)
     frames = [int(i) for i in frames]
     return {
         "landmarks": lm,
@@ -89,6 +82,9 @@ def view_outcomes(
     paired_torso=None,
     phase_instances=(),
     phase_coverage: dict | None = None,
+    event_details=(),
+    combo_pairs=(),
+    repetitions=(),
 ) -> dict[str, RuleOutcome]:
     """一路视角上全部检查项经 ``evaluate_rules`` 的结论（以检查项 id 为键）；基线取起始实战式窗口，缺失时取开头几帧。"""
     baseline = view_windows.get(
@@ -98,15 +94,16 @@ def view_outcomes(
         view=view,
         action=action,
         stance=stance,
-        phase_windows={
-            f"{segment}:{phase}": idx for (segment, phase), idx in view_windows.items()
-        },
+        phase_windows={f"{segment}:{phase}": idx for (segment, phase), idx in view_windows.items()},
         baseline=baseline,
         params=cfg,
         paired_torso=paired_torso,
         phase_instances=_phase_instance_frames(series["times"], phase_instances),
         phase_coverage=phase_coverage or {},
         times=np.asarray(series["times"], dtype=float),
+        event_details=tuple(event_details),
+        combo_pairs=tuple(combo_pairs),
+        repetitions=tuple(repetitions),
     )
     outcomes = evaluate_rules(
         series["landmarks"],
@@ -124,9 +121,7 @@ def _phase_instance_frames(times, instances) -> dict:
     grouped = {}
     for instance in instances:
         scope = f"{instance['segment']}:{instance['phase']}"
-        frames = np.flatnonzero(
-            (times >= instance["start"]) & (times <= instance["end"])
-        )
+        frames = np.flatnonzero((times >= instance["start"]) & (times <= instance["end"]))
         grouped.setdefault(scope, []).append((instance["repetition"], frames))
     return {scope: tuple(values) for scope, values in grouped.items()}
 
@@ -153,6 +148,9 @@ def _view_checks(
     evidence_views: dict,
     evidence_diagnostics: dict,
     phase_coverage: dict | None = None,
+    event_details=(),
+    combo_pairs=(),
+    repetitions=(),
 ) -> tuple[RuleCheck, ...]:
     """一路视角在给定相位窗口上的逐项结论（只列适用本视角的项）。"""
     outcomes = view_outcomes(
@@ -167,6 +165,9 @@ def _view_checks(
         paired_torso=paired_torso,
         phase_instances=phase_instances,
         phase_coverage=phase_coverage,
+        event_details=event_details,
+        combo_pairs=combo_pairs,
+        repetitions=repetitions,
     )
     return tuple(
         to_rule_check(
@@ -191,9 +192,7 @@ def judge_view(
     supported_capabilities=None,
 ) -> tuple[tuple[RuleCheck, ...], dict]:
     """一路视角的逐项结论与相位诊断；没有同步的另一路时用它，不做正侧融合。"""
-    return judge_views({view: series}, action, stance, cfg, supported_capabilities)[
-        view
-    ]
+    return judge_views({view: series}, action, stance, cfg, supported_capabilities)[view]
 
 
 def judge_views(
@@ -208,9 +207,7 @@ def judge_views(
     相位与练习一样经 ``synchronized_windows`` 准备，诊断另带 ``phaseSource``；逐视角报告。
     躯干朝向在正面项中引用双机位共同证据，其余项仍按各路独立测量。
     """
-    windows, diagnostics, alignment, sources = synchronized_windows(
-        views, action, stance, cfg
-    )
+    windows, diagnostics, alignment, sources = synchronized_windows(views, action, stance, cfg)
     record = shared_action_record(action, stance, diagnostics, alignment, sources)
     profile = rule_profile(action, stance, cfg)
     paired = (
@@ -237,6 +234,12 @@ def judge_views(
                     or diagnostics[view].get("projectedPhaseInstances", ())
                 ),
                 phase_coverage=alignment["phases"],
+                event_details=(
+                    diagnostics[view].get("eventDetails")
+                    or diagnostics[view].get("projectedEventDetails", ())
+                ),
+                combo_pairs=diagnostics[view].get("comboPairs", ()),
+                repetitions=diagnostics[view].get("repetitions", ()),
             ),
             {
                 **diagnostics[view],

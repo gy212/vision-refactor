@@ -10,7 +10,14 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
-from core.evaluation.rules.sanda_v5 import ACTION_SEGMENTS, ACTIONS, PHASES, STANCES
+from core.evaluation.rules.sanda_v5 import (
+    ACTION_SEGMENTS,
+    ACTIONS,
+    DERIVED_SEGMENTS,
+    PHASES,
+    SEGMENT_LABELS,
+    STANCES,
+)
 from core.reporting.saved_results import (
     MISSING_CHECKS_NOTE,
     saved_checks,
@@ -24,9 +31,7 @@ STATUS_LABELS = {
     "unable": "暂无法判断",
 }
 _REVIEW_LABELS = {"confirmed": "教师已确认", "revoked": "教师已撤销"}
-_RERECORD_HINT = (
-    " 请重新录制：全身及拳脚入画、光线充足、减少遮挡，保留开始和结束实战式。"
-)
+_RERECORD_HINT = " 请重新录制：全身及拳脚入画、光线充足、减少遮挡，保留开始和结束实战式。"
 
 
 @dataclass(frozen=True)
@@ -44,10 +49,7 @@ class StatusCounts:
     def verify_conservation(self) -> bool:
         """Verify strict item conservation."""
         cat_sum = (
-            self.candidate_count
-            + self.not_observed_count
-            + self.unable_count
-            + self.revoked_count
+            self.candidate_count + self.not_observed_count + self.unable_count + self.revoked_count
         )
         sub_sum = self.unconfirmed_count + self.confirmed_count
         return cat_sum == self.total_checks and sub_sum == self.candidate_count
@@ -217,15 +219,9 @@ def _headline(
 
 def _is_unjudgeable(counts: StatusCounts) -> bool:
     """所有可测项（不含已撤销）都无法判断。"""
-    measurable = (
-        counts.candidate_count + counts.not_observed_count + counts.unable_count
-    )
+    measurable = counts.candidate_count + counts.not_observed_count + counts.unable_count
     return (
-        (
-            counts.candidate_count == 0
-            and counts.not_observed_count == 0
-            and counts.unable_count > 0
-        )
+        (counts.candidate_count == 0 and counts.not_observed_count == 0 and counts.unable_count > 0)
         or (measurable > 0 and counts.unable_count == measurable)
         or (counts.total_checks > 0 and counts.unable_count == counts.total_checks)
     )
@@ -234,9 +230,7 @@ def _is_unjudgeable(counts: StatusCounts) -> bool:
 def _candidate_headline(counts: StatusCounts, needs_rerecord: bool) -> HeadlineSummary:
     """存在未撤销候选问题时的标题（第 5、6 级）。"""
     confirmed_note = (
-        f"（含教师已确认 {counts.confirmed_count} 项）"
-        if counts.confirmed_count > 0
-        else ""
+        f"（含教师已确认 {counts.confirmed_count} 项）" if counts.confirmed_count > 0 else ""
     )
     if counts.unable_count > 0:
         return _headline(
@@ -395,9 +389,7 @@ def _build_header(record: dict, result: dict) -> ReportHeader:
         created_at_local=format_local_datetime(created_at_utc),
         record_id=_text_or(record.get("id"), "0" * 32),
         revision=revision,
-        rule_version=_text_or(
-            result.get("ruleVersion"), "sanda-feedback-mediapipe-legacy"
-        ),
+        rule_version=_text_or(result.get("ruleVersion"), "sanda-feedback-mediapipe-legacy"),
         backend_description=backend_desc,
     )
 
@@ -435,13 +427,10 @@ def _normalize_check(cid: str, c: dict, audit_logs: list[dict]) -> NormalizedChe
         body_part=_text_or(c.get("bodyPart"), "未指定部位"),
         segment=str(c.get("segment") or "stance"),
         segment_label=str(
-            c.get("segmentLabel")
-            or ACTIONS.get(c.get("segment", ""), c.get("segment", ""))
+            c.get("segmentLabel") or ACTIONS.get(c.get("segment", ""), c.get("segment", ""))
         ),
         phase=str(c.get("phase") or "motion"),
-        phase_label=str(
-            c.get("phaseLabel") or PHASES.get(c.get("phase", ""), c.get("phase", ""))
-        ),
+        phase_label=str(c.get("phaseLabel") or PHASES.get(c.get("phase", ""), c.get("phase", ""))),
         standard=str(c.get("standard") or ""),
         source=str(c.get("source") or ""),
         status=status,
@@ -449,13 +438,9 @@ def _normalize_check(cid: str, c: dict, audit_logs: list[dict]) -> NormalizedChe
         review=review,
         review_display=_REVIEW_LABELS.get(review, ""),
         reason=reason,
-        evidence_refs=c.get("evidence", [])
-        if isinstance(c.get("evidence"), list)
-        else [],
+        evidence_refs=c.get("evidence", []) if isinstance(c.get("evidence"), list) else [],
         evidence_details=(
-            c.get("evidenceDetails", [])
-            if isinstance(c.get("evidenceDetails"), list)
-            else []
+            c.get("evidenceDetails", []) if isinstance(c.get("evidenceDetails"), list) else []
         ),
         measurements_summary=format_fusion(c) if fusion or measurements else "",
         measurements=measurements,
@@ -475,9 +460,7 @@ class _Buckets:
 
     def add(self, check: NormalizedCheck) -> None:
         if check.status == "candidate":
-            (self.revoked if check.review == "revoked" else self.candidate).append(
-                check
-            )
+            (self.revoked if check.review == "revoked" else self.candidate).append(check)
         else:
             getattr(self, check.status).append(check)
 
@@ -500,7 +483,7 @@ def _ordered_stages(action: str) -> list[tuple[str, str, str]]:
         return [("stance", "start", "开始实战式"), ("stance", "end", "结束实战式")]
     stages = [("stance", "start", "开始实战式")]
     for seg in ACTION_SEGMENTS.get(action, (action,)):
-        stages.append((seg, "segment", ACTIONS.get(seg, seg)))
+        stages.append((seg, "segment", SEGMENT_LABELS.get(seg, seg)))
     stages.append(("stance", "end", "结束实战式"))
     return stages
 
@@ -513,9 +496,7 @@ def _phase_times(phase_windows: dict) -> dict[tuple[str, str], list[float]]:
                 key = (pw.get("segment", ""), pw.get("phase", ""))
                 for r in pw.get("ranges", []):
                     if len(r) >= 2:
-                        phase_times.setdefault(key, []).extend(
-                            [float(r[0]), float(r[1])]
-                        )
+                        phase_times.setdefault(key, []).extend([float(r[0]), float(r[1])])
     return phase_times
 
 
@@ -528,9 +509,7 @@ def build_phase_timeline(
     for seg, p_kind, stage_title in _ordered_stages(action):
         if p_kind == "segment":
             stage_checks = [
-                c
-                for c in all_checks
-                if c.segment == seg and c.phase not in {"start", "end"}
+                c for c in all_checks if c.segment == seg and c.phase not in {"start", "end"}
             ]
             times_list = [
                 stamp
@@ -539,10 +518,10 @@ def build_phase_timeline(
                 for stamp in stamps
             ]
         else:
-            stage_checks = [
-                c for c in all_checks if c.segment == seg and c.phase == p_kind
-            ]
+            stage_checks = [c for c in all_checks if c.segment == seg and c.phase == p_kind]
             times_list = phase_times.get((seg, p_kind), [])
+        if p_kind == "segment" and seg in DERIVED_SEGMENTS and not stage_checks and not times_list:
+            continue
         if times_list:
             t_min, t_max = min(times_list), max(times_list)
             time_text = f"{t_min:.2f}s ～ {t_max:.2f}s"
@@ -558,14 +537,10 @@ def build_phase_timeline(
                 start_seconds=t_min,
                 end_seconds=t_max,
                 candidate_count=sum(
-                    1
-                    for c in stage_checks
-                    if c.status == "candidate" and c.review != "revoked"
+                    1 for c in stage_checks if c.status == "candidate" and c.review != "revoked"
                 ),
                 unable_count=sum(1 for c in stage_checks if c.status == "unable"),
-                not_observed_count=sum(
-                    1 for c in stage_checks if c.status == "not_observed"
-                ),
+                not_observed_count=sum(1 for c in stage_checks if c.status == "not_observed"),
                 checks=stage_checks,
             )
         )
@@ -591,9 +566,7 @@ def build_report_model(record: dict) -> NormalizedReportModel:
         if cid:
             dedup[cid] = c
     review_map = _review_map(result)
-    all_checks = [
-        _normalize_check(cid, c, review_map.get(cid, [])) for cid, c in dedup.items()
-    ]
+    all_checks = [_normalize_check(cid, c, review_map.get(cid, [])) for cid, c in dedup.items()]
     buckets = _Buckets()
     for check in all_checks:
         buckets.add(check)
@@ -606,7 +579,9 @@ def build_report_model(record: dict) -> NormalizedReportModel:
     repetitions = _dict_field(result, "repetitions")
     if repetitions and repetitions["detected"] != repetitions["expected"]:
         # Tk 与 HTML 共用此横幅；只写原始 summary 不会进入结果页。
-        headline.subtitle += f" 检测到 {repetitions['detected']} 次动作，应做 {repetitions['expected']} 次。"
+        headline.subtitle += (
+            f" 检测到 {repetitions['detected']} 次动作，应做 {repetitions['expected']} 次。"
+        )
     if repetitions.get("incompleteRecovery"):
         headline.subtitle += " 存在打出后保持的动作，尚未观察到收回。"
     skipped_note = skipped_checks_note(result, len(all_checks))
@@ -622,9 +597,7 @@ def build_report_model(record: dict) -> NormalizedReportModel:
         header=header,
         headline=headline,
         counts=counts,
-        phases=build_phase_timeline(
-            header.action, all_checks, _dict_field(result, "phaseWindows")
-        ),
+        phases=build_phase_timeline(header.action, all_checks, _dict_field(result, "phaseWindows")),
         candidate_groups=group_checks_by_reason(buckets.candidate),
         candidate_checks=buckets.candidate,
         revoked_checks=buckets.revoked,

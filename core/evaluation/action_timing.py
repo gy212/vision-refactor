@@ -4,8 +4,13 @@ from __future__ import annotations
 
 from collections import Counter
 
-from core.evaluation.action_catalog import ActionDefinition, action_definition
+from core.evaluation.action_catalog import (
+    DERIVED_SEGMENTS,
+    ActionDefinition,
+    action_definition,
+)
 from core.evaluation.action_events import motion_landmarks
+from core.evaluation.hook_events import hook_reference
 from core.evaluation.kick_phases import kick_combo_windows
 from core.evaluation.motion_input import MotionInput, prepare_motion_input
 from core.evaluation.punch_events import straight_reference
@@ -29,9 +34,10 @@ def _segment_reference(series, prepared, segment, stance, view, cfg) -> dict:
             "reason": "没有找到持续稳定的起始护位",
         }
     baseline = prepared.stable[0]
-    if segment.endswith("_straight"):
+    if segment.endswith(("_straight", "_hook")):
         role = "front" if segment.startswith("front_") else "rear"
-        reference = straight_reference(
+        ref_fn = straight_reference if segment.endswith("_straight") else hook_reference
+        reference = ref_fn(
             series["landmarks"],
             series["valid_mask"],
             prepared.torso,
@@ -50,9 +56,7 @@ def _segment_reference(series, prepared, segment, stance, view, cfg) -> dict:
             "directionReferenceFrames": reference.direction_frames,
             "directionLandmarks": [0, 23, 24] if view == "side" else [],
             "minimumDirectionReferenceFrames": cfg.min_valid if view == "side" else 0,
-            "directionRequirement": "鼻点及至少一个髋点"
-            if view == "side"
-            else "无需方向参照",
+            "directionRequirement": "鼻点及至少一个髋点" if view == "side" else "无需方向参照",
             "reason": reference.reason,
         }
     valid = series["valid_mask"][baseline][:, points].all(axis=1)
@@ -72,13 +76,14 @@ def _source_coverage(series, prepared, definition, stance, view, cfg) -> dict:
     """可见帧与必要参照分别声明，配对缺成员不抹掉仍可观测的独立段。"""
     mask = series["valid_mask"]
     usable = prepared.torso > 1e-4
-    for segment in definition.segments:
+    segments = tuple(seg for seg in definition.segments if seg not in DERIVED_SEGMENTS)
+    for segment in segments:
         usable &= mask[:, motion_landmarks(segment, stance)].all(axis=1)
-    if not definition.segments:
+    if not segments:
         usable &= mask[:, [11, 15, 23]].all(axis=1) | mask[:, [12, 16, 24]].all(axis=1)
     references = {
         segment: _segment_reference(series, prepared, segment, stance, view, cfg)
-        for segment in definition.segments
+        for segment in segments
     }
     ready = sum(item["ready"] for item in references.values())
     return {
@@ -100,9 +105,7 @@ def timing_source(
     """先核对可见性和识别的真实参照条件，再选一路执行一次识别。"""
     candidates = [view for view in definition.timing_views if view in views]
     coverage = {
-        view: _source_coverage(
-            views[view], prepared[view], definition, stance, view, cfg
-        )
+        view: _source_coverage(views[view], prepared[view], definition, stance, view, cfg)
         for view in candidates
     }
     executable = [view for view in candidates if coverage[view]["referenceReady"]]
@@ -133,6 +136,7 @@ def timing_source(
         "motionLandmarks": {
             segment: list(motion_landmarks(segment, stance))
             for segment in definition.segments
+            if segment not in DERIVED_SEGMENTS
         },
         "bodyReference": "至少一条有效肩髋链",
         "visibility": coverage,
@@ -166,9 +170,7 @@ def shared_timeline(
     每一路只按共有时段读取自己的有效点，数据不完整由对应检查报告。
     """
     definition = action_definition(action)
-    prepared = {
-        view: prepare_motion_input(series, cfg) for view, series in views.items()
-    }
+    prepared = {view: prepare_motion_input(series, cfg) for view, series in views.items()}
     source, selection = timing_source(views, definition, stance, cfg, prepared)
     if source is None:
         if definition.timing == "side_combo":
@@ -193,7 +195,7 @@ def shared_timeline(
     data: dict = {}
     if definition.timing == "side_combo":
         source_windows = step_combo_windows(
-            views[source], stance, cfg, data, prepared[source]
+            views[source], stance, cfg, data, prepared[source], action=action
         )
     elif definition.timing == "side_kick":
         source_windows = kick_combo_windows(
@@ -216,19 +218,13 @@ def shared_timeline(
                 data["phaseInstances"],
             )
         )
-        diagnostics[view] = (
-            data if view == source else _project_diagnostics(data, source)
-        )
-        sources[view] = (
-            "own_view" if view == source else source + "_synchronized_timing"
-        )
+        diagnostics[view] = data if view == source else _project_diagnostics(data, source)
+        sources[view] = "own_view" if view == source else source + "_synchronized_timing"
         missing = set(source_windows) - set(windows[view])
         if missing:
             diagnostics[view]["reason"] = "本机位录像未覆盖共享阶段的完整时间范围"
         boundaries = data["eventDetails"]
-        windows[view] = settled_stance_windows(
-            series, dict(windows[view]), boundaries, cfg
-        )
+        windows[view] = settled_stance_windows(series, dict(windows[view]), boundaries, cfg)
     correspondence = phase_correspondence(
         views, windows, source, source_windows, data["phaseInstances"]
     )
@@ -243,9 +239,7 @@ def shared_timeline(
         "timingSource": source,
         "sourceSelection": selection,
         "eventCounts": {
-            source: dict(
-                Counter(event["segment"] for event in data.get("eventDetails", []))
-            )
+            source: dict(Counter(event["segment"] for event in data.get("eventDetails", [])))
         },
         "phases": correspondence,
     }
