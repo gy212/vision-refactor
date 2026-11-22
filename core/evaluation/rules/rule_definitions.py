@@ -28,6 +28,7 @@ from core.evaluation.rules.segment_blueprints import (
 )
 from core.evaluation.rules.spec import PhaseCheck, PhaseVerdict
 from core.evaluation.rules.stance_rules import build_stance_check, stance_landmarks
+from core.evaluation.rules.step_rules import build_step_check, step_landmarks
 from core.evaluation.rules.straight_rules import (
     build_straight_check,
     straight_landmarks,
@@ -51,8 +52,8 @@ __all__ = [
     "describe_rule",
 ]
 
-RuleDomain = Literal["stance", "guard", "punch", "body_posture", "straight", "hook", "kick"]
-PUBLIC_DOMAINS: frozenset[str] = frozenset({"stance", "guard", "punch", "body_posture"})
+RuleDomain = Literal["stance", "guard", "punch", "body_posture", "step", "straight", "hook", "kick"]
+PUBLIC_DOMAINS: frozenset[str] = frozenset({"stance", "guard", "punch", "body_posture", "step"})
 PRIVATE_DOMAINS: frozenset[str] = frozenset({"straight", "hook", "kick"})
 
 
@@ -149,7 +150,24 @@ STRATEGY_REGISTRY: dict[str, StrategySpec] = _register(
         build_punch_check,
         "front",
     ),
-    # --- 公共域：通用人体姿态与转体步法（body_posture_rules） ---
+    StrategySpec("wrist_shoulder_height_gap", "punch", punch_landmarks, build_punch_check, "side"),
+    StrategySpec(
+        "punch_post_peak_recovery",
+        "punch",
+        punch_landmarks,
+        build_punch_check,
+        "side",
+        trigger_ratio_override=0.01,
+    ),
+    StrategySpec(
+        "combo_punch_pause_gap",
+        "punch",
+        punch_landmarks,
+        build_punch_check,
+        "side",
+        trigger_ratio_override=0.01,
+    ),
+    # --- 公共域：通用人体姿态与发力转体（body_posture_rules） ---
     StrategySpec(
         "nose_shoulder_drop",
         "body_posture",
@@ -167,6 +185,13 @@ STRATEGY_REGISTRY: dict[str, StrategySpec] = _register(
         trigger_ratio_override=0.01,
     ),
     StrategySpec(
+        "trunk_sagittal_tilt_angle",
+        "body_posture",
+        body_posture_landmarks,
+        build_body_posture_check,
+        "side",
+    ),
+    StrategySpec(
         "frontal_hip_width_ratio",
         "body_posture",
         body_posture_landmarks,
@@ -182,6 +207,49 @@ STRATEGY_REGISTRY: dict[str, StrategySpec] = _register(
         "side",
         absence=True,
     ),
+    StrategySpec(
+        "punch_heel_lift_pivot",
+        "body_posture",
+        body_posture_landmarks,
+        build_body_posture_check,
+        "side",
+        absence=True,
+    ),
+    # --- 公共域：步法（step_rules） ---
+    StrategySpec(
+        "foot_forward_displacement",
+        "step",
+        step_landmarks,
+        build_step_check,
+        "side",
+        trigger_ratio_override=0.01,
+    ),
+    StrategySpec(
+        "rear_foot_overtake",
+        "step",
+        step_landmarks,
+        build_step_check,
+        "side",
+        valid_ratio_override=0.5,
+        trigger_ratio_override=0.01,
+    ),
+    StrategySpec(
+        "step_feet_together_paired",
+        "step",
+        step_landmarks,
+        build_step_check,
+        "side",
+        paired=True,
+        valid_ratio_override=0.25,
+    ),
+    StrategySpec(
+        "step_landing_sync",
+        "step",
+        step_landmarks,
+        build_step_check,
+        "side",
+        trigger_ratio_override=0.01,
+    ),
     # --- 动作独有私有域：直拳（straight_rules） ---
     StrategySpec(
         "elbow_extension_at_peak",
@@ -192,13 +260,6 @@ STRATEGY_REGISTRY: dict[str, StrategySpec] = _register(
     ),
     StrategySpec("arm_torso_angle", "straight", straight_landmarks, build_straight_check, "side"),
     StrategySpec(
-        "wrist_shoulder_height_gap",
-        "straight",
-        straight_landmarks,
-        build_straight_check,
-        "side",
-    ),
-    StrategySpec(
         "prepunch_elbow_height",
         "straight",
         straight_landmarks,
@@ -206,25 +267,12 @@ STRATEGY_REGISTRY: dict[str, StrategySpec] = _register(
         "side",
     ),
     # --- 动作独有私有域：摆拳（hook_rules） ---
-    StrategySpec("hook_arm_shoulder_level", "hook", hook_landmarks, build_hook_check, "any"),
+    StrategySpec("hook_forearm_upper_ratio", "hook", hook_landmarks, build_hook_check, "side"),
+    StrategySpec(
+        "hook_forearm_horizontal_angle", "hook", hook_landmarks, build_hook_check, "front"
+    ),
+    StrategySpec("hook_wrist_over_center", "hook", hook_landmarks, build_hook_check, "front"),
     # --- 动作独有私有域：低鞭腿与垫步（kick_rules） ---
-    StrategySpec(
-        "pad_step_displacement",
-        "kick",
-        kick_landmarks,
-        build_kick_check,
-        "side",
-        trigger_ratio_override=0.01,
-    ),
-    StrategySpec(
-        "pad_step_ankle_overtake",
-        "kick",
-        kick_landmarks,
-        build_kick_check,
-        "side",
-        valid_ratio_override=0.5,
-        trigger_ratio_override=0.01,
-    ),
     StrategySpec(
         "pad_step_settle_pause",
         "kick",
@@ -285,14 +333,24 @@ _DEFAULT_STRATEGY_BY_CODE: dict[str, str] = {
     "punch_prepull": "prepunch_wrist_pull",
     "punch_recover": "returned_wrist_jaw_distance",
     "shoulder_level": "wrist_shoulder_height_gap",
+    "punch_unrecovered": "punch_post_peak_recovery",
+    "combo_punch_pause": "combo_punch_pause_gap",
     "punch_extension": "elbow_extension_at_peak",
     "punch_preelbow": "prepunch_elbow_height",
+    "hook_arm_bend": "hook_forearm_upper_ratio",
+    "hook_forearm_level": "hook_forearm_horizontal_angle",
+    "hook_over_center": "hook_wrist_over_center",
     "head_down": "nose_shoulder_drop",
     "body_lean": "shoulder_line_tilt_angle",
+    "trunk_lean_sagittal": "trunk_sagittal_tilt_angle",
     "hip_turn": "frontal_hip_width_ratio",
     "pivot_heel": "support_foot_turn_projection",
-    "pad_step_missing": "pad_step_displacement",
-    "pad_step_overtake": "pad_step_ankle_overtake",
+    "step_feet_together": "step_feet_together_paired",
+    "step_late_landing": "step_landing_sync",
+    "step_follow_missing": "foot_forward_displacement",
+    "step_overtake": "rear_foot_overtake",
+    "pad_step_missing": "foot_forward_displacement",
+    "pad_step_overtake": "rear_foot_overtake",
     "pad_step_pause": "pad_step_settle_pause",
     "kick_height": "kick_peak_height_band",
     "kick_retract": "retract_ankle_reach",
@@ -363,7 +421,11 @@ def resolve_blueprint(segment: str, bp: CheckBlueprint, stance: str) -> RuleDefi
         base_check = spec.build_check(bp.strategy, bp.role, scope)
     bound_check = _wrap_overrides(base_check, bp.param_overrides)
     default_name, _, default_standard = RULES[bp.code]
-    evidence_points = {"front": required, "side": (L_SHOULDER, R_SHOULDER)} if spec.paired else {}
+    if spec.paired:
+        other_view = "side" if view == "front" else "front"
+        evidence_points = {view: required, other_view: (L_SHOULDER, R_SHOULDER)}
+    else:
+        evidence_points = {}
     valid_override = (
         bp.valid_ratio_override
         if bp.valid_ratio_override is not None

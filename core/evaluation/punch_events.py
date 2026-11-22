@@ -43,6 +43,27 @@ def straight_motion_landmarks(role: str, stance: str) -> tuple[int, int]:
     return shoulder, wrist
 
 
+def baseline_facing(
+    lm: np.ndarray,
+    mask: np.ndarray,
+    torso: np.ndarray,
+    baseline: np.ndarray,
+    cfg: FeedbackConfig,
+) -> tuple[int, float, str]:
+    """从起始护位有效鼻髋点计算侧面面朝方向（+1/-1），供直拳与摆拳共用。"""
+    hip_mask = mask[baseline][:, [23, 24]]
+    hip_count = hip_mask.sum(axis=1)
+    valid = mask[baseline, 0] & (hip_count > 0) & (torso[baseline] > 1e-4)
+    direction_frames = int(valid.sum())
+    if direction_frames < cfg.min_valid:
+        return direction_frames, 0.0, "起始护位的鼻点或髋点不足，无法确定出拳方向"
+    hips = np.where(hip_mask, lm[baseline][:, [23, 24], 0], 0).sum(axis=1)
+    hips /= np.maximum(hip_count, 1)
+    facing = float(np.sign(np.median((lm[baseline, 0, 0] - hips)[valid])))
+    reason = "" if facing else "起始护位无法确定出拳方向"
+    return direction_frames, facing, reason
+
+
 def straight_reference(
     lm: np.ndarray,
     mask: np.ndarray,
@@ -64,22 +85,7 @@ def straight_reference(
         )
     if view == "front":
         return StraightReference(points, motion_frames, 0, 0.0)
-    hip_mask = mask[baseline][:, [23, 24]]
-    hip_count = hip_mask.sum(axis=1)
-    valid = mask[baseline, 0] & (hip_count > 0) & (torso[baseline] > 1e-4)
-    direction_frames = int(valid.sum())
-    if direction_frames < cfg.min_valid:
-        return StraightReference(
-            points,
-            motion_frames,
-            direction_frames,
-            0.0,
-            "起始护位的鼻点或髋点不足，无法确定出拳方向",
-        )
-    hips = np.where(hip_mask, lm[baseline][:, [23, 24], 0], 0).sum(axis=1)
-    hips /= np.maximum(hip_count, 1)
-    facing = float(np.sign(np.median((lm[baseline, 0, 0] - hips)[valid])))
-    reason = "" if facing else "起始护位无法确定出拳方向"
+    direction_frames, facing, reason = baseline_facing(lm, mask, torso, baseline, cfg)
     return StraightReference(points, motion_frames, direction_frames, facing, reason)
 
 
@@ -165,13 +171,29 @@ def observe_punch(
     return PunchObservation(reach, initial, events)
 
 
-def preceding_punch(events: list[MotionEvent], floor: int, before: int) -> MotionEvent | None:
-    """只配对本次后手起动之前唯一闭合的前手事件，不跨上一次后手。"""
-    candidates = [
-        event
-        for event in events
-        if event.ending == "returned" and floor <= event.start <= event.peak < event.end <= before
-    ]
+def preceding_punch(
+    events: list[MotionEvent],
+    floor: int,
+    before: int,
+    *,
+    rear_peak: int | None = None,
+) -> MotionEvent | None:
+    """配对本次后手之前唯一闭合的前手事件；传入 rear_peak 时支持边收边出重叠。"""
+    if rear_peak is None:
+        candidates = [
+            event
+            for event in events
+            if event.ending == "returned"
+            and floor <= event.start <= event.peak < event.end <= before
+        ]
+    else:
+        candidates = [
+            event
+            for event in events
+            if event.ending == "returned"
+            and floor <= event.start <= before
+            and event.peak < rear_peak
+        ]
     return candidates[0] if len(candidates) == 1 else None
 
 

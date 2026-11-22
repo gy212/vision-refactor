@@ -20,7 +20,7 @@ ACTION_DEFINITIONS = {
     "stance": ActionDefinition("实战式", (), timing_views=("front", "side")),
     "step_straight_combo": ActionDefinition(
         "上步前后手直拳组合",
-        ("front_straight", "rear_straight"),
+        ("front_straight", "rear_straight", "combo_transition", "step_footwork"),
         timing="side_combo",
         timing_views=("side",),
         scoring="per_repetition",
@@ -35,21 +35,25 @@ ACTION_DEFINITIONS = {
         rule_input="whole_clip",
     ),
     "straight_combo": ActionDefinition(
-        "前后手直拳组合", ("front_straight", "rear_straight")
+        "前后手直拳组合", ("front_straight", "rear_straight", "combo_transition")
     ),
     "hook_combo": ActionDefinition(
         "前后手摆拳组合",
-        ("front_hook", "rear_hook"),
+        ("front_hook", "rear_hook", "combo_transition"),
         timing_views=("front", "side"),
+    ),
+    "step_hook_combo": ActionDefinition(
+        "上步前后手摆拳组合",
+        ("front_hook", "rear_hook", "combo_transition", "step_footwork"),
+        timing="side_combo",
+        timing_views=("side",),
+        scoring="per_repetition",
+        rule_input="whole_clip",
     ),
     "front_straight": ActionDefinition("前手直拳", ("front_straight",)),
     "rear_straight": ActionDefinition("后手直拳", ("rear_straight",)),
-    "front_hook": ActionDefinition(
-        "前手摆拳", ("front_hook",), timing_views=("front", "side")
-    ),
-    "rear_hook": ActionDefinition(
-        "后手摆拳", ("rear_hook",), timing_views=("front", "side")
-    ),
+    "front_hook": ActionDefinition("前手摆拳", ("front_hook",), timing_views=("front", "side")),
+    "rear_hook": ActionDefinition("后手摆拳", ("rear_hook",), timing_views=("front", "side")),
     "front_low_kick": ActionDefinition(
         "前低鞭腿",
         ("front_low_kick",),
@@ -66,7 +70,13 @@ ACTION_DEFINITIONS = {
     ),
 }
 ACTIONS = {key: definition.label for key, definition in ACTION_DEFINITIONS.items()}
-SEGMENT_LABELS = {**ACTIONS, "pad_step": "后脚垫步"}
+SEGMENT_LABELS = {
+    **ACTIONS,
+    "pad_step": "后脚垫步",
+    "step_footwork": "上步步法",
+    "combo_transition": "组合拳衔接",
+}
+DERIVED_SEGMENTS: frozenset[str] = frozenset({"step_footwork", "combo_transition"})
 ACTION_SEGMENTS = {
     key: definition.segments
     for key, definition in ACTION_DEFINITIONS.items()
@@ -94,3 +104,8 @@ def action_definition(action: str) -> ActionDefinition:
 def action_segments(action: str) -> tuple[str, ...]:
     """动作成员只描述编排，不决定成员使用哪种测量或评分。"""
     return action_definition(action).segments
+
+
+def motion_segments(action: str) -> tuple[str, ...]:
+    """返回需要执行独立事件识别的基础动作段，过滤步法与组合衔接等派生段。"""
+    return tuple(seg for seg in action_segments(action) if seg not in DERIVED_SEGMENTS)

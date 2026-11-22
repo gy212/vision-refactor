@@ -1,4 +1,4 @@
-"""低鞭腿与垫步独有私有规则：垫步 3 项、踢高、收腿、绷脚背、同侧甩臂及侧视防互换掩码。"""
+"""低鞭腿与垫步独有私有规则：垫步停顿、踢高、收腿、绷脚背、同侧甩臂及侧视防互换掩码。"""
 
 from __future__ import annotations
 
@@ -11,8 +11,6 @@ from core.evaluation.measures.kicks import (
     measure_foot_flexed,
     measure_kick_height,
     measure_kick_retract_segment,
-    measure_pad_step_missing,
-    measure_pad_step_overtake,
     measure_pad_step_pause,
 )
 from core.evaluation.measures.torso import chain_torso
@@ -23,20 +21,12 @@ from core.evaluation.rules.window_context import (
     write_segment_details,
 )
 
-_PAD_STEP_DISPATCH = {
-    "pad_step_displacement": measure_pad_step_missing,
-    "pad_step_ankle_overtake": measure_pad_step_overtake,
-    "pad_step_settle_pause": measure_pad_step_pause,
-}
-
 
 def kick_landmarks(strategy: str, role: str, stance: str, view: str = "side") -> tuple[int, ...]:
     """返回低鞭腿与垫步独有策略所需的最小关键点下标元组。"""
     del view
-    if strategy in {"pad_step_displacement", "pad_step_settle_pause"}:
+    if strategy == "pad_step_settle_pause":
         return (sides_for_stance("rear", stance)[5],)
-    if strategy == "pad_step_ankle_overtake":
-        return sides_for_stance("rear", stance)[5], sides_for_stance("front", stance)[5]
     sh, el, wr, hip, kn, ank, _, toe = sides_for_stance(role, stance)
     if strategy == "kick_peak_height_band":
         other = "rear" if role == "front" else "front"
@@ -92,8 +82,7 @@ def support_foot_anti_swap(
     return apply_finish_anti_swap(lm, mask, kick_ankle, sup_ankle, torso, ctx, scope)
 
 
-def measure_pad_step_rule(
-    strategy: str,
+def measure_pad_step_pause_rule(
     lm: np.ndarray,
     mask: np.ndarray,
     baseline: np.ndarray,
@@ -101,7 +90,7 @@ def measure_pad_step_rule(
     ctx: RuleContext,
     scope: str,
 ) -> tuple[np.ndarray, np.ndarray, dict]:
-    """逐次执行后脚垫步规则并将结果回写为引擎可用的逐帧布尔与数值序列。"""
+    """逐次执行垫步落稳后停顿规则并将结果回写为引擎可用的逐帧布尔与数值序列。"""
     n_frames = len(lm)
     bad = np.zeros(n_frames, dtype=bool)
     valid = np.zeros(n_frames, dtype=bool)
@@ -110,10 +99,9 @@ def measure_pad_step_rule(
     if facing is None:
         ctx.measurement_issues.append("起始护位与垫步窗口关键点不足以确定面朝方向")
         return bad, valid, {}
-    fn = _PAD_STEP_DISPATCH[strategy]
     cfg = ctx.params
     for sub, sub_times in iter_instance_slices(n_frames, ctx, scope):
-        bad_seg, valid_seg, seg_details = fn(
+        bad_seg, valid_seg, seg_details = measure_pad_step_pause(
             lm[sub],
             mask[sub],
             sub_times,
@@ -226,9 +214,9 @@ def _measure_arm_swing_rule(
 
 def build_kick_check(strategy: str, role: str, scope: str) -> PhaseCheck:
     """按低鞭腿或垫步独有策略名构造对应的相位判定函数。"""
-    if strategy in _PAD_STEP_DISPATCH:
-        return lambda lm, mask, base, base_mask, ctx: measure_pad_step_rule(
-            strategy, lm, mask, base, base_mask, ctx, scope
+    if strategy == "pad_step_settle_pause":
+        return lambda lm, mask, base, base_mask, ctx: measure_pad_step_pause_rule(
+            lm, mask, base, base_mask, ctx, scope
         )
     if strategy == "retract_ankle_reach":
         return lambda lm, mask, base, base_mask, ctx: measure_kick_retract_rule(

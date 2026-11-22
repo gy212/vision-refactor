@@ -49,9 +49,7 @@ _VIEW_LABELS = {"front": "正面", "side": "侧面"}
 def create_practice_engine(cfg: FeedbackConfig | None = None):
     """练习分析用的 MediaPipe 引擎（不联网下载模型）。"""
     cfg = cfg or FeedbackConfig()
-    return create_engine(
-        practice_engine(cfg.pose_variant), models_dir=models_dir(), download=False
-    )
+    return create_engine(practice_engine(cfg.pose_variant), models_dir=models_dir(), download=False)
 
 
 def extract_series(
@@ -149,12 +147,8 @@ def _observe_view(
             for run in contiguous_runs(indices)
         ]
     else:
-        c["viewProblems"][view] = (
-            f"该阶段可见肩髋链不足（{body_valid.sum()}/{len(indices)}帧）"
-        )
-    return ranges, to_practice_check(
-        c, view, outcome, weights[view], views, diagnostics, evidence
-    )
+        c["viewProblems"][view] = f"该阶段可见肩髋链不足（{body_valid.sum()}/{len(indices)}帧）"
+    return ranges, to_practice_check(c, view, outcome, weights[view], views, diagnostics, evidence)
 
 
 def _fuse(
@@ -171,9 +165,7 @@ def _fuse(
     if any(view not in views for view in required_views):
         c["reason"] = (
             "缺少"
-            + "、".join(
-                _VIEW_LABELS[view] for view in required_views if view not in views
-            )
+            + "、".join(_VIEW_LABELS[view] for view in required_views if view not in views)
             + "视频，无法检查这一项"
         )
         return
@@ -276,10 +268,7 @@ def _view_diagnostics(views: dict, diagnostics: dict, phase_sources: dict) -> di
             **diagnostics[view],
             "phaseSource": phase_sources[view],
             "bodyValidFrames": int(
-                (
-                    torso_length(s["landmarks"], s["valid_mask"], "visible_side_chain")
-                    > 1e-4
-                ).sum()
+                (torso_length(s["landmarks"], s["valid_mask"], "visible_side_chain") > 1e-4).sum()
             ),
             "totalFrames": len(s["times"]),
             "jointValidRatios": s["valid_mask"].mean(axis=0).tolist(),
@@ -314,9 +303,7 @@ def select_practice_checks(
 ) -> tuple[list[dict], list[str], int]:
     """按全局关闭 ID 过滤当前动作的检查项，并阻止当前动作全部检查项被关闭。"""
     all_checks = build_checks(action, stance, pose_variant=pose_variant)
-    disabled_set = {
-        s.strip() for s in (disabled_checks or ()) if isinstance(s, str) and s.strip()
-    }
+    disabled_set = {s.strip() for s in (disabled_checks or ()) if isinstance(s, str) and s.strip()}
     skipped_ids = [c["id"] for c in all_checks if c["id"] in disabled_set]
     enabled_checks = [c for c in all_checks if c["id"] not in disabled_set]
     if not enabled_checks:
@@ -369,14 +356,18 @@ def evaluate_series(
                 or diagnostics[view].get("projectedPhaseInstances", ())
             ),
             phase_coverage=alignment["phases"],
+            event_details=(
+                diagnostics[view].get("eventDetails")
+                or diagnostics[view].get("projectedEventDetails", ())
+            ),
+            combo_pairs=diagnostics[view].get("comboPairs", ()),
+            repetitions=diagnostics[view].get("repetitions", ()),
         )
         for view, s in views.items()
     }
     evidence = {}
     for c in checks:
-        _evaluate_check(
-            c, views, windows, diagnostics, alignment, outcomes_by_view, cfg, evidence
-        )
+        _evaluate_check(c, views, windows, diagnostics, alignment, outcomes_by_view, cfg, evidence)
     unable, summary, repetitions = _summarize_practice(action, checks, diagnostics)
     result = {
         "schemaVersion": 1,
@@ -438,10 +429,7 @@ def _summarize_practice(
 def _repetitions(action: str, diagnostics: dict) -> dict | None:
     """按侧面逐次评分策略登记的动作统计重复次数与各次时间；其余动作不统计次数，为 None。"""
     side = diagnostics.get("side", {})
-    if (
-        action_definition(action).scoring != "per_repetition"
-        or "repetitions" not in side
-    ):
+    if action_definition(action).scoring != "per_repetition" or "repetitions" not in side:
         return None
     result = {
         "expected": side["expectedRepetitions"],

@@ -37,12 +37,12 @@ def resolve_window_facing(
     return 1.0 if sum(win_dirs) >= 0.0 else -1.0
 
 
-def iter_instance_slices(
+def iter_labeled_instance_slices(
     n_frames: int,
     ctx: RuleContext,
     scope: str,
-) -> list[tuple[np.ndarray, np.ndarray]]:
-    """根据 phase_windows 与 phase_instances 提取每次重复动作的局部切片及时间戳。"""
+) -> list[tuple[int | None, np.ndarray, np.ndarray]]:
+    """按 phase_instances 提取带 repetition 身份的每次动作切片及时间戳。"""
     if n_frames == 0:
         return []
     win_orig = ctx.phase_windows.get(scope)
@@ -57,19 +57,30 @@ def iter_instance_slices(
         win_times = np.asarray(win_orig, dtype=float) / fps
     instances = ctx.phase_instances.get(scope, ())
     if not instances:
-        return [(np.arange(n_frames, dtype=int), win_times)]
-    slices: list[tuple[np.ndarray, np.ndarray]] = []
+        return [(None, np.arange(n_frames, dtype=int), win_times)]
+    slices: list[tuple[int | None, np.ndarray, np.ndarray]] = []
     covered = np.zeros(n_frames, dtype=bool)
-    for _, frames in instances:
+    for rep_id, frames in instances:
         sub = np.flatnonzero(np.isin(win_orig, frames))
         if sub.size:
             covered[sub] = True
-            slices.append((sub, win_times[sub]))
+            slices.append((rep_id, sub, win_times[sub]))
     for run in contiguous_runs(win_orig[~covered]):
         sub = np.flatnonzero(~covered & (win_orig >= run[0]) & (win_orig <= run[-1]))
         if sub.size:
-            slices.append((sub, win_times[sub]))
-    return slices or [(np.arange(n_frames, dtype=int), win_times)]
+            slices.append((None, sub, win_times[sub]))
+    return slices or [(None, np.arange(n_frames, dtype=int), win_times)]
+
+
+def iter_instance_slices(
+    n_frames: int,
+    ctx: RuleContext,
+    scope: str,
+) -> list[tuple[np.ndarray, np.ndarray]]:
+    """根据 phase_windows 与 phase_instances 提取每次重复动作的局部切片及时间戳。"""
+    return [
+        (sub, sub_times) for _, sub, sub_times in iter_labeled_instance_slices(n_frames, ctx, scope)
+    ]
 
 
 def write_segment_details(

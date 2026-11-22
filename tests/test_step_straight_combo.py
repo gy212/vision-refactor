@@ -278,7 +278,7 @@ def test_project_windows_maps_runs_by_time() -> None:
 
 def test_all_combo_checks_run_directly_across_models() -> None:
     checks = build_checks(ACTION, "left")
-    assert len(checks) == 37
+    assert len(checks) == 64
     assert all("availability" not in c and "blockedReason" not in c for c in checks)
     assert not {"stance_head", "vertical_fist"} & {c["code"] for c in checks}
     guards = [
@@ -290,8 +290,11 @@ def test_all_combo_checks_run_directly_across_models() -> None:
     assert {c["primaryView"] for c in checks if c["code"] == "shoulder_level"} == {"side"}
     for model in ("lite", "full", "heavy"):
         assert build_checks(ACTION, "left", pose_variant=model) == checks
-    assert build_checks("straight_combo", "left") == checks
-    assert action_segments(ACTION) == action_segments("straight_combo")
+    assert [c for c in checks if c["segment"] != "step_footwork"] == build_checks(
+        "straight_combo", "left"
+    )
+    assert len([c for c in checks if c["segment"] == "step_footwork"]) == 4
+    assert action_segments(ACTION) == (*action_segments("straight_combo"), "step_footwork")
     assert ACTIONS[ACTION] == "上步前后手直拳组合"
 
 

@@ -7,8 +7,8 @@ from dataclasses import dataclass
 import numpy as np
 
 from core.evaluation.body_sides import sides_for_stance
-from core.evaluation.motion_events import EventPolicy, MotionEvent, excursion_events
-from core.evaluation.measures.motion import normalized_motion
+from core.evaluation.hook_events import hook_motion_landmarks, observe_hook
+from core.evaluation.motion_events import MotionEvent
 from core.evaluation.punch_events import observe_straight, straight_motion_landmarks
 
 
@@ -34,12 +34,10 @@ def motion_landmarks(segment: str, stance: str) -> tuple[int, int]:
     role = "front" if segment.startswith("front_") else "rear"
     if segment.endswith("_straight"):
         return straight_motion_landmarks(role, stance)
+    if segment.endswith("_hook"):
+        return hook_motion_landmarks(role, stance)
     shoulder, _, wrist, hip, _, ankle, *_ = sides_for_stance(role, stance)
-    return (
-        (hip, ankle)
-        if ("kick" in segment or segment == "pad_step")
-        else (shoulder, wrist)
-    )
+    return (hip, ankle) if ("kick" in segment or segment == "pad_step") else (shoulder, wrist)
 
 
 def action_events(
@@ -55,34 +53,21 @@ def action_events(
     diagnostics: dict,
     view: str,
 ) -> list[ActionEvent]:
-    """按基础动作分派唯一识别方法，直拳单独练习和编入组合时使用同一观测策略。"""
+    """按基础动作分派唯一识别方法，直拳与摆拳在单拳和组合中共用各自观测策略。"""
     events: list[ActionEvent] = []
     for segment in segments:
+        role = "front" if segment.startswith("front_") else "rear"
         if segment.endswith("_straight"):
-            role = "front" if segment.startswith("front_") else "rear"
             observation = observe_straight(
                 lm, mask, times, torso, baseline, stable, role, stance, cfg, view
             )
-            if observation.reason:
-                diagnostics["reason"] = observation.reason
-            events.extend(ActionEvent(segment, event) for event in observation.events)
-            continue
-        anchor, moving = motion_landmarks(segment, stance)
-        relative = normalized_motion(lm, mask, torso, anchor, moving)
-        if not np.isfinite(relative[baseline]).all():
-            continue
-        displacement = relative - np.median(relative[baseline], axis=0)
-        distance = np.linalg.norm(displacement, axis=1)
-        found = excursion_events(
-            distance,
-            times,
-            baseline,
-            cfg,
-            rise=cfg.motion_distance,
-            fall=cfg.return_distance,
-            policy=EventPolicy(
-                start_at_rest=True, inclusive_return=True, allow_held=False
-            ),
-        )
-        events.extend(ActionEvent(segment, event) for event in found)
+        elif segment.endswith("_hook"):
+            observation = observe_hook(
+                lm, mask, times, torso, baseline, stable, role, stance, cfg, view
+            )
+        else:
+            raise ValueError(f"未注册事件观测器的动作段：{segment}")
+        if observation.reason:
+            diagnostics["reason"] = observation.reason
+        events.extend(ActionEvent(segment, event) for event in observation.events)
     return sorted(events, key=lambda event: event.motion.peak)

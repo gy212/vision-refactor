@@ -61,7 +61,10 @@ def test_missing_front_member_uses_observed_rear_interval_without_inventing_fron
     assert combination["rearEventId"] == rear["eventId"]
     assert combination["missingSegments"] == ["front_straight"]
     assert (combination["start"], combination["end"]) == (rear["start"], rear["end"])
-    assert {instance["eventId"] for instance in data["phaseInstances"]} == {rear["eventId"]}
+    assert {instance["eventId"] for instance in data["phaseInstances"]} == {
+        rear["eventId"],
+        "step_footwork:1",
+    }
 
 
 def test_short_confirmed_event_keeps_its_actual_finish_evidence():

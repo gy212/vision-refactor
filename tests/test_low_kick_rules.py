@@ -33,14 +33,16 @@ from core.evaluation.kick_events import (  # noqa: E402
     kick_repetitions,
     segment_kick_events,
 )
+from core.evaluation.measures.feet import (  # noqa: E402
+    measure_foot_forward_displacement,
+    measure_rear_foot_overtake,
+)
 from core.evaluation.measures.guard import measure_guard_elbow_flare  # noqa: E402
 from core.evaluation.measures.kicks import (  # noqa: E402
     kicking_leg_side_safe,
     measure_foot_flexed,
     measure_kick_height,
     measure_kick_retract_segment,
-    measure_pad_step_missing,
-    measure_pad_step_overtake,
     measure_pad_step_pause,
 )
 from core.evaluation.measures.posture import measure_body_lean  # noqa: E402
@@ -372,21 +374,29 @@ def test_kick_geometry_thresholds_and_anti_swap_masking():
     # pad_step_missing：0.05/0.30=0.17 < 0.45 违规；0.18/0.30=0.60 通过
     lm_small = lm.copy()
     lm_small[:, 28, 0] = np.linspace(0.40, 0.45, n)
-    bad, valid, _ = measure_pad_step_missing(lm_small, mask, times, "left", facing=1.0)
+    bad, valid, _ = measure_foot_forward_displacement(
+        lm_small, mask, times, 28, min_disp=0.45, facing=1.0, label="垫步后脚前推距离"
+    )
     assert isinstance(valid, np.ndarray) and valid.shape == (n,) and valid.all() and bad
     lm_good = lm.copy()
     lm_good[:, 28, 0] = np.linspace(0.40, 0.58, n)
-    bad, valid, _ = measure_pad_step_missing(lm_good, mask, times, "left", facing=1.0)
+    bad, valid, _ = measure_foot_forward_displacement(
+        lm_good, mask, times, 28, min_disp=0.45, facing=1.0, label="垫步后脚前推距离"
+    )
     assert isinstance(valid, np.ndarray) and valid.shape == (n,) and valid.all() and not bad
 
     # pad_step_overtake：允许两脚并齐(=0.0)，>0.20 判超越
     lm_flush = lm.copy()
     lm_flush[:, 28, 0] = 0.60
-    bad, valid, _ = measure_pad_step_overtake(lm_flush, mask, times, "left", facing=1.0)
+    bad, valid, _ = measure_rear_foot_overtake(
+        lm_flush, mask, 28, 27, overtake_max=0.20, facing=1.0, mode="tail_median"
+    )
     assert isinstance(valid, np.ndarray) and valid.shape == (n,) and valid.all() and not bad
     lm_over = lm.copy()
     lm_over[:, 28, 0] = 0.70  # (0.70 - 0.60) / 0.30 = 0.33 > 0.20
-    bad, valid, _ = measure_pad_step_overtake(lm_over, mask, times, "left", facing=1.0)
+    bad, valid, _ = measure_rear_foot_overtake(
+        lm_over, mask, 28, 27, overtake_max=0.20, facing=1.0, mode="tail_median"
+    )
     assert isinstance(valid, np.ndarray) and valid.shape == (n,) and valid.all() and bad
 
     # pad_step_pause：落稳停顿 > 0.60s 违规
@@ -703,12 +713,14 @@ def test_coderabbit_pr66_review_regressions():
     lm_stat[5:, [L_HIP, R_HIP], :2] = (0.50, 0.55)  # torso = 0.30
     lm_stat[:, 28, :2] = (0.60, 0.90)  # 后踝静止不动
     lm_stat[:, 27, :2] = (0.65, 0.90)
-    bad_pad, val_pad, det_pad = measure_pad_step_missing(
+    bad_pad, val_pad, det_pad = measure_foot_forward_displacement(
         lm_stat,
         np.ones((n_pad, 33), dtype=bool),
         np.arange(n_pad, dtype=float) / 30.0,
-        "left",
+        28,
+        min_disp=0.45,
         facing=1.0,
+        label="垫步后脚前推距离",
     )
     assert val_pad.all() and bad_pad
     assert det_pad["垫步后脚前推距离"][0] == pytest.approx(0.0, abs=1e-6)
@@ -889,7 +901,7 @@ def test_pr67_hook_prepare_pullback_and_shoulder_level_require_elbow():
         )
         assert gb_bad["status"] == "candidate"
 
-    # [P1-2]: front_hook / hook_combo 拳在肩高但肘部明显下沉时应检出，缺失肘关键点时应为 unable
+    # [P1-2]: 摆拳打到瞬间正面小臂下坠偏离水平时应检出，缺失肘关键点时应为 unable
     lm_f_drop, mf = _make_hook_sequence(action="hook_combo", view="front", drop_front_elbow=True)
     lm_s_drop, ms = _make_hook_sequence(action="hook_combo", view="side", drop_front_elbow=True)
     res_drop = evaluate_series(
@@ -901,10 +913,10 @@ def test_pr67_hook_prepare_pullback_and_shoulder_level_require_elbow():
         },
         cfg,
     )
-    sl_drop = next(
-        c for c in res_drop["checks"] if c["id"] == "front_hook:motion:front:shoulder_level"
+    fl_drop = next(
+        c for c in res_drop["checks"] if c["id"] == "front_hook:finish:front:hook_forearm_level"
     )
-    assert sl_drop["status"] == "candidate"
+    assert fl_drop["status"] == "candidate"
 
     lm_f_miss, mf = _make_hook_sequence(action="hook_combo", view="front", mask_front_elbow=True)
     lm_s_miss, ms = _make_hook_sequence(action="hook_combo", view="side", mask_front_elbow=True)
@@ -917,10 +929,10 @@ def test_pr67_hook_prepare_pullback_and_shoulder_level_require_elbow():
         },
         cfg,
     )
-    sl_miss = next(
-        c for c in res_miss["checks"] if c["id"] == "front_hook:motion:front:shoulder_level"
+    fl_miss = next(
+        c for c in res_miss["checks"] if c["id"] == "front_hook:finish:front:hook_forearm_level"
     )
-    assert sl_miss["status"] == "unable"
+    assert fl_miss["status"] == "unable"
 
 
 def test_kick_measure_without_stance_start_records_issue_and_returns_empty():

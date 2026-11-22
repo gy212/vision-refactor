@@ -118,15 +118,12 @@ def test_timing_and_scoring_choices_cannot_change_rule_definitions(monkeypatch):
 
 def test_same_base_segment_has_identical_checks_in_every_composition():
     reference = build_checks("step_straight_combo", "left")
+    ref_segments = {"stance", *action_definition("step_straight_combo").segments}
     for action in ACTIONS:
         checks = build_checks(action, "left")
         members = {"stance", *action_definition(action).segments}
         expected = [check for check in reference if check["segment"] in members]
-        actual = [
-            check
-            for check in checks
-            if check["segment"] in {"stance", "front_straight", "rear_straight"}
-        ]
+        actual = [check for check in checks if check["segment"] in ref_segments]
         assert actual == expected
     assert _elbow_outcome("step_straight_combo").state == "pass"
 
@@ -284,11 +281,12 @@ def test_straight_hook_and_kick_share_common_guard_and_punch_definitions():
             assert {c["strategy"] for c in items} == {strategy}
             assert {c["primaryView"] for c in items} == {expected_view}
 
-    # 验证摆拳接入公共护手、公共预摆/收回，且无出拳手误挂项与旧 code 残留。
-    assert len(catalog_checks("left")) == 99
-    assert len(build_checks("front_hook", "left")) == 24
-    assert len(build_checks("rear_hook", "left")) == 28
-    assert len(build_checks("hook_combo", "left")) == 36
+    # 验证摆拳与步法/姿态/衔接接入公共层后的唯一目录数与各动作检查数。
+    assert len(catalog_checks("left")) == 151
+    assert len(build_checks("front_hook", "left")) == 36
+    assert len(build_checks("rear_hook", "left")) == 41
+    assert len(build_checks("hook_combo", "left")) == 62
+    assert len(build_checks("step_hook_combo", "left")) == 66
 
     front_hook_checks = by_seg["front_hook"]
     rear_hook_checks = by_seg["rear_hook"]
@@ -300,6 +298,13 @@ def test_straight_hook_and_kick_share_common_guard_and_punch_definitions():
             c["code"].startswith("guard_") and c["role"] == attack_role for c in seg_checks
         ), "摆拳出拳手不得误挂任何护手检查项"
         assert not {"guard_low", "guard_recover"} & {c["code"] for c in seg_checks}
+        assert [c["phase"] for c in seg_checks if c["code"] == "shoulder_level"] == ["finish"]
+
+    rear_straight_ids = {c["id"] for c in by_seg["rear_straight"]}
+    assert {
+        "rear_straight:motion:front:guard_jaw",
+        "rear_straight:finish:front:guard_jaw",
+    } <= rear_straight_ids
 
     rear_hook_ids = {c["id"] for c in rear_hook_checks}
     assert {
@@ -310,12 +315,15 @@ def test_straight_hook_and_kick_share_common_guard_and_punch_definitions():
         "rear_hook:motion:front:guard_jaw",
         "rear_hook:finish:front:guard_jaw",
         "rear_hook:recovered:rear:punch_recover",
+        "rear_hook:finish:rear:hook_arm_bend",
+        "rear_hook:finish:rear:hook_forearm_level",
+        "rear_hook:finish:rear:hook_over_center",
     } <= rear_hook_ids
     assert "rear_hook:prepare:rear:punch_preelbow" not in rear_hook_ids
 
-    # 摆拳齐肩保持 0.20 + 双视角融合（any）不漂移，公共护手抬肘统一为 -0.18。
+    # 摆拳齐肩复用公共 wrist_shoulder_height_gap（0.20 + 双视角融合 any），公共护手抬肘统一为 -0.18。
     hook_level = next(c for c in rear_hook_checks if c["code"] == "shoulder_level")
-    assert hook_level["strategy"] == "hook_arm_shoulder_level"
+    assert hook_level["strategy"] == "wrist_shoulder_height_gap"
     assert "primaryView" not in hook_level
     assert hook_level["parameterOverrides"]["shoulder_height"] == pytest.approx(0.20)
     hook_elbow = next(c for c in rear_hook_checks if c["code"] == "guard_elbow")

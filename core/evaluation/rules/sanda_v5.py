@@ -7,6 +7,7 @@ from typing import Any
 from core.evaluation.action_catalog import (
     ACTIONS,
     ACTION_SEGMENTS,
+    DERIVED_SEGMENTS,
     PHASES,
     SEGMENT_LABELS,
     STANCES,
@@ -35,7 +36,9 @@ from core.evaluation.view_weights import practice_view_weights
 __all__ = [
     "ACTIONS",
     "ACTION_SEGMENTS",
+    "DERIVED_SEGMENTS",
     "PHASES",
+    "SEGMENT_LABELS",
     "STANCES",
     "RULE_VERSION",
     "PROFILE_NAME",
@@ -52,7 +55,7 @@ __all__ = [
     "rule_profile",
 ]
 
-RULE_VERSION = "sanda-rules-mediapipe-2026-11-21-v5.19"
+RULE_VERSION = "sanda-rules-mediapipe-2026-11-22-v5.20"
 
 PROFILE_NAME = "sanda_v5"
 

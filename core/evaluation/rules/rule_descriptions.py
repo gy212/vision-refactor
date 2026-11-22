@@ -4,9 +4,9 @@ from __future__ import annotations
 
 DOC = "武术散打得分点.docx 表1"
 SUMMARY = "扣分点说明功能需求汇总.md"
-FORMAL = "原正式规则 formal_v1（D-3 并入）"
 TEACHER_SOURCE = "教师确认 #33 issuecomment-6235417498；卷三第7题更正：后手必须收回下颚"
 KICK_SOURCE = "低鞭腿动作规则标准 2026-11-14"
+HOOK_STEP_SOURCE = "用户2026-11-22确认摆拳与公共步法/姿态/衔接规则标准"
 USER_20261105_SOURCE = "用户2026-11-05逐项意见及核对回复"
 USER_20261106_SOURCE = "用户2026-11-06确认报告动作正确并要求增加容错；docs/直拳容错调整_20261106.md"
 USER_20261108_SOURCE = (
@@ -142,6 +142,16 @@ PUNCH_CHECK_META: dict[str, tuple[str, str, str]] = {
         "arm",
         "出拳与肩部齐平",
     ),
+    "punch_unrecovered": (
+        "出拳后未及时收回",
+        "hand",
+        "出拳打到峰值后应及时收回护位，不得停在外面超过0.45秒或保持不收",
+    ),
+    "combo_punch_pause": (
+        "前后手衔接停顿过长",
+        "hand",
+        "组合拳第一拳收完到第二拳起动之间的停顿空档不超过0.25秒，允许边收边出",
+    ),
 }
 
 BODY_POSTURE_CHECK_META: dict[str, tuple[str, str, str]] = {
@@ -156,6 +166,11 @@ BODY_POSTURE_CHECK_META: dict[str, tuple[str, str, str]] = {
         "torso",
         f"正面双肩连线与水平夹角不超过{KICK_PARAMS['body_lean_angle']:g}°",
     ),
+    "trunk_lean_sagittal": (
+        "出拳时上体前倾或后仰",
+        "torso",
+        "侧面看肩中点到髋中点连线相对竖直线前倾或后仰不超过10°",
+    ),
     "hip_turn": (
         "未充分翻胯",
         "hip",
@@ -165,6 +180,29 @@ BODY_POSTURE_CHECK_META: dict[str, tuple[str, str, str]] = {
         "支撑脚未碾脚外旋",
         "step_foot",
         "踢腿击打过程中支撑脚应充分外旋拧转，脚尖转至不领先于脚跟",
+    ),
+}
+
+STEP_CHECK_META: dict[str, tuple[str, str, str]] = {
+    "step_feet_together": (
+        "上步时两脚并拢过窄",
+        "feet",
+        "双摄确认为侧身帧时，侧面两脚跟水平距离不小于1.0倍侧面肩宽投影",
+    ),
+    "step_late_landing": (
+        "脚步落稳晚于出拳",
+        "step_foot",
+        "上步或跟步的脚步落稳时间不晚于对应出拳打到瞬间超过0.20秒",
+    ),
+    "step_follow_missing": (
+        "后手出拳时后脚未跟步",
+        "step_foot",
+        "上步组合拳过程中后脚向攻击方向跟步推进不少于0.25倍躯干长",
+    ),
+    "step_overtake": (
+        "跟步时后脚超过前脚",
+        "step_foot",
+        "上步组合拳跟步过程中后脚踝不得超越前脚踝超过0.02倍躯干长",
     ),
 }
 
@@ -180,6 +218,25 @@ STRAIGHT_PRIVATE_META: dict[str, tuple[str, str, str]] = {
         "出拳前先抬肘",
         "arm",
         "后手直拳起动前不先将肘抬至肩高附近",
+    ),
+}
+
+HOOK_PRIVATE_META: dict[str, tuple[str, str, str]] = {
+    "hook_arm_bend": (
+        "摆拳大小臂弯屈角度不当",
+        "arm",
+        "侧面看打到瞬间小臂投影与大臂长度之比：腕在肘后不超过0.50（防弯太紧），"
+        "腕在肘前不超过0.70（防直臂甩大臂）",
+    ),
+    "hook_forearm_level": (
+        "摆拳小臂未保持水平",
+        "arm",
+        "正面看打到瞬间小臂（肘到腕）与水平线夹角不超过10°",
+    ),
+    "hook_over_center": (
+        "摆拳摆过身体中线过多",
+        "hand",
+        "正面看打到瞬间手腕越过两肩中点到达对侧方向不超过0.30倍正面肩宽",
     ),
 }
 
@@ -228,7 +285,9 @@ RULES: dict[str, tuple[str, str, str]] = {
     **GUARD_CHECK_META,
     **PUNCH_CHECK_META,
     **BODY_POSTURE_CHECK_META,
+    **STEP_CHECK_META,
     **STRAIGHT_PRIVATE_META,
+    **HOOK_PRIVATE_META,
     **KICK_PRIVATE_META,
 }
 

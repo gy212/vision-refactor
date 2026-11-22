@@ -78,21 +78,17 @@ def _wrap_record(action: str, stance: str, result: dict) -> dict:
     }
 
 
-def test_catalog_checks_returns_99_unique_items_with_stance_bookends():
+def test_catalog_checks_returns_151_unique_items_with_stance_bookends():
     left_catalog = catalog_checks("left")
     right_catalog = catalog_checks("right")
 
-    assert len(left_catalog) == 99
-    assert len(right_catalog) == 99
-    assert len({c["id"] for c in left_catalog}) == 99
+    assert len(left_catalog) == 151
+    assert len(right_catalog) == 151
+    assert len({c["id"] for c in left_catalog}) == 151
     assert [c["id"] for c in left_catalog] == [c["id"] for c in right_catalog]
 
-    assert all(
-        c["segment"] == "stance" and c["phase"] == "start" for c in left_catalog[:8]
-    )
-    assert all(
-        c["segment"] == "stance" and c["phase"] == "end" for c in left_catalog[-8:]
-    )
+    assert all(c["segment"] == "stance" and c["phase"] == "start" for c in left_catalog[:8])
+    assert all(c["segment"] == "stance" and c["phase"] == "end" for c in left_catalog[-8:])
     assert all(c["segment"] != "stance" for c in left_catalog[8:-8])
 
     with pytest.raises(ValueError, match="请选择支持的左式/右式"):
@@ -110,9 +106,7 @@ def test_global_disabled_checks_reuse_across_actions_and_stances(tmp_path):
     for action in ("front_straight", "step_straight_combo"):
         for stance in ("left", "right"):
             views = _synth_views(action, stance, tmp_path)
-            result = evaluate_series(
-                action, stance, deepcopy(views), disabled_checks=loaded
-            )
+            result = evaluate_series(action, stance, deepcopy(views), disabled_checks=loaded)
             expected_all = build_checks(action, stance)
 
             returned_ids = [c["id"] for c in result["checks"]]
@@ -150,9 +144,7 @@ def test_analyze_practice_applies_disabled_checks_and_default_omits_new_keys(tmp
                 return ev.extract_series(
                     path, cfg, stopped, sp.scripted_pipeline(front_lm, front_det)
                 )
-            return ev.extract_series(
-                path, cfg, stopped, sp.scripted_pipeline(side_lm, side_det)
-            )
+            return ev.extract_series(path, cfg, stopped, sp.scripted_pipeline(side_lm, side_det))
 
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr("core.evaluation.practice.extract_series", fake_extract)
@@ -174,9 +166,7 @@ def test_analyze_practice_applies_disabled_checks_and_default_omits_new_keys(tmp
     filtered = run_for(["stance:start:front:stance_elbow"])
     assert filtered["disabledCheckIds"] == ["stance:start:front:stance_elbow"]
     assert filtered["totalCatalogChecks"] == len(build_checks("front_straight", "left"))
-    assert "stance:start:front:stance_elbow" not in [
-        c["id"] for c in filtered["checks"]
-    ]
+    assert "stance:start:front:stance_elbow" not in [c["id"] for c in filtered["checks"]]
 
 
 def test_reject_all_disabled_before_inference_and_ignore_unrelated_ids(tmp_path):
@@ -217,9 +207,7 @@ def test_reject_all_disabled_before_inference_and_ignore_unrelated_ids(tmp_path)
         "stale:obsolete:check:id",
     )
     fs_views = _synth_views("front_straight", "left", tmp_path)
-    result = evaluate_series(
-        "front_straight", "left", fs_views, disabled_checks=unrelated
-    )
+    result = evaluate_series("front_straight", "left", fs_views, disabled_checks=unrelated)
     assert len(result["checks"]) == len(build_checks("front_straight", "left"))
     assert "disabledCheckIds" not in result
     assert "totalCatalogChecks" not in result
@@ -271,9 +259,7 @@ def test_phase_windows_preserved_and_reports_lock_saved_scope_counts():
     # 后续修改全局偏好，绝不影响已保存记录的只读报告口径
     save_practice_disabled_checks(["front_straight:finish:front:punch_extension"])
 
-    expected_note = (
-        f"本次已按设置跳过 {skipped_n} 个检查项（启用 {enabled_n}/{total_n} 项）。"
-    )
+    expected_note = f"本次已按设置跳过 {skipped_n} 个检查项（启用 {enabled_n}/{total_n} 项）。"
     model = build_report_model(record)
     assert model.counts.total_checks == enabled_n
     assert model.counts.verify_conservation()

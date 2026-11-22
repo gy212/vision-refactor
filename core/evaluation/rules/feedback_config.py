@@ -100,6 +100,20 @@ class FeedbackConfig:
     kick_guard_back_front: float = 0.18  # 原地后低鞭腿护肘后拉阈值（正面，躯干长度）
     kick_guard_elbow_flare: float = 30.0  # 踢腿护手开肘大臂与躯干夹角锁定上限（正面，度）
     kick_guard_jaw_dist: float = 0.34  # 原地后低鞭腿前手护颚腕口距上限（正面，躯干长度）
+    hook_bend_tight_ratio: float = 0.50  # 摆拳打到瞬间腕在肘后小臂投影/大臂长上限（防弯太紧）
+    hook_bend_straight_ratio: float = (
+        0.70  # 摆拳打到瞬间腕在肘前小臂投影/大臂长上限（防直臂甩大臂）
+    )
+    hook_forearm_level_angle: float = 10.0  # 摆拳打到瞬间正面小臂与水平线夹角上限（度）
+    hook_over_center_ratio: float = 0.30  # 摆拳打到瞬间正面手腕越过两肩中点比例上限（倍肩宽）
+    punch_unrecovered_hold_seconds: float = 0.45  # 出拳峰值后停在外面未收回时长上限（秒）
+    combo_punch_pause_max: float = 0.25  # 组合拳前后手衔接纯停顿空档上限（秒）
+    trunk_sagittal_lean_angle: float = 10.0  # 出拳侧面躯干相对竖直线前倾或后仰上限（度）
+    punch_heel_lift_min: float = 0.05  # 出拳打到瞬间发力脚相对基线提踵增量下限（躯干长度）
+    step_feet_together_ratio: float = 1.0  # 上步侧身帧两脚跟水平距相对侧肩宽下限（倍侧肩宽）
+    step_late_landing_max: float = 0.20  # 上步脚步落稳晚于出拳峰值时长上限（秒）
+    step_follow_min_disp: float = 0.25  # 上步组合后脚向前跟步位移下限（躯干长度）
+    step_overtake_max: float = 0.02  # 上步组合跟步后脚越过前脚上限（躯干长度）
     front_weights: dict = field(default_factory=default_front_weights)
     stance_elbow_min: float = 90.0  # 公共实战式与直拳容错由 PARAMS 覆盖
     stance_knee_max: float = 170.0

@@ -22,15 +22,17 @@ from apps.tk.controllers.practice_checks import (
 )
 
 
-def test_build_check_groups_covers_all_99_checks_in_9_unified_groups():
+def test_build_check_groups_covers_all_151_checks_in_11_unified_groups():
     left_groups = build_check_groups("left")
-    assert len(left_groups) == 9
+    assert len(left_groups) == 11
     assert all(isinstance(g, CheckGroup) for g in left_groups)
     assert (left_groups[0].key, left_groups[0].title) == ("stance:start", "开始实战式")
     assert (left_groups[-1].key, left_groups[-1].title) == ("stance:end", "结束实战式")
     assert [g.key for g in left_groups[1:-1]] == [
         "front_straight",
         "rear_straight",
+        "combo_transition",
+        "step_footwork",
         "pad_step",
         "front_low_kick",
         "front_hook",
@@ -40,6 +42,8 @@ def test_build_check_groups_covers_all_99_checks_in_9_unified_groups():
     assert [g.title for g in left_groups[1:-1]] == [
         "前手直拳",
         "后手直拳",
+        "组合拳衔接",
+        "上步步法",
         "后脚垫步",
         "前低鞭腿",
         "前手摆拳",
@@ -48,8 +52,8 @@ def test_build_check_groups_covers_all_99_checks_in_9_unified_groups():
     ]
 
     left_ids = [item["id"] for g in left_groups for item in g.items]
-    assert len(left_ids) == 99
-    assert len(set(left_ids)) == 99
+    assert len(left_ids) == 151
+    assert len(set(left_ids)) == 151
 
     right_groups = build_check_groups("right")
     right_ids = [item["id"] for g in right_groups for item in g.items]
@@ -62,15 +66,15 @@ def test_build_check_groups_covers_all_99_checks_in_9_unified_groups():
 
 def test_checks_button_text_counts_from_pref_and_ignores_unknown_ids():
     all_ids = [item["id"] for item in catalog_checks(DEFAULT_STANCE)]
-    assert checks_button_text() == "检查项设置（已开 99/99 项）"
+    assert checks_button_text() == "检查项设置（已开 151/151 项）"
 
     sample = [f" {all_ids[0]} ", all_ids[1], all_ids[0], "stale:unknown:id", ""]
-    assert checks_button_text(sample) == "检查项设置（已开 97/99 项）"
+    assert checks_button_text(sample) == "检查项设置（已开 149/151 项）"
 
     save_practice_disabled_checks([all_ids[0], all_ids[2], "stale:unknown:id"])
-    assert checks_button_text() == "检查项设置（已开 97/99 项）"
-    assert checks_summary_text(97, 99) == (
-        "已启用 97 / 99 项（全局统一生效，自动作用于所有包含对应阶段的练习动作）"
+    assert checks_button_text() == "检查项设置（已开 149/151 项）"
+    assert checks_summary_text(149, 151) == (
+        "已启用 149 / 151 项（全局统一生效，自动作用于所有包含对应阶段的练习动作）"
     )
 
 
@@ -93,7 +97,7 @@ def test_validate_and_save_checks_rejects_empty_and_persists_selection():
     restored = validate_and_save_checks(all_ids, all_ids)
     assert restored == ()
     assert load_practice_disabled_checks() == ()
-    assert checks_button_text() == "检查项设置（已开 99/99 项）"
+    assert checks_button_text() == "检查项设置（已开 151/151 项）"
 
 
 def test_practice_analysis_analyzer_snapshots_disabled_checks(monkeypatch):
@@ -137,10 +141,7 @@ def test_zero_enabled_actions_and_validate_action_checks():
     assert zero_enabled_actions(stance_ids) == (ACTIONS["stance"],)
 
     front_straight_ids = tuple(
-        item["id"]
-        for group in groups
-        if group.key == "front_straight"
-        for item in group.items
+        item["id"] for group in groups if group.key == "front_straight" for item in group.items
     )
     assert zero_enabled_actions(stance_ids + front_straight_ids) == (
         ACTIONS["stance"],
@@ -184,9 +185,7 @@ def test_practice_analysis_analyzer_validates_action_when_provided(monkeypatch):
     with pytest.raises(ValueError, match="当前动作至少需要保留 1 个开启的检查项"):
         controller.analyzer(DEFAULT_MODEL, action="stance", stance="left")
 
-    run_front = controller.analyzer(
-        DEFAULT_MODEL, action="front_straight", stance="left"
-    )
+    run_front = controller.analyzer(DEFAULT_MODEL, action="front_straight", stance="left")
     run_front("front_straight", "left", None, None)
     assert captured[-1]["disabled_checks"] == stance_ids
 
@@ -223,24 +222,22 @@ def test_checks_dialog_batch_toggle_validation_and_save(monkeypatch):
         lambda title, msg, **kw: infos.append((title, msg, kw.get("parent"))),
     )
     saved_events: list[bool] = []
-    dialog = PracticeChecksDialog(
-        root, stance="right", on_saved=lambda: saved_events.append(True)
-    )
+    dialog = PracticeChecksDialog(root, stance="right", on_saved=lambda: saved_events.append(True))
     try:
         assert dialog.is_open()
         assert dialog._win.title() == "检查项设置"
-        assert len(dialog.group_frames) == 9
-        assert len(dialog.vars) == 99
-        assert dialog.summary_var.get().startswith("已启用 99 / 99 项")
+        assert len(dialog.group_frames) == 11
+        assert len(dialog.vars) == 151
+        assert dialog.summary_var.get().startswith("已启用 151 / 151 项")
 
         dialog.set_group("pad_step", False)
-        assert dialog.summary_var.get().startswith("已启用 96 / 99 项")
+        assert dialog.summary_var.get().startswith("已启用 148 / 151 项")
         dialog.set_group("pad_step", True)
-        assert dialog.summary_var.get().startswith("已启用 99 / 99 项")
+        assert dialog.summary_var.get().startswith("已启用 151 / 151 项")
 
         for group in dialog.groups:
             dialog.set_group(group.key, False)
-        assert dialog.summary_var.get().startswith("已启用 0 / 99 项")
+        assert dialog.summary_var.get().startswith("已启用 0 / 151 项")
         assert dialog.save() is False
         assert warnings and "至少需要保留 1 个开启的检查项" in warnings[-1][1]
         assert warnings[-1][2] is dialog._win
@@ -248,7 +245,7 @@ def test_checks_dialog_batch_toggle_validation_and_save(monkeypatch):
         assert saved_events == []
 
         dialog.enable_all()
-        assert dialog.summary_var.get().startswith("已启用 99 / 99 项")
+        assert dialog.summary_var.get().startswith("已启用 151 / 151 项")
         target_ids = [item["id"] for item in dialog.groups[0].items[:2]]
         for cid in target_ids:
             dialog.vars[cid].set(False)
@@ -289,7 +286,7 @@ def test_practice_controls_checks_button_single_instance_lock_and_close():
         can_analyze=lambda: True,
     )
     try:
-        assert str(controls.checks_button.cget("text")) == "检查项设置（已开 99/99 项）"
+        assert str(controls.checks_button.cget("text")) == "检查项设置（已开 151/151 项）"
         controls.open_checks_dialog()
         first = controls.checks_dialog
         assert first is not None and first.is_open()
@@ -299,7 +296,7 @@ def test_practice_controls_checks_button_single_instance_lock_and_close():
         cid = first.groups[0].items[0]["id"]
         first.vars[cid].set(False)
         assert first.save() is True
-        assert str(controls.checks_button.cget("text")) == "检查项设置（已开 98/99 项）"
+        assert str(controls.checks_button.cget("text")) == "检查项设置（已开 150/151 项）"
 
         controls.open_checks_dialog()
         reopened = controls.checks_dialog
@@ -354,9 +351,7 @@ def test_checks_dialog_save_oserror_keeps_dialog_open_and_preserves_state(monkey
         lambda *_a, **_kw: (_ for _ in ()).throw(OSError("磁盘只读")),
     )
     saved_events: list[bool] = []
-    dialog = PracticeChecksDialog(
-        root, stance="left", on_saved=lambda: saved_events.append(True)
-    )
+    dialog = PracticeChecksDialog(root, stance="left", on_saved=lambda: saved_events.append(True))
     try:
         cid = dialog.groups[0].items[0]["id"]
         dialog.vars[cid].set(False)
@@ -474,9 +469,7 @@ def test_practice_controls_import_reanalyze_and_start_preflight_block_zero_check
             modes=ModeManager(),
             workflows=WorkflowHost(ScorebookRegistry()),
             controls=SimpleNamespace(set_roi=lambda _r: None),
-            flags=SimpleNamespace(
-                exam_locked=False, recording_ready=False, closing=False
-            ),
+            flags=SimpleNamespace(exam_locked=False, recording_ready=False, closing=False),
             exam=lambda: None,
         )
         controller.practice = PracticeSession(controls.identity)
@@ -566,9 +559,7 @@ def test_practice_controller_judge_blocks_zero_checks_and_exit_closes_dialogs(
         controls=LiveControls(),
         flags=SimpleNamespace(exam_locked=False, recording_ready=False, closing=False),
         exam=lambda: None,
-        announcer_factory=lambda: SimpleNamespace(
-            announce=lambda _t: None, close=lambda: None
-        ),
+        announcer_factory=lambda: SimpleNamespace(announce=lambda _t: None, close=lambda: None),
     )
     try:
         controller.enter()

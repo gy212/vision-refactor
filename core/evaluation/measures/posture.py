@@ -1,4 +1,4 @@
-"""通用人体姿势测量：关节角、高度差、肘贴身距离、低头、上体侧倾与正面翻胯。"""
+"""通用人体姿势测量：关节角、高度差、肘贴身距离、低头、侧倾、前后倾与翻胯。"""
 
 from __future__ import annotations
 
@@ -83,6 +83,23 @@ def measure_body_lean(
     return angles > max_angle, valid, {"正面双肩倾斜角": (angles, "度")}
 
 
+def measure_trunk_lean_sagittal(
+    lm: np.ndarray,
+    mask: np.ndarray,
+    max_angle: float = 10.0,
+) -> tuple[np.ndarray, np.ndarray, dict]:
+    """侧面躯干前后倾角：肩中点到髋中点连线相对竖直线前倾或后仰超过 max_angle 度判违规。"""
+    sh_mid = 0.5 * (lm[:, L_SHOULDER, :2] + lm[:, R_SHOULDER, :2])
+    hp_mid = 0.5 * (lm[:, L_HIP, :2] + lm[:, R_HIP, :2])
+    vec = sh_mid - hp_mid
+    length = np.linalg.norm(vec, axis=1)
+    dx = np.abs(vec[:, 0])
+    dy = hp_mid[:, 1] - sh_mid[:, 1]
+    angles = np.degrees(np.arctan2(dx, dy))
+    valid = mask[:, [L_SHOULDER, R_SHOULDER, L_HIP, R_HIP]].all(axis=1) & (length > 1e-4)
+    return angles > max_angle, valid, {"侧面躯干相对竖直倾角": (angles, "度")}
+
+
 def measure_hip_turn_width(
     lm: np.ndarray,
     mask: np.ndarray,
@@ -91,8 +108,10 @@ def measure_hip_turn_width(
     baseline_mask: np.ndarray,
     base_torso: np.ndarray,
     max_ratio: float = 0.80,
+    *,
+    label: str = "正面两髋水平宽比值",
 ) -> tuple[np.ndarray, np.ndarray, dict]:
-    """正面翻胯判定：相对基线双髋水平宽比值仍大于 max_ratio 判未充分翻胯。"""
+    """翻胯/转胯判定：相对基线双髋水平宽比值仍大于 max_ratio 判未充分转胯。"""
     base_ok = baseline_mask[:, L_HIP] & baseline_mask[:, R_HIP] & (base_torso > 1e-4)
     if not base_ok.any():
         empty = np.zeros(len(lm), dtype=bool)
@@ -101,4 +120,4 @@ def measure_hip_turn_width(
     base_med = max(float(np.median(base_w)), 1e-4)
     cur_ok = mask[:, L_HIP] & mask[:, R_HIP] & (torso > 1e-4)
     ratio = np.abs(lm[:, R_HIP, 0] - lm[:, L_HIP, 0]) / np.maximum(torso, 1e-4) / base_med
-    return ratio > max_ratio, cur_ok, {"正面两髋水平宽比值": (ratio, "倍基线")}
+    return ratio > max_ratio, cur_ok, {label: (ratio, "倍基线")}

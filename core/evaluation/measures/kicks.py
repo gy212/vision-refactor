@@ -1,99 +1,13 @@
+# -*- coding: utf-8 -*-
 """低鞭腿与垫步独有底层几何测量及抗侧视左右腿互换掩码。"""
 
 from __future__ import annotations
 
 import numpy as np
 
-from core.evaluation.body_sides import facing_direction, sides_for_stance
+from core.evaluation.body_sides import sides_for_stance
+from core.evaluation.measures.feet import foot_forward_progression, foot_settle_index
 from core.evaluation.measures.posture import joint_angle, relative_height
-from core.evaluation.measures.torso import chain_torso
-
-
-def _resolve_times(n_frames: int, times_or_dt: np.ndarray | float | None) -> np.ndarray:
-    """将输入时间戳数组或采样步长规整为一维时间序列。"""
-    if isinstance(times_or_dt, np.ndarray) and times_or_dt.shape == (n_frames,):
-        return np.asarray(times_or_dt, dtype=float)
-    dt = float(times_or_dt) if times_or_dt is not None else 1.0 / 30.0
-    if not np.isfinite(dt) or dt <= 1e-4:
-        dt = 1.0 / 30.0
-    return np.arange(n_frames, dtype=float) * dt
-
-
-def _infer_facing(lm: np.ndarray, mask: np.ndarray) -> float | None:
-    """从窗口逐帧统计面朝方向，返回 +1.0（朝右）或 -1.0（朝左）。"""
-    dirs = [
-        d for row, mask_row in zip(lm, mask) if (d := facing_direction(row, mask_row)) is not None
-    ]
-    if not dirs:
-        return None
-    return 1.0 if sum(dirs) >= 0.0 else -1.0
-
-
-def _median_filter_1d(arr: np.ndarray, k: int = 3) -> np.ndarray:
-    """对有限值做局部中值滤波，抑制单帧标签抖动。"""
-    out = arr.copy()
-    half = k // 2
-    n = len(arr)
-    for i in range(n):
-        win = arr[max(0, i - half) : min(n, i + half + 1)]
-        fin = win[np.isfinite(win)]
-        if len(fin) >= 2:
-            out[i] = float(np.median(fin))
-    return out
-
-
-def _interpolate_short_gaps(arr: np.ndarray, max_gap: int = 4) -> np.ndarray:
-    """仅对不超过 max_gap 帧的短暂缺失做线性插值，长缺口保留 NaN。"""
-    out = arr.copy()
-    fin = np.isfinite(out)
-    if fin.sum() < 2:
-        return out
-    n = len(out)
-    i = 0
-    while i < n:
-        if fin[i]:
-            i += 1
-            continue
-        j = i
-        while j < n and not fin[j]:
-            j += 1
-        gap = j - i
-        if i > 0 and j < n and gap <= max_gap:
-            out[i:j] = np.linspace(out[i - 1], out[j], gap + 2)[1:-1]
-        i = j
-    return out
-
-
-def _rear_ankle_progression(
-    lm: np.ndarray,
-    mask: np.ndarray,
-    times_or_dt: np.ndarray | float | None,
-    stance: str,
-    facing: float | None,
-) -> tuple[bool, np.ndarray, float, np.ndarray, np.ndarray, np.ndarray]:
-    """计算后脚踝向攻击方向清理后的序列、有效帧掩码、推进幅度和时域数组。"""
-    n = len(lm)
-    invalid = np.zeros(n, dtype=bool)
-    empty = np.array([], dtype=float)
-    dir_x = _infer_facing(lm, mask) if facing is None else facing
-    if n == 0 or dir_x is None or dir_x == 0:
-        return False, invalid, 0.0, empty, empty, empty
-    _, _, _, _, _, rear_ankle, _, _ = sides_for_stance("rear", stance)
-    torso = chain_torso(lm, mask)
-    ok = mask[:, rear_ankle] & (torso > 1e-4)
-    if int(ok.sum()) < 5:
-        return False, invalid, 0.0, empty, empty, empty
-    # 先在原始坐标做平滑并求窗内净位移，再用整个窗口统一的躯干中位尺度归一化。
-    ref_torso = float(np.median(torso[ok]))
-    raw_x = np.where(ok, lm[:, rear_ankle, 0] * float(dir_x), np.nan)
-    x_sm = _median_filter_1d(_interpolate_short_gaps(raw_x, max_gap=4), k=3)
-    if not np.isfinite(x_sm).any():
-        return False, invalid, 0.0, empty, empty, empty
-    idx_min = int(np.nanargmin(x_sm))
-    rx_sm = (x_sm - float(x_sm[idx_min])) / ref_torso
-    pad_disp = float(np.nanmax(rx_sm[idx_min:]))
-    times = _resolve_times(n, times_or_dt)
-    return True, ok, pad_disp, rx_sm, times, torso
 
 
 def kicking_leg_side_safe(
@@ -123,72 +37,6 @@ def kicking_leg_side_safe(
     return safe_mask
 
 
-def measure_pad_step_missing(
-    lm: np.ndarray,
-    mask: np.ndarray,
-    times_or_dt: np.ndarray | float | None,
-    stance: str,
-    min_disp: float = 0.45,
-    overtake_max: float = 0.20,
-    pause_max: float = 0.60,
-    *,
-    facing: float | None = None,
-) -> tuple[bool, np.ndarray, dict[str, tuple[float, str]]]:
-    """垫步缺失判定：起腿前窗口后脚最大正向推进不足 min_disp 判违规，并返回逐帧有效掩码。"""
-    del overtake_max, pause_max
-    ok, valid_mask, pad_disp, _, _, _ = _rear_ankle_progression(
-        lm, mask, times_or_dt, stance, facing
-    )
-    if not ok:
-        return False, valid_mask, {"垫步后脚前推距离": (float("nan"), "躯干长度")}
-    return (
-        bool(pad_disp < min_disp),
-        valid_mask,
-        {"垫步后脚前推距离": (pad_disp, "躯干长度")},
-    )
-
-
-def measure_pad_step_overtake(
-    lm: np.ndarray,
-    mask: np.ndarray,
-    times_or_dt: np.ndarray | float | None,
-    stance: str,
-    min_disp: float = 0.45,
-    overtake_max: float = 0.20,
-    pause_max: float = 0.60,
-    *,
-    facing: float | None = None,
-) -> tuple[bool, np.ndarray, dict[str, tuple[float, str]]]:
-    """垫步后脚超越前脚判定：临起脚末端双脚踝差值中位超过 overtake_max 判违规，并返回逐帧有效掩码。"""
-    del times_or_dt, min_disp, pause_max
-    n = len(lm)
-    invalid = np.zeros(n, dtype=bool)
-    dir_x = _infer_facing(lm, mask) if facing is None else facing
-    if n == 0 or dir_x is None or dir_x == 0:
-        return False, invalid, {"垫步末端后脚越前距离": (float("nan"), "躯干长度")}
-    _, _, _, _, _, rear_ankle, _, _ = sides_for_stance("rear", stance)
-    _, _, _, _, _, front_ankle, _, _ = sides_for_stance("front", stance)
-    full_torso = chain_torso(lm, mask)
-    full_ok = mask[:, rear_ankle] & mask[:, front_ankle] & (full_torso > 1e-4)
-    lo = max(0, n - 10)
-    ok = full_ok[lo:]
-    if not ok.any():
-        return False, invalid, {"垫步末端后脚越前距离": (float("nan"), "躯干长度")}
-    torso = full_torso[lo:]
-    diff = (
-        (lm[lo:, rear_ankle, 0] - lm[lo:, front_ankle, 0])
-        * float(dir_x)
-        / np.where(torso > 1e-4, torso, 1.0)
-    )
-    vals = diff[ok]
-    end_med = float(np.median(vals[-min(4, len(vals)) :]))
-    return (
-        bool(end_med > overtake_max),
-        full_ok,
-        {"垫步末端后脚越前距离": (end_med, "躯干长度")},
-    )
-
-
 def measure_pad_step_pause(
     lm: np.ndarray,
     mask: np.ndarray,
@@ -202,32 +50,19 @@ def measure_pad_step_pause(
 ) -> tuple[bool, np.ndarray, dict[str, tuple[float, str]]]:
     """垫步后停顿判定：仅当有实质垫步且落稳到起脚超过 pause_max 秒判违规，并返回逐帧有效掩码。"""
     del overtake_max
-    ok, valid_mask, pad_disp, rx_sm, times, _ = _rear_ankle_progression(
-        lm, mask, times_or_dt, stance, facing
-    )
-    if not ok or len(times) < 2:
+    rear_ankle = sides_for_stance("rear", stance)[5]
+    prog = foot_forward_progression(lm, mask, times_or_dt, rear_ankle, facing)
+    if not prog.ok or len(prog.times) < 2:
         return (
             False,
             np.zeros(len(lm), dtype=bool),
             {"垫步落稳后停顿": (float("nan"), "秒")},
         )
-    if pad_disp < min_disp:
-        return False, valid_mask, {"垫步落稳后停顿": (0.0, "秒")}
-    dt = np.gradient(times)
-    pos_dt = dt[dt > 1e-4]
-    fallback_dt = float(np.median(pos_dt)) if pos_dt.size else 1.0 / 30.0
-    dt_safe = np.where(dt > 1e-4, dt, fallback_dt)
-    vx = np.gradient(rx_sm) / dt_safe
-    pk_v_idx = int(np.nanargmax(vx)) if np.isfinite(vx).any() else len(rx_sm) - 1
-    rx_target = float(np.nanmax(rx_sm[pk_v_idx:]))
-    settle_idx = len(rx_sm) - 1
-    for k in range(pk_v_idx, len(rx_sm)):
-        if np.isfinite(rx_sm[k]) and np.isfinite(vx[k]):
-            if (rx_target - rx_sm[k]) <= 0.06 and vx[k] < 0.40:
-                settle_idx = k
-                break
-    pause_s = max(0.0, float(times[-1] - times[settle_idx]))
-    return bool(pause_s > pause_max), valid_mask, {"垫步落稳后停顿": (pause_s, "秒")}
+    if prog.displacement < min_disp:
+        return False, prog.valid_mask, {"垫步落稳后停顿": (0.0, "秒")}
+    settle_idx = foot_settle_index(prog)
+    pause_s = max(0.0, float(prog.times[-1] - prog.times[settle_idx]))
+    return bool(pause_s > pause_max), prog.valid_mask, {"垫步落稳后停顿": (pause_s, "秒")}
 
 
 def measure_kick_height(

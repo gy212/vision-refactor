@@ -1,4 +1,4 @@
-"""直拳独有私有规则：发力端伸肘、起动前贴肋禁抬肘与直拳专用齐肩策略。"""
+"""直拳独有私有规则：发力端伸肘、前手直拳臂躯夹角与起动前贴肋禁抬肘。"""
 
 from __future__ import annotations
 
@@ -19,7 +19,6 @@ def straight_landmarks(
     mapping = {
         "elbow_extension_at_peak": (sh, el, wr),
         "arm_torso_angle": (sh, wr, hip),
-        "wrist_shoulder_height_gap": (sh, wr),
         "prepunch_elbow_height": (sh, el),
     }
     if strategy not in mapping:
@@ -73,17 +72,6 @@ def measure_arm_torso_angle(
     )
 
 
-def measure_wrist_shoulder_height_gap(
-    role: str, lm: np.ndarray, mask: np.ndarray, ctx: RuleContext
-) -> tuple[np.ndarray, np.ndarray, dict]:
-    """后手直拳专用齐肩判定：出拳手腕与同侧肩纵向绝对差不超过上限。"""
-    sh, _, wr, *_ = sides_for_stance(role, ctx.stance)
-    torso = chain_torso(lm, mask)
-    height, valid = relative_height(lm, mask, wr, sh, torso)
-    gap = np.abs(height)
-    return gap > ctx.params.shoulder_height, valid, {"拳肩高度差": (gap, "躯干长度")}
-
-
 def measure_punch_preelbow(
     role: str, lm: np.ndarray, mask: np.ndarray, ctx: RuleContext
 ) -> tuple[np.ndarray, np.ndarray, dict]:
@@ -106,8 +94,6 @@ def build_straight_check(strategy: str, role: str, scope: str) -> PhaseCheck:
         )
     if strategy == "arm_torso_angle":
         return lambda lm, mask, _b, _bm, ctx: measure_arm_torso_angle(role, lm, mask, ctx)
-    if strategy == "wrist_shoulder_height_gap":
-        return lambda lm, mask, _b, _bm, ctx: measure_wrist_shoulder_height_gap(role, lm, mask, ctx)
     if strategy == "prepunch_elbow_height":
         return lambda lm, mask, _b, _bm, ctx: measure_punch_preelbow(role, lm, mask, ctx)
     raise KeyError(f"未知的直拳独有策略: {strategy!r}")
