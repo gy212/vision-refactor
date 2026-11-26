@@ -1,3 +1,13 @@
+## 2026-11-26: [feat] 重构从视频制作模板链路、新增双摄同步预览选段弹窗与质量校验闸门
+
+- 问题：原「动作分析（模板比对）」窗口内置的「从视频生成模板」折叠区存在按钮中文宽度截断（`▸ 从视频生...`）、固定盲裁（70 分位单峰误裁、无视觉预览确认、手填起止帧倒挂/越界静默退化为 1 帧）、非原子写盘与同名覆盖（强行写入 `<stem>_heavy.npz` 导致双摄 `front`/`side` 覆盖且破坏考试规则/几何查表 `stem`）、`workers > 1` 分段提取却标 `video`、空拍/低质量全 0 模板无拦截、主窗关窗漏管比对弹窗与运行期控件未锁定、以及 `apps/cli/make_template.py` 绕过公共服务且默认 `full` 与 Tk `heavy` 不一致等系统性隐患。
+- 修改：
+  1. **模板建库公共服务、质量体检闸门与原子写盘**：新增 `core/services/template_quality.py`，在 `core/services/templates.py` 与 `core/services/__init__.py` 补全 `discover_recording_videos`、`sanitize_action_name`、`planned_template_paths`、`TemplateQualityReport`/`TemplateQualityError`、`TemplateCreateResult` 与 `create_template_pair`；`create_template_from_video` 强制单线程顺序提取并单次调用 `extract_pose_sequence` 同时供 `derive_valid_mask` 做体检（帧数不足/全空/低检出率/核心躯干有效率不达标即拒止），严格校验显式起止帧并接入 `atomic_target` 原子写盘与 `overwrite=False` 防覆盖。
+  2. **下游评估校验与 CLI 收口**：`core/evaluation/scoring/exam_pool.py` 为 `SCORE_SQUEEZE`/`KICK_KINDS` 统一剥离 `_正面`/`_侧面` 后缀；`core/evaluation/matching/engine.py` 在 `match_templates` 逐个校验模板池内各模板的 `layout`/`normalizer_version`/`pose_variant` 一致性；`apps/cli/make_template.py` 收口调用 `create_template_from_video`、默认 `--pose` 对齐为 `heavy` 并新增 `--no-auto-crop`。
+  3. **独立复用「制作模板」弹窗与主界面/比对窗口联动**：新增 `apps/tk/controllers/template_builder.py` 与 `apps/tk/views/template_builder_dialog.py`，支持双摄录制目录与单视频（正面/侧面/不加视角后缀）加载、同步双路滑块与 `±1/±5` 帧微调实时画面预览、12 标准动作下拉+自定义命名、覆盖确认及质量体检反馈；`apps/tk/views/recording_panel.py` 与 `apps/tk/controllers/template_pools.py` 增加 `制作模板…` 入口与 `add_paths`/`add_created` 自动回填；`apps/tk/views/compare_dialog.py`、`apps/tk/controllers/compare.py` 与 `apps/tk/app.py` 改由 `从视频制作模板…` 唤起共享弹窗，修复运行期池按钮锁定、线程数输入容错、`InterruptedError` 显示 `已停止`、主窗关闭协同停任务以及 `CollapsibleSection` 全角中文宽度计算，抽离 `ProgressPanel`/`FramePreviewSlot` 到 `apps/tk/views/widgets.py`，并同步清理 `.harness-baseline.json` 中已消除的 `compare_dialog.py::silent_except` 债务。
+  4. **单测补充**：新增 `tests/test_template_creation.py` 与 `tests/test_template_builder_ui.py`，同步更新 `tests/test_tk_compare_settings.py`。
+- 验证：WSL `./.venv/wsl/bin/python` 运行 `ruff format --check`（全部新增/修改文件通过）、`square check .`（退出码 0，无新增违规）、`git -c core.whitespace=cr-at-eol diff --check`（无空白错误），以及 `tests/test_template_creation.py`、`test_template_auto_crop.py`、`test_template_metadata.py`、`test_pose33_v3_golden.py`、`test_valid_mask_migration.py`、`test_exam_pool_scoring.py`、`test_eval_pose_cache.py`、`test_step_straight_combo.py`、`test_artifact_roots.py`、`test_tech_eval_contract.py`、`test_rule_availability.py`、`test_architecture.py`（18/18 全绿）与 `test_template_builder_ui.py`（3 个非 Tk 用例通过，4 个真实 Tk 用例因 WSL2 缺 `tkinter` 自动 skip，待 Windows `.venv` 补跑 GUI 用例）。
+
 ## 2026-11-22: [fix] 修复 PR #69 审查指出的步法窗重叠、按次标量门控、掩码连坐与滞留微抖问题
 
 - 问题：PR #69 第一轮审查指出 3 项 P1 缺陷：1）`step_footwork_windows` 相邻两次步法窗直接截断到 `prev_end`/`next_start`，导致连贯节奏（间隔 `0.3s～0.6s`）下跨次重叠串味，且 `combo_transition_windows` 用 `len(pairs) + 1` 编号在首轮缺前手时错标次数；2）7 条按次标量规则缺少逐次实例有效性门控，多次重复中某一次遮挡被其余正常次数稀释伪造为通过，同时 `measure_step_landing_lag` 双脚强制同帧与门连坐、`measure_combo_punch_pause` 侧面强制四点同见连坐；3）`measure_punch_post_peak_hold` 与 `_refine_hook_peak` 在全窗取极值，滞留尾端 `+1e-4`/`+0.002` 微抖即可将滞留时长归零或将摆拳峰值拖至收拳前夕。
@@ -7,6 +17,12 @@
   3. **出拳滞留与摆拳峰值抗平台微抖**：`core/evaluation/measures/motion.py::measure_punch_post_peak_hold` 改为以首次进入峰值平台带 `max(return_reach, 0.85 * max_reach)` 作为滞留起点，向后统计至首次回落（或 `held_ending` 至窗尾）；`core/evaluation/hook_events.py::_refine_hook_peak` 通过 `_leading_arc_mask` 将精修弧段封顶于首次到达 `0.85` 平台后的 `_HOOK_PEAK_LEADING_SECONDS`（`0.25s`）前沿区间，且正面以有符号内摆进度 `signed_cross` 定位平台起点避免外引帧截断环弧 C66。
   4. **对抗回归单测**：新建 `tests/test_per_instance_rule_boundaries.py`（复用 `test_hook_and_step_rules.py` 与 `test_low_kick_rules.py` 公开构造器），全覆盖连贯双次 `step_hook_combo`/`step_straight_combo`、首轮缺前手次轮编号、两段式慢跟步/匀速慢拖步/两拍垫步边界、全部 7 条按次标量规则单次遮挡 `unable` 与违规次保留、`step_late_landing` 双脚解耦与 `front_cut` 双向遮挡边界、`hook_combo` 远侧手腕遮挡停顿检出，以及 `+1e-4`/`+0.002` 平台微抖滞留、长滞留摆拳前沿峰值与正面环弧 C66 / 侧面 `0.25s` 横摆弧稳定性。
 - 验证：WSL `./.venv/wsl/bin/python` 亲跑 PR #69 Review 3 段复现反例与复审 7 组对抗用例全部通过；通过 `square check .`、`ruff format --check --line-length 100`、`ruff check`、`git -c core.whitespace=cr-at-eol diff --check` 以及门禁、黄金基线（`pose33_v3/golden.json` 与 14 份 HTML golden 零漂移）和受影响规则/低鞭腿/考试/报告 pytest。
+
+## 2026-11-22: [docs] 同步规范文档索引表述并将按需契约升级为操作前必读
+
+- 问题：`AGENTS.md` 规范文档索引中仍将 Issue / PR / Review 契约写为“按需读取契约”，未明确“执行对应操作前必须先完整读取，未读严禁执行”，且分组与条目命名尚未与最新 Square 规范索引对齐。
+- 修改：参照用户提供截图同步更新 `AGENTS.md` 的“规范文档索引”段落：调整“强制必读契约”与“可插拔技术栈样例包”表述并去掉冗余后缀，将“按需读取契约”升级为“按需必读契约”，明确执行 Issue、PR、Review 等操作前**必须先完整读取对应契约，未读严禁执行对应操作**，并同步三条子项名称（保留本仓 `square review` 挂载与 `square contract-check` 校验命令提示；同步依据：用户 2026-11-22 截图指令）。
+- 验证：确认索引内 6 份 `specs/` 链接文件均存在，`git -c core.whitespace=cr-at-eol diff --check` 零空白错误，`square check .` 静态门禁通过。
 
 ## 2026-11-22: [docs] 改写全量 46 条检查标准为大白话并简化双摄肩宽比显示（v5.22）
 

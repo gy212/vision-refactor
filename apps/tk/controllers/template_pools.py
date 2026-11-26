@@ -3,8 +3,10 @@
 
 模板在 Tk 线程里缓存为普通路径（``lists``），录后计划可能在录制的任务线程里构建，不读 Tk 变量。
 """
+
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 from tkinter import messagebox
 from typing import Any
@@ -28,11 +30,38 @@ class TemplatePools:
 
     def __init__(self, panel: Any) -> None:
         self.panel = panel
-        self._templates = (tuple(panel.pool_paths("front")), tuple(panel.pool_paths("side")))
+        self._templates = (
+            tuple(panel.pool_paths("front")),
+            tuple(panel.pool_paths("side")),
+        )
 
     def lists(self) -> tuple[list[Path], list[Path]]:
         front, side = self._templates
         return list(front), list(side)
+
+    def add_paths(self, view: str, paths: Sequence[Path | str]) -> int:
+        """校验并去重加入指定视角模板池，持久化并刷新提示，返回新增个数。"""
+        if not paths:
+            return 0
+        existing = {str(p) for p in self.panel.pool_paths(view)}
+        added = 0
+        for path in paths:
+            usable = try_load_heavy_template(path)
+            if usable is not None and str(usable) not in existing:
+                self.panel.add_pool_path(view, usable)
+                existing.add(str(usable))
+                added += 1
+        if added > 0:
+            self.changed()
+        return added
+
+    def add_created(self, results: Sequence[Any]) -> int:
+        """把模板创建结果按 view(front/side) 分别回填到对应模板池，返回总新增数。"""
+        total = 0
+        for view in ("front", "side"):
+            paths = [res.path for res in results if res.view == view]
+            total += self.add_paths(view, paths)
+        return total
 
     def add(self, view: str) -> None:
         paths = self.panel.ask_templates(view)
@@ -51,7 +80,8 @@ class TemplatePools:
         if rejected:
             messagebox.showerror(
                 "部分模板无效",
-                "以下文件不是可用的 heavy + pose33_v3 模板，已跳过：\n" + "\n".join(rejected)
+                "以下文件不是可用的 heavy + pose33_v3 模板，已跳过：\n"
+                + "\n".join(rejected)
                 + "\n请用 make_template.py --pose heavy 生成后再添加。",
                 parent=self.panel.root,
             )
@@ -62,12 +92,19 @@ class TemplatePools:
 
     def changed(self) -> None:
         """池变化后缓存为普通路径、持久化并刷新提示。"""
-        self._templates = (tuple(self.panel.pool_paths("front")), tuple(self.panel.pool_paths("side")))
+        self._templates = (
+            tuple(self.panel.pool_paths("front")),
+            tuple(self.panel.pool_paths("side")),
+        )
         try:
-            save_template_pools(front=list(self._templates[0]), side=list(self._templates[1]))
+            save_template_pools(
+                front=list(self._templates[0]), side=list(self._templates[1])
+            )
         except Exception:
             pass
         self.sync_status()
 
     def sync_status(self) -> None:
-        self.panel.template_status_var.set(template_status_text(*map(len, self._templates)))
+        self.panel.template_status_var.set(
+            template_status_text(*map(len, self._templates))
+        )

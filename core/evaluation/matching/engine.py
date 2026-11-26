@@ -4,6 +4,7 @@
 D-9 未决：模板池混用 v2/v3 归一化时维持现状——视频特征按池内第一个模板的归一化版本提取，布局校验也
 按第一个模板（``match_video``）。逐模板归一化作为 P3 之后的独立 PR。
 """
+
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
@@ -14,8 +15,18 @@ from threading import Event
 import numpy as np
 
 from core.evaluation.matching.dtw import subsequence_dtw
-from core.evaluation.scoring.cost import POSE33_BASELINE, avg_cost_of, score_from_avg_cost
-from core.evaluation.templates import COMPARE, Template, canonical_feature_layout, load_template, normalizer_for
+from core.evaluation.scoring.cost import (
+    POSE33_BASELINE,
+    avg_cost_of,
+    score_from_avg_cost,
+)
+from core.evaluation.templates import (
+    COMPARE,
+    Template,
+    canonical_feature_layout,
+    load_template,
+    normalizer_for,
+)
 from core.pose.features import ProgressCb, extract_features
 
 
@@ -62,11 +73,22 @@ def assert_feature_layout_match(
     right_shape = _frame_shape(right_arr)
     left_layout_c = canonical_feature_layout(left_layout)
     right_layout_c = canonical_feature_layout(right_layout)
-    layout_matches = left_layout_c is None or right_layout_c is None or left_layout_c == right_layout_c
-    if left_arr.ndim == 3 and right_arr.ndim == 3 and left_shape == right_shape and layout_matches:
+    layout_matches = (
+        left_layout_c is None
+        or right_layout_c is None
+        or left_layout_c == right_layout_c
+    )
+    if (
+        left_arr.ndim == 3
+        and right_arr.ndim == 3
+        and left_shape == right_shape
+        and layout_matches
+    ):
         return
 
-    def _desc(label: str, arr: np.ndarray, frame_shape: tuple[int, ...], layout: str | None) -> str:
+    def _desc(
+        label: str, arr: np.ndarray, frame_shape: tuple[int, ...], layout: str | None
+    ) -> str:
         layout_part = "" if layout is None else f", feature_layout={layout!r}"
         return f"{label}: sequence_shape={tuple(arr.shape)}, frame_shape={frame_shape}{layout_part}"
 
@@ -98,9 +120,13 @@ def template_features(
     pv = pose_variant or template.meta.get("pose_variant", "full")
     workers_eff = effective_workers(workers, template.running_mode)
     seq, fps, views = extract_features(
-        video_path, pose_variant=pv, workers=workers_eff,
-        normalizer=normalizer_for(template.normalizer_version), compute_view=compute_view,
-        progress_cb=progress_cb, stop_evt=stop_evt,
+        video_path,
+        pose_variant=pv,
+        workers=workers_eff,
+        normalizer=normalizer_for(template.normalizer_version),
+        compute_view=compute_view,
+        progress_cb=progress_cb,
+        stop_evt=stop_evt,
     )
     return seq, fps, views, pv, workers_eff
 
@@ -125,10 +151,50 @@ class QueryMatch:
     end_frame: int
 
 
-def match_query(query: np.ndarray, seq: np.ndarray, *, stop_evt: Event | None = None) -> QueryMatch:
+def match_query(
+    query: np.ndarray, seq: np.ndarray, *, stop_evt: Event | None = None
+) -> QueryMatch:
     """查询特征 ``query`` 对视频特征 ``seq`` 做一次子序列 DTW（不校验布局；模板比对用 ``match_templates``）。"""
     cost, start, end = subsequence_dtw(query, seq, stop_evt=stop_evt)
-    return QueryMatch(float(cost), float(avg_cost_of(cost, query.shape[0])), int(start), int(end))
+    return QueryMatch(
+        float(cost), float(avg_cost_of(cost, query.shape[0])), int(start), int(end)
+    )
+
+
+def _assert_pool_template_compatible(
+    first: Template,
+    template: Template,
+    *,
+    video_layout: str,
+) -> None:
+    """校验池内每个模板自身的 layout、normalizer_version 与 pose_variant 是否与基准模板一致。"""
+    tpl_layout = template.layout if hasattr(template, "layout") else video_layout
+    if canonical_feature_layout(tpl_layout) != canonical_feature_layout(video_layout):
+        raise ValueError(
+            "Feature layout mismatch: 模板池不允许混用不同 layout 的模板。"
+            f" expected={video_layout!r}, actual={tpl_layout!r} ({template.path})。"
+        )
+    if not isinstance(first, Template) or not isinstance(template, Template):
+        return
+    if template.normalizer_version != first.normalizer_version:
+        raise ValueError(
+            "Template normalizer mismatch: 模板池不允许混用不同归一化版本"
+            f" ({first.path}: {first.normalizer_version!r} vs {template.path}: {template.normalizer_version!r})。"
+        )
+    first_meta_norm = str(first.meta.get("normalizer_version") or "").strip().lower()
+    tpl_meta_norm = str(template.meta.get("normalizer_version") or "").strip().lower()
+    if first_meta_norm and tpl_meta_norm and tpl_meta_norm != first_meta_norm:
+        raise ValueError(
+            "Template normalizer mismatch: 模板池不允许混用不同归一化版本"
+            f" ({first.path}: {first_meta_norm!r} vs {template.path}: {tpl_meta_norm!r})。"
+        )
+    first_pv = str(first.meta.get("pose_variant") or "").strip().lower()
+    tpl_pv = str(template.meta.get("pose_variant") or "").strip().lower()
+    if first_pv and tpl_pv and tpl_pv != first_pv:
+        raise ValueError(
+            "Template pose_variant mismatch: 模板池不允许混用不同姿态模型档位"
+            f" ({first.path}: {first_pv!r} vs {template.path}: {tpl_pv!r})。"
+        )
 
 
 def match_templates(
@@ -142,18 +208,36 @@ def match_templates(
 ) -> list[TemplateMatch]:
     """视频特征 ``seq`` 对每个模板做一次子序列 DTW，按 ``templates`` 顺序返回。
 
-    ``stop_evt`` 为 None 时 DTW 不响应取消（单模板比对的现状）；布局按 ``layout`` 校验（见模块说明的 D-9）。
+    ``stop_evt`` 为 None 时 DTW 不响应取消（单模板比对的现状）；逐个校验每个模板自身的布局、
+    归一化版本与模型档位是否与基准一致。
     """
     out: list[TemplateMatch] = []
+    if not templates:
+        return out
+    first = templates[0]
     for template in templates:
         raise_if_cancelled(stop_evt)
+        tpl_layout = template.layout if hasattr(template, "layout") else layout
         assert_feature_layout_match(
-            template.features, seq, left_label=f"template {template.path}", right_label=video_label,
-            left_layout=layout, right_layout=layout,
+            template.features,
+            seq,
+            left_label=f"template {template.path}",
+            right_label=video_label,
+            left_layout=tpl_layout,
+            right_layout=layout,
         )
+        _assert_pool_template_compatible(first, template, video_layout=layout)
         m = match_query(template.features, seq, stop_evt=stop_evt)
-        out.append(TemplateMatch(template, m.cost, m.avg_cost,
-                                 score_from_avg_cost(m.avg_cost, baseline), m.start_frame, m.end_frame))
+        out.append(
+            TemplateMatch(
+                template,
+                m.cost,
+                m.avg_cost,
+                score_from_avg_cost(m.avg_cost, baseline),
+                m.start_frame,
+                m.end_frame,
+            )
+        )
     return out
 
 
@@ -178,11 +262,21 @@ def match_video(
         return []
     first = templates[0]
     seq, fps, _views, pv, workers_eff = template_features(
-        first, Path(video_path), pose_variant=pose_variant, workers=workers,
-        progress_cb=progress_cb, stop_evt=stop_evt,
+        first,
+        Path(video_path),
+        pose_variant=pose_variant,
+        workers=workers,
+        progress_cb=progress_cb,
+        stop_evt=stop_evt,
     )
-    matches = match_templates(seq, templates, layout=first.layout, baseline=baseline, stop_evt=stop_evt,
-                              video_label=f"video {video_path}")
+    matches = match_templates(
+        seq,
+        templates,
+        layout=first.layout,
+        baseline=baseline,
+        stop_evt=stop_evt,
+        video_label=f"video {video_path}",
+    )
     return [_compare_result(m, Path(video_path), pv, fps, workers_eff) for m in matches]
 
 
@@ -207,22 +301,53 @@ def match_video_windows(
     if not templates:
         return []
     first = templates[0]
-    seq, fps, _views, pv, workers_eff = template_features(first, Path(video_path), pose_variant=pose_variant,
-                                                          workers=workers, stop_evt=stop_evt)
+    seq, fps, _views, pv, workers_eff = template_features(
+        first,
+        Path(video_path),
+        pose_variant=pose_variant,
+        workers=workers,
+        stop_evt=stop_evt,
+    )
     per_window = []
     for start, end in windows:
         start, end = max(0, int(start)), min(len(seq) - 1, int(end))
         if end <= start:
             continue
-        matches = match_templates(seq[start:end + 1], templates, layout=first.layout, baseline=baseline,
-                                  stop_evt=stop_evt, video_label=f"video {video_path}[{start}:{end}]")
-        per_window.append([_compare_result(m, Path(video_path), pv, fps, workers_eff, offset=start) for m in matches])
+        matches = match_templates(
+            seq[start : end + 1],
+            templates,
+            layout=first.layout,
+            baseline=baseline,
+            stop_evt=stop_evt,
+            video_label=f"video {video_path}[{start}:{end}]",
+        )
+        per_window.append(
+            [
+                _compare_result(m, Path(video_path), pv, fps, workers_eff, offset=start)
+                for m in matches
+            ]
+        )
     return [[window[i] for window in per_window] for i in range(len(templates))]
 
 
-def _compare_result(m: TemplateMatch, video_path: Path, pv: str, fps: float, workers: int, offset: int = 0) -> CompareResult:
+def _compare_result(
+    m: TemplateMatch,
+    video_path: Path,
+    pv: str,
+    fps: float,
+    workers: int,
+    offset: int = 0,
+) -> CompareResult:
     return CompareResult(
-        template_path=m.template.path, video_path=video_path, pose_variant=pv, fps=float(fps),
-        start_frame=m.start_frame + offset, end_frame=m.end_frame + offset, cost=m.cost, avg_cost=m.avg_cost,
-        score=m.score, preview_path=None, workers_used=workers,
+        template_path=m.template.path,
+        video_path=video_path,
+        pose_variant=pv,
+        fps=float(fps),
+        start_frame=m.start_frame + offset,
+        end_frame=m.end_frame + offset,
+        cost=m.cost,
+        avg_cost=m.avg_cost,
+        score=m.score,
+        preview_path=None,
+        workers_used=workers,
     )
