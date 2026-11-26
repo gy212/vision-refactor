@@ -10,7 +10,9 @@ import numpy as np
 import pytest
 
 from apps.tk.controllers.template_builder import (
+    COMPARE_BACKFILL_OPTIONS,
     TemplateBuilderController,
+    filter_backfill_results,
     format_quality_error,
     frame_ranges_for_times,
     min_duration_seconds,
@@ -175,7 +177,8 @@ def test_controller_generate_cancel_and_quality_error(tmp_path):
         videos,
         *,
         action_name,
-        frame_ranges,
+        start_s,
+        end_s,
         out_dir,
         pose_variant,
         preview,
@@ -184,6 +187,7 @@ def test_controller_generate_cancel_and_quality_error(tmp_path):
         stop_evt,
     ):
         assert pose_variant == "heavy" and overwrite is True
+        assert start_s == pytest.approx(0.1) and end_s == pytest.approx(1.5)
         progress_cb("提取骨架特征", 10, 90)
         if mode["behavior"] == "cancel":
             gate.wait(2.0)
@@ -313,6 +317,7 @@ def test_dialog_preview_nudge_overwrite_and_app_integration(tmp_path, monkeypatc
             dispatcher.post,
             record_dir=rec_dir,
             on_created=received.append,
+            pool_mode="dual",
             controller_factory=lambda v, p: TemplateBuilderController(
                 v,
                 p,
@@ -322,15 +327,14 @@ def test_dialog_preview_nudge_overwrite_and_app_integration(tmp_path, monkeypatc
             ),
         )
         dialog.action_name_var.set("实战式")
-        dialog.controller.load_directory(rec_dir)
-        dialog._on_sources_loaded()
+        dialog.load_directory(rec_dir)
         assert dialog._slots["front"].photo is not None
         assert dialog._slots["side"].photo is not None
         assert "已存在同名模板" in dialog.output_hint_var.get()
 
-        dialog._nudge("start", 5)
+        dialog.nudge_buttons[("start", 5)].invoke()
         assert dialog.anchor_var.get() == "start" and dialog.start_var.get() > 0.0
-        dialog._nudge("end", -5)
+        dialog.nudge_buttons[("end", -5)].invoke()
         assert dialog.anchor_var.get() == "end" and dialog.end_var.get() < 3.0
 
         dialog.start_generate()
@@ -381,7 +385,7 @@ def test_app_links_builder_to_pools_compare_and_close(tmp_path):
         app.open_compare()
         compare = app._dialogs["compare"]
         assert isinstance(compare, CompareDialog)
-        compare._open_template_builder()
+        compare.build_tpl_btn.invoke()
         assert app._dialogs["template_builder"] is builder
         builder.on_generated(
             [TemplateCreateResult("front", front_npz, 0, 29, 30, 30.0, _quality())],
@@ -389,7 +393,7 @@ def test_app_links_builder_to_pools_compare_and_close(tmp_path):
         )
         assert compare.pool_paths() == [str(front_npz)]
 
-        app._close_workflows()
+        app.shutdown_steps().prepare_workflows()
         assert not compare.is_open()
         assert not builder.is_open()
     finally:
@@ -417,5 +421,183 @@ def test_template_pools_add_paths_dedups_and_ignores_invalid(tmp_path):
         )
         assert pools.add_paths("front", [good, good, bad]) == 1
         assert app.recording.pools.lists()[0] == [good]
+    finally:
+        tk_root.destroy()
+
+
+def test_controller_seconds_tolerates_frame_count_mismatch(tmp_path, monkeypatch):
+    """容器元数据 frame_count=30 与真实解码 29 帧不一致时，按 start_s/end_s 建库不越界。"""
+    clip = tmp_path / "front.mp4"
+    clip.write_bytes(b"v")
+    feats = np.ones((29, 22, 2), dtype=np.float32)
+    monkeypatch.setattr(
+        "core.services.templates.extract_features",
+        lambda *_a, **_k: (feats, 30.0, None),
+    )
+    view, queue = _FakeView(), _Queue()
+    ctrl = TemplateBuilderController(
+        view,
+        queue.post,
+        open_source=lambda p: _FakeSource(p, fps=30.0, frame_count=30),
+        out_dir=tmp_path / "tpls",
+    )
+    ctrl.load_single_file(clip, "front")
+    assert ctrl.start_generate(action_name="直拳", start_s=0.0, end_s=1.0)
+    while ctrl.busy:
+        threading.Event().wait(0.01)
+    queue.drain()
+    ctrl.close()
+
+    assert not any(c[0] == "on_failed" for c in view.calls), view.calls
+    generated = [c for c in view.calls if c[0] == "on_generated"]
+    assert len(generated) == 1
+    results = generated[0][1]
+    assert len(results) == 1
+    assert results[0].frame_count == 29 and results[0].end_frame == 28
+    assert results[0].path.exists()
+
+
+def test_filter_backfill_modes(tmp_path):
+    front = TemplateCreateResult(
+        "front", tmp_path / "a_正面.npz", 0, 10, 11, 30.0, _quality()
+    )
+    side = TemplateCreateResult(
+        "side", tmp_path / "a_侧面.npz", 0, 10, 11, 30.0, _quality()
+    )
+    single = TemplateCreateResult(
+        "single", tmp_path / "a.npz", 0, 10, 11, 30.0, _quality()
+    )
+    pair = [front, side]
+
+    assert filter_backfill_results(pair, pool_mode="none") == []
+    assert filter_backfill_results(pair, pool_mode="dual") == pair
+    assert filter_backfill_results([single], pool_mode="dual") == []
+    assert filter_backfill_results([single], pool_mode="single") == [single]
+    assert filter_backfill_results(
+        pair, pool_mode="single", backfill_choice="仅加入正面"
+    ) == [front]
+    assert filter_backfill_results(
+        pair, pool_mode="single", backfill_choice="仅加入侧面"
+    ) == [side]
+    assert (
+        filter_backfill_results(
+            pair, pool_mode="single", backfill_choice="仅保存不入池"
+        )
+        == []
+    )
+    assert COMPARE_BACKFILL_OPTIONS == ("仅加入正面", "仅加入侧面", "仅保存不入池")
+
+
+def test_dialog_pool_modes_busy_isolation_and_video_filetypes(tmp_path, monkeypatch):
+    tk = pytest.importorskip("tkinter")
+    from apps.tk import UiDispatcher
+    from apps.tk.views.template_builder_dialog import TemplateBuilderDialog
+    from apps.tk.views.widgets import video_filetypes
+    from tests.tk_app_doubles import build_app
+
+    patterns = video_filetypes()[0][1]
+    assert "*.wmv" in patterns.split() and ";" not in patterns
+
+    try:
+        tk_root = tk.Tk()
+    except tk.TclError as exc:  # pragma: no cover
+        pytest.skip(f"Tk 不可用：{exc}")
+    tk_root.withdraw()
+    try:
+        clip = tmp_path / "clip.mp4"
+        clip.write_bytes(b"v")
+        rec_dir = tmp_path / "rec"
+        rec_dir.mkdir()
+        (rec_dir / "front.mp4").write_bytes(b"f")
+        (rec_dir / "side.mp4").write_bytes(b"s")
+        front_npz = _write_heavy_template(tmp_path / "直拳_正面.npz")
+        side_npz = _write_heavy_template(tmp_path / "直拳_侧面.npz")
+        out_dir = tmp_path / "out"
+        out_dir.mkdir()
+        pair_results = [
+            TemplateCreateResult("front", front_npz, 0, 29, 30, 30.0, _quality()),
+            TemplateCreateResult("side", side_npz, 0, 29, 30, 30.0, _quality()),
+        ]
+
+        monkeypatch.setattr(
+            "apps.tk.views.template_builder_dialog.messagebox.askyesno",
+            lambda *_a, **_k: True,
+        )
+        for kind in ("showerror", "showwarning", "showinfo"):
+            monkeypatch.setattr(
+                f"apps.tk.views.template_builder_dialog.messagebox.{kind}",
+                lambda title, msg, **_k: pytest.fail(f"意外弹出模态框 {title}: {msg}"),
+            )
+
+        dispatcher = UiDispatcher(tk_root)
+        gate = threading.Event()
+        dual_calls: list[list[TemplateCreateResult]] = []
+        single_calls: list[list[TemplateCreateResult]] = []
+
+        def slow_pair(*_a, **_k):
+            gate.wait(2.0)
+            return pair_results
+
+        dialog = TemplateBuilderDialog(
+            tk_root,
+            dispatcher.post,
+            record_dir=rec_dir,
+            on_created=dual_calls.append,
+            pool_mode="dual",
+            controller_factory=lambda v, p: TemplateBuilderController(
+                v,
+                p,
+                open_source=lambda path: _FakeSource(path),
+                create_pair=slow_pair,
+                out_dir=out_dir,
+            ),
+        )
+        dialog.load_single_file(clip, "single")
+        assert dialog.auto_add_var.get() is False
+        assert str(dialog.auto_add_check.cget("state")) == "disabled"
+        assert "切换视角" in dialog.auto_add_hint_var.get()
+
+        dialog.load_single_file(clip, "front")
+        assert dialog.auto_add_var.get() is True
+        assert str(dialog.auto_add_check.cget("state")) == "normal"
+
+        # compare(single) 模式下加载双摄目录，支持“仅加入正面/侧面/仅保存不入池”
+        dialog.set_on_created(single_calls.append, pool_mode="single")
+        dialog.load_directory(rec_dir)
+        dialog.compare_backfill_var.set("仅加入侧面")
+        dialog.action_name_var.set("直拳")
+        dialog.start_generate()
+        assert dialog.is_busy()
+        # 运行中修改回填回调，仍应使用启动时的快照 single_calls 与“仅加入侧面”
+        other_calls: list[list[TemplateCreateResult]] = []
+        dialog.set_on_created(other_calls.append, pool_mode="dual")
+        dialog.compare_backfill_var.set("仅保存不入池")
+        gate.set()
+        while dialog.is_busy():
+            threading.Event().wait(0.01)
+        dispatcher.pump()
+        assert (
+            single_calls == [[pair_results[1]]] and not other_calls and not dual_calls
+        )
+        dialog.close()
+
+        # app 级 busy 隔离 + 关闭未停完禁止并发重开
+        app = build_app(tk_root)
+        app.open_template_builder()
+        builder = app._dialogs["template_builder"]
+        infos: list[tuple[str, str]] = []
+        monkeypatch.setattr(
+            "apps.tk.app.messagebox.showinfo", lambda t, m, **_k: infos.append((t, m))
+        )
+        monkeypatch.setattr(builder, "is_busy", lambda: True)
+        app.open_compare()
+        app._dialogs["compare"].build_tpl_btn.invoke()
+        assert builder._pool_mode == "dual"
+        assert builder._on_created == app.recording.pools.add_created
+        builder.close()
+        app.open_template_builder()
+        assert infos and "正在停止收尾" in infos[0][1]
+        assert app._dialogs["template_builder"] is builder
+        app.shutdown_steps().prepare_workflows()
     finally:
         tk_root.destroy()

@@ -180,22 +180,29 @@ class DesktopApp:
             messagebox.showerror("打开失败", f"{title}创建失败：{exc}")
 
     def open_compare(self) -> None:
-        cb = lambda fn: self.open_template_builder(on_created=fn)
-        self._open_dialog(
-            "compare",
-            "动作比对窗口",
-            lambda: CompareDialog(self.root, self.ui.post, open_builder=cb),
-        )
+        cb = lambda fn: self.open_template_builder(on_created=fn, pool_mode="single")
+        make = lambda: CompareDialog(self.root, self.ui.post, open_builder=cb)
+        self._open_dialog("compare", "动作比对窗口", make)
 
-    def open_template_builder(self, *, on_created: Any = None) -> None:
+    def open_template_builder(
+        self, *, on_created: Any = None, pool_mode: str = "dual"
+    ) -> None:
         cb = self.recording.pools.add_created if on_created is None else on_created
         dlg = self._dialogs.get("template_builder")
         if dlg is not None and dlg.is_open():
-            dlg.set_on_created(cb)
+            if not dlg.is_busy():
+                dlg.set_on_created(cb, pool_mode=pool_mode)
             dlg.focus()
             return
+        if dlg is not None and dlg.is_busy():
+            messagebox.showinfo("请稍候", "上一次模板生成正在停止收尾，请稍后再打开。")
+            return
         make = lambda: TemplateBuilderDialog(
-            self.root, self.ui.post, record_dir=self.recording.record_dir, on_created=cb
+            self.root,
+            self.ui.post,
+            record_dir=self.recording.record_dir,
+            on_created=cb,
+            pool_mode=pool_mode,
         )
         self._open_dialog("template_builder", "制作模板窗口", make)
 

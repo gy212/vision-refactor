@@ -25,11 +25,9 @@ from tkinter import (
 )
 
 from apps.tk.controllers.compare import CompareController, usable_template
-from apps.tk.views.widgets import CollapsibleSection, ProgressPanel
+from apps.tk.views.widgets import CollapsibleSection, ProgressPanel, video_filetypes
 
 logger = logging.getLogger(__name__)
-
-_VIDEO_TYPES = [("视频文件", "*.mp4;*.avi;*.mov;*.mkv"), ("所有文件", "*.*")]
 
 
 def score_color(score: float) -> str:
@@ -213,7 +211,7 @@ class CompareDialog:
     # ------------------------------------------------------------------ 按钮
     def _ask_video(self, title: str, var: StringVar) -> None:
         path = filedialog.askopenfilename(
-            title=title, filetypes=_VIDEO_TYPES, parent=self._win
+            title=title, filetypes=video_filetypes(), parent=self._win
         )
         self._win.lift()
         self._win.focus_force()

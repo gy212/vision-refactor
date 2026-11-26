@@ -188,13 +188,39 @@ def _assert_pool_template_compatible(
             "Template normalizer mismatch: 模板池不允许混用不同归一化版本"
             f" ({first.path}: {first_meta_norm!r} vs {template.path}: {tpl_meta_norm!r})。"
         )
-    first_pv = str(first.meta.get("pose_variant") or "").strip().lower()
-    tpl_pv = str(template.meta.get("pose_variant") or "").strip().lower()
-    if first_pv and tpl_pv and tpl_pv != first_pv:
+    first_pv = str(first.meta.get("pose_variant") or "full").strip().lower()
+    tpl_pv = str(template.meta.get("pose_variant") or "full").strip().lower()
+    if tpl_pv != first_pv:
         raise ValueError(
             "Template pose_variant mismatch: 模板池不允许混用不同姿态模型档位"
             f" ({first.path}: {first_pv!r} vs {template.path}: {tpl_pv!r})。"
         )
+
+
+def _assert_pool_compatible(templates: Sequence[Template]) -> None:
+    """在耗时姿态提取前前置校验模板池内全部模板的布局、归一化版本与模型档位是否兼容。"""
+    if len(templates) < 2:
+        return
+    first = templates[0]
+    if not isinstance(first, Template):
+        return
+    for template in templates[1:]:
+        if not isinstance(template, Template):
+            continue
+        assert_feature_layout_match(
+            template.features,
+            first.features,
+            left_label=f"template {template.path}",
+            right_label=f"template {first.path}",
+            left_layout=template.layout,
+            right_layout=first.layout,
+        )
+        _assert_pool_template_compatible(first, template, video_layout=first.layout)
+
+
+def _pool_workers(workers: int, templates: Sequence[Template]) -> int:
+    modes = [t.running_mode for t in templates if isinstance(t, Template)]
+    return effective_workers(workers, *modes) if modes else int(workers)
 
 
 def match_templates(
@@ -260,12 +286,14 @@ def match_video(
     templates = [load(Path(p)) for p in template_paths]
     if not templates:
         return []
+    _assert_pool_compatible(templates)
     first = templates[0]
+    pool_workers = _pool_workers(workers, templates)
     seq, fps, _views, pv, workers_eff = template_features(
         first,
         Path(video_path),
         pose_variant=pose_variant,
-        workers=workers,
+        workers=pool_workers,
         progress_cb=progress_cb,
         stop_evt=stop_evt,
     )
@@ -300,12 +328,14 @@ def match_video_windows(
     templates = [load(Path(p)) for p in template_paths]
     if not templates:
         return []
+    _assert_pool_compatible(templates)
     first = templates[0]
+    pool_workers = _pool_workers(workers, templates)
     seq, fps, _views, pv, workers_eff = template_features(
         first,
         Path(video_path),
         pose_variant=pose_variant,
-        workers=workers,
+        workers=pool_workers,
         stop_evt=stop_evt,
     )
     per_window = []

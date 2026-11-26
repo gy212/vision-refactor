@@ -8,6 +8,7 @@
 - ``ONLINE``：在线识别的模板库，要求 pose33_v3 / v3（原 ``load_template_library``）。
 契约违规抛 ``TemplateError(code, message)``；提示文案逐字沿用迁移前的版本。
 """
+
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
@@ -18,13 +19,45 @@ from typing import Any
 import numpy as np
 
 from core.pose.layouts import POSE33_V3
-from core.pose.normalize import normalize_pose_xy, normalize_pose_xy_v1, normalize_pose_xy_v3
+from core.pose.normalize import (
+    normalize_pose_xy,
+    normalize_pose_xy_v1,
+    normalize_pose_xy_v3,
+)
 from core.pose.validity import DEFAULT_VALID_CONF_THR, MEDIAPIPE_VALIDITY_POLICY
 
 # 历史模板曾把 feature_layout 写成 normalizer 描述字符串；Issue #6 后统一写注册表布局名。
 LEGACY_DEFAULT_FEATURE_LAYOUT = "pose_indices_11_32_xy_rot_scale_norm"
 LEGACY_POSE33_V3_FEATURE_LAYOUT = "pose_indices_11_32_xy_rot_scale_norm_v3"
-_NORMALIZERS = {"v1": normalize_pose_xy_v1, "v2": normalize_pose_xy, "v3": normalize_pose_xy_v3}
+_NORMALIZERS = {
+    "v1": normalize_pose_xy_v1,
+    "v2": normalize_pose_xy,
+    "v3": normalize_pose_xy_v3,
+}
+
+VIEW_FRONT_SUFFIX = "_正面"
+VIEW_SIDE_SUFFIX = "_侧面"
+VIEW_SUFFIXES: dict[str, str] = {
+    "front": VIEW_FRONT_SUFFIX,
+    "side": VIEW_SIDE_SUFFIX,
+    "single": "",
+}
+
+
+def split_view_suffix(name: str) -> tuple[str, str | None]:
+    """拆分动作/模板名末尾的视角后缀，返回 ``(基础动作名, 'front'|'side'|None)``。"""
+    text = str(name)
+    if text.endswith(VIEW_FRONT_SUFFIX):
+        return text[: -len(VIEW_FRONT_SUFFIX)], "front"
+    if text.endswith(VIEW_SIDE_SUFFIX):
+        return text[: -len(VIEW_SIDE_SUFFIX)], "side"
+    return text, None
+
+
+def base_action_name(name: str) -> str:
+    """剥离模板文件名末尾的 ``_正面``/``_侧面`` 视角后缀，得到动作基础名。"""
+    base, _view = split_view_suffix(name)
+    return base
 
 
 class TemplateError(ValueError):
@@ -70,7 +103,9 @@ def runtime_feature_layout(raw_meta: dict, normalized_meta: dict) -> str:
     if "feature_layout" in raw_meta:
         return str(raw_meta["feature_layout"])
     if "feature_layout_name" in raw_meta:
-        return str(normalized_meta.get("feature_layout", raw_meta["feature_layout_name"]))
+        return str(
+            normalized_meta.get("feature_layout", raw_meta["feature_layout_name"])
+        )
     return LEGACY_DEFAULT_FEATURE_LAYOUT
 
 
@@ -120,7 +155,11 @@ class Template:
     @property
     def running_mode(self) -> str:
         meta = self.meta
-        return str(meta.get("running_mode") or (meta.get("cfg") or {}).get("running_mode") or "video").lower()
+        return str(
+            meta.get("running_mode")
+            or (meta.get("cfg") or {}).get("running_mode")
+            or "video"
+        ).lower()
 
 
 Check = Callable[["TemplateContract", Path, np.ndarray, dict], None]
@@ -134,37 +173,63 @@ class TemplateContract:
     layouts: frozenset[str] | None
     normalizers: frozenset[str] | None
     variants: frozenset[str] | None
-    allow_missing_layout_meta: bool  # 旧模板无 feature_layout 字段时放行（按形状/默认推断）
+    allow_missing_layout_meta: (
+        bool  # 旧模板无 feature_layout 字段时放行（按形状/默认推断）
+    )
     label: str = "模板"
     dtype: Any = None  # 特征转换的 dtype；None 保留文件里的 dtype
-    require_file: bool = False  # 读之前先要求文件存在且非空，读取失败包装成 template_invalid
+    require_file: bool = (
+        False  # 读之前先要求文件存在且非空，读取失败包装成 template_invalid
+    )
     optional_meta: bool = False  # 文件缺 meta 键时按空 meta 处理
     checks: tuple[Check, ...] = field(default=())
 
 
-def _exam_shape(c: TemplateContract, path: Path, features: np.ndarray, meta: dict) -> None:
-    if features.ndim != 3 or features.shape[0] <= 0 or features.shape[1:] != POSE33_V3.shape:
-        raise TemplateError("template_invalid", f"{c.label}特征形状无效：{path} -> {tuple(features.shape)}")
+def _exam_shape(
+    c: TemplateContract, path: Path, features: np.ndarray, meta: dict
+) -> None:
+    if (
+        features.ndim != 3
+        or features.shape[0] <= 0
+        or features.shape[1:] != POSE33_V3.shape
+    ):
+        raise TemplateError(
+            "template_invalid",
+            f"{c.label}特征形状无效：{path} -> {tuple(features.shape)}",
+        )
 
 
-def _exam_finite(c: TemplateContract, path: Path, features: np.ndarray, meta: dict) -> None:
+def _exam_finite(
+    c: TemplateContract, path: Path, features: np.ndarray, meta: dict
+) -> None:
     if not np.isfinite(features).all():
         raise TemplateError("template_invalid", f"{c.label}包含非有限特征：{path}")
 
 
-def _exam_variant(c: TemplateContract, path: Path, features: np.ndarray, meta: dict) -> None:
+def _exam_variant(
+    c: TemplateContract, path: Path, features: np.ndarray, meta: dict
+) -> None:
     if str(meta.get("pose_variant") or "") not in c.variants:
-        raise TemplateError("template_invalid", f"{c.label}必须使用 {'/'.join(sorted(c.variants))} 模型：{path}")
+        raise TemplateError(
+            "template_invalid",
+            f"{c.label}必须使用 {'/'.join(sorted(c.variants))} 模型：{path}",
+        )
 
 
-def _exam_layout(c: TemplateContract, path: Path, features: np.ndarray, meta: dict) -> None:
+def _exam_layout(
+    c: TemplateContract, path: Path, features: np.ndarray, meta: dict
+) -> None:
     layout = str(meta.get("feature_layout") or "")
     if (layout or not c.allow_missing_layout_meta) and layout not in c.layouts:
-        raise TemplateError("template_incompatible",
-                            f"{c.label}布局必须为 {'/'.join(sorted(c.layouts))}：{path} -> {layout}")
+        raise TemplateError(
+            "template_incompatible",
+            f"{c.label}布局必须为 {'/'.join(sorted(c.layouts))}：{path} -> {layout}",
+        )
 
 
-def _online_layout(c: TemplateContract, path: Path, features: np.ndarray, meta: dict) -> None:
+def _online_layout(
+    c: TemplateContract, path: Path, features: np.ndarray, meta: dict
+) -> None:
     layout = str(meta.get("feature_layout", "")) or "?"
     normalizer = str(meta.get("normalizer_version", "")) or "?"
     if layout not in c.layouts or normalizer not in c.normalizers:
@@ -175,19 +240,37 @@ def _online_layout(c: TemplateContract, path: Path, features: np.ndarray, meta: 
         )
 
 
-def _online_shape(c: TemplateContract, path: Path, features: np.ndarray, meta: dict) -> None:
+def _online_shape(
+    c: TemplateContract, path: Path, features: np.ndarray, meta: dict
+) -> None:
     if features.ndim != 3 or features.shape[1:] != POSE33_V3.shape:
-        raise TemplateError("template_invalid", f"在线模板 {path.name} 特征形状 {features.shape} 非 (M,{POSE33_V3.shape})")
+        raise TemplateError(
+            "template_invalid",
+            f"在线模板 {path.name} 特征形状 {features.shape} 非 (M,{POSE33_V3.shape})",
+        )
 
 
 COMPARE = TemplateContract("compare", None, None, None, True)
 EXAM_POOL = TemplateContract(
-    "exam_pool", frozenset({POSE33_V3.name}), None, frozenset({"heavy"}), True, label="固定模板",
-    dtype=np.float32, require_file=True, checks=(_exam_shape, _exam_finite, _exam_variant, _exam_layout),
+    "exam_pool",
+    frozenset({POSE33_V3.name}),
+    None,
+    frozenset({"heavy"}),
+    True,
+    label="固定模板",
+    dtype=np.float32,
+    require_file=True,
+    checks=(_exam_shape, _exam_finite, _exam_variant, _exam_layout),
 )
 ONLINE = TemplateContract(
-    "online", frozenset({POSE33_V3.name}), frozenset({"v3"}), None, False, dtype=np.float32,
-    optional_meta=True, checks=(_online_layout, _online_shape),
+    "online",
+    frozenset({POSE33_V3.name}),
+    frozenset({"v3"}),
+    None,
+    False,
+    dtype=np.float32,
+    optional_meta=True,
+    checks=(_online_layout, _online_shape),
 )
 
 
@@ -196,8 +279,14 @@ def _read(path: Path, contract: TemplateContract) -> tuple[np.ndarray, Any, dict
         if contract.require_file and ("features" not in data or "meta" not in data):
             raise ValueError("缺少 features/meta")
         raw = data["features"]
-        features = raw if contract.dtype is None else np.asarray(raw, dtype=contract.dtype)
-        declared = data["meta"].item() if (not contract.optional_meta or "meta" in data) else None
+        features = (
+            raw if contract.dtype is None else np.asarray(raw, dtype=contract.dtype)
+        )
+        declared = (
+            data["meta"].item()
+            if (not contract.optional_meta or "meta" in data)
+            else None
+        )
     return features, declared, dict(declared or {})
 
 
@@ -210,14 +299,24 @@ def load_template(path: str | Path, contract: TemplateContract = COMPARE) -> Tem
         try:
             features, declared, raw_meta = _read(path, contract)
         except Exception as exc:
-            raise TemplateError("template_invalid", f"无法读取{contract.label} {path}：{exc}") from exc
+            raise TemplateError(
+                "template_invalid", f"无法读取{contract.label} {path}：{exc}"
+            ) from exc
     else:
         features, declared, raw_meta = _read(path, contract)
     for check in contract.checks:
         check(contract, path, features, raw_meta)
     meta = normalize_template_meta(dict(raw_meta))
     layout = runtime_feature_layout(raw_meta, meta)
-    return Template(path, features, declared, raw_meta, meta, layout, normalizer_version_from_layout(layout))
+    return Template(
+        path,
+        features,
+        declared,
+        raw_meta,
+        meta,
+        layout,
+        normalizer_version_from_layout(layout),
+    )
 
 
 class TemplateStore:

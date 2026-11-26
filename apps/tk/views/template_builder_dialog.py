@@ -11,11 +11,8 @@ from collections.abc import Callable
 from pathlib import Path
 from tkinter import (
     BooleanVar,
-    DoubleVar,
-    Scrollbar,
     StringVar,
     TclError,
-    Text,
     Tk,
     Toplevel,
     filedialog,
@@ -28,18 +25,21 @@ from core.evaluation import ACTIONS
 from core.services import TemplateCreateResult, sanitize_action_name
 
 from apps.tk.controllers.template_builder import (
+    COMPARE_BACKFILL_OPTIONS,
     TemplateBuilderController,
-    format_range_summary,
+    filter_backfill_results,
     format_sources_info,
-    min_duration_seconds,
-    min_step_seconds,
-    nudge_time,
 )
-from apps.tk.views.widgets import FramePreviewSlot, ProgressPanel
+from apps.tk.views.widgets import (
+    DualPreviewPanel,
+    ProgressPanel,
+    SyncRangePanel,
+    build_scrolled_text,
+    video_filetypes,
+)
 
 logger = logging.getLogger(__name__)
 
-_VIDEO_TYPES = [("视频文件", "*.mp4;*.avi;*.mov;*.mkv;*.m4v"), ("所有文件", "*.*")]
 _SINGLE_VIEW_OPTIONS = ("正面", "侧面", "不加视角后缀")
 _SINGLE_VIEW_MAP = {"正面": "front", "侧面": "side", "不加视角后缀": "single"}
 _PREVIEW_DEBOUNCE_MS = 30
@@ -56,33 +56,32 @@ class TemplateBuilderDialog:
         *,
         record_dir: Path | Callable[[], Path] | None = None,
         on_created: Callable[[list[TemplateCreateResult]], None] | None = None,
+        pool_mode: str = "none",
         controller_factory: Callable[..., TemplateBuilderController] | None = None,
     ) -> None:
         self._win = Toplevel(parent)
         self._win.title("从视频制作模板")
-        self._win.geometry("820x790")
-        self._win.minsize(720, 680)
+        self._win.geometry("820x810")
+        self._win.minsize(720, 700)
         self._win.transient(parent)
 
         self._record_dir = record_dir
         self._on_created = on_created
-        self._max_s = 0.0
-        self._suppress_scale = False
+        self._pool_mode = pool_mode
         self._preview_after_id: str | None = None
         self._lockable_widgets: list[Any] = []
+        self._active_run: tuple[Any, str, bool, str] | None = None
+        self._auto_add_forced_off = False
+        self._saved_auto_add = True
 
         self.single_view_label_var = StringVar(value="正面")
         self.source_info_var = StringVar(value=format_sources_info({}))
-        self.anchor_var = StringVar(value="start")
-        self.start_var = DoubleVar(value=0.0)
-        self.end_var = DoubleVar(value=0.0)
-        self.start_time_var = StringVar(value="0.00s")
-        self.end_time_var = StringVar(value="0.00s")
-        self.range_info_var = StringVar(value="已选区间：—")
         self.action_name_var = StringVar(value="")
         self.output_hint_var = StringVar(value="预计保存：请先选择视频与动作名称")
         self.preview_var = BooleanVar(value=False)
         self.auto_add_var = BooleanVar(value=True)
+        self.compare_backfill_var = StringVar(value=COMPARE_BACKFILL_OPTIONS[0])
+        self.auto_add_hint_var = StringVar(value="")
         self.status_var = StringVar(value="请选择双摄录制目录或单个视频文件")
         self.progress_text_var = StringVar(value="")
 
@@ -97,12 +96,15 @@ class TemplateBuilderDialog:
         self._build_preview_and_range(outer)
         self._build_options(outer)
         self._build_actions(outer)
-        self._sync_auto_add_visibility()
-        self._set_range_controls_enabled(False)
+        self._sync_auto_add_controls()
+        self._range.set_enabled(False)
         self._win.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def is_open(self) -> bool:
         return bool(self._win.winfo_exists())
+
+    def is_busy(self) -> bool:
+        return self.controller.busy
 
     def focus(self) -> None:
         try:
@@ -113,11 +115,26 @@ class TemplateBuilderDialog:
             logger.debug("聚焦制作模板窗口失败：%s", exc)
 
     def set_on_created(
-        self, on_created: Callable[[list[TemplateCreateResult]], None] | None
+        self,
+        on_created: Callable[[list[TemplateCreateResult]], None] | None,
+        *,
+        pool_mode: str = "none",
     ) -> None:
-        """复用已打开弹窗时更新回填回调与勾选框可见性。"""
+        """复用已打开弹窗时更新回填回调、入池模式与选项可见性。"""
         self._on_created = on_created
-        self._sync_auto_add_visibility()
+        self._pool_mode = pool_mode
+        self._sync_auto_add_controls()
+
+    def load_directory(self, directory: str | Path) -> None:
+        """加载双摄录制目录并刷新同步区间、预览与入池选项。"""
+        self.controller.load_directory(directory)
+        self._on_sources_loaded()
+
+    def load_single_file(self, path: str | Path, view: str | None = None) -> None:
+        """加载单视频文件并刷新同步区间、预览与入池选项。"""
+        chosen = self._selected_single_view() if view is None else view
+        self.controller.load_single_file(path, chosen)
+        self._on_sources_loaded()
 
     def close(self) -> None:
         """外部（主窗关闭）或窗口关闭协议触发：停任务、消定时器、关视频句柄并销毁窗体。"""
@@ -162,76 +179,27 @@ class TemplateBuilderDialog:
     def _build_preview_and_range(self, outer: ttk.Frame) -> None:
         box = ttk.Labelframe(outer, text="② 同步区间与画面预览", padding=8)
         box.pack(fill="x", pady=(10, 0))
-
-        preview_row = ttk.Frame(box)
-        preview_row.pack(fill="x")
-        preview_row.columnconfigure(0, weight=1)
-        preview_row.columnconfigure(1, weight=1)
-        self._slots = {
-            "front": FramePreviewSlot(preview_row, "正面画面", 0),
-            "side": FramePreviewSlot(preview_row, "侧面画面", 1),
-        }
-
-        anchor_row = ttk.Frame(box)
-        anchor_row.pack(fill="x", pady=(8, 0))
-        ttk.Label(anchor_row, text="预览跟随：").pack(side="left")
-        self._range_widgets: list[Any] = []
-        for val, text in (("start", "起始帧"), ("end", "结束帧")):
-            rb = ttk.Radiobutton(
-                anchor_row,
-                text=text,
-                value=val,
-                variable=self.anchor_var,
-                command=self._render_preview,
-            )
-            rb.pack(side="left", padx=(4, 12) if val == "start" else (0, 0))
-            self._range_widgets.append(rb)
-
-        self.start_scale = self._build_range_row(
-            box, "起始位置：", self.start_var, self.start_time_var, "start"
+        self._preview_panel = DualPreviewPanel(box)
+        self._slots = self._preview_panel.slots
+        self._range = SyncRangePanel(
+            box,
+            deltas=_NUDGE_DELTAS,
+            get_metas=lambda: self.controller.metas,
+            on_preview=lambda debounced: (
+                self._schedule_preview() if debounced else self._render_preview()
+            ),
         )
-        self.end_scale = self._build_range_row(
-            box, "结束位置：", self.end_var, self.end_time_var, "end"
-        )
-        ttk.Label(box, textvariable=self.range_info_var, foreground="#222222").pack(
-            anchor="w", pady=(6, 0)
-        )
+        self.anchor_var = self._range.anchor_var
+        self.start_var = self._range.start_var
+        self.end_var = self._range.end_var
+        self.start_time_var = self._range.start_time_var
+        self.end_time_var = self._range.end_time_var
+        self.range_info_var = self._range.range_info_var
+        self.start_scale = self._range.start_scale
+        self.end_scale = self._range.end_scale
+        self.nudge_buttons = self._range.nudge_buttons
+        self._range_widgets = self._range.widgets
         self._lockable_widgets.extend(self._range_widgets)
-
-    def _build_range_row(
-        self,
-        parent: ttk.Frame,
-        label: str,
-        var: DoubleVar,
-        time_var: StringVar,
-        which: str,
-    ) -> ttk.Scale:
-        row = ttk.Frame(parent)
-        row.pack(fill="x", pady=(6, 0))
-        ttk.Label(row, text=label, width=10).pack(side="left")
-        scale = ttk.Scale(
-            row,
-            from_=0.0,
-            to=1.0,
-            orient="horizontal",
-            variable=var,
-            command=lambda val, w=which: self._on_slide(w, val),
-        )
-        scale.pack(side="left", fill="x", expand=True, padx=(4, 8))
-        ttk.Label(row, textvariable=time_var, width=8, anchor="e").pack(
-            side="left", padx=(0, 6)
-        )
-        self._range_widgets.append(scale)
-        for delta in _NUDGE_DELTAS:
-            btn = ttk.Button(
-                row,
-                text=f"{delta:+d}帧",
-                width=5,
-                command=lambda w=which, d=delta: self._nudge(w, d),
-            )
-            btn.pack(side="left", padx=(2, 0))
-            self._range_widgets.append(btn)
-        return scale
 
     def _build_options(self, outer: ttk.Frame) -> None:
         box = ttk.Labelframe(outer, text="③ 命名与生成选项", padding=8)
@@ -268,8 +236,30 @@ class TemplateBuilderDialog:
             opt_row, text="生成后自动加入模板池", variable=self.auto_add_var
         )
         self.auto_add_check.pack(side="left", padx=(16, 0))
+
+        self.backfill_row = ttk.Frame(box)
+        self.backfill_row.pack(fill="x", pady=(4, 0))
+        self.compare_backfill_frame = ttk.Frame(self.backfill_row)
+        ttk.Label(self.compare_backfill_frame, text="入比对池视角：").pack(side="left")
+        self.compare_backfill_combo = ttk.Combobox(
+            self.compare_backfill_frame,
+            textvariable=self.compare_backfill_var,
+            values=list(COMPARE_BACKFILL_OPTIONS),
+            state="readonly",
+            width=12,
+        )
+        self.compare_backfill_combo.pack(side="left")
+        self.auto_add_hint_label = ttk.Label(
+            self.backfill_row, textvariable=self.auto_add_hint_var, foreground="#b35900"
+        )
+        self.auto_add_hint_label.pack(side="left")
         self._lockable_widgets.extend(
-            [self.action_combo, self.preview_check, self.auto_add_check]
+            [
+                self.action_combo,
+                self.preview_check,
+                self.auto_add_check,
+                self.compare_backfill_combo,
+            ]
         )
 
     def _build_actions(self, outer: ttk.Frame) -> None:
@@ -293,13 +283,7 @@ class TemplateBuilderDialog:
         self.progress_bar = self._progress.bar
 
         ttk.Label(box, textvariable=self.status_var).pack(anchor="w", pady=(6, 0))
-        txt_box = ttk.Frame(box)
-        txt_box.pack(fill="both", expand=True, pady=(4, 0))
-        self.result_text = Text(txt_box, height=5, wrap="word")
-        self.result_text.pack(side="left", fill="both", expand=True)
-        sb = Scrollbar(txt_box, command=self.result_text.yview)
-        sb.pack(side="right", fill="y")
-        self.result_text.configure(yscrollcommand=sb.set)
+        self.result_text = build_scrolled_text(box, height=5, wrap="word")
 
     # ------------------------------------------------------------------ 交互
     def _initial_dir(self) -> str | None:
@@ -339,7 +323,7 @@ class TemplateBuilderDialog:
         self._load_with(
             lambda: filedialog.askopenfilename(
                 title="选择视频文件",
-                filetypes=_VIDEO_TYPES,
+                filetypes=video_filetypes(),
                 initialdir=self._initial_dir(),
                 parent=self._win,
             ),
@@ -354,18 +338,7 @@ class TemplateBuilderDialog:
         self._render_preview()
 
     def _on_sources_loaded(self) -> None:
-        metas = self.controller.metas
-        self._max_s = max(0.0, min_duration_seconds(metas))
-        self._suppress_scale = True
-        try:
-            upper = max(self._max_s, 1e-3)
-            self.start_scale.configure(from_=0.0, to=upper)
-            self.end_scale.configure(from_=0.0, to=upper)
-            self.start_var.set(0.0)
-            self.end_var.set(self._max_s)
-        finally:
-            self._suppress_scale = False
-        self._set_range_controls_enabled(bool(metas))
+        self._range.reset_for_metas(self.controller.metas)
         self._sync_source_ui()
         self._render_preview()
         self.set_status("视频已加载，请拖动滑块确认起止区间并填写动作名称")
@@ -373,83 +346,10 @@ class TemplateBuilderDialog:
     def _sync_source_ui(self) -> None:
         metas = self.controller.metas
         self.source_info_var.set(format_sources_info(metas))
-        self._sync_slot_layout(metas)
-        self._sync_range_labels()
+        self._preview_panel.sync_layout(metas)
+        self._range.sync_labels()
+        self._sync_auto_add_controls()
         self._refresh_output_hint()
-
-    def _sync_slot_layout(self, metas: dict[str, Any]) -> None:
-        if not metas:
-            for slot in self._slots.values():
-                slot.frame.grid()
-                slot.clear("未加载")
-            return
-        if "front" in metas and "side" in metas:
-            self._slots["front"].frame.configure(text="正面画面")
-            self._slots["front"].frame.grid()
-            self._slots["side"].frame.configure(text="侧面画面")
-            self._slots["side"].frame.grid()
-            return
-        active = next(iter(metas))
-        hide_key, show_key = (
-            ("front", "side") if active == "side" else ("side", "front")
-        )
-        title = {"side": "侧面画面", "front": "正面画面"}.get(active, "视频画面")
-        self._slots[hide_key].frame.grid_remove()
-        self._slots[show_key].frame.configure(text=title)
-        self._slots[show_key].frame.grid()
-
-    def _on_slide(self, which: str, value: str) -> None:
-        if self._suppress_scale or not self.controller.metas:
-            return
-        step = min_step_seconds(self.controller.metas)
-        raw = float(value)
-        self._suppress_scale = True
-        try:
-            if which == "start":
-                val = min(max(0.0, raw), max(0.0, self.end_var.get() - step))
-                self.start_var.set(val)
-            else:
-                val = max(
-                    min(self._max_s, raw), min(self._max_s, self.start_var.get() + step)
-                )
-                self.end_var.set(val)
-        finally:
-            self._suppress_scale = False
-        self.anchor_var.set(which)
-        self._sync_range_labels()
-        self._schedule_preview()
-
-    def _nudge(self, which: str, delta_frames: int) -> None:
-        metas = self.controller.metas
-        if not metas:
-            return
-        fps = next(iter(metas.values())).fps
-        step = min_step_seconds(metas)
-        self._suppress_scale = True
-        try:
-            if which == "start":
-                upper = max(0.0, self.end_var.get() - step)
-                self.start_var.set(
-                    nudge_time(self.start_var.get(), delta_frames, fps, 0.0, upper)
-                )
-            else:
-                lower = min(self._max_s, self.start_var.get() + step)
-                self.end_var.set(
-                    nudge_time(
-                        self.end_var.get(), delta_frames, fps, lower, self._max_s
-                    )
-                )
-            self.anchor_var.set(which)
-        finally:
-            self._suppress_scale = False
-        self._sync_range_labels()
-        self._render_preview()
-
-    def _sync_range_labels(self) -> None:
-        s, e = self.start_var.get(), self.end_var.get()
-        self.start_time_var.set(f"{s:.2f}s")
-        self.end_time_var.set(f"{e:.2f}s")
-        self.range_info_var.set(format_range_summary(self.controller.metas, s, e))
 
     def _schedule_preview(self) -> None:
         self._cancel_preview_debounce()
@@ -470,17 +370,8 @@ class TemplateBuilderDialog:
         metas = self.controller.metas
         if not metas:
             return
-        t_s = (
-            self.start_var.get()
-            if self.anchor_var.get() == "start"
-            else self.end_var.get()
-        )
-        for view, (idx, bgr) in self.controller.read_preview_frames(t_s).items():
-            slot_key = "side" if view == "side" else "front"
-            fps = float(metas[view].fps) or 30.0
-            self._slots[slot_key].show_frame(
-                f"帧 {idx}（{idx / fps:.2f}s）", bgr, master=self._win
-            )
+        frames = self.controller.read_preview_frames(self._range.active_time())
+        self._preview_panel.show_frames(frames, metas, master=self._win)
 
     def _refresh_output_hint(self) -> None:
         if not self.controller.metas:
@@ -509,16 +400,35 @@ class TemplateBuilderDialog:
         self.output_hint_var.set(text)
         self.output_hint_label.configure(foreground=color)
 
-    def _sync_auto_add_visibility(self) -> None:
-        if self._on_created is not None:
-            self.auto_add_check.pack(side="left", padx=(16, 0))
-        else:
+    def _sync_auto_add_controls(self) -> None:
+        metas = self.controller.metas
+        is_dual_dir = "front" in metas and "side" in metas
+        single_no_view = self.controller.single_mode and "single" in metas
+        if self._on_created is None or self._pool_mode == "none":
             self.auto_add_check.pack_forget()
-
-    def _set_range_controls_enabled(self, enabled: bool) -> None:
-        state = "normal" if enabled else "disabled"
-        for widget in self._range_widgets:
-            widget.configure(state=state)
+            self.compare_backfill_frame.pack_forget()
+            self.auto_add_hint_var.set("")
+            return
+        self.auto_add_check.pack(side="left", padx=(16, 0))
+        if self._pool_mode == "dual" and single_no_view:
+            if not self._auto_add_forced_off:
+                self._saved_auto_add = bool(self.auto_add_var.get())
+                self._auto_add_forced_off = True
+            self.auto_add_var.set(False)
+            self.auto_add_check.configure(state="disabled")
+            self.auto_add_hint_var.set("（主界面仅支持正面/侧面入池，请切换视角）")
+        else:
+            if self._auto_add_forced_off:
+                self.auto_add_var.set(self._saved_auto_add)
+                self._auto_add_forced_off = False
+            self.auto_add_check.configure(
+                state="disabled" if self.controller.busy else "normal"
+            )
+            self.auto_add_hint_var.set("")
+        if self._pool_mode == "single" and is_dual_dir:
+            self.compare_backfill_frame.pack(side="left")
+        else:
+            self.compare_backfill_frame.pack_forget()
 
     def start_generate(self) -> None:
         if self.controller.busy:
@@ -542,6 +452,12 @@ class TemplateBuilderDialog:
             ):
                 return
         self._set_result("")
+        self._active_run = (
+            self._on_created,
+            self._pool_mode,
+            bool(self.auto_add_var.get()),
+            self.compare_backfill_var.get(),
+        )
         self.controller.start_generate(
             action_name=action_name,
             start_s=self.start_var.get(),
@@ -563,7 +479,10 @@ class TemplateBuilderDialog:
         self.generate_btn.configure(state=state)
         self.stop_btn.configure(state="normal" if running else "disabled")
         for widget in self._lockable_widgets:
-            if widget is self.single_view_combo and not running:
+            if (
+                widget in (self.single_view_combo, self.compare_backfill_combo)
+                and not running
+            ):
                 widget.configure(state="readonly")
             elif widget in self._range_widgets and not running:
                 widget.configure(
@@ -573,6 +492,7 @@ class TemplateBuilderDialog:
                 widget.configure(state=state)
         if not running:
             self._progress.hide()
+            self._sync_auto_add_controls()
 
     def set_status(self, text: str) -> None:
         self.status_var.set(text)
@@ -584,14 +504,28 @@ class TemplateBuilderDialog:
         self.status_var.set("模板生成完成")
         self._set_result(summary)
         self._refresh_output_hint()
-        if self._on_created is not None and self.auto_add_var.get():
-            self._on_created(results)
+        snap = self._active_run
+        self._active_run = None
+        cb, pool_mode, auto_add, choice = snap or (
+            self._on_created,
+            self._pool_mode,
+            bool(self.auto_add_var.get()),
+            self.compare_backfill_var.get(),
+        )
+        if cb is not None and auto_add:
+            picked = filter_backfill_results(
+                results, pool_mode=pool_mode, backfill_choice=choice
+            )
+            if picked:
+                cb(picked)
 
     def on_cancelled(self) -> None:
+        self._active_run = None
         self.status_var.set("已取消")
         self._set_result("已取消模板生成。")
 
     def on_failed(self, message: str) -> None:
+        self._active_run = None
         self.status_var.set("生成失败")
         self._set_result(message)
         messagebox.showerror("模板生成失败", message, parent=self._win)

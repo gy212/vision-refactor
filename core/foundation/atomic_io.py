@@ -5,6 +5,7 @@ Windows 上目标被其它进程短暂占用（杀毒、索引、Excel 预览）
 ``PermissionError``，这里有界重试；仍失败时先把旧文件挪成 ``.bak`` 再复制，复制失败就还原 ``.bak``。
 旧文件挪不开时不就地覆盖，原样保留并把异常抛给调用方。
 """
+
 from __future__ import annotations
 
 import json
@@ -12,7 +13,7 @@ import os
 import shutil
 import time
 import uuid
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -120,6 +121,71 @@ def atomic_target(path: Path | str, *, durable: bool = True) -> Iterator[Path]:
         replace_file(tmp, path, durable=durable)
     finally:
         _discard(tmp)
+
+
+def _rollback_replaced(committed: Sequence[tuple[Path, Path | None]]) -> None:
+    for target, bak in reversed(committed):
+        if bak is None:
+            _discard(target)
+        elif bak.exists():
+            try:
+                os.replace(bak, target)
+            except OSError:
+                pass  # 还原失败时保留 .bak 以便排查
+
+
+@contextmanager
+def atomic_replace_many(
+    targets: Sequence[Path | str], *, durable: bool = True
+) -> Iterator[list[Path]]:
+    """多文件事务性原子替换：全部写入临时路径并校验后再统一提交，任一失败保留原文件并回滚已替换目标。"""
+    target_paths = [Path(t) for t in targets]
+    if not target_paths:
+        yield []
+        return
+    resolved_keys = [str(t.resolve(strict=False)) for t in target_paths]
+    if len(set(resolved_keys)) != len(resolved_keys):
+        raise ValueError(f"atomic_replace_many 不允许重复目标路径：{target_paths}")
+
+    tmps: list[Path] = []
+    for t in target_paths:
+        if t.is_dir():
+            raise IsADirectoryError(f"替换目标是目录：{t}")
+        t.parent.mkdir(parents=True, exist_ok=True)
+        tmps.append(temporary_sibling(t))
+
+    committed: list[tuple[Path, Path | None]] = []
+    try:
+        yield tmps
+        for tmp, target in zip(tmps, target_paths):
+            if not tmp.is_file():
+                raise FileNotFoundError(f"临时文件未写出：{tmp}")
+            if target.is_dir():
+                raise IsADirectoryError(f"替换目标是目录：{target}")
+            if durable:
+                _fsync_file(tmp)
+
+        try:
+            for tmp, target in zip(tmps, target_paths):
+                bak: Path | None = None
+                if target.exists():
+                    bak = target.with_name(f"_bak_{uuid.uuid4().hex}.bak")
+                    os.replace(target, bak)
+                    committed.append((target, bak))
+                    os.replace(tmp, target)
+                else:
+                    os.replace(tmp, target)
+                    committed.append((target, None))
+        except BaseException:
+            _rollback_replaced(committed)
+            raise
+
+        for _target, bak in committed:
+            if bak is not None:
+                _discard(bak)
+    finally:
+        for tmp in tmps:
+            _discard(tmp)
 
 
 def atomic_write_bytes(path: Path | str, data: bytes) -> None:

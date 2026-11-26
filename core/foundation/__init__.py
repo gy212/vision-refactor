@@ -2,6 +2,7 @@
 
 from core.foundation import diag, prefs
 from core.foundation.atomic_io import (
+    atomic_replace_many,
     atomic_target,
     atomic_write_bytes,
     atomic_write_json,
@@ -95,6 +96,7 @@ __all__ = [
     "TaskHandle",
     "angle_deg",
     "as_stopped",
+    "atomic_replace_many",
     "atomic_target",
     "atomic_write_bytes",
     "atomic_write_json",

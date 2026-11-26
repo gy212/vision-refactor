@@ -32,9 +32,13 @@ from core.evaluation.scoring.kick_quality import score_kick_quality
 from core.evaluation.step_reps import EXPECTED_REPETITIONS, step_combo_windows
 from core.evaluation.templates import (
     EXAM_POOL,
+    VIEW_FRONT_SUFFIX,
+    VIEW_SIDE_SUFFIX,
     TemplateError,
     TemplateStore,
+    base_action_name,
     load_template,
+    split_view_suffix,
 )
 from core.evaluation.view_weights import normalized_pair
 from core.pose.extract import pose_cache
@@ -45,20 +49,14 @@ TEMPLATE_LAYOUT = "pose33_v3"
 
 # 踢腿几何质量评分：动作名（模板 stem）→ kick_quality 类型；列出的动作并入几何分。
 # 低鞭腿不列入——实测其低/高鞭高度差不稳定，几何常误判，直接用纯 DTW 分。
-KICK_KINDS = {
-    "高鞭腿": "high_whip",
-    "侧踹腿": "kick_up",
-    "正蹬腿": "kick_up",
-}
+KICK_KINDS = {"高鞭腿": "high_whip", "侧踹腿": "kick_up", "正蹬腿": "kick_up"}
 # 踢腿动作子分 = 几何高度分 × w + DTW 相似度分 × (1-w)。校准旋钮。
 KICK_GEOM_WEIGHT = 0.5
 
 # DTW 分压缩映射（opt-in）：动作名 → (下限, 上限)。某些动作 DTW 定位不可靠（如背后七颠：低位移提踵，
 # 归一化特征抹掉高度，开放边界退化匹配极短片段，虚高分与动作质量无关）。这类动作考察不严「是人就过」，
 # 把 DTW 分线性压到高分窄区间：人人及格偏上，保留同一条视频恒定、可复现的微弱区分度。未登记动作不受影响。
-SCORE_SQUEEZE: dict[str, tuple[float, float]] = {
-    "背后七颠": (0.75, 0.90),
-}
+SCORE_SQUEEZE: dict[str, tuple[float, float]] = {"背后七颠": (0.75, 0.90)}
 
 # 同一动作正侧两视角按权重合并成一个子分（opt-in，八段锦用）。key = 合并后动作名；value 自动归一。
 # 触发条件：正池有 "<key>_正面"、侧池有 "<key>_侧面"，两者都在才合并；散打模板不在表内，行为不变。
@@ -66,8 +64,6 @@ VIEW_WEIGHTS: dict[str, dict[str, float]] = {
     "两手攀足": {"side": 0.75, "front": 0.25},  # 实测正面看不清前俯深度，侧面为主
     "攒拳怒目": {"side": 0.50, "front": 0.50},  # 正侧分接近，合并去重双计数
 }
-VIEW_FRONT_SUFFIX = "_正面"
-VIEW_SIDE_SUFFIX = "_侧面"
 
 EXAM_STANCE = DEFAULT_STANCE  # 考试固定左式（D-3）
 # 规则检查取动作匹配窗口前后各放宽的时长：相位检测要看到动作前后的实战式。
@@ -129,14 +125,10 @@ def merge_view_weighted_actions(action_details: list[dict]) -> list[dict]:
         if idx in consumed:
             continue
         name = str(d.get("name") or "")
-        base = None
-        if name.endswith(VIEW_FRONT_SUFFIX):
-            base = name[: -len(VIEW_FRONT_SUFFIX)]
-        elif name.endswith(VIEW_SIDE_SUFFIX):
-            base = name[: -len(VIEW_SIDE_SUFFIX)]
-        weights = VIEW_WEIGHTS.get(base) if base else None
-        front_d = by_name.get(f"{base}{VIEW_FRONT_SUFFIX}") if base else None
-        side_d = by_name.get(f"{base}{VIEW_SIDE_SUFFIX}") if base else None
+        base, view = split_view_suffix(name)
+        weights = VIEW_WEIGHTS.get(base) if (base and view is not None) else None
+        front_d = by_name.get(f"{base}{VIEW_FRONT_SUFFIX}") if weights else None
+        side_d = by_name.get(f"{base}{VIEW_SIDE_SUFFIX}") if weights else None
         pair = normalized_pair(weights) if weights is not None else None
         if pair is None or front_d is None or side_d is None:
             merged.append(d)
@@ -159,15 +151,10 @@ def merge_view_weighted_actions(action_details: list[dict]) -> list[dict]:
             }
         )
         consumed.add(idx)
-        for j, o in enumerate(action_details):
-            if o is front_d or o is side_d:
-                consumed.add(j)
+        consumed.update(
+            j for j, o in enumerate(action_details) if o is front_d or o is side_d
+        )
     return merged
-
-
-def base_action_name(name: str) -> str:
-    """剥离模板文件名末尾的 ``_正面``/``_侧面`` 视角后缀，得到动作基础名。"""
-    return str(name).removesuffix(VIEW_FRONT_SUFFIX).removesuffix(VIEW_SIDE_SUFFIX)
 
 
 def action_score(name: str, dtw_score: float, geom_score: float | None) -> float:

@@ -10,7 +10,7 @@ from threading import Event
 
 import numpy as np
 
-from core.foundation.atomic_io import atomic_target
+from core.foundation.atomic_io import atomic_replace_many, atomic_target
 from core.foundation.paths import templates_dir
 from core.foundation.signal import find_active_range, motion_energy
 from core.foundation.tasks import Cancelled, from_stopped
@@ -33,6 +33,7 @@ from core.services.template_quality import (
     discover_recording_videos,
     planned_template_paths,
     sanitize_action_name,
+    validate_frame_bounds,
 )
 
 _DEFAULT_EXTRACT_FEATURES = extract_features
@@ -253,14 +254,7 @@ def _resolve_crop_range(
             return analysis.start_frame, analysis.end_frame, analysis, "auto"
         return 0, n_frames - 1, analysis, "full"
 
-    start_i = 0 if start is None else int(start)
-    end_i = (n_frames - 1) if end is None else int(end)
-    if start_i < 0 or end_i < 0 or start_i >= n_frames or end_i >= n_frames:
-        raise ValueError(
-            f"起止帧越界：{start_i}..{end_i}（总帧数 {n_frames}，有效范围 0..{n_frames - 1}）"
-        )
-    if start_i > end_i:
-        raise ValueError(f"起始帧 {start_i} 不能大于结束帧 {end_i}")
+    start_i, end_i = validate_frame_bounds(n_frames, start, end)
     return start_i, end_i, analysis, "manual"
 
 
@@ -391,15 +385,19 @@ def create_template_from_video(
         progress_cb=progress_cb,
         stop_evt=stop_evt,
     )
+    if stop_evt is not None and stop_evt.is_set():
+        raise InterruptedError("模板生成已取消")
     if not overwrite and resolved_out.exists():
         raise FileExistsError(f"模板文件已存在：{resolved_out}")
     _write_template_npz(resolved_out, seg_feats, meta)
 
-    if preview and progress_cb is not None:
-        progress_cb("导出模板预览", 0, 1)
     if preview:
+        if stop_evt is not None and stop_evt.is_set():
+            raise InterruptedError("模板生成已取消")
+        if progress_cb is not None:
+            progress_cb("导出模板预览", 0, 1)
         preview_path = resolved_out.with_suffix(".preview.mp4")
-        export_match_preview(
+        _actual_preview = export_match_preview(
             video_path,
             out_path=preview_path,
             start_frame=start_i,
@@ -423,17 +421,22 @@ def _commit_staged_pair(
     progress_cb: ProgressCb | None,
     stop_evt: Event | None,
 ) -> list[TemplateCreateResult]:
-    written_paths: list[Path] = []
-    try:
-        for _view, _vpath, target, seg_feats, meta, _q, _s, _e, _fps in staged:
-            if not overwrite and target.exists():
-                raise FileExistsError(f"模板文件已存在：{target}")
-            _write_template_npz(target, seg_feats, meta)
-            written_paths.append(target)
-    except BaseException:
-        for created in written_paths:
-            created.unlink(missing_ok=True)
-        raise
+    if stop_evt is not None and stop_evt.is_set():
+        raise InterruptedError("模板生成已取消")
+    for _view, _vpath, target, *_rest in staged:
+        if not overwrite and target.exists():
+            raise FileExistsError(f"模板文件已存在：{target}")
+
+    targets = [item[2] for item in staged]
+    with atomic_replace_many(targets) as tmp_paths:
+        for item, tmp_path in zip(staged, tmp_paths):
+            if stop_evt is not None and stop_evt.is_set():
+                raise InterruptedError("模板生成已取消")
+            _view, _vpath, _target, seg_feats, meta, _q, _s, _e, _fps = item
+            with open(tmp_path, "wb") as fh:
+                np.savez_compressed(
+                    fh, features=seg_feats, meta=np.array(meta, dtype=object)
+                )
 
     results: list[TemplateCreateResult] = []
     for (
@@ -449,6 +452,8 @@ def _commit_staged_pair(
     ) in staged:
         preview_path: Path | None = None
         if preview:
+            if stop_evt is not None and stop_evt.is_set():
+                raise InterruptedError("模板生成已取消")
             if progress_cb is not None:
                 progress_cb("导出模板预览", 0, 1)
             preview_path = export_match_preview(

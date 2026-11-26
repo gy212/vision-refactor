@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import threading
-import tkinter as tk
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -181,6 +180,7 @@ def test_settings_download_reports_failures_and_reenables_buttons():
 
 
 def test_dialogs_build_and_close_on_real_tk(monkeypatch):
+    tk = pytest.importorskip("tkinter")
     from apps.tk import UiDispatcher
     from apps.tk.views import CompareDialog, SettingsDialog
 

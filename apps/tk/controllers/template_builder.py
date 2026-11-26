@@ -27,6 +27,12 @@ from core.services import (
 
 POSE_VARIANT = "heavy"
 VIEW_LABELS = {"front": "正面", "side": "侧面", "single": "单视角"}
+COMPARE_BACKFILL_OPTIONS = ("仅加入正面", "仅加入侧面", "仅保存不入池")
+_COMPARE_BACKFILL_VIEW = {
+    "仅加入正面": "front",
+    "仅加入侧面": "side",
+    "仅保存不入池": None,
+}
 
 logger = logging.getLogger(__name__)
 Post = Callable[[Callable[[], Any]], Any]
@@ -160,6 +166,27 @@ def format_quality_error(exc: TemplateQualityError) -> str:
     if exc.report is None:
         return str(exc)
     return f"{exc}\n体检详情：{format_quality_report(exc.report)}"
+
+
+def filter_backfill_results(
+    results: Sequence[TemplateCreateResult],
+    *,
+    pool_mode: str,
+    backfill_choice: str = COMPARE_BACKFILL_OPTIONS[0],
+) -> list[TemplateCreateResult]:
+    """按模板池模式过滤生成后需要自动回填的模板列表（不影响磁盘落盘）。"""
+    if pool_mode == "none":
+        return []
+    if pool_mode == "dual":
+        return [res for res in results if res.view in ("front", "side")]
+    if pool_mode == "single":
+        if len(results) <= 1:
+            return list(results)
+        target_view = _COMPARE_BACKFILL_VIEW.get(backfill_choice, "front")
+        if target_view is None:
+            return []
+        return [res for res in results if res.view == target_view]
+    return list(results)
 
 
 class TemplateBuilderController:
@@ -312,7 +339,7 @@ class TemplateBuilderController:
         if not self._metas:
             raise ValueError("请先选择视频来源。")
         clean_name = sanitize_action_name(action_name)
-        ranges = frame_ranges_for_times(self._metas, start_s, end_s)
+        frame_ranges_for_times(self._metas, start_s, end_s)
         videos = {view: meta.path for view, meta in self._metas.items()}
 
         self._stop_evt.clear()
@@ -325,7 +352,8 @@ class TemplateBuilderController:
                 results = self._create_pair(
                     videos,
                     action_name=clean_name,
-                    frame_ranges=ranges,
+                    start_s=float(start_s),
+                    end_s=float(end_s),
                     out_dir=self._out_dir,
                     pose_variant=POSE_VARIANT,
                     preview=preview,

@@ -116,13 +116,23 @@ def _make_pose33_v3_template(args) -> None:
         raise RuntimeError(f"Cannot open video: {video_path}") from None
 
     meta = load_template(saved_path, COMPARE).raw_meta
-    start = int(meta.get("start_frame") or 0)
-    end = int(meta.get("end_frame") or start)
-    auto_start = int(meta.get("auto_start_frame") or start)
-    auto_end = int(meta.get("auto_end_frame") or end)
-    fps = float(meta.get("fps") or 30.0)
+    raw_start = meta.get("start_frame")
+    raw_end = meta.get("end_frame")
+    raw_auto_start = meta.get("auto_start_frame")
+    raw_auto_end = meta.get("auto_end_frame")
+    raw_fps = meta.get("fps")
+    start = int(raw_start) if raw_start is not None else 0
+    end = int(raw_end) if raw_end is not None else start
+    auto_start = int(raw_auto_start) if raw_auto_start is not None else start
+    auto_end = int(raw_auto_end) if raw_auto_end is not None else end
+    fps = float(raw_fps) if raw_fps is not None and float(raw_fps) > 0 else 30.0
     print(f"Saved template: {saved_path}")
     print(f"Segment frames: {start}..{end} (len={end - start + 1}, fps={fps:.3f})")
     print(f"Auto segment:   {auto_start}..{auto_end}")
     if args.preview:
-        print(f"Saved preview: {saved_path.with_suffix('.preview.mp4')}")
+        candidates = (
+            saved_path.with_suffix(".preview.mp4"),
+            saved_path.with_suffix(".preview.avi"),
+        )
+        actual_preview = next((p for p in candidates if p.is_file()), candidates[0])
+        print(f"Saved preview: {actual_preview}")

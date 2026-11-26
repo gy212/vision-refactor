@@ -9,18 +9,29 @@ from pathlib import Path
 
 import numpy as np
 
+from core.evaluation.templates import VIEW_SUFFIXES, split_view_suffix
 from core.foundation.paths import templates_dir
 from core.foundation.signal import motion_energy
+from core.media.segment_layout import VIDEO_SUFFIXES, SegmentLayout
 from core.pose.validity import DEFAULT_VALID_CONF_THR, derive_valid_mask
 
 MIN_TEMPLATE_FRAMES = 8
 MIN_DETECTED_RATIO = 0.6
 MIN_CORE_VALID_RATIO = 0.6
-VIEW_SUFFIXES: dict[str, str] = {"front": "_正面", "side": "_侧面", "single": ""}
 
 _CORE_INDICES = (11, 12, 23, 24)
 _LIMB_INDICES = (13, 14, 15, 16, 25, 26, 27, 28)
 _ILLEGAL_NAME_CHARS = set('/\\:*?"<>|')
+_WINDOWS_RESERVED_NAMES = frozenset(
+    {
+        "CON",
+        "PRN",
+        "AUX",
+        "NUL",
+        *(f"COM{i}" for i in range(1, 10)),
+        *(f"LPT{i}" for i in range(1, 10)),
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -65,40 +76,61 @@ class TemplateQualityError(ValueError):
         self.report: TemplateQualityReport | None = report
 
 
-def _first_existing(directory: Path, names: tuple[str, ...]) -> Path | None:
-    for name in names:
-        candidate = directory / name
-        if candidate.is_file():
-            return candidate
-    return None
-
-
 def discover_recording_videos(path: str | Path) -> RecordingPair:
-    """从录制片段目录（查找 front/side .mp4/.avi）或单视频文件解析待建库视频。"""
+    """从录制片段目录（委托 ``SegmentLayout.resolve_videos``）或单视频文件解析待建库视频。"""
     p = Path(path)
     if p.is_dir():
-        front = _first_existing(p, ("front.mp4", "front.avi"))
-        side = _first_existing(p, ("side.mp4", "side.avi"))
+        front, side = SegmentLayout.resolve_videos(p)
         if front is None and side is None:
-            raise ValueError(f"录制目录下未找到 front.mp4/.avi 或 side.mp4/.avi：{p}")
+            exts = ", ".join(sorted(VIDEO_SUFFIXES))
+            raise ValueError(
+                f"录制目录下未找到 front.mp4/.avi 或 side.mp4/.avi（支持 {exts}）：{p}"
+            )
         return RecordingPair(front=front, side=side)
     if p.is_file():
+        if p.suffix.lower() not in VIDEO_SUFFIXES:
+            exts = ", ".join(sorted(VIDEO_SUFFIXES))
+            raise ValueError(f"不支持的视频文件类型：{p.name}（仅支持 {exts}）")
         return RecordingPair(front=p, side=None)
     raise FileNotFoundError(f"视频文件或目录不存在：{p}")
 
 
 def sanitize_action_name(action_name: str) -> str:
-    """校验并规范化动作名，拒绝空白及非法路径字符。"""
+    """校验并规范化动作名，拒绝空白、非法路径字符、Windows 保留设备名及自带视角后缀。"""
     name = str(action_name or "").strip()
     if not name:
         raise ValueError("动作名称不能为空")
     if (
         name in {".", ".."}
         or ".." in name
+        or name.endswith(".")
         or any(ch in _ILLEGAL_NAME_CHARS or ord(ch) < 32 for ch in name)
     ):
         raise ValueError(f"动作名称包含非法路径字符：{action_name!r}")
+    if name.split(".", 1)[0].upper() in _WINDOWS_RESERVED_NAMES:
+        raise ValueError(f"动作名称不能使用系统保留设备名：{action_name!r}")
+    _base, view_suffix = split_view_suffix(name)
+    if view_suffix is not None:
+        raise ValueError(f"动作名称无需自带视角后缀（_正面/_侧面）：{action_name!r}")
     return name
+
+
+def validate_frame_bounds(
+    n_frames: int, start: int | None, end: int | None
+) -> tuple[int, int]:
+    """校验并解析闭区间起止帧 ``(start_i, end_i)``，越界或 ``start > end`` 时抛 ``ValueError``。"""
+    total = int(n_frames)
+    if total <= 0:
+        raise ValueError(f"视频总帧数无效：{total}")
+    start_i = 0 if start is None else int(start)
+    end_i = (total - 1) if end is None else int(end)
+    if start_i < 0 or end_i < 0 or start_i >= total or end_i >= total:
+        raise ValueError(
+            f"起止帧越界：{start_i}..{end_i}（总帧数 {total}，有效范围 0..{total - 1}）"
+        )
+    if start_i > end_i:
+        raise ValueError(f"起始帧 {start_i} 不能大于结束帧 {end_i}")
+    return start_i, end_i
 
 
 def planned_template_paths(
