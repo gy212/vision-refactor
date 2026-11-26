@@ -5,6 +5,7 @@ Windows 上目标被其它进程短暂占用（杀毒、索引、Excel 预览）
 ``PermissionError``，这里有界重试；仍失败时先把旧文件挪成 ``.bak`` 再复制，复制失败就还原 ``.bak``。
 旧文件挪不开时不就地覆盖，原样保留并把异常抛给调用方。
 """
+
 from __future__ import annotations
 
 import json
@@ -12,7 +13,7 @@ import os
 import shutil
 import time
 import uuid
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -34,6 +35,24 @@ def _discard(path: Path) -> None:
         pass
 
 
+def _replace_with_retry(
+    src: Path,
+    dst: Path,
+    *,
+    retries: int = REPLACE_RETRIES,
+    delay_s: float = REPLACE_RETRY_DELAY_S,
+) -> None:
+    """用有界重试执行 ``os.replace(src, dst)``；仅在 ``PermissionError`` 时重试。"""
+    for attempt in range(retries + 1):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if attempt >= retries:
+                raise
+            time.sleep(delay_s)
+
+
 def replace_file(
     src: Path | str,
     dst: Path | str,
@@ -53,20 +72,11 @@ def replace_file(
         raise IsADirectoryError(f"替换目标是目录：{dst}")
     if durable:
         _fsync_file(src)
-    for attempt in range(retries + 1):
-        try:
-            os.replace(src, dst)
-            return
-        except PermissionError:
-            if attempt >= retries:
-                if not _copy_replace(src, dst):
-                    raise
-                return
-            time.sleep(delay_s)
-        except OSError:
-            if not _copy_replace(src, dst):
-                raise
-            return
+    try:
+        _replace_with_retry(src, dst, retries=retries, delay_s=delay_s)
+    except OSError:
+        if not _copy_replace(src, dst):
+            raise
 
 
 def _copy_replace(src: Path, dst: Path) -> bool:
@@ -120,6 +130,91 @@ def atomic_target(path: Path | str, *, durable: bool = True) -> Iterator[Path]:
         replace_file(tmp, path, durable=durable)
     finally:
         _discard(tmp)
+
+
+def _check_unique_targets(target_paths: Sequence[Path]) -> None:
+    resolved_keys = [
+        os.path.normcase(str(t.resolve(strict=False))) for t in target_paths
+    ]
+    if len(set(resolved_keys)) != len(resolved_keys):
+        raise ValueError(f"多文件原子提交不允许重复目标路径：{target_paths}")
+
+
+def _rollback_replaced(committed: Sequence[tuple[Path, Path | None]]) -> None:
+    for target, bak in reversed(committed):
+        if bak is None:
+            _discard(target)
+        elif bak.exists():
+            try:
+                _replace_with_retry(bak, target)
+            except OSError:
+                pass  # 还原失败时保留 .bak 以便排查
+
+
+def atomic_commit_staged(
+    pairs: Sequence[tuple[Path | str, Path | str]], *, durable: bool = True
+) -> list[Path]:
+    """把多组已写好的 ``(staged_src, target)`` 统一事务性提交；任一失败保留原文件并回滚已提交目标。"""
+    pair_list = [(Path(src), Path(dst)) for src, dst in pairs]
+    if not pair_list:
+        return []
+    _check_unique_targets([dst for _src, dst in pair_list])
+
+    for src, dst in pair_list:
+        if dst.is_dir():
+            raise IsADirectoryError(f"替换目标是目录：{dst}")
+        if not src.is_file():
+            raise FileNotFoundError(f"临时文件未写出：{src}")
+        dst.parent.mkdir(parents=True, exist_ok=True)
+    if durable:
+        for src, _dst in pair_list:
+            _fsync_file(src)
+
+    committed: list[tuple[Path, Path | None]] = []
+    try:
+        for src, dst in pair_list:
+            if dst.exists():
+                bak = dst.with_name(f"_bak_{uuid.uuid4().hex}.bak")
+                _replace_with_retry(dst, bak)
+                committed.append((dst, bak))
+                _replace_with_retry(src, dst)
+            else:
+                _replace_with_retry(src, dst)
+                committed.append((dst, None))
+    except BaseException:
+        _rollback_replaced(committed)
+        raise
+
+    for _dst, bak in committed:
+        if bak is not None:
+            _discard(bak)
+    return [dst for _src, dst in pair_list]
+
+
+@contextmanager
+def atomic_replace_many(
+    targets: Sequence[Path | str], *, durable: bool = True
+) -> Iterator[list[Path]]:
+    """多文件事务性原子替换：全部写入临时路径并校验后再统一提交，任一失败保留原文件并回滚已替换目标。"""
+    target_paths = [Path(t) for t in targets]
+    if not target_paths:
+        yield []
+        return
+    _check_unique_targets(target_paths)
+
+    tmps: list[Path] = []
+    for t in target_paths:
+        if t.is_dir():
+            raise IsADirectoryError(f"替换目标是目录：{t}")
+        t.parent.mkdir(parents=True, exist_ok=True)
+        tmps.append(temporary_sibling(t))
+
+    try:
+        yield tmps
+        atomic_commit_staged(list(zip(tmps, target_paths)), durable=durable)
+    finally:
+        for tmp in tmps:
+            _discard(tmp)
 
 
 def atomic_write_bytes(path: Path | str, data: bytes) -> None:

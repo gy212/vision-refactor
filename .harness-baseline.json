@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "entry_ceiling": 58,
+  "entry_ceiling": 57,
   "entries": {
     "anti_cheat_compression.nested_ternary": {
       "analysis/bench_annotate_metrics.py::nested_ternary@timing_metrics": 1,
@@ -30,7 +30,6 @@
       "apps/tk/self_check.py::silent_except": 1,
       "apps/tk/shutdown.py::silent_except": 1,
       "apps/tk/views/benchmark_dialog.py::silent_except": 3,
-      "apps/tk/views/compare_dialog.py::silent_except": 1,
       "apps/tk/views/exam_window.py::silent_except": 1,
       "apps/tk/views/main_window.py::silent_except": 1,
       "apps/tk/views/practice_checks_dialog.py::silent_except": 1,

@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """core.foundation.atomic_io：原子替换、目标被占用时有界重试、失败不留半截文件。"""
+
 from __future__ import annotations
 
 import json
@@ -13,6 +14,8 @@ import pytest
 
 from core.foundation import atomic_io
 from core.foundation.atomic_io import (
+    atomic_commit_staged,
+    atomic_replace_many,
     atomic_target,
     atomic_write_bytes,
     atomic_write_json,
@@ -32,7 +35,9 @@ def test_writers_roundtrip_and_leave_no_temporary(tmp_path):
     atomic_write_json(tmp_path / "d.json", {"k": 1}, trailing_newline=True)
     assert (tmp_path / "a.bin").read_bytes() == b"\x00\x01"
     assert (tmp_path / "b.txt").read_bytes().startswith(b"\xef\xbb\xbf")
-    assert (tmp_path / "c.json").read_text(encoding="utf-8") == json.dumps({"键": [1, 2]}, ensure_ascii=False, indent=2)
+    assert (tmp_path / "c.json").read_text(encoding="utf-8") == json.dumps(
+        {"键": [1, 2]}, ensure_ascii=False, indent=2
+    )
     assert (tmp_path / "d.json").read_text(encoding="utf-8").endswith("}\n")
     assert _leftovers(tmp_path, {"a.bin", "b.txt", "c.json", "d.json"}) == []
 
@@ -62,7 +67,9 @@ def test_permission_error_is_retried_a_bounded_number_of_times(tmp_path, monkeyp
     assert dst.read_bytes() == b"new" and not src.exists()
 
 
-def test_persistent_lock_raises_and_leaves_target_and_no_temporary(tmp_path, monkeypatch):
+def test_persistent_lock_raises_and_leaves_target_and_no_temporary(
+    tmp_path, monkeypatch
+):
     target = tmp_path / "成绩.xlsx"
     target.write_bytes(b"old")
     attempts = []
@@ -138,7 +145,9 @@ def test_text_writers_match_path_write_text_bytes(tmp_path):
     atomic_write_text(tmp_path / "new.txt", text, encoding="utf-8-sig")
     assert (tmp_path / "new.txt").read_bytes() == (tmp_path / "ref.txt").read_bytes()
     data = {"键": [1, 2]}
-    (tmp_path / "ref.json").write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    (tmp_path / "ref.json").write_text(
+        json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
     atomic_write_json(tmp_path / "new.json", data, trailing_newline=True)
     assert (tmp_path / "new.json").read_bytes() == (tmp_path / "ref.json").read_bytes()
 
@@ -169,7 +178,9 @@ def test_temporary_is_ascii_and_invisible_to_suffix_scans(tmp_path):
         assert list(tmp_path.glob("*.npz")) == []
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason="Windows 下打开中的文件不能被 os.replace 覆盖")
+@pytest.mark.skipif(
+    sys.platform != "win32", reason="Windows 下打开中的文件不能被 os.replace 覆盖"
+)
 def test_real_open_handle_released_during_retry(tmp_path, monkeypatch):
     target = tmp_path / "busy.json"
     target.write_text("old", encoding="utf-8")
@@ -186,3 +197,96 @@ def test_real_open_handle_released_during_retry(tmp_path, monkeypatch):
 def _write(path: Path, data: bytes) -> Path:
     path.write_bytes(data)
     return path
+
+
+def test_atomic_replace_many_retries_transient_permission_error_on_commit(
+    tmp_path, monkeypatch
+):
+    a, b = tmp_path / "a.bin", tmp_path / "b.bin"
+    a.write_bytes(b"old-a")
+    b.write_bytes(b"old-b")
+    monkeypatch.setattr(atomic_io, "REPLACE_RETRY_DELAY_S", 0.0)
+    real_replace = os.replace
+    transient = 0
+
+    def flaky(src, dst):
+        nonlocal transient
+        if Path(dst) == b and Path(src).name.startswith("_tmp_") and transient < 2:
+            transient += 1
+            raise PermissionError("transient lock")
+        real_replace(src, dst)
+
+    monkeypatch.setattr(atomic_io.os, "replace", flaky)
+    with atomic_replace_many([a, b]) as (ta, tb):
+        ta.write_bytes(b"new-a")
+        tb.write_bytes(b"new-b")
+
+    assert transient == 2
+    assert a.read_bytes() == b"new-a" and b.read_bytes() == b"new-b"
+    assert _leftovers(tmp_path, {"a.bin", "b.bin"}) == []
+
+
+def test_atomic_replace_many_rollback_retries_permission_error_and_cleans_bak(
+    tmp_path, monkeypatch
+):
+    a, b = tmp_path / "a.bin", tmp_path / "b.bin"
+    a.write_bytes(b"old-a")
+    b.write_bytes(b"old-b")
+    monkeypatch.setattr(atomic_io, "REPLACE_RETRY_DELAY_S", 0.0)
+    real_replace = os.replace
+    rollback_attempts = 0
+
+    def flaky_rollback(src, dst):
+        nonlocal rollback_attempts
+        if Path(dst) == b and Path(src).name.startswith("_tmp_"):
+            raise OSError("commit failure on b")
+        if Path(src).suffix == ".bak" and Path(dst) == a and rollback_attempts < 2:
+            rollback_attempts += 1
+            raise PermissionError("antivirus holding target during rollback")
+        real_replace(src, dst)
+
+    monkeypatch.setattr(atomic_io.os, "replace", flaky_rollback)
+    with pytest.raises(OSError, match="commit failure on b"):
+        with atomic_replace_many([a, b]) as (ta, tb):
+            ta.write_bytes(b"new-a")
+            tb.write_bytes(b"new-b")
+
+    assert rollback_attempts == 2
+    assert a.read_bytes() == b"old-a" and b.read_bytes() == b"old-b"
+    assert _leftovers(tmp_path, {"a.bin", "b.bin"}) == []
+
+
+def test_atomic_replace_many_and_commit_staged_validate_missing_dir_and_duplicates(
+    tmp_path, monkeypatch
+):
+    existing = tmp_path / "keep.npz"
+    existing.write_bytes(b"old")
+
+    with pytest.raises(FileNotFoundError):
+        with atomic_replace_many([existing, tmp_path / "second.npz"]) as (ta, _tb):
+            ta.write_bytes(b"half")
+    assert existing.read_bytes() == b"old"
+    assert _leftovers(tmp_path, {"keep.npz"}) == []
+
+    with pytest.raises(FileNotFoundError):
+        atomic_commit_staged([(tmp_path / "missing.tmp", tmp_path / "out.npz")])
+
+    subdir = tmp_path / "adir"
+    subdir.mkdir()
+    with pytest.raises(IsADirectoryError):
+        with atomic_replace_many([subdir]):
+            pass
+    src_file = _write(tmp_path / "src.tmp", b"data")
+    with pytest.raises(IsADirectoryError):
+        atomic_commit_staged([(src_file, subdir)])
+
+    monkeypatch.setattr(atomic_io.os.path, "normcase", str.lower)
+    for pair_targets in (
+        [tmp_path / "dup.npz", tmp_path / "dup.npz"],
+        [tmp_path / "same.npz", tmp_path / "SAME.NPZ"],
+    ):
+        with pytest.raises(ValueError):
+            with atomic_replace_many(pair_targets):
+                pass
+        with pytest.raises(ValueError):
+            atomic_commit_staged([(src_file, t) for t in pair_targets])

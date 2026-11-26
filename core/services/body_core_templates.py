@@ -17,10 +17,83 @@ from core.evaluation.matching.body_core import (
     BODY_CORE_V1_CALIBRATED_BASELINE,
     CALIBRATION_STATUS_UNVALIDATED,
 )
+from core.foundation.atomic_io import atomic_target
 from core.foundation.paths import templates_dir
 from core.foundation.signal import find_active_range, motion_energy
-from core.pose.backends import BACKEND_MEDIAPIPE, BACKEND_YOLO, extract_body_core_features
+from core.pose.backends import (
+    BACKEND_MEDIAPIPE,
+    BACKEND_YOLO,
+    extract_body_core_features,
+)
 from core.pose.layouts import BODY_CORE_V1
+from core.services.template_quality import validate_frame_bounds
+
+
+def _build_body_core_meta(
+    video_path: Path,
+    *,
+    backend: str,
+    pose_variant: str,
+    fps: float,
+    n_frames: int,
+    start_i: int,
+    end_i: int,
+    auto_start: int,
+    auto_end: int,
+    backend_meta: dict,
+) -> dict:
+    """组装 ``body_core_v1`` 模板 metadata（含 MediaPipe/YOLO 后端字段与未标定声明）。"""
+    meta: dict = {
+        "video": str(video_path),
+        "fps": float(fps),
+        "frame_count": int(n_frames),
+        "start_frame": int(start_i),
+        "end_frame": int(end_i),
+        "auto_start_frame": int(auto_start),
+        "auto_end_frame": int(auto_end),
+        "backend": backend,
+        "raw_layout": str(
+            backend_meta.get("raw_layout")
+            or ("pose33_like_coco17" if backend == BACKEND_YOLO else "pose33_v3")
+        ),
+        "feature_layout": BODY_CORE_V1.name,
+        "capability": str(backend_meta.get("capability") or "body_only"),
+        "normalizer_version": "body_core_v1",
+        "running_mode": "video",
+        # S3（#10）已落参数，但结论为仅预览 / 内部标定参考，不授权评分。
+        "calibration_status": CALIBRATION_STATUS_UNVALIDATED,
+        "calibration_note": BODY_CORE_CALIBRATION_NOTE,
+        "baseline": float(BODY_CORE_V1_CALIBRATED_BASELINE),
+        "baseline_calibrated": True,
+        "score_authorized": False,
+        "display_scope": str(backend_meta.get("display_scope") or "internal"),
+    }
+    if backend == BACKEND_MEDIAPIPE:
+        meta["pose_variant"] = pose_variant
+        meta["model_name"] = f"pose_landmarker_{pose_variant}"
+        meta["confidence_kind"] = "visibility"
+    else:  # YOLO
+        meta["model_name"] = str(backend_meta.get("model_name", "yolo"))
+        meta["confidence_kind"] = str(backend_meta.get("confidence_kind", "yolo_conf"))
+        meta["validity_policy"] = str(
+            backend_meta.get("validity_policy", "confidence_thr")
+        )
+        meta["valid_conf_thr"] = float(backend_meta.get("valid_conf_thr", 0.5))
+        for k in (
+            "max_persons",
+            "multi_person_frames",
+            "multi_person_detected",
+            "review_required",
+            "gate_status",
+            "track_reset_note",
+        ):
+            if k in backend_meta:
+                meta[k] = backend_meta[k]
+        if "body_core_valid_frame_ratio" in backend_meta:
+            meta["body_core_valid_frame_ratio"] = float(
+                backend_meta["body_core_valid_frame_ratio"]
+            )
+    return meta
 
 
 def create_body_core_template(
@@ -53,16 +126,17 @@ def create_body_core_template(
         raise RuntimeError(f"视频未产出任何 body_core_v1 帧：{video_path}")
 
     seq = features.reshape(features.shape[0], -1)
-    if features.shape[0] >= 2:
+    n_frames = int(features.shape[0])
+    if n_frames >= 2:
         energy = motion_energy(seq)
         auto_start, auto_end = find_active_range(energy, pad=10)
     else:
-        auto_start, auto_end = 0, int(features.shape[0] - 1)
+        auto_start, auto_end = 0, n_frames - 1
 
-    start_i = int(start) if start is not None else int(auto_start)
-    end_i = int(end) if end is not None else int(auto_end)
-    start_i = max(0, min(start_i, features.shape[0] - 1))
-    end_i = max(start_i, min(end_i, features.shape[0] - 1))
+    if start is None and end is None:
+        start_i, end_i = validate_frame_bounds(n_frames, auto_start, auto_end)
+    else:
+        start_i, end_i = validate_frame_bounds(n_frames, start, end)
 
     out_dir = templates_dir()
     out_path = (
@@ -71,54 +145,24 @@ def create_body_core_template(
         else (out_dir / f"{video_path.stem}_{backend}_body_core_v1.npz")
     )
 
-    meta: dict = {
-        "video": str(video_path),
-        "fps": float(fps),
-        "frame_count": int(features.shape[0]),
-        "start_frame": int(start_i),
-        "end_frame": int(end_i),
-        "auto_start_frame": int(auto_start),
-        "auto_end_frame": int(auto_end),
-        "backend": backend,
-        "raw_layout": str(backend_meta.get("raw_layout") or ("pose33_like_coco17" if backend == BACKEND_YOLO else "pose33_v3")),
-        "feature_layout": BODY_CORE_V1.name,
-        "capability": str(backend_meta.get("capability") or "body_only"),
-        "normalizer_version": "body_core_v1",
-        "running_mode": "video",
-        # S3（#10）已落参数，但结论为仅预览 / 内部标定参考，不授权评分。
-        "calibration_status": CALIBRATION_STATUS_UNVALIDATED,
-        "calibration_note": BODY_CORE_CALIBRATION_NOTE,
-        "baseline": float(BODY_CORE_V1_CALIBRATED_BASELINE),
-        "baseline_calibrated": True,
-        "score_authorized": False,
-        "display_scope": str(backend_meta.get("display_scope") or "internal"),
-    }
-    if backend == BACKEND_MEDIAPIPE:
-        meta["pose_variant"] = pose_variant
-        meta["model_name"] = f"pose_landmarker_{pose_variant}"
-        meta["confidence_kind"] = "visibility"
-    else:  # YOLO
-        meta["model_name"] = str(backend_meta.get("model_name", "yolo"))
-        meta["confidence_kind"] = str(backend_meta.get("confidence_kind", "yolo_conf"))
-        meta["validity_policy"] = str(backend_meta.get("validity_policy", "confidence_thr"))
-        meta["valid_conf_thr"] = float(backend_meta.get("valid_conf_thr", 0.5))
-        # 透传 YOLO 多人闸门 / track 信息，供 #9 拒绝/降级与 #10 标定参考。
-        for k in (
-            "max_persons",
-            "multi_person_frames",
-            "multi_person_detected",
-            "review_required",
-            "gate_status",
-            "track_reset_note",
-        ):
-            if k in backend_meta:
-                meta[k] = backend_meta[k]
-        if "body_core_valid_frame_ratio" in backend_meta:
-            meta["body_core_valid_frame_ratio"] = float(backend_meta["body_core_valid_frame_ratio"])
-
-    np.savez_compressed(
-        out_path,
-        features=features[start_i : end_i + 1],
-        meta=np.array(meta, dtype=object),
+    meta = _build_body_core_meta(
+        video_path,
+        backend=backend,
+        pose_variant=pose_variant,
+        fps=fps,
+        n_frames=n_frames,
+        start_i=start_i,
+        end_i=end_i,
+        auto_start=auto_start,
+        auto_end=auto_end,
+        backend_meta=backend_meta,
     )
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with atomic_target(out_path) as tmp, open(tmp, "wb") as fh:
+        np.savez_compressed(
+            fh,
+            features=features[start_i : end_i + 1],
+            meta=np.array(meta, dtype=object),
+        )
     return Path(out_path)

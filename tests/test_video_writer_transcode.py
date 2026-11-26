@@ -91,7 +91,9 @@ def test_transcode_to_h264_runs_ffmpeg_and_removes_avi(
         return subprocess.CompletedProcess(command, 0)
 
     monkeypatch.setattr(video_writer.subprocess, "run", fake_run)
-    monkeypatch.setattr(video_writer, "ffmpeg_executable", lambda: "ffmpeg")   # 不依赖本机装没装 ffmpeg
+    monkeypatch.setattr(
+        video_writer, "ffmpeg_executable", lambda: "ffmpeg"
+    )  # 不依赖本机装没装 ffmpeg
 
     result = video_writer.transcode_to_h264(src)
 
@@ -295,3 +297,110 @@ def test_transcode_to_h264_pre_cancelled_does_not_start_ffmpeg(
 
     with pytest.raises(InterruptedError, match="转码已取消"):
         video_writer.transcode_to_h264(src, stop_evt=stop_evt)
+
+
+def test_preview_export_cancel_cleans_partial_and_transcodes_avi(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from core.foundation.tasks import Cancelled
+    from core.services import (
+        export_match_preview,
+        preview as preview_svc,
+        write_pose_preview,
+    )
+
+    out_mp4 = tmp_path / "demo.preview.mp4"
+    avi_path = tmp_path / "demo.preview.avi"
+
+    def cancelled_annotate(_video, out_path, *_a, **_k):
+        Path(out_path).write_bytes(b"partial-mp4")
+        Path(out_path).with_suffix(".avi").write_bytes(b"partial-avi")
+        raise Cancelled("user cancelled")
+
+    monkeypatch.setattr(preview_svc, "annotate_video", cancelled_annotate)
+    with pytest.raises(InterruptedError, match="预览导出已取消"):
+        export_match_preview(
+            Path("v.mp4"),
+            out_path=out_mp4,
+            start_frame=0,
+            end_frame=10,
+            pose_variant="heavy",
+            stop_evt=threading.Event(),
+        )
+    assert not out_mp4.exists()
+    assert not avi_path.exists()
+    assert not list(tmp_path.glob("_tmp_*"))
+
+    def fallback_annotate(_video, out_path, *_a, **_k):
+        fb = Path(out_path).with_suffix(".avi")
+        fb.write_bytes(b"avi-data")
+        return fb, "MJPG", 5
+
+    def fake_transcode(src, **_k):
+        dst = Path(src).with_suffix(".mp4")
+        Path(src).unlink()
+        dst.write_bytes(b"h264-mp4")
+        return dst
+
+    monkeypatch.setattr(preview_svc, "annotate_video", fallback_annotate)
+    monkeypatch.setattr(preview_svc, "transcode_to_h264", fake_transcode)
+    actual_path, codec = write_pose_preview(
+        Path("v.mp4"),
+        out_path=out_mp4,
+        start_frame=0,
+        end_frame=5,
+        pose_variant="heavy",
+    )
+    assert actual_path == out_mp4 and actual_path.read_bytes() == b"h264-mp4"
+    assert codec == "H264"
+    assert not avi_path.exists()
+    assert not list(tmp_path.glob("_tmp_*"))
+
+
+def test_export_match_preview_preserves_existing_preview_on_cancel_or_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from core.foundation.tasks import Cancelled
+    from core.services import export_match_preview, preview as preview_svc
+
+    old_mp4 = tmp_path / "demo.preview.mp4"
+    old_mp4.write_bytes(b"OLD_PREVIEW_MP4")
+
+    def cancel_during_annotate(_video, work_path, *_a, **_k):
+        Path(work_path).write_bytes(b"partial-should-not-overwrite")
+        raise Cancelled("user cancelled")
+
+    monkeypatch.setattr(preview_svc, "annotate_video", cancel_during_annotate)
+    with pytest.raises(InterruptedError, match="预览导出已取消"):
+        export_match_preview(
+            Path("v.mp4"),
+            out_path=old_mp4,
+            start_frame=0,
+            end_frame=10,
+            pose_variant="heavy",
+            stop_evt=threading.Event(),
+        )
+    assert old_mp4.read_bytes() == b"OLD_PREVIEW_MP4"
+    assert [p.name for p in tmp_path.iterdir()] == ["demo.preview.mp4"]
+
+    def fallback_avi(_video, work_path, *_a, **_k):
+        avi = Path(work_path).with_suffix(".avi")
+        avi.write_bytes(b"temp-avi")
+        return avi, "MJPG", 5
+
+    monkeypatch.setattr(preview_svc, "annotate_video", fallback_avi)
+    monkeypatch.setattr(
+        preview_svc,
+        "transcode_to_h264",
+        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("ffmpeg crashed")),
+    )
+    with pytest.raises(RuntimeError, match="ffmpeg crashed"):
+        export_match_preview(
+            Path("v.mp4"),
+            out_path=old_mp4,
+            start_frame=0,
+            end_frame=5,
+            pose_variant="heavy",
+        )
+    assert old_mp4.read_bytes() == b"OLD_PREVIEW_MP4"
+    assert [p.name for p in tmp_path.iterdir()] == ["demo.preview.mp4"]

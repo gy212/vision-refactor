@@ -4,15 +4,17 @@
 控制器与视图都是真实的；只替换摄像头设备、会话线程与录像落盘。关窗测试用 ``QueuedRoot`` 接管
 ``ShutdownCoordinator`` 的 ``after`` 轮询，由测试逐步执行。
 """
+
 from __future__ import annotations
 
-import tkinter as tk
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
 import pytest
+
+tk = pytest.importorskip("tkinter")
 
 from apps.tk.app import DesktopApp
 from apps.tk.shutdown import ShutdownCoordinator
@@ -24,8 +26,15 @@ class FakeLive:
     """会话管理器替身：记录 start/stop/wait_idle。默认 stop 后会话线程立即结束；
     ``ends_on_stop=False`` 模拟迟迟不结束的会话线程，``on_wait`` 模拟它在等待期间收尾。"""
 
-    def __init__(self, state: str = "idle", *, on_wait=None, ends_on_stop: bool = True, preview=None,
-                 config=None) -> None:
+    def __init__(
+        self,
+        state: str = "idle",
+        *,
+        on_wait=None,
+        ends_on_stop: bool = True,
+        preview=None,
+        config=None,
+    ) -> None:
         self.state = state
         self.ends_on_stop = ends_on_stop
         self.on_wait = on_wait
@@ -162,7 +171,9 @@ def tk_root():
     return root
 
 
-def build_app(root, *, pool: SyncPool | None = None, live: FakeLive | None = None) -> DesktopApp:
+def build_app(
+    root, *, pool: SyncPool | None = None, live: FakeLive | None = None
+) -> DesktopApp:
     """在真实根窗口上组装应用：摄像头池换成替身、启动时不枚举；``live`` 给出时替换会话管理器。"""
     with patch("apps.tk.controllers.cameras.CameraController.start_enumeration"):
         app = DesktopApp(root, camera_service=CameraService(pool=pool or SyncPool()))
@@ -171,11 +182,14 @@ def build_app(root, *, pool: SyncPool | None = None, live: FakeLive | None = Non
     return app
 
 
-def bind_recording(app: DesktopApp, finalizer, *, failing: frozenset[str] = frozenset(),
-                   plan_for=None) -> RecordingService:
+def bind_recording(
+    app: DesktopApp, finalizer, *, failing: frozenset[str] = frozenset(), plan_for=None
+) -> RecordingService:
     """录制服务换成假 writer；计划默认由录制控制器构建。"""
     app.recording.service = RecordingService(
-        finalizer, plan_for=plan_for or app.recording.plan, recorder=SegmentRecorder(writer_factory(failing)),
+        finalizer,
+        plan_for=plan_for or app.recording.plan,
+        recorder=SegmentRecorder(writer_factory(failing)),
     )
     return app.recording.service
 
@@ -215,23 +229,42 @@ def activate_practice(app: DesktopApp, *, identity=None, clock=None, announcer=N
     practice = app.practice
     if practice.practice is not None:
         app.workflows.deactivate(practice.practice)
-    practice.practice = PracticeSession(identity or app.window.practice.controls.identity)
+    practice.practice = PracticeSession(
+        identity or app.window.practice.controls.identity
+    )
     practice.announcer = announcer if announcer is not None else Mock()
-    ports = WorkflowPorts(recorder=app.recording, occupancy=OccupancyPort(app.controls, "practice"),
-                          announcer=practice.announcer, ui=practice, analysis=practice)
-    app.workflows.activate(practice.practice, CommandExecutor(ports, clock=clock or (lambda: time.monotonic())))
+    ports = WorkflowPorts(
+        recorder=app.recording,
+        occupancy=OccupancyPort(app.controls, "practice"),
+        announcer=practice.announcer,
+        ui=practice,
+        analysis=practice,
+    )
+    app.workflows.activate(
+        practice.practice,
+        CommandExecutor(ports, clock=clock or (lambda: time.monotonic())),
+    )
     return practice.practice
 
 
-def practice_app(root, *, ready: bool = True, student_id: str = "001", identity=None, clock=None,
-                 announcer=None) -> DesktopApp:
+def practice_app(
+    root,
+    *,
+    ready: bool = True,
+    student_id: str = "001",
+    identity=None,
+    clock=None,
+    announcer=None,
+) -> DesktopApp:
     """已进入学生练习、双摄会话运行中的应用：真实的 ``PracticeSession`` 经 ``WorkflowHost`` 驱动。
 
     练习流程的身份默认读界面学号（``identity`` 可替换）；正/侧摄像头下拉已选好。
     """
     from core.workflows import PRACTICE
 
-    app = build_app(root, live=FakeLive("running", config=SimpleNamespace(dual=True, is_file=False)))
+    app = build_app(
+        root, live=FakeLive("running", config=SimpleNamespace(dual=True, is_file=False))
+    )
     app.flags.recording_ready = ready
     app.modes.enter(PRACTICE)
     app.workflows.session_started(app.session.live.token)

@@ -23,10 +23,23 @@ import numpy as np
 from core.evaluation.action_catalog import action_definition
 from core.evaluation.kick_events import kick_repetitions
 from core.evaluation.rule_checks import ACTION_BY_NAME, judge_views, series_from_raw
-from core.evaluation.rules.sanda_v5 import DEFAULT_STANCE, FeedbackConfig, load_feedback_config
+from core.evaluation.rules.sanda_v5 import (
+    DEFAULT_STANCE,
+    FeedbackConfig,
+    load_feedback_config,
+)
 from core.evaluation.scoring.kick_quality import score_kick_quality
 from core.evaluation.step_reps import EXPECTED_REPETITIONS, step_combo_windows
-from core.evaluation.templates import EXAM_POOL, TemplateError, TemplateStore, load_template
+from core.evaluation.templates import (
+    EXAM_POOL,
+    VIEW_FRONT_SUFFIX,
+    VIEW_SIDE_SUFFIX,
+    TemplateError,
+    TemplateStore,
+    base_action_name,
+    load_template,
+    split_view_suffix,
+)
 from core.evaluation.view_weights import normalized_pair
 from core.pose.extract import pose_cache
 from core.pose.raw_series import slice_pose_raw_series
@@ -36,20 +49,14 @@ TEMPLATE_LAYOUT = "pose33_v3"
 
 # 踢腿几何质量评分：动作名（模板 stem）→ kick_quality 类型；列出的动作并入几何分。
 # 低鞭腿不列入——实测其低/高鞭高度差不稳定，几何常误判，直接用纯 DTW 分。
-KICK_KINDS = {
-    "高鞭腿": "high_whip",
-    "侧踹腿": "kick_up",
-    "正蹬腿": "kick_up",
-}
+KICK_KINDS = {"高鞭腿": "high_whip", "侧踹腿": "kick_up", "正蹬腿": "kick_up"}
 # 踢腿动作子分 = 几何高度分 × w + DTW 相似度分 × (1-w)。校准旋钮。
 KICK_GEOM_WEIGHT = 0.5
 
 # DTW 分压缩映射（opt-in）：动作名 → (下限, 上限)。某些动作 DTW 定位不可靠（如背后七颠：低位移提踵，
 # 归一化特征抹掉高度，开放边界退化匹配极短片段，虚高分与动作质量无关）。这类动作考察不严「是人就过」，
 # 把 DTW 分线性压到高分窄区间：人人及格偏上，保留同一条视频恒定、可复现的微弱区分度。未登记动作不受影响。
-SCORE_SQUEEZE: dict[str, tuple[float, float]] = {
-    "背后七颠": (0.75, 0.90),
-}
+SCORE_SQUEEZE: dict[str, tuple[float, float]] = {"背后七颠": (0.75, 0.90)}
 
 # 同一动作正侧两视角按权重合并成一个子分（opt-in，八段锦用）。key = 合并后动作名；value 自动归一。
 # 触发条件：正池有 "<key>_正面"、侧池有 "<key>_侧面"，两者都在才合并；散打模板不在表内，行为不变。
@@ -57,8 +64,6 @@ VIEW_WEIGHTS: dict[str, dict[str, float]] = {
     "两手攀足": {"side": 0.75, "front": 0.25},  # 实测正面看不清前俯深度，侧面为主
     "攒拳怒目": {"side": 0.50, "front": 0.50},  # 正侧分接近，合并去重双计数
 }
-VIEW_FRONT_SUFFIX = "_正面"
-VIEW_SIDE_SUFFIX = "_侧面"
 
 EXAM_STANCE = DEFAULT_STANCE  # 考试固定左式（D-3）
 # 规则检查取动作匹配窗口前后各放宽的时长：相位检测要看到动作前后的实战式。
@@ -97,7 +102,9 @@ def check_pair(front_path: Path, side_path: Path) -> None:
         )
 
 
-def usable_pools(front: Iterable | None, side: Iterable | None) -> tuple[list[Path], list[Path]]:
+def usable_pools(
+    front: Iterable | None, side: Iterable | None
+) -> tuple[list[Path], list[Path]]:
     """多模板池：各自过滤出可用模板（保序去重，单个坏模板跳过不整体失败）；两池都空抛 ``template_missing``。"""
     store = TemplateStore(EXAM_POOL)
     front_ok, side_ok = store.usable(front or []), store.usable(side or [])
@@ -118,14 +125,10 @@ def merge_view_weighted_actions(action_details: list[dict]) -> list[dict]:
         if idx in consumed:
             continue
         name = str(d.get("name") or "")
-        base = None
-        if name.endswith(VIEW_FRONT_SUFFIX):
-            base = name[: -len(VIEW_FRONT_SUFFIX)]
-        elif name.endswith(VIEW_SIDE_SUFFIX):
-            base = name[: -len(VIEW_SIDE_SUFFIX)]
-        weights = VIEW_WEIGHTS.get(base) if base else None
-        front_d = by_name.get(f"{base}{VIEW_FRONT_SUFFIX}") if base else None
-        side_d = by_name.get(f"{base}{VIEW_SIDE_SUFFIX}") if base else None
+        base, view = split_view_suffix(name)
+        weights = VIEW_WEIGHTS.get(base) if (base and view is not None) else None
+        front_d = by_name.get(f"{base}{VIEW_FRONT_SUFFIX}") if weights else None
+        side_d = by_name.get(f"{base}{VIEW_SIDE_SUFFIX}") if weights else None
         pair = normalized_pair(weights) if weights is not None else None
         if pair is None or front_d is None or side_d is None:
             merged.append(d)
@@ -135,7 +138,9 @@ def merge_view_weighted_actions(action_details: list[dict]) -> list[dict]:
             {
                 "name": base,
                 "view": "combined",
-                "score": float(w_front * float(front_d["score"]) + w_side * float(side_d["score"])),
+                "score": float(
+                    w_front * float(front_d["score"]) + w_side * float(side_d["score"])
+                ),
                 "front_score": float(front_d["score"]),
                 "side_score": float(side_d["score"]),
                 "view_weights": {"front": w_front, "side": w_side},
@@ -146,9 +151,9 @@ def merge_view_weighted_actions(action_details: list[dict]) -> list[dict]:
             }
         )
         consumed.add(idx)
-        for j, o in enumerate(action_details):
-            if o is front_d or o is side_d:
-                consumed.add(j)
+        consumed.update(
+            j for j, o in enumerate(action_details) if o is front_d or o is side_d
+        )
     return merged
 
 
@@ -159,7 +164,7 @@ def action_score(name: str, dtw_score: float, geom_score: float | None) -> float
         if geom_score is not None
         else dtw_score
     )
-    squeeze = SCORE_SQUEEZE.get(name)
+    squeeze = SCORE_SQUEEZE.get(base_action_name(name))
     if squeeze is not None:
         lo, hi = squeeze
         final = lo + (hi - lo) * float(np.clip(dtw_score, 0.0, 1.0))
@@ -168,10 +173,12 @@ def action_score(name: str, dtw_score: float, geom_score: float | None) -> float
 
 def rule_action_for(name: str) -> str | None:
     """模板名（可带 ``_正面``/``_侧面`` 后缀）对应的规则目录动作；目录外的动作为 None。"""
-    return ACTION_BY_NAME.get(name.removesuffix(VIEW_FRONT_SUFFIX).removesuffix(VIEW_SIDE_SUFFIX))
+    return ACTION_BY_NAME.get(base_action_name(name))
 
 
-def side_combo_repetitions(series, action: str, cfg: FeedbackConfig) -> list[tuple[float, float]]:
+def side_combo_repetitions(
+    series, action: str, cfg: FeedbackConfig
+) -> list[tuple[float, float]]:
     """侧面整段原始序列上指定上步拳法组合每一次的 ``(起, 止)``（秒）；切不出时为空列表。"""
     landmarks, meta = slice_pose_raw_series(series)
     diagnostics: dict = {}
@@ -186,7 +193,9 @@ def side_repetitions(series, cfg: FeedbackConfig) -> list[tuple[float, float]]:
     return side_combo_repetitions(series, "step_straight_combo", cfg)
 
 
-def action_side_repetitions(series, action: str, cfg: FeedbackConfig) -> list[tuple[float, float]]:
+def action_side_repetitions(
+    series, action: str, cfg: FeedbackConfig
+) -> list[tuple[float, float]]:
     """侧面整段原始序列上按规则目录动作切分每一次的 ``(起, 止)``（秒）；不支持或切不出时为空列表。"""
     if action == "step_straight_combo":
         return side_repetitions(series, cfg)
@@ -194,7 +203,9 @@ def action_side_repetitions(series, action: str, cfg: FeedbackConfig) -> list[tu
         return side_combo_repetitions(series, action, cfg)
     if action in ("step_front_low_kick", "rear_low_kick"):
         landmarks, meta = slice_pose_raw_series(series)
-        return kick_repetitions(series_from_raw(landmarks, meta), action, EXAM_STANCE, cfg)
+        return kick_repetitions(
+            series_from_raw(landmarks, meta), action, EXAM_STANCE, cfg
+        )
     return []
 
 
@@ -309,9 +320,9 @@ def rule_reports(
             unpaired.remove(side)
             judged[id(side)] = result["side"]
     for side in unpaired:
-        judged[id(side)] = judge_views({"side": side["series"]}, side["action"], EXAM_STANCE, cfg)[
-            "side"
-        ]
+        judged[id(side)] = judge_views(
+            {"side": side["series"]}, side["action"], EXAM_STANCE, cfg
+        )["side"]
     reports, record_reports = [], {}
     for target in front_targets + side_targets:
         item = judged[id(target)]
@@ -335,12 +346,15 @@ def _plain_detail(name: str, view: str, res, series) -> dict:
     dtw_score = float(res.score)
     start, end = int(res.start_frame), int(res.end_frame)
     geom_score, geom_detail = None, ""
-    if series is not None and name in KICK_KINDS:
-        lm_win, meta_win = slice_pose_raw_series(series, start_frame=start, end_frame=end)
+    kick_kind = KICK_KINDS.get(base_action_name(name))
+    if series is not None and kick_kind is not None:
+        lm_win, meta_win = slice_pose_raw_series(
+            series, start_frame=start, end_frame=end
+        )
         geom_score, geom_detail = score_kick_quality(
             lm_win,
             meta_win["valid_mask"],
-            KICK_KINDS[name],
+            kick_kind,
             width=meta_win.get("width"),
             height=meta_win.get("height"),
         )
@@ -454,7 +468,9 @@ def score_pool(
         else []
     )
     results = dict(zip(plain, plain_results))
-    if series is None and (any(n in KICK_KINDS for n in names) or any(rule_actions)):
+    if series is None and (
+        any(base_action_name(n) in KICK_KINDS for n in names) or any(rule_actions)
+    ):
         _check_stop(stop_evt)
         series = raw_series(video, pose_variant=POSE_VARIANT)
 
@@ -473,7 +489,9 @@ def score_pool(
         details.append(detail)
     pool_mean = float(np.mean([d["score"] for d in details])) if details else None
     targets = [
-        rule_target(series, d, action, view) for d, action in zip(details, rule_actions) if action
+        rule_target(series, d, action, view)
+        for d, action in zip(details, rule_actions)
+        if action
     ]
     return details, pool_mean, targets
 
@@ -533,7 +551,8 @@ def score_exam_pools(
             side_raw = raw_series(side_video, pose_variant=POSE_VARIANT)
             cfg_rep = rule_cfg or FeedbackConfig()
             reps_by_action = {
-                act: action_side_repetitions(side_raw, act, cfg_rep) for act in per_rep_actions
+                act: action_side_repetitions(side_raw, act, cfg_rep)
+                for act in per_rep_actions
             }
             reps = reps_by_action.get("step_straight_combo")
         pool_args = {
@@ -551,15 +570,23 @@ def score_exam_pools(
         side_details, side_score, side_targets = score_pool(
             side_tpls, side_video, "side", **pool_args
         )
-    reports = rule_reports(front_targets, side_targets, rule_cfg) if rule_cfg is not None else []
+    reports = (
+        rule_reports(front_targets, side_targets, rule_cfg)
+        if rule_cfg is not None
+        else []
+    )
     # 合并只影响 combined 与逐动作列，避免正+侧双模板动作被双重计数。
     action_scores = merge_view_weighted_actions(front_details + side_details)
     all_scores = [d["score"] for d in action_scores]
     combined = float(np.mean(all_scores)) if all_scores else 0.0
     pct = int(np.clip(int(round(combined * 100.0)), 0, 100))
     # 兼容旧字段：front/side_segment 取各池首个匹配窗口
-    front_seg = (front_details[0]["start"], front_details[0]["end"]) if front_details else None
-    side_seg = (side_details[0]["start"], side_details[0]["end"]) if side_details else None
+    front_seg = (
+        (front_details[0]["start"], front_details[0]["end"]) if front_details else None
+    )
+    side_seg = (
+        (side_details[0]["start"], side_details[0]["end"]) if side_details else None
+    )
     return ExamPoolResult(
         front_score,
         side_score,

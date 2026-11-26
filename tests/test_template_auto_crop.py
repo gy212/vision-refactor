@@ -5,7 +5,11 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from core.services import TemplateAutoCropReviewRequired, analyze_template_auto_crop, create_template_from_video
+from core.services import (
+    TemplateAutoCropReviewRequired,
+    analyze_template_auto_crop,
+    create_template_from_video,
+)
 from core.services import templates as services_templates
 
 
@@ -107,3 +111,25 @@ def test_explicit_range_overrides_review_and_records_diagnostics(
     assert meta["crop_selection"] == "manual"
     assert meta["auto_review_required"] is True
     assert meta["selected_retained_ratio"] == pytest.approx(211 / features.shape[0])
+
+
+def test_create_template_no_auto_crop_keeps_full_sequence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    energy = np.full(40 * 30 - 1, 0.002, dtype=np.float32)
+    energy[100:140] = 0.2
+    energy[700:740] = 0.2
+    features = _features_from_energy(energy)
+    monkeypatch.setattr(
+        services_templates,
+        "extract_features",
+        lambda *_a, **_k: (features, 30.0, None),
+    )
+
+    out_path = create_template_from_video(
+        "long.mp4", auto_crop=False, out_path=tmp_path / "full.npz"
+    )
+    with np.load(out_path, allow_pickle=True) as d:
+        meta = dict(d["meta"].item())
+        assert d["features"].shape[0] == features.shape[0]
+        assert meta["crop_selection"] == "full"
