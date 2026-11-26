@@ -71,6 +71,7 @@ class TemplateBuilderDialog:
         self._preview_after_id: str | None = None
         self._lockable_widgets: list[Any] = []
         self._active_run: tuple[Any, str, bool, str] | None = None
+        self._running = False
         self._auto_add_forced_off = False
         self._saved_auto_add = True
 
@@ -422,7 +423,7 @@ class TemplateBuilderDialog:
                 self.auto_add_var.set(self._saved_auto_add)
                 self._auto_add_forced_off = False
             self.auto_add_check.configure(
-                state="disabled" if self.controller.busy else "normal"
+                state="disabled" if self._running else "normal"
             )
             self.auto_add_hint_var.set("")
         if self._pool_mode == "single" and is_dual_dir:
@@ -475,7 +476,8 @@ class TemplateBuilderDialog:
 
     # ------------------------------------------------------------------ TemplateBuilderView
     def set_running(self, running: bool) -> None:
-        state = "disabled" if running else "normal"
+        self._running = bool(running)
+        state = "disabled" if self._running else "normal"
         self.generate_btn.configure(state=state)
         self.stop_btn.configure(state="normal" if running else "disabled")
         for widget in self._lockable_widgets:

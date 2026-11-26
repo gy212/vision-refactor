@@ -7,12 +7,13 @@ from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from threading import Event
+import uuid
 
 import numpy as np
 
-from core.foundation.atomic_io import atomic_replace_many, atomic_target
+from core.foundation.atomic_io import atomic_commit_staged, temporary_sibling
 from core.foundation.paths import templates_dir
-from core.foundation.signal import find_active_range, motion_energy
+from core.foundation.signal import motion_energy
 from core.foundation.tasks import Cancelled, from_stopped
 from core.pose.engine import EngineSpec
 from core.pose.extract import FORMAL, extract_pose_sequence, formal_engine
@@ -27,8 +28,11 @@ from core.services.template_quality import (
     MIN_TEMPLATE_FRAMES,
     VIEW_SUFFIXES,
     RecordingPair,
+    TemplateAutoCropAnalysis,
+    TemplateAutoCropReviewRequired,
     TemplateQualityError,
     TemplateQualityReport,
+    analyze_template_auto_crop,
     assess_template_quality,
     discover_recording_videos,
     planned_template_paths,
@@ -51,141 +55,6 @@ class TemplateCreateResult:
     fps: float
     quality: TemplateQualityReport
     preview_path: Path | None = None
-
-
-@dataclass(frozen=True)
-class TemplateAutoCropAnalysis:
-    """Diagnostics for the legacy single-action template auto crop."""
-
-    start_frame: int
-    end_frame: int
-    frame_count: int
-    fps: float
-    activity_groups: tuple[tuple[int, int], ...]
-
-    @property
-    def selected_frames(self) -> int:
-        return max(0, int(self.end_frame) - int(self.start_frame) + 1)
-
-    @property
-    def retained_ratio(self) -> float:
-        return float(self.selected_frames) / float(max(1, int(self.frame_count)))
-
-    @property
-    def duration_s(self) -> float:
-        return float(self.frame_count) / float(self.fps)
-
-    @property
-    def selected_duration_s(self) -> float:
-        return float(self.selected_frames) / float(self.fps)
-
-    @property
-    def requires_review(self) -> bool:
-        if self.duration_s < 30.0 or len(self.activity_groups) < 2:
-            return False
-        suspicious_limit_s = max(5.0, self.duration_s * 0.10)
-        return self.selected_duration_s <= suspicious_limit_s
-
-    def to_meta(self) -> dict:
-        return {
-            "auto_crop_strategy": "primary_activity_segment_v1",
-            "auto_activity_group_count": len(self.activity_groups),
-            "auto_activity_groups": [
-                {"start_frame": int(start), "end_frame": int(end)}
-                for start, end in self.activity_groups
-            ],
-            "auto_retained_ratio": float(self.retained_ratio),
-            "auto_review_required": bool(self.requires_review),
-        }
-
-
-class TemplateAutoCropReviewRequired(ValueError):
-    def __init__(self, analysis: TemplateAutoCropAnalysis):
-        self.analysis = analysis
-        ranges = ", ".join(
-            f"{start}..{end} ({start / analysis.fps:.1f}-{end / analysis.fps:.1f}s)"
-            for start, end in analysis.activity_groups[:12]
-        )
-        if len(analysis.activity_groups) > 12:
-            ranges += f"，另有 {len(analysis.activity_groups) - 12} 段"
-        super().__init__(
-            "长视频自动裁剪需要人工确认："
-            f"输入 {analysis.duration_s:.2f}s，当前算法只会保留 "
-            f"{analysis.selected_duration_s:.2f}s "
-            f"({analysis.retained_ratio * 100.0:.1f}%)，"
-            f"并检测到 {len(analysis.activity_groups)} 个活动组。"
-            "请填写 startFrame/endFrame（CLI 使用 --start/--end），"
-            "或先按动作拆分视频后分别生成模板。"
-            f"候选区间：{ranges}"
-        )
-
-
-def analyze_template_auto_crop(
-    energy: np.ndarray,
-    *,
-    fps: float,
-) -> TemplateAutoCropAnalysis:
-    """Analyze whether the single-action auto crop is unsafe for a long video.
-
-    The selected range intentionally remains identical to ``find_active_range``.
-    Activity groups are diagnostics only: they prevent a long multi-activity video
-    from silently becoming a tiny template without changing scoring/exam callers.
-    """
-    values = np.asarray(energy, dtype=np.float32).reshape(-1)
-    fps_value = float(fps or 0.0) or 30.0
-    frame_count = int(values.size + 1)
-    auto_start, auto_end = find_active_range(values, pad=10)
-
-    if values.size == 0:
-        groups: tuple[tuple[int, int], ...] = ()
-    else:
-        smooth_frames = max(3, int(round(0.30 * fps_value)))
-        kernel = np.ones(smooth_frames, dtype=np.float32) / float(smooth_frames)
-        smoothed = (
-            np.convolve(values, kernel, mode="same")
-            if values.size >= smooth_frames
-            else values
-        )
-        active = smoothed > float(np.percentile(smoothed, 70))
-        runs: list[tuple[int, int]] = []
-        run_start: int | None = None
-        for index, is_active in enumerate(active.tolist()):
-            if is_active and run_start is None:
-                run_start = index
-            elif (not is_active) and run_start is not None:
-                runs.append((run_start, index - 1))
-                run_start = None
-        if run_start is not None:
-            runs.append((run_start, int(active.size - 1)))
-
-        min_active_frames = max(2, int(round(0.15 * fps_value)))
-        runs = [
-            (start, end) for start, end in runs if end - start + 1 >= min_active_frames
-        ]
-        merge_gap_frames = max(1, int(round(2.0 * fps_value)))
-        merged: list[tuple[int, int]] = []
-        for start, end in runs:
-            if merged and start - merged[-1][1] - 1 <= merge_gap_frames:
-                merged[-1] = (merged[-1][0], end)
-            else:
-                merged.append((start, end))
-
-        group_pad_frames = max(1, int(round(0.50 * fps_value)))
-        groups = tuple(
-            (
-                max(0, int(start - group_pad_frames)),
-                min(frame_count - 1, int(end + 1 + group_pad_frames)),
-            )
-            for start, end in merged
-        )
-
-    return TemplateAutoCropAnalysis(
-        start_frame=int(auto_start),
-        end_frame=int(auto_end),
-        frame_count=frame_count,
-        fps=fps_value,
-        activity_groups=groups,
-    )
 
 
 def _extract_pose_and_features(
@@ -301,12 +170,6 @@ def _build_template_meta(
     }
 
 
-def _write_template_npz(out_path: Path, seg_feats: np.ndarray, meta: dict) -> None:
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    with atomic_target(out_path) as tmp, open(tmp, "wb") as fh:
-        np.savez_compressed(fh, features=seg_feats, meta=np.array(meta, dtype=object))
-
-
 def _prepare_template_payload(
     video_path: Path,
     *,
@@ -375,7 +238,7 @@ def create_template_from_video(
     if not overwrite and resolved_out.exists():
         raise FileExistsError(f"模板文件已存在：{resolved_out}")
 
-    seg_feats, meta, _quality, start_i, end_i, _fps = _prepare_template_payload(
+    seg_feats, meta, quality, start_i, end_i, fps = _prepare_template_payload(
         video_path,
         pose_variant=pose_variant,
         start=start,
@@ -385,29 +248,86 @@ def create_template_from_video(
         progress_cb=progress_cb,
         stop_evt=stop_evt,
     )
-    if stop_evt is not None and stop_evt.is_set():
-        raise InterruptedError("模板生成已取消")
-    if not overwrite and resolved_out.exists():
-        raise FileExistsError(f"模板文件已存在：{resolved_out}")
-    _write_template_npz(resolved_out, seg_feats, meta)
+    results = _commit_staged_pair(
+        [
+            (
+                "single",
+                video_path,
+                resolved_out,
+                seg_feats,
+                meta,
+                quality,
+                start_i,
+                end_i,
+                fps,
+            )
+        ],
+        pose_variant=pose_variant,
+        preview=preview,
+        overwrite=overwrite,
+        progress_cb=progress_cb,
+        stop_evt=stop_evt,
+    )
+    return results[0].path
 
-    if preview:
+
+def _preview_target_and_stale(target: Path, actual_preview: Path) -> tuple[Path, Path]:
+    if actual_preview.suffix.lower() == ".avi":
+        return target.with_suffix(".preview.avi"), target.with_suffix(".preview.mp4")
+    return target.with_suffix(".preview.mp4"), target.with_suffix(".preview.avi")
+
+
+def _stage_npz_and_previews(
+    staged: Sequence[
+        tuple[str, Path, Path, np.ndarray, dict, TemplateQualityReport, int, int, float]
+    ],
+    *,
+    pose_variant: str,
+    preview: bool,
+    progress_cb: ProgressCb | None,
+    stop_evt: Event | None,
+    tmp_cleanup: list[Path],
+) -> tuple[list[tuple[Path, Path]], list[Path], list[Path | None]]:
+    commit_pairs: list[tuple[Path, Path]] = []
+    stale_previews: list[Path] = []
+    staged_previews: list[Path | None] = []
+    for _view, _vp, target, seg_feats, meta, _q, _s, _e, _fps in staged:
+        if stop_evt is not None and stop_evt.is_set():
+            raise InterruptedError("模板生成已取消")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        tmp_npz = temporary_sibling(target)
+        tmp_cleanup.append(tmp_npz)
+        with open(tmp_npz, "wb") as fh:
+            np.savez_compressed(
+                fh, features=seg_feats, meta=np.array(meta, dtype=object)
+            )
+        commit_pairs.append((tmp_npz, target))
+
+    for _view, video_path, target, _sf, _m, _q, start_i, end_i, _fps in staged:
+        if not preview:
+            staged_previews.append(None)
+            continue
         if stop_evt is not None and stop_evt.is_set():
             raise InterruptedError("模板生成已取消")
         if progress_cb is not None:
             progress_cb("导出模板预览", 0, 1)
-        preview_path = resolved_out.with_suffix(".preview.mp4")
-        _actual_preview = export_match_preview(
+        tmp_req = target.with_name(f"_tmp_{uuid.uuid4().hex}.preview.mp4")
+        tmp_cleanup.extend((tmp_req, tmp_req.with_suffix(".avi")))
+        actual_tmp = export_match_preview(
             video_path,
-            out_path=preview_path,
+            out_path=tmp_req,
             start_frame=start_i,
             end_frame=end_i,
             pose_variant=pose_variant,
             progress_cb=progress_cb,
             stop_evt=stop_evt,
         )
-
-    return resolved_out
+        tmp_cleanup.append(actual_tmp)
+        final_prev, stale_prev = _preview_target_and_stale(target, actual_tmp)
+        commit_pairs.append((actual_tmp, final_prev))
+        stale_previews.append(stale_prev)
+        staged_previews.append(final_prev)
+    return commit_pairs, stale_previews, staged_previews
 
 
 def _commit_staged_pair(
@@ -427,57 +347,51 @@ def _commit_staged_pair(
         if not overwrite and target.exists():
             raise FileExistsError(f"模板文件已存在：{target}")
 
-    targets = [item[2] for item in staged]
-    with atomic_replace_many(targets) as tmp_paths:
-        for item, tmp_path in zip(staged, tmp_paths):
-            if stop_evt is not None and stop_evt.is_set():
-                raise InterruptedError("模板生成已取消")
-            _view, _vpath, _target, seg_feats, meta, _q, _s, _e, _fps = item
-            with open(tmp_path, "wb") as fh:
-                np.savez_compressed(
-                    fh, features=seg_feats, meta=np.array(meta, dtype=object)
-                )
-
-    results: list[TemplateCreateResult] = []
-    for (
-        view,
-        video_path,
-        target,
-        seg_feats,
-        _meta,
-        quality,
-        start_i,
-        end_i,
-        fps,
-    ) in staged:
-        preview_path: Path | None = None
-        if preview:
-            if stop_evt is not None and stop_evt.is_set():
-                raise InterruptedError("模板生成已取消")
-            if progress_cb is not None:
-                progress_cb("导出模板预览", 0, 1)
-            preview_path = export_match_preview(
-                video_path,
-                out_path=target.with_suffix(".preview.mp4"),
-                start_frame=start_i,
-                end_frame=end_i,
-                pose_variant=pose_variant,
-                progress_cb=progress_cb,
-                stop_evt=stop_evt,
-            )
-        results.append(
-            TemplateCreateResult(
-                view=view,
-                path=target,
-                start_frame=start_i,
-                end_frame=end_i,
-                frame_count=int(seg_feats.shape[0]),
-                fps=float(fps),
-                quality=quality,
-                preview_path=preview_path,
-            )
+    tmp_cleanup: list[Path] = []
+    try:
+        commit_pairs, stale_previews, staged_previews = _stage_npz_and_previews(
+            staged,
+            pose_variant=pose_variant,
+            preview=preview,
+            progress_cb=progress_cb,
+            stop_evt=stop_evt,
+            tmp_cleanup=tmp_cleanup,
         )
-    return results
+        if stop_evt is not None and stop_evt.is_set():
+            raise InterruptedError("模板生成已取消")
+        for _view, _vpath, target, *_rest in staged:
+            if not overwrite and target.exists():
+                raise FileExistsError(f"模板文件已存在：{target}")
+        atomic_commit_staged(commit_pairs)
+        for stale in stale_previews:
+            stale.unlink(missing_ok=True)
+    finally:
+        for path in dict.fromkeys(tmp_cleanup):
+            path.unlink(missing_ok=True)
+
+    return [
+        TemplateCreateResult(
+            view=view,
+            path=target,
+            start_frame=start_i,
+            end_frame=end_i,
+            frame_count=int(seg_feats.shape[0]),
+            fps=float(fps),
+            quality=quality,
+            preview_path=prev_path,
+        )
+        for (
+            view,
+            _vp,
+            target,
+            seg_feats,
+            _meta,
+            quality,
+            start_i,
+            end_i,
+            fps,
+        ), prev_path in zip(staged, staged_previews)
+    ]
 
 
 def create_template_pair(

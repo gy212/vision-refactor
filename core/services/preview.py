@@ -5,7 +5,9 @@ from __future__ import annotations
 
 from pathlib import Path
 from threading import Event
+import uuid
 
+from core.foundation.atomic_io import replace_file
 from core.foundation.tasks import Cancelled, from_stopped
 from core.media.video_source import DecodeOptions
 from core.media.writer import transcode_to_h264
@@ -14,13 +16,24 @@ from core.pose.extract import formal_engine
 from core.pose.features import ProgressCb
 
 
-def _cleanup_partial_preview(out_path: Path, *extra: Path) -> None:
-    candidates = dict.fromkeys((out_path, out_path.with_suffix(".avi"), *extra))
-    for path in candidates:
+def _cleanup_partial_preview(*paths: Path) -> None:
+    expanded: list[Path] = []
+    for p in paths:
+        expanded.append(p)
+        expanded.append(p.with_suffix(".avi"))
+    for path in dict.fromkeys(expanded):
         try:
             path.unlink(missing_ok=True)
         except OSError:
             pass
+
+
+def _preview_targets(out_file: Path, actual_suffix: str) -> tuple[Path, Path | None]:
+    ext = ".avi" if actual_suffix.lower() == ".avi" else (out_file.suffix or ".mp4")
+    final_target = out_file.with_suffix(ext)
+    stale_ext = ".mp4" if final_target.suffix.lower() == ".avi" else ".avi"
+    stale = out_file.with_suffix(stale_ext)
+    return final_target, (stale if stale != final_target else None)
 
 
 def write_pose_preview(
@@ -42,40 +55,60 @@ def write_pose_preview(
     if progress_cb is not None:
         progress = lambda done, total: progress_cb("导出匹配预览", done, total)  # noqa: E731
     out_file = Path(out_path)
-    try:
-        path, codec, _frames = annotate_video(
-            video_path,
-            out_file,
-            formal_engine(pose_variant),
-            decode=DecodeOptions(start=int(start_frame), end=int(end_frame)),
-            cancel=cancel,
-            progress=progress,
-            keep_partial=keep_partial,
-        )
-    except Cancelled:
-        if not keep_partial:
-            _cleanup_partial_preview(out_file)
-        raise InterruptedError("预览导出已取消") from None
-
-    if not keep_partial and stop_evt is not None and stop_evt.is_set():
-        _cleanup_partial_preview(out_file, path)
-        raise InterruptedError("预览导出已取消")
-
-    should_transcode = path.suffix.lower() != ".mp4" and not (
-        keep_partial and stop_evt is not None and stop_evt.is_set()
+    out_file.parent.mkdir(parents=True, exist_ok=True)
+    work_path = (
+        out_file
+        if keep_partial
+        else out_file.with_name(f"_tmp_{uuid.uuid4().hex}{out_file.suffix or '.mp4'}")
     )
-    if should_transcode:
+    actual_path: Path | None = None
+    final_target: Path | None = None
+    try:
         try:
-            transcoded = transcode_to_h264(path, stop_evt=stop_evt)
-        except InterruptedError:
-            if not keep_partial:
-                _cleanup_partial_preview(out_file, path)
+            actual_path, codec, _frames = annotate_video(
+                video_path,
+                work_path,
+                formal_engine(pose_variant),
+                decode=DecodeOptions(start=int(start_frame), end=int(end_frame)),
+                cancel=cancel,
+                progress=progress,
+                keep_partial=keep_partial,
+            )
+        except Cancelled:
             raise InterruptedError("预览导出已取消") from None
-        if transcoded is not None and transcoded != path:
-            path = transcoded
-            if path.suffix.lower() == ".mp4":
-                codec = "H264"
-    return path, codec
+
+        if not keep_partial and stop_evt is not None and stop_evt.is_set():
+            raise InterruptedError("预览导出已取消")
+
+        should_transcode = actual_path.suffix.lower() != ".mp4" and not (
+            keep_partial and stop_evt is not None and stop_evt.is_set()
+        )
+        if should_transcode:
+            transcoded = transcode_to_h264(actual_path, stop_evt=stop_evt)
+            if transcoded is not None and transcoded != actual_path:
+                actual_path = transcoded
+                if actual_path.suffix.lower() == ".mp4":
+                    codec = "H264"
+
+        if keep_partial:
+            final_target = actual_path
+            return actual_path, codec
+
+        if stop_evt is not None and stop_evt.is_set():
+            raise InterruptedError("预览导出已取消")
+
+        final_target, stale = _preview_targets(out_file, actual_path.suffix)
+        if actual_path != final_target:
+            replace_file(actual_path, final_target)
+        if stale is not None:
+            stale.unlink(missing_ok=True)
+        return final_target, codec
+    finally:
+        if not keep_partial:
+            leftovers = [work_path]
+            if actual_path is not None and actual_path != final_target:
+                leftovers.append(actual_path)
+            _cleanup_partial_preview(*leftovers)
 
 
 def export_match_preview(

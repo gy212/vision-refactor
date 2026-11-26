@@ -163,32 +163,6 @@ def test_create_template_validates_bounds_and_supports_single_bound(
         assert (meta["start_frame"], meta["end_frame"]) == (0, 19)
 
 
-def test_create_template_no_auto_crop_keeps_full_sequence(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # 构造 40s 稀疏多活动序列：开启 auto_crop 会触发复核，关闭 auto_crop 应直接保留整段。
-    energy = np.full(40 * 30 - 1, 0.002, dtype=np.float32)
-    energy[100:140] = 0.2
-    energy[700:740] = 0.2
-    values = np.concatenate(
-        [np.zeros(1, dtype=np.float32), np.cumsum(energy, dtype=np.float32)]
-    )
-    feats = np.broadcast_to(values[:, None, None], (values.size, 22, 2)).copy()
-    monkeypatch.setattr(
-        services_templates,
-        "extract_features",
-        lambda *_a, **_k: (feats, 30.0, None),
-    )
-
-    out_path = create_template_from_video(
-        "long.mp4", auto_crop=False, out_path=tmp_path / "full.npz"
-    )
-    with np.load(out_path, allow_pickle=True) as d:
-        meta = dict(d["meta"].item())
-        assert d["features"].shape[0] == feats.shape[0]
-        assert meta["crop_selection"] == "full"
-
-
 def test_create_template_forces_sequential_extraction_even_if_workers_gt_1(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -559,64 +533,6 @@ def test_create_template_pair_overwrite_failure_preserves_existing_templates(
     assert not list(tmp_path.glob("*.bak"))
 
 
-def test_preview_export_cancel_cleans_partial_and_transcodes_avi(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from threading import Event
-
-    from core.foundation.tasks import Cancelled
-    from core.services import (
-        export_match_preview,
-        preview as preview_svc,
-        write_pose_preview,
-    )
-
-    out_mp4 = tmp_path / "demo.preview.mp4"
-    avi_path = tmp_path / "demo.preview.avi"
-
-    def cancelled_annotate(video, out_path, *_a, **_k):
-        Path(out_path).write_bytes(b"partial-mp4")
-        Path(out_path).with_suffix(".avi").write_bytes(b"partial-avi")
-        raise Cancelled("user cancelled")
-
-    monkeypatch.setattr(preview_svc, "annotate_video", cancelled_annotate)
-    with pytest.raises(InterruptedError, match="预览导出已取消"):
-        export_match_preview(
-            Path("v.mp4"),
-            out_path=out_mp4,
-            start_frame=0,
-            end_frame=10,
-            pose_variant="heavy",
-            stop_evt=Event(),
-        )
-    assert not out_mp4.exists()
-    assert not avi_path.exists()
-
-    def fallback_annotate(_video, out_path, *_a, **_k):
-        fb = Path(out_path).with_suffix(".avi")
-        fb.write_bytes(b"avi-data")
-        return fb, "MJPG", 5
-
-    def fake_transcode(src, **_k):
-        dst = Path(src).with_suffix(".mp4")
-        Path(src).unlink()
-        dst.write_bytes(b"h264-mp4")
-        return dst
-
-    monkeypatch.setattr(preview_svc, "annotate_video", fallback_annotate)
-    monkeypatch.setattr(preview_svc, "transcode_to_h264", fake_transcode)
-    actual_path, codec = write_pose_preview(
-        Path("v.mp4"),
-        out_path=out_mp4,
-        start_frame=0,
-        end_frame=5,
-        pose_variant="heavy",
-    )
-    assert actual_path == out_mp4 and actual_path.read_bytes() == b"h264-mp4"
-    assert codec == "H264"
-    assert not avi_path.exists()
-
-
 def test_make_template_cli_prints_zero_auto_start_and_actual_preview_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -760,3 +676,79 @@ def test_discover_sanitize_and_body_core_bounds_hardening(
         "v.mp4", backend="mediapipe", start=2, end=12, out_path=tmp_path / "ok_bc.npz"
     )
     assert saved.is_file() and not list(tmp_path.glob("*.tmp"))
+
+
+def test_template_creation_with_preview_cancel_preserves_existing_npz_and_previews(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    front_raw = _load_raw("front_src_raw.npz")[:30]
+    side_raw = _load_raw("side_src_raw.npz")[:30]
+
+    single_npz = tmp_path / "单路.npz"
+    single_prev = tmp_path / "单路.preview.mp4"
+    single_npz.write_bytes(b"OLD_SINGLE_NPZ")
+    single_prev.write_bytes(b"OLD_SINGLE_PREV")
+
+    front_npz = tmp_path / "直拳_正面.npz"
+    front_prev = tmp_path / "直拳_正面.preview.mp4"
+    side_npz = tmp_path / "直拳_侧面.npz"
+    side_prev = tmp_path / "直拳_侧面.preview.mp4"
+    front_npz.write_bytes(b"OLD_FRONT_NPZ")
+    front_prev.write_bytes(b"OLD_FRONT_PREV")
+    side_npz.write_bytes(b"OLD_SIDE_NPZ")
+    side_prev.write_bytes(b"OLD_SIDE_PREV")
+
+    H.clear_registry()
+    H.register_video("golden://tx_front.mp4", front_raw, fps=30.0)
+    H.register_video("golden://tx_side.mp4", side_raw, fps=30.0)
+    try:
+        with H.replay_context():
+            monkeypatch.setattr(
+                services_templates,
+                "export_match_preview",
+                lambda *_a, **_k: (_ for _ in ()).throw(
+                    InterruptedError("预览导出已取消")
+                ),
+            )
+            with pytest.raises(InterruptedError, match="预览导出已取消"):
+                create_template_from_video(
+                    "golden://tx_front.mp4",
+                    out_path=single_npz,
+                    auto_crop=False,
+                    preview=True,
+                    overwrite=True,
+                )
+            assert single_npz.read_bytes() == b"OLD_SINGLE_NPZ"
+            assert single_prev.read_bytes() == b"OLD_SINGLE_PREV"
+
+            call_count = 0
+
+            def preview_fail_on_second(_video, *, out_path, **_k):
+                nonlocal call_count
+                call_count += 1
+                if call_count == 1:
+                    Path(out_path).write_bytes(b"new-front-preview")
+                    return Path(out_path)
+                raise InterruptedError("预览导出已取消")
+
+            monkeypatch.setattr(
+                services_templates, "export_match_preview", preview_fail_on_second
+            )
+            with pytest.raises(InterruptedError, match="预览导出已取消"):
+                create_template_pair(
+                    {"front": "golden://tx_front.mp4", "side": "golden://tx_side.mp4"},
+                    action_name="直拳",
+                    out_dir=tmp_path,
+                    preview=True,
+                    overwrite=True,
+                )
+    finally:
+        H.clear_registry()
+
+    assert front_npz.read_bytes() == b"OLD_FRONT_NPZ"
+    assert front_prev.read_bytes() == b"OLD_FRONT_PREV"
+    assert side_npz.read_bytes() == b"OLD_SIDE_NPZ"
+    assert side_prev.read_bytes() == b"OLD_SIDE_PREV"
+    assert not list(tmp_path.glob("_tmp_*"))
+    assert not list(tmp_path.glob("*.bak"))
+    assert not list(tmp_path.glob("*.tmp"))

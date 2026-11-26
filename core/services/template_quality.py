@@ -11,7 +11,7 @@ import numpy as np
 
 from core.evaluation.templates import VIEW_SUFFIXES, split_view_suffix
 from core.foundation.paths import templates_dir
-from core.foundation.signal import motion_energy
+from core.foundation.signal import find_active_range, motion_energy
 from core.media.segment_layout import VIDEO_SUFFIXES, SegmentLayout
 from core.pose.validity import DEFAULT_VALID_CONF_THR, derive_valid_mask
 
@@ -234,3 +234,133 @@ def assess_template_quality(
                 report=report,
             )
     return report
+
+
+@dataclass(frozen=True)
+class TemplateAutoCropAnalysis:
+    """Diagnostics for the legacy single-action template auto crop."""
+
+    start_frame: int
+    end_frame: int
+    frame_count: int
+    fps: float
+    activity_groups: tuple[tuple[int, int], ...]
+
+    @property
+    def selected_frames(self) -> int:
+        return max(0, int(self.end_frame) - int(self.start_frame) + 1)
+
+    @property
+    def retained_ratio(self) -> float:
+        return float(self.selected_frames) / float(max(1, int(self.frame_count)))
+
+    @property
+    def duration_s(self) -> float:
+        return float(self.frame_count) / float(self.fps)
+
+    @property
+    def selected_duration_s(self) -> float:
+        return float(self.selected_frames) / float(self.fps)
+
+    @property
+    def requires_review(self) -> bool:
+        if self.duration_s < 30.0 or len(self.activity_groups) < 2:
+            return False
+        suspicious_limit_s = max(5.0, self.duration_s * 0.10)
+        return self.selected_duration_s <= suspicious_limit_s
+
+    def to_meta(self) -> dict:
+        return {
+            "auto_crop_strategy": "primary_activity_segment_v1",
+            "auto_activity_group_count": len(self.activity_groups),
+            "auto_activity_groups": [
+                {"start_frame": int(start), "end_frame": int(end)}
+                for start, end in self.activity_groups
+            ],
+            "auto_retained_ratio": float(self.retained_ratio),
+            "auto_review_required": bool(self.requires_review),
+        }
+
+
+class TemplateAutoCropReviewRequired(ValueError):
+    def __init__(self, analysis: TemplateAutoCropAnalysis):
+        self.analysis = analysis
+        ranges = ", ".join(
+            f"{start}..{end} ({start / analysis.fps:.1f}-{end / analysis.fps:.1f}s)"
+            for start, end in analysis.activity_groups[:12]
+        )
+        if len(analysis.activity_groups) > 12:
+            ranges += f"，另有 {len(analysis.activity_groups) - 12} 段"
+        super().__init__(
+            "长视频自动裁剪需要人工确认："
+            f"输入 {analysis.duration_s:.2f}s，当前算法只会保留 "
+            f"{analysis.selected_duration_s:.2f}s "
+            f"({analysis.retained_ratio * 100.0:.1f}%)，"
+            f"并检测到 {len(analysis.activity_groups)} 个活动组。"
+            "请填写 startFrame/endFrame（CLI 使用 --start/--end），"
+            "或先按动作拆分视频后分别生成模板。"
+            f"候选区间：{ranges}"
+        )
+
+
+def analyze_template_auto_crop(
+    energy: np.ndarray,
+    *,
+    fps: float,
+) -> TemplateAutoCropAnalysis:
+    """Analyze whether the single-action auto crop is unsafe for a long video."""
+    values = np.asarray(energy, dtype=np.float32).reshape(-1)
+    fps_value = float(fps or 0.0) or 30.0
+    frame_count = int(values.size + 1)
+    auto_start, auto_end = find_active_range(values, pad=10)
+
+    if values.size == 0:
+        groups: tuple[tuple[int, int], ...] = ()
+    else:
+        smooth_frames = max(3, int(round(0.30 * fps_value)))
+        kernel = np.ones(smooth_frames, dtype=np.float32) / float(smooth_frames)
+        smoothed = (
+            np.convolve(values, kernel, mode="same")
+            if values.size >= smooth_frames
+            else values
+        )
+        active = smoothed > float(np.percentile(smoothed, 70))
+        runs: list[tuple[int, int]] = []
+        run_start: int | None = None
+        for index, is_active in enumerate(active.tolist()):
+            if is_active and run_start is None:
+                run_start = index
+            elif (not is_active) and run_start is not None:
+                runs.append((run_start, index - 1))
+                run_start = None
+        if run_start is not None:
+            runs.append((run_start, int(active.size - 1)))
+
+        min_active_frames = max(2, int(round(0.15 * fps_value)))
+        runs = [
+            (start, end) for start, end in runs if end - start + 1 >= min_active_frames
+        ]
+        merge_gap_frames = max(1, int(round(2.0 * fps_value)))
+        merged: list[tuple[int, int]] = []
+        for start, end in runs:
+            if merged and start - merged[-1][1] - 1 <= merge_gap_frames:
+                merged[-1] = (merged[-1][0], end)
+            else:
+                merged.append((start, end))
+
+        group_pad_frames = max(1, int(round(0.50 * fps_value)))
+        groups = tuple(
+            (
+                max(0, int(start - group_pad_frames)),
+                min(frame_count - 1, int(end + 1 + group_pad_frames)),
+            )
+            for start, end in merged
+        )
+
+    return TemplateAutoCropAnalysis(
+        start_frame=int(auto_start),
+        end_frame=int(auto_end),
+        frame_count=frame_count,
+        fps=fps_value,
+        activity_groups=groups,
+    )

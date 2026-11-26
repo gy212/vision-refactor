@@ -579,6 +579,17 @@ def test_dialog_pool_modes_busy_isolation_and_video_filetypes(tmp_path, monkeypa
         assert (
             single_calls == [[pair_results[1]]] and not other_calls and not dual_calls
         )
+
+        # set_running(False) 期间即使后台 controller.busy 尚未归 False，也应稳定恢复 auto_add_check
+        busy_flag = {"val": True}
+        monkeypatch.setattr(
+            TemplateBuilderController, "busy", property(lambda _s: busy_flag["val"])
+        )
+        dialog.set_running(True)
+        assert str(dialog.auto_add_check.cget("state")) == "disabled"
+        dialog.set_running(False)
+        assert str(dialog.auto_add_check.cget("state")) == "normal"
+        busy_flag["val"] = False
         dialog.close()
 
         # app 级 busy 隔离 + 关闭未停完禁止并发重开
