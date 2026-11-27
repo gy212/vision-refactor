@@ -17,7 +17,7 @@ from apps.tk.controllers.settings import SettingsController, active_model_keys, 
 
 class SettingsDialog:
     def __init__(self, parent: Tk, post: Callable[[Callable[[], Any]], Any], *,
-                 current_pose: str = "full", hands_enabled: bool = True) -> None:
+                 current_pose: str = "full", hands_enabled: bool = False) -> None:
         self._win = Toplevel(parent)
         self._win.title("设置")
         self._win.geometry("560x560")

@@ -33,9 +33,12 @@ from core.evaluation.rules.sanda_v5 import DEFAULT_STANCE, build_checks, load_fe
 from core.evaluation.scoring.cost import POSE33_BASELINE
 from core.evaluation.segmentation import split_front_side
 from core.evaluation.templates import COMPARE, Template, load_template, normalizer_for
-from core.pose.extract import pose_cache
+from core.foundation.tasks import Cancelled, from_stopped
+from core.pose.extract import FORMAL, extract_pose_pair, formal_engine, pose_cache
 from core.pose.features import ProgressCb, extract_features
 from core.pose.raw_series import extract_pose_raw_series, slice_pose_raw_series
+
+_DEFAULT_EXTRACT_FEATURES = extract_features
 
 
 @dataclass(frozen=True)
@@ -289,6 +292,32 @@ def compare_dual_templates(
     )
 
 
+def _warm_dual_streams(
+    front_video: Path,
+    side_video: Path,
+    pair: _Pair,
+    *,
+    parallel: bool,
+    progress_cb: ProgressCb | None,
+    stop_evt: Event,
+) -> None:
+    """在 ``pose_cache`` 作用域内经共享原语预热正/侧两路顺序姿态，下游特征与规则 100% 命中缓存。"""
+    if pair.workers != 1 or extract_features is not _DEFAULT_EXTRACT_FEATURES:
+        return
+    progress = (
+        (lambda done, total: progress_cb("提取骨架特征", done, total))
+        if progress_cb is not None
+        else None
+    )
+    try:
+        extract_pose_pair(
+            front_video, side_video, formal_engine(pair.pose_variant), FORMAL,
+            parallel=parallel, cancel=from_stopped(stop_evt.is_set), progress=progress,
+        )
+    except Cancelled:
+        raise InterruptedError("姿态特征提取已取消") from None
+
+
 @pose_cache()
 def compare_dual_streams(
     front_template_path: str | Path,
@@ -307,6 +336,7 @@ def compare_dual_streams(
     enable_error_analysis: bool = False,
     progress_cb: ProgressCb | None = None,
     stop_evt: Event | None = None,
+    parallel: bool = True,
 ) -> DualCompareResult:
     """正、侧两路已知视角的同步视频分别对正/侧模板（``DUAL_STREAM``，``batch --paired``）；每路整段参与，不切分。"""
     stop_evt = stop_evt or Event()
@@ -314,6 +344,9 @@ def compare_dual_streams(
     front_video, side_video = Path(front_video_path), Path(side_video_path)
     rule_action, rule_stance = _rule_target(enable_rules, rule_action, rule_stance)
     pair = _load_pair(Path(front_template_path), Path(side_template_path), pose_variant, workers)
+    _warm_dual_streams(
+        front_video, side_video, pair, parallel=parallel, progress_cb=progress_cb, stop_evt=stop_evt,
+    )
 
     def features(template: Template, video: Path, label: str):
         seq, fps, _views = extract_features(

@@ -18,8 +18,11 @@ from core.pose.engine import (
 )
 from core.pose.extract import (
     FORMAL,
+    MIN_CPUS_FOR_RECORDING_PARALLEL,
     PRACTICE_V4,
     ExtractionProfile,
+    can_parallel_pose_pair,
+    extract_pose_pair,
     extract_pose_sequence,
     formal_engine,
     practice_engine,
@@ -63,6 +66,7 @@ from core.pose.normalize import (
     normalize_pose_xy,
     normalize_pose_xy_v1,
     normalize_pose_xy_v3,
+    normalize_pose_xy_v3_batch,
 )
 from core.pose.parallel import InferResult, ParallelPoseEngine, default_pipeline_factory
 from core.pose.raw_series import (
@@ -121,6 +125,7 @@ __all__ = [
     "L_SHOULDER",
     "L_WRIST",
     "MEDIAPIPE_VALIDITY_POLICY",
+    "MIN_CPUS_FOR_RECORDING_PARALLEL",
     "MISSING_MODEL_HINTS",
     "MOUTH_L",
     "MOUTH_R",
@@ -148,6 +153,7 @@ __all__ = [
     "SmoothedLandmark",
     "SourceMeta",
     "actions_text",
+    "can_parallel_pose_pair",
     "classify_pose_actions",
     "create_engine",
     "default_pipeline_factory",
@@ -159,6 +165,7 @@ __all__ = [
     "draw_status_lines",
     "draw_text",
     "draw_tk_hud",
+    "extract_pose_pair",
     "extract_pose_raw",
     "extract_pose_raw_series",
     "extract_pose_sequence",
@@ -174,6 +181,7 @@ __all__ = [
     "normalize_pose_xy",
     "normalize_pose_xy_v1",
     "normalize_pose_xy_v3",
+    "normalize_pose_xy_v3_batch",
     "pose_cache",
     "pose_model_path",
     "pose_view_score",

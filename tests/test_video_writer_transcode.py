@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import subprocess
 import threading
 from pathlib import Path
@@ -76,9 +77,7 @@ def test_open_video_writer_normalizes_unknown_container_fallback_to_avi(
     assert codec == "MJPG"
 
 
-def test_transcode_to_h264_runs_ffmpeg_and_removes_avi(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_transcode_to_h264_runs_ffmpeg_and_removes_avi(tmp_path: Path, monkeypatch) -> None:
     src = tmp_path / "recording.avi"
     src.write_bytes(b"avi")
     expected_dst = tmp_path / "recording.mp4"
@@ -164,9 +163,7 @@ def test_pre_cancelled_pass_through_inputs_keep_legacy_return_semantics(
     assert video_writer.transcode_to_h264(mp4, stop_evt=stop_evt) == mp4
 
 
-def test_transcode_to_h264_keeps_avi_when_ffmpeg_is_missing(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_transcode_to_h264_keeps_avi_when_ffmpeg_is_missing(tmp_path: Path, monkeypatch) -> None:
     src = tmp_path / "recording.avi"
     src.write_bytes(b"avi")
 
@@ -179,9 +176,7 @@ def test_transcode_to_h264_keeps_avi_when_ffmpeg_is_missing(
     assert src.exists()
 
 
-def test_transcode_to_h264_keeps_avi_when_ffmpeg_fails(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_transcode_to_h264_keeps_avi_when_ffmpeg_fails(tmp_path: Path, monkeypatch) -> None:
     src = tmp_path / "recording.avi"
     src.write_bytes(b"avi")
     existing_dst = src.with_suffix(".mp4")
@@ -279,9 +274,7 @@ def test_transcode_to_h264_cancellation_terminates_ffmpeg_and_cleans_partial(
     assert list(tmp_path.glob(".recording.*.tmp.mp4")) == []
 
 
-def test_transcode_to_h264_pre_cancelled_does_not_start_ffmpeg(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_transcode_to_h264_pre_cancelled_does_not_start_ffmpeg(tmp_path: Path, monkeypatch) -> None:
     src = tmp_path / "recording.avi"
     src.write_bytes(b"avi")
     stop_evt = threading.Event()
@@ -404,3 +397,66 @@ def test_export_match_preview_preserves_existing_preview_on_cancel_or_error(
         )
     assert old_mp4.read_bytes() == b"OLD_PREVIEW_MP4"
     assert [p.name for p in tmp_path.iterdir()] == ["demo.preview.mp4"]
+
+
+def test_open_video_writer_removes_empty_mp4_stub_before_avi_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    preferred = tmp_path / "recording.mp4"
+
+    def fake_video_writer(path: str, codec: int, _fps: float, _size: tuple[int, int]):
+        target = Path(path)
+        if target.suffix == ".mp4":
+            target.write_bytes(b"")
+            return _FakeWriter(opened=False)
+        return _FakeWriter(opened=True)
+
+    monkeypatch.setattr(video_writer.cv2, "VideoWriter", fake_video_writer)
+    _writer, actual_path, codec = video_writer.open_video_writer(
+        preferred, fps=30.0, size=(320, 240)
+    )
+    assert actual_path == preferred.with_suffix(".avi")
+    assert codec == "MJPG"
+    assert not preferred.exists()
+
+    # 若目标 .mp4 原本已存在且所有编码器均失败，不得误删既有文件
+    existing = tmp_path / "keep.mp4"
+    existing.write_bytes(b"KEEP")
+    monkeypatch.setattr(
+        video_writer.cv2, "VideoWriter", lambda *_a, **_k: _FakeWriter(opened=False)
+    )
+    with pytest.raises(RuntimeError):
+        video_writer.open_video_writer(existing, fps=30.0, size=(320, 240))
+    assert existing.read_bytes() == b"KEEP"
+
+
+def test_transcode_to_h264_logs_warning_on_cleanup_oserror(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    src = tmp_path / "recording.avi"
+    src.write_bytes(b"avi")
+    real_unlink = Path.unlink
+    created: list[Path] = []
+
+    def fail_run(command, **_kwargs):
+        tmp = Path(command[-1])
+        tmp.write_bytes(b"partial")
+        created.append(tmp)
+        raise subprocess.CalledProcessError(1, command)
+
+    def locked_tmp(self: Path, missing_ok: bool = False) -> None:
+        if self.name.endswith(".tmp.mp4"):
+            raise PermissionError("tmp locked")
+        real_unlink(self, missing_ok=missing_ok)
+
+    with caplog.at_level(logging.WARNING, logger="core.media.writer"):
+        with monkeypatch.context() as mp:
+            mp.setattr(video_writer.subprocess, "run", fail_run)
+            mp.setattr(Path, "unlink", locked_tmp)
+            assert video_writer.transcode_to_h264(src) == src
+    assert len(created) == 1
+    assert any(
+        created[0].name in rec.getMessage() and "tmp locked" in rec.getMessage()
+        for rec in caplog.records
+    )
+    created[0].unlink(missing_ok=True)

@@ -83,13 +83,22 @@ def compare_dual(scheme: Scheme, front_template: str | Path, side_template: str 
     raise ValueError(f"compare_dual 不支持计分方案 {scheme.name}")
 
 
-def score_segment(front_video: str | Path, side_video: str | Path, front_templates, side_templates, *,
-                  stop_evt: Event | None = None) -> ExamPoolResult:
+def score_segment(
+    front_video: str | Path,
+    side_video: str | Path,
+    front_templates,
+    side_templates,
+    *,
+    stop_evt: Event | None = None,
+    parallel: bool = True,
+) -> ExamPoolResult:
     """离线复算一个双摄片段的考试分（``EXAM_POOL``，与 Tk 考试同一算法，D-4）；模板池按考试契约过滤。"""
     front_ok, side_ok = usable_pools(front_templates, side_templates)
-    return score_exam_pools(front_ok, side_ok, Path(front_video), Path(side_video), compare=match_video,
-                            raw_series=extract_pose_raw_series, stop_evt=stop_evt or Event(),
-                            compare_windows=match_video_windows)
+    return score_exam_pools(
+        front_ok, side_ok, Path(front_video), Path(side_video), compare=match_video,
+        raw_series=extract_pose_raw_series, stop_evt=stop_evt or Event(),
+        compare_windows=match_video_windows, parallel=parallel,
+    )
 
 
 def tech_eval_video(video_path: str | Path, *, pose_variant: str = "full", stance: str = "left",

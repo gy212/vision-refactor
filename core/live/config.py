@@ -30,7 +30,7 @@ class SessionConfig:
     cameras: Mapping[str, CaptureSpec] | None = None
     video_path: Path | None = None
     pose_variant: str = "full"
-    enable_hands: bool = True
+    enable_hands: bool = False
     delegate: str = "cpu"
     workers: int = 1
     parallel: bool = False            # True：ParallelPoseEngine（IMAGE 模式）；摄像头满则丢帧，视频保序
@@ -72,7 +72,7 @@ def camera_session(
     cameras: Mapping[str, CaptureSpec],
     *,
     pose_variant: str = "full",
-    enable_hands: bool = True,
+    enable_hands: bool = False,
     workers: int = 1,
     skeleton: bool = False,
     online_match: bool = True,
@@ -113,7 +113,7 @@ def video_session(
     path: Path | str,
     *,
     pose_variant: str = "full",
-    enable_hands: bool = True,
+    enable_hands: bool = False,
     workers: int = 1,
     hud: Literal["tk", "cli"] = "tk",
     delegate: str = "cpu",

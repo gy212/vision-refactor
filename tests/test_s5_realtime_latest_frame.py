@@ -186,7 +186,7 @@ def test_default_cli_still_uses_run_not_latest_frame(monkeypatch):
             "show": False,
             "out_path": None,
             "pose_variant": "full",
-            "enable_hands": True,
+            "enable_hands": False,
             "delegate": "cpu",
         }
     ]
@@ -206,7 +206,7 @@ def test_cli_delegate_gpu_is_explicit_opt_in(monkeypatch):
             "show": False,
             "out_path": None,
             "pose_variant": "full",
-            "enable_hands": True,
+            "enable_hands": False,
             "delegate": "gpu",
         }
     ]

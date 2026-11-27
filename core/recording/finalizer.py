@@ -25,6 +25,7 @@ from core.media.segment_layout import SegmentLayout
 from core.recording.recorder import FinishedSegment
 from core.recording.steps import (
     TERMINAL_STATUSES,
+    RecordingActiveFn,
     SegmentStatus,
     Step,
     StepContext,
@@ -145,9 +146,11 @@ class SegmentFinalizer:
         on_update: UpdateCallback | None = None,
         write_result: ResultWriter = write_result_json,
         tasks: TaskGroup | None = None,
+        is_recording: RecordingActiveFn | None = None,
     ) -> None:
         self._on_update = on_update
         self._write_result = write_result
+        self._is_recording: RecordingActiveFn | None = is_recording
         tasks = tasks or TaskGroup("finalizer")
         # 键是 (步骤所在的线, 是否 finish_on_close)；只有 finish_on_close 的 io 线是非守护线程（V-4）
         self._lanes = {
@@ -165,6 +168,16 @@ class SegmentFinalizer:
         self._closed = False
 
     # ------------------------------------------------------------------ 公共接口
+    def bind_recording_probe(self, probe: RecordingActiveFn) -> None:
+        """绑定前台录制活跃探针（由 ``RecordingService`` 注入，不覆盖构造时显式传入的探针）。"""
+        with self._lock:
+            if self._is_recording is None:
+                self._is_recording = probe
+
+    def _recording_active(self) -> bool:
+        probe = self._is_recording
+        return bool(probe is not None and probe())
+
     def submit(self, segment: FinishedSegment, plan: ProcessingPlan) -> bool:
         """提交一个片段；同一片段 id 或同一片段目录只接受一次。关闭后只接受 ``finish_on_close`` 的计划。"""
         try:
@@ -277,6 +290,7 @@ class SegmentFinalizer:
             errors=segment.errors,
             stop_evt=job.stop_evt,
             publish=lambda status, message: self._publish(job, status, message),
+            foreground_recording=self._recording_active,
         )
 
     def _finish(self, job: _Job, outcome: Terminal) -> None:
