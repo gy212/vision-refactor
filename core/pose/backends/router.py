@@ -87,7 +87,7 @@ class ModelAvailability:
 @dataclass(frozen=True)
 class BackendRouteRequest:
     task_type: str
-    enable_hands: bool = True
+    enable_hands: bool = False
     quality_profile: str = QualityProfile.DEFAULT.value
     score_mode: str = ScoreMode.NONE.value
     requires_capabilities: tuple[str, ...] = ()

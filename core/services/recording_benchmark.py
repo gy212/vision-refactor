@@ -120,7 +120,7 @@ class BenchmarkSetup:
     work_dir: Path
     engine_factory: EngineFactory
     pose_variant: str = "full"
-    enable_hands: bool = True
+    enable_hands: bool = False
     phases: tuple[Phase, ...] = PHASES
     extra: Mapping[str, Any] = field(default_factory=dict)
     writer_factory: WriterFactory = _default_writer_factory

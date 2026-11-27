@@ -68,7 +68,7 @@ class EngineSpec:
     running_mode: str = "video"  # "video" (tracking) or "image" (per-frame, parallel-friendly)
     draw_pose_face: bool = False  # Disable by default to avoid visual confusion when hands are near the face.
     draw_joint_angles: bool = False  # Overlay knee/elbow joint angles on the annotated preview (UI opt-in).
-    enable_hands: bool = True  # Set False for pose-only extraction (faster), e.g. template matching.
+    enable_hands: bool = False  # Opt-in: Sanda gloves have no finger features; set True when hands / V-sign are needed.
     delegate: str = "cpu"  # Explicit opt-in only: "cpu" keeps the legacy BaseOptions path, "gpu" probes GPU delegate.
     delegate_fallback_to_cpu: bool = True
     min_pose_detection_confidence: float = 0.5

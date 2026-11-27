@@ -6,10 +6,11 @@ from __future__ import annotations
 import json
 import threading
 import time
-import tkinter as tk
 from types import SimpleNamespace
 
 import pytest
+
+tk = pytest.importorskip("tkinter")
 
 from apps.tk.controllers import benchmark as bench_mod
 from apps.tk.controllers.benchmark import BenchmarkContext, BenchmarkController

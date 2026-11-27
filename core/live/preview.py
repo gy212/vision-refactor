@@ -25,15 +25,17 @@ TargetSize = Callable[[str], tuple[int, int]]
 
 
 def fit_preview_rgb(frame_bgr: np.ndarray, target: tuple[int, int]) -> np.ndarray:
-    """BGR→RGB 并按目标区域等比缩放；目标尚未布局（≤1 像素）时不缩放。不改动传入的帧。"""
-    rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+    """按目标区域等比缩放后再 BGR→RGB；目标尚未布局（≤1 像素）时不缩放。不改动传入的帧。"""
     pw, ph = target
+    src = frame_bgr
     if pw > 1 and ph > 1:
-        ih, iw = rgb.shape[:2]
-        scale = min(pw / iw, ph / ih)
-        nw, nh = max(1, int(iw * scale)), max(1, int(ih * scale))
-        rgb = cv2.resize(rgb, (nw, nh), interpolation=cv2.INTER_LINEAR)
-    return rgb
+        ih, iw = frame_bgr.shape[:2]
+        if ih > 0 and iw > 0:
+            scale = min(pw / iw, ph / ih)
+            nw, nh = max(1, int(iw * scale)), max(1, int(ih * scale))
+            if (nw, nh) != (iw, ih):
+                src = cv2.resize(frame_bgr, (nw, nh), interpolation=cv2.INTER_LINEAR)
+    return cv2.cvtColor(src, cv2.COLOR_BGR2RGB)
 
 
 @dataclass(frozen=True)

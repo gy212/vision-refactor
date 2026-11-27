@@ -23,7 +23,7 @@ class CapturePanel:
         self.source_hint_var = StringVar(root, value="当前输入源：未选择")
         self.pose_var = StringVar(root, value="full")
         self.workers_var = IntVar(root, value=default_workers())
-        self.enable_hands_var = BooleanVar(root, value=True)
+        self.enable_hands_var = BooleanVar(root, value=False)
 
     def build_cameras(self, parent: Any) -> None:
         """右上角设置按钮与两路摄像头选择（主要操作区顶部）。"""

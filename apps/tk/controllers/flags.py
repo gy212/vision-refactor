@@ -15,6 +15,6 @@ class LiveFlags:
     dual_active: bool = False       # 双摄会话已接管设备并登记录制
     record_skeleton: bool = False   # 本次会话开始时冻结的骨架开关（视频文件会话恒为 False：录像本身已带骨架）
     pose_variant: str = "full"      # 本次会话的模型与手部设置：录后骨架成片沿用（D-26）
-    enable_hands: bool = True
+    enable_hands: bool = False
     auto_compare: bool = True       # 片段级自动比对开关（主线程维护的缓存）
     exam_locked: bool = False       # 考试进行中锁定手动录制

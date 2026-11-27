@@ -119,6 +119,7 @@ def test_plans_render_skeleton_only_when_recording_skeleton():
     kinds = [type(s).__name__ for s in dual.steps]
     assert kinds.index("RenderSkeleton") == kinds.index("ValidateVideos") + 1
     assert kinds.index("CompareGate") == kinds.index("RenderSkeleton") + 1
+    assert dual.steps[kinds.index("RenderSkeleton")].engine.enable_hands is False
     assert "RenderSkeleton" not in [type(s).__name__ for s in build_segment_plan(
         _segment(True), PlanSettings(record_skeleton=False, auto_compare=True)).steps]
 

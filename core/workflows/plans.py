@@ -42,7 +42,7 @@ class PlanSettings:
     front_templates: tuple[Path, ...] = ()
     side_templates: tuple[Path, ...] = ()
     pose_variant: str = "full"        # 骨架成片用会话的模型与手部设置
-    enable_hands: bool = True
+    enable_hands: bool = False
 
 
 def segment_intent(segment: FinishedSegment) -> SegmentIntent:

@@ -272,7 +272,7 @@ def run(
     show: bool = True,
     out_path: str | None = None,
     pose_variant: str = "full",
-    enable_hands: bool = True,
+    enable_hands: bool = False,
     delegate: str = "cpu",
 ) -> None:
     """顺序 VIDEO 推理的预览/导出。"""
@@ -298,7 +298,7 @@ def run_parallel(
     show: bool = True,
     out_path: str | None = None,
     pose_variant: str = "full",
-    enable_hands: bool = True,
+    enable_hands: bool = False,
     workers: int = 4,
     delegate: str = "cpu",
 ) -> None:
@@ -327,7 +327,7 @@ def run_realtime_latest_frame_smoke(
     *,
     show: bool = True,
     pose_variant: str = "full",
-    enable_hands: bool = True,
+    enable_hands: bool = False,
     delegate: str = "cpu",
     limit_frames: int | None = None,
 ) -> RealtimeLatestFrameMetrics:
@@ -373,7 +373,12 @@ def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--source", default="0", help="Camera index like 0/1, or a video file path like demo.mp4")
     p.add_argument("--pose", default="full", choices=["lite", "full", "heavy"], help="Pose model variant")
-    p.add_argument("--no-hands", action="store_true", help="Disable hand landmarker for pose-only preview/export")
+    p.add_argument(
+        "--hands",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Enable hand landmarker for V-sign / hand skeleton (default: disabled; --no-hands kept for compatibility)",
+    )
     p.add_argument("--no-show", action="store_true", help="Disable preview window (useful for batch)")
     p.add_argument("--out", default=None, help="Optional output video path, e.g. out.mp4")
     p.add_argument(
@@ -403,7 +408,7 @@ def main() -> None:
             args.source,
             show=not args.no_show,
             pose_variant=args.pose,
-            enable_hands=not args.no_hands,
+            enable_hands=args.hands,
             delegate=args.delegate,
             limit_frames=args.limit_frames,
         )
@@ -416,7 +421,7 @@ def main() -> None:
             show=not args.no_show,
             out_path=args.out,
             pose_variant=args.pose,
-            enable_hands=not args.no_hands,
+            enable_hands=args.hands,
             workers=max(1, int(args.workers)),
             delegate=args.delegate,
         )
@@ -426,7 +431,7 @@ def main() -> None:
             show=not args.no_show,
             out_path=args.out,
             pose_variant=args.pose,
-            enable_hands=not args.no_hands,
+            enable_hands=args.hands,
             delegate=args.delegate,
         )
 

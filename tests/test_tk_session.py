@@ -10,6 +10,8 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+pytest.importorskip("tkinter")
+
 from apps.tk.controllers import session as session_mod
 from apps.tk.controllers.session import UiState, next_rotation_cw, session_config, session_spec
 from apps.tk.views.capture_panel import NO_SECOND_CAMERA
@@ -47,7 +49,7 @@ def test_collect_state_requires_input_source(root):
 
 def test_collect_state_sets_source2_when_two_distinct_cameras_selected(root):
     state = _state_app(root, second_label="摄像头 1").session.collect_state()
-    assert (state.source, state.source2, state.enable_hands) == ("0", "1", True)
+    assert (state.source, state.source2, state.enable_hands) == ("0", "1", False)
 
 
 def test_collect_state_rejects_same_camera_for_both_views(root):
@@ -82,16 +84,17 @@ def test_collect_state_reads_runtime_rotation_and_ui_settings(root):
     capture = app.window.capture
     capture.pose_var.set("heavy")
     capture.workers_var.set(4)
-    capture.enable_hands_var.set(False)
+    capture.enable_hands_var.set(True)
     state = app.session.collect_state()
     assert (state.rotate, state.rotate2) == (90, 270)
-    assert (state.pose_variant, state.workers, state.enable_hands) == ("heavy", 4, False)
+    assert (state.pose_variant, state.workers, state.enable_hands) == ("heavy", 4, True)
 
 
 def test_ui_defaults_record_skeleton_off_and_auto_compare_on(root):
-    panel = build_app(root).window.recording
-    assert panel.record_skeleton_var.get() is False
-    assert panel.auto_compare_var.get() is True
+    win = build_app(root).window
+    assert win.recording.record_skeleton_var.get() is False
+    assert win.recording.auto_compare_var.get() is True
+    assert win.capture.enable_hands_var.get() is False
 
 
 @pytest.mark.parametrize(("student", "size", "policy"), [(False, (1280, 720), "prefer"), (True, (1920, 1080), "require")])
