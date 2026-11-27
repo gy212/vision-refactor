@@ -2,13 +2,17 @@
 
 from copy import deepcopy
 
+from hypothesis import given, settings, strategies as st
+from hypothesis.extra.numpy import arrays
 import numpy as np
 import pytest
 
-from core.evaluation import FeedbackConfig, evaluate_series
-from core.evaluation.rule_checks import synchronized_windows
-from core.evaluation import action_timing
+from core.evaluation import FeedbackConfig, action_timing, evaluate_series, motion_input
+from core.evaluation import stance_windows
+from core.evaluation.motion_input import prepare_motion_input
 from core.evaluation.punch_events import reach_events
+from core.evaluation.rule_checks import synchronized_windows
+from core.evaluation.stance_windows import settled_stance_windows, stable_guard_windows
 from tests.test_step_straight_combo import _series
 
 
@@ -86,7 +90,9 @@ def test_dense_actions_share_one_detection_and_instance_identity(
     assert "eventPairs" not in result["alignment"]
 
 
-def test_source_visibility_is_checked_before_detection_and_missing_data_stays_unable(monkeypatch):
+def test_source_visibility_is_checked_before_detection_and_missing_data_stays_unable(
+    monkeypatch,
+):
     front, side = _single_punch(), _series(0)
     side["valid_mask"][:, 16] = False
     result = evaluate_series("rear_straight", "left", {"front": front, "side": side})
@@ -125,7 +131,10 @@ def test_shared_phase_still_requires_target_time_coverage():
 
 def test_projected_events_are_not_reported_as_independent_observations():
     _, diagnostics, alignment, sources = synchronized_windows(
-        {"front": _series(0), "side": _series(2)}, "step_straight_combo", "left", FeedbackConfig()
+        {"front": _series(0), "side": _series(2)},
+        "step_straight_combo",
+        "left",
+        FeedbackConfig(),
     )
     assert diagnostics["front"]["eventDetails"] == []
     assert diagnostics["front"]["projectedEventDetails"] == diagnostics["side"]["eventDetails"]
@@ -257,3 +266,279 @@ def test_unseen_direction_reference_does_not_create_a_punch():
     )
     assert diagnostics["side"]["eventDetails"] == []
     assert "鼻点或髋点" in diagnostics["side"]["reason"]
+
+
+def _reference_stable_guard_windows(
+    lm: np.ndarray, mask: np.ndarray, torso: np.ndarray, edge: int, cfg: FeedbackConfig
+) -> list[np.ndarray]:
+    """逐帧语义参考实现，用于独立验证向量化护位滑窗的逐窗口一致性。"""
+    n = len(lm)
+    if edge <= 0 or n < edge:
+        return []
+    with np.errstate(all="ignore"):
+        wrists = (lm[:, [15, 16], :2] - lm[:, [11, 12], :2]) / np.maximum(
+            torso[:, None, None], 1e-4
+        )
+        expected = []
+        for start in range(n - edge + 1):
+            ix = np.arange(start, start + edge)
+            if not (torso[ix] > 1e-4).all():
+                continue
+            visible = 0
+            raised = False
+            for arm, (sh, wr, hip) in enumerate(((11, 15, 23), (12, 16, 24))):
+                if not mask[ix][:, [sh, wr, hip]].all():
+                    continue
+                visible += 1
+                relative = wrists[ix, arm]
+                w_dev = np.max(np.linalg.norm(relative - np.median(relative, axis=0), axis=1))
+                h_dev = np.max(
+                    np.linalg.norm(lm[ix, hip, :2] - np.median(lm[ix, hip, :2], axis=0), axis=1)
+                )
+                if (
+                    w_dev > cfg.return_distance / 2
+                    or h_dev > 0.15 * np.median(torso[ix])
+                    or not (lm[ix, wr, 1] < lm[ix, hip, 1] + 0.1 * torso[ix]).all()
+                ):
+                    visible = 0
+                    break
+                raised |= bool(
+                    (lm[ix, wr, 1] <= lm[ix, sh, 1] + cfg.guard_wrist_height * torso[ix]).all()
+                )
+            if visible and raised:
+                expected.append(ix)
+    return expected
+
+
+_ADVERSARIAL_FLOATS = st.one_of(
+    st.floats(min_value=-2.0, max_value=2.0, allow_nan=False, allow_infinity=False),
+    st.sampled_from(
+        [
+            0.0,
+            -0.0,
+            1e-4,
+            1e-4 + 1e-7,
+            1e-4 - 1e-7,
+            0.25,
+            0.5,
+            1.0,
+            float("nan"),
+            float("inf"),
+            float("-inf"),
+            1e20,
+            3e38,
+            -3e38,
+        ]
+    ),
+)
+
+
+@settings(max_examples=550, deadline=None)
+@given(
+    t=st.integers(min_value=0, max_value=22),
+    edge=st.integers(min_value=1, max_value=9),
+    lm_dtype=st.sampled_from([np.float32, np.float64]),
+    torso_dtype=st.sampled_from([np.float32, np.float64]),
+    readonly=st.booleans(),
+    strided=st.booleans(),
+    data=st.data(),
+)
+def test_stable_guard_windows_matches_framewise_reference_under_adversarial_inputs(
+    t: int,
+    edge: int,
+    lm_dtype: type,
+    torso_dtype: type,
+    readonly: bool,
+    strided: bool,
+    data: st.DataObject,
+):
+    cfg = FeedbackConfig()
+    lm = np.zeros((t, 33, 4), dtype=lm_dtype)
+    mask = np.zeros((t, 33), dtype=bool)
+    if t > 0:
+        pts = data.draw(arrays(lm_dtype, (t, 6, 2), elements=_ADVERSARIAL_FLOATS))
+        lm[:, [11, 12, 15, 16, 23, 24], :2] = pts
+        arm_mode = data.draw(st.sampled_from(["all_false", "left_only", "right_only", "random"]))
+        if arm_mode == "left_only":
+            mask[:, [11, 15, 23]] = True
+        elif arm_mode == "right_only":
+            mask[:, [12, 16, 24]] = True
+        elif arm_mode == "random":
+            mask[:, [11, 12, 15, 16, 23, 24]] = data.draw(
+                arrays(bool, (t, 6), elements=st.booleans())
+            )
+        torso = data.draw(arrays(torso_dtype, (t,), elements=_ADVERSARIAL_FLOATS))
+    else:
+        torso = np.zeros((0,), dtype=torso_dtype)
+    if strided and t > 0:
+        lm = np.repeat(lm, 2, axis=0)[::2]
+        mask = np.repeat(mask, 2, axis=0)[::2]
+        torso = np.repeat(torso, 2, axis=0)[::2]
+    if readonly:
+        lm.setflags(write=False)
+        mask.setflags(write=False)
+        torso.setflags(write=False)
+
+    actual = stable_guard_windows(lm, mask, torso, edge, cfg)
+    expected = _reference_stable_guard_windows(lm, mask, torso, edge, cfg)
+
+    assert isinstance(actual, tuple)
+    assert len(actual) == len(expected)
+    for got, want in zip(actual, expected):
+        assert not got.flags.writeable
+        np.testing.assert_array_equal(got, want)
+
+
+def test_stable_guard_windows_preserves_ieee754_nan_demorgan_and_arm_semantics():
+    cfg = FeedbackConfig()
+    edge = 4
+
+    def base_guard(t: int = 6):
+        lm = np.zeros((t, 33, 4), dtype=np.float64)
+        lm[:, 11, :2] = (0.4, 0.30)
+        lm[:, 12, :2] = (0.6, 0.30)
+        lm[:, 15, :2] = (0.42, 0.28)
+        lm[:, 16, :2] = (0.58, 0.28)
+        lm[:, 23, :2] = (0.42, 0.60)
+        lm[:, 24, :2] = (0.58, 0.60)
+        mask = np.ones((t, 33), dtype=bool)
+        torso = np.full(t, 0.30, dtype=np.float64)
+        return lm, mask, torso
+
+    # hip_x 或 wr_x 为 NaN 但 y 坐标满足条件时，原语义 NaN > thr 为 False，窗口必须保留。
+    for joint in (23, 15):
+        lm, mask, torso = base_guard()
+        lm[2, joint, 0] = np.nan
+        got = stable_guard_windows(lm, mask, torso, edge, cfg)
+        want = _reference_stable_guard_windows(lm, mask, torso, edge, cfg)
+        assert len(got) == len(want) == 3
+        for a, e in zip(got, want):
+            np.testing.assert_array_equal(a, e)
+
+    # y 坐标或躯干长度含 NaN 时，必须拒绝对应窗口。
+    lm, mask, torso = base_guard()
+    lm[:, 15, 1] = np.nan
+    assert stable_guard_windows(lm, mask, torso, edge, cfg) == ()
+
+    lm, mask, torso = base_guard()
+    torso[:] = np.nan
+    assert stable_guard_windows(lm, mask, torso, edge, cfg) == ()
+
+    # 单臂可见时，远侧遮挡臂的异常坐标不得否定近侧稳定护位；但双臂可见时移动手否定稳定。
+    lm, mask, torso = base_guard()
+    lm[:, 16, 0] = np.linspace(0.5, 1.5, len(lm))
+    assert stable_guard_windows(lm, mask, torso, edge, cfg) == ()
+    mask[:, [12, 16, 24]] = False
+    assert len(stable_guard_windows(lm, mask, torso, edge, cfg)) == 3
+    assert stable_guard_windows(lm, mask, torso, 0, cfg) == ()
+
+    # T=0、T=1、T < edge、全 False 掩码均安全返回空或精确单窗。
+    assert (
+        stable_guard_windows(
+            np.zeros((0, 33, 4), dtype=np.float32),
+            np.zeros((0, 33), dtype=bool),
+            np.zeros((0,), dtype=np.float64),
+            edge,
+            cfg,
+        )
+        == ()
+    )
+    lm1, mask1, torso1 = base_guard(t=1)
+    got1 = stable_guard_windows(lm1, mask1, torso1, 1, cfg)
+    assert len(got1) == 1 and got1[0].tolist() == [0]
+    assert stable_guard_windows(lm1, mask1, torso1, edge, cfg) == ()
+    lm3, mask3, torso3 = base_guard(t=3)
+    assert stable_guard_windows(lm3, mask3, torso3, edge, cfg) == ()
+    mask_none = np.zeros_like(mask3)
+    assert stable_guard_windows(lm3, mask_none, torso3, 2, cfg) == ()
+
+
+def test_stable_guard_and_settled_windows_enforce_readonly_contract():
+    series = _series(0, seconds=3)
+    lm = series["landmarks"].copy()
+    mask = series["valid_mask"].copy()
+    times = np.asarray(series["times"], dtype=float)
+    lm.setflags(write=False)
+    mask.setflags(write=False)
+    times.setflags(write=False)
+    readonly_series = {**series, "landmarks": lm, "valid_mask": mask, "times": times}
+
+    cfg = FeedbackConfig()
+    prepared = prepare_motion_input(readonly_series, cfg)
+    assert isinstance(prepared.stable, tuple)
+    assert len(prepared.stable) > 0
+    for win in prepared.stable:
+        assert not win.flags.writeable
+        with pytest.raises(ValueError):
+            win[0] = 999
+
+    windows = {("stance", "start"): np.arange(7), ("stance", "end"): np.arange(70, 77)}
+    settled = settled_stance_windows(
+        readonly_series, windows, [{"start": 2.0}], cfg, stable=prepared.stable
+    )
+    assert ("stance", "start") in settled
+    with pytest.raises(ValueError):
+        settled[("stance", "start")][0] = 999
+
+
+@pytest.mark.parametrize(
+    "bad_times",
+    [
+        np.full(30, 1.0),
+        np.linspace(2.0, 0.0, 30),
+        np.full(30, np.nan),
+        np.full(30, np.inf),
+        np.full(30, -np.inf),
+        np.arange(30, dtype=float) * 1e-320,
+    ],
+)
+def test_settled_stance_windows_handles_degenerate_timestamps_without_crashing(
+    bad_times,
+):
+    series = _series(0, seconds=1)
+    series["times"] = bad_times
+    cfg = FeedbackConfig()
+    windows = {
+        ("stance", "start"): np.arange(5),
+        ("stance", "end"): np.arange(20, 25),
+        ("rear_straight", "motion"): np.arange(10, 15),
+    }
+
+    prepared = prepare_motion_input(series, cfg)
+    assert prepared.stable == ()
+
+    direct = settled_stance_windows(series, windows, [{"start": 0.5}], cfg)
+    reused = settled_stance_windows(series, windows, [{"start": 0.5}], cfg, stable=prepared.stable)
+    assert ("stance", "start") not in direct
+    assert ("stance", "end") not in direct
+    assert ("rear_straight", "motion") in direct
+    assert set(direct) == set(reused)
+    for key in direct:
+        np.testing.assert_array_equal(direct[key], reused[key])
+
+
+def test_shared_timeline_computes_stable_guard_windows_once_per_view(monkeypatch):
+    calls: list[str] = []
+    real_stable = stance_windows.stable_guard_windows
+
+    def spy_motion(*args, **kwargs):
+        calls.append("motion_input")
+        return real_stable(*args, **kwargs)
+
+    def spy_settled(*args, **kwargs):
+        calls.append("stance_windows")
+        return real_stable(*args, **kwargs)
+
+    monkeypatch.setattr(motion_input, "stable_guard_windows", spy_motion)
+    monkeypatch.setattr(stance_windows, "stable_guard_windows", spy_settled)
+
+    views = {"front": _single_punch(), "side": _single_punch()}
+    windows, diagnostics, _, _ = synchronized_windows(
+        views, "rear_straight", "left", FeedbackConfig()
+    )
+    assert calls == ["motion_input", "motion_input"]
+    assert ("stance", "start") in windows["front"]
+    assert ("stance", "start") in windows["side"]
+    with pytest.raises(ValueError):
+        windows["side"][("stance", "start")][0] = 999
+    assert len(diagnostics["side"]["eventDetails"]) == 1
