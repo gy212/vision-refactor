@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -29,6 +30,8 @@ from core.foundation.tasks import Cancelled, CancelToken, translate_interrupted
 from core.media.video_source import DecodeOptions, open_video
 from core.media.writer import is_mjpeg_avi, open_video_writer, trim_mjpeg_avi
 from core.recording import StepContext
+
+_logger = logging.getLogger(__name__)
 
 
 # 关窗时为进行中的考试裁剪预留的等待时间（迁移前关窗对裁剪线程的追加预算）
@@ -139,6 +142,13 @@ def _cancel_predicate(cancel: CancelToken | None) -> Callable[[], bool] | None:
     return _is_cancelled
 
 
+def _discard_partial(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError as exc:
+        _logger.warning("清理考试裁剪半成品失败（%s）：%s", path, exc)
+
+
 def _stream_write_range(
     path: Path,
     out_path: Path,
@@ -153,6 +163,7 @@ def _stream_write_range(
     if end <= start:
         raise RuntimeError("裁剪区间为空")
     writer = None
+    opened = False
     out = out_path
     written = 0
     # 尽量 seek 并核对位置；不可靠时重开顺序跳过
@@ -169,6 +180,7 @@ def _stream_write_range(
                     w, h = size_hint
                 out.parent.mkdir(parents=True, exist_ok=True)
                 writer, out, _codec = open_video_writer(out_path, fps=float(fps), size=(w, h))
+                opened = True
             writer.write(fr)
             written += 1
             del fr
@@ -176,20 +188,15 @@ def _stream_write_range(
         if writer is not None:
             writer.release()
             writer = None
-            try:
-                out.unlink(missing_ok=True)
-            except OSError:
-                pass
+            _discard_partial(out)
         raise
     finally:
         if writer is not None:
             writer.release()
         source.close()
     if written <= 0:
-        try:
-            out.unlink(missing_ok=True)
-        except OSError:
-            pass
+        if opened:
+            _discard_partial(out)
         raise RuntimeError(f"裁剪写出 0 帧：{path}")
     return out, written
 
@@ -247,9 +254,9 @@ def _write_single_range(
     size_hint: tuple[int, int] | None,
     cancel: CancelToken | None,
 ) -> tuple[Path, int, bool]:
-    """写出单路 [start, end)；MJPG AVI 走 L1 包级无损流拷贝输出 .avi，其余格式走流式回退写出 .avi。"""
-    avi_out = out_dir / f"{view}_exam.avi"
+    """写出单路 [start, end)；MJPG AVI 走包级无损流拷贝输出 .avi，其余格式优先直写 H.264 .mp4（无编码器时自动回退 .avi）。"""
     if is_mjpeg_avi(path):
+        avi_out = out_dir / f"{view}_exam.avi"
         _check_cancel(cancel)
         with translate_interrupted(cancel):
             written = trim_mjpeg_avi(
@@ -260,9 +267,10 @@ def _write_single_range(
                 cancel_check=_cancel_predicate(cancel),
             )
         return avi_out, written, True
+    mp4_out = out_dir / f"{view}_exam.mp4"
     out, written = _stream_write_range(
         path,
-        avi_out,
+        mp4_out,
         start=start,
         end=end,
         fps=fps,
@@ -301,11 +309,8 @@ def _write_aligned_pair(
             cancel=cancel,
         )
     except BaseException:
-        for path in created:
-            try:
-                path.unlink(missing_ok=True)
-            except OSError:
-                pass
+        for path in dict.fromkeys(created):
+            _discard_partial(path)
         raise
 
 
@@ -358,6 +363,12 @@ def _write_pair_outputs(
             raise RuntimeError(
                 f"clip re-trim still mismatched: front={front_written} side={side_written}"
             )
+    source_resolved = {src.resolve(strict=False) for src in sources}
+    for view, out in (("front", front_out), ("side", side_out)):
+        opposite_suffix = ".avi" if out.suffix.lower() == ".mp4" else ".mp4"
+        sibling = out_dir / f"{view}_exam{opposite_suffix}"
+        if sibling != out and sibling.resolve(strict=False) not in source_resolved:
+            _discard_partial(sibling)
     return front_out, side_out, written, all(copied)
 
 

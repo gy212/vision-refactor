@@ -5,6 +5,7 @@
 返回 ``Terminal`` 表示片段到达终态；失败抛 ``PostprocessError``（稳定的 ``code``），取消抛 ``Cancelled``。
 考试裁剪步骤在 ``workflows/exam/clip.py``，由构建计划的一方放进计划，本模块不导入它。
 """
+
 from __future__ import annotations
 
 import threading
@@ -28,7 +29,15 @@ from core.pose.raw_series import extract_pose_raw_series
 
 Lane = Literal["io", "analysis"]
 SegmentStatus = Literal[
-    "queued", "transcoding", "validating", "rendering", "comparing", "completed", "failed", "skipped", "cancelled",
+    "queued",
+    "transcoding",
+    "validating",
+    "rendering",
+    "comparing",
+    "completed",
+    "failed",
+    "skipped",
+    "cancelled",
 ]
 TERMINAL_STATUSES = frozenset({"completed", "failed", "skipped", "cancelled"})
 VIEW_LABELS = {"front": "正面", "side": "侧面"}
@@ -187,7 +196,10 @@ class CheckRecording:
     def run(self, ctx: StepContext, cancel: CancelToken) -> Terminal | None:
         for view in ctx.views:
             if ctx.errors.get(view):
-                raise PostprocessError(f"{view}_recording_failed", f"{VIEW_LABELS.get(view, view)}录像失败：{ctx.errors[view]}")
+                raise PostprocessError(
+                    f"{view}_recording_failed",
+                    f"{VIEW_LABELS.get(view, view)}录像失败：{ctx.errors[view]}",
+                )
         if not all(ctx.sources.get(view) for view in ctx.views):
             raise PostprocessError("recording_missing", "正面或侧面录像路径缺失")
         if ctx.segment_dir is not None:
@@ -264,7 +276,9 @@ class ValidateVideos:
             except Exception as exc:
                 raise PostprocessError("video_unreadable", f"{label}录像无法读取：{exc}") from exc
             if not valid:
-                raise PostprocessError("video_unreadable", f"{label}录像不存在、为空或无法读取：{path}")
+                raise PostprocessError(
+                    "video_unreadable", f"{label}录像不存在、为空或无法读取：{path}"
+                )
         return None
 
 
@@ -279,7 +293,11 @@ class CompareGate:
     def run(self, ctx: StepContext, cancel: CancelToken) -> Terminal | None:
         _raise_if_cancelled(ctx, cancel)
         if self.record_skeleton:
-            return Terminal("skipped", "带骨架录像未自动比对，请关闭骨架后重新录制", "annotated_recording")
+            return Terminal(
+                "skipped",
+                "带骨架录像未自动比对，请关闭骨架后重新录制",
+                "annotated_recording",
+            )
         if not self.auto_compare:
             return Terminal("skipped", "仅录制模式，已保存视频未自动比对", "auto_compare_disabled")
         return None
@@ -313,17 +331,27 @@ class ScoreExamPool:
             message = f"正在执行侧面多模板 DTW 比对（{len(side_tpls)} 个，正面池为空）"
             ctx.warnings.append("正面模板池为空，仅比对侧面")
         ctx.publish("comparing", message)
-        step_recording = (
-            self.foreground_recording()
-            if callable(self.foreground_recording)
-            else self.foreground_recording
-        )
-        is_recording = bool(ctx.foreground_recording()) or bool(step_recording)
-        parallel = can_parallel_pose_pair(foreground_recording=is_recording)
+
+        def allow_parallel() -> bool:
+            step_recording = (
+                self.foreground_recording()
+                if callable(self.foreground_recording)
+                else self.foreground_recording
+            )
+            return can_parallel_pose_pair(
+                foreground_recording=bool(ctx.foreground_recording()) or bool(step_recording)
+            )
+
         result = exam_pool.score_exam_pools(
-            front_tpls, side_tpls, ctx.video("front"), ctx.video("side"),
-            compare=self.compare, raw_series=extract_pose_raw_series, stop_evt=ctx.stop_evt,
-            compare_windows=self.compare_windows, parallel=parallel,
+            front_tpls,
+            side_tpls,
+            ctx.video("front"),
+            ctx.video("side"),
+            compare=self.compare,
+            raw_series=extract_pose_raw_series,
+            stop_evt=ctx.stop_evt,
+            compare_windows=self.compare_windows,
+            parallel=allow_parallel,
         )
         _raise_if_cancelled(ctx, cancel)
         message = "后台多模板比对完成" if front_tpls and side_tpls else "后台单侧多模板比对完成"
@@ -395,13 +423,20 @@ def dual_segment_steps(
         *rendered,
         CompareGate(record_skeleton=record_skeleton, auto_compare=auto_compare),
         ScoreExamPool(
-            tuple(front_templates), tuple(side_templates),
-            compare=deps.compare, compare_windows=deps.compare_windows,
-            model_available=deps.model_available, foreground_recording=recording_flag,
+            tuple(front_templates),
+            tuple(side_templates),
+            compare=deps.compare,
+            compare_windows=deps.compare_windows,
+            model_available=deps.model_available,
+            foreground_recording=recording_flag,
         ),
     )
 
 
-def single_segment_steps(deps: StepDeps = StepDeps(), *, skeleton: Step | None = None) -> tuple[Step, ...]:
+def single_segment_steps(
+    deps: StepDeps = StepDeps(), *, skeleton: Step | None = None
+) -> tuple[Step, ...]:
     """单路片段：转码（V-4）；``skeleton`` 给出时再生成骨架成片（D-26）。"""
-    return (Transcode(deps.transcode),) if skeleton is None else (Transcode(deps.transcode), skeleton)
+    return (
+        (Transcode(deps.transcode),) if skeleton is None else (Transcode(deps.transcode), skeleton)
+    )

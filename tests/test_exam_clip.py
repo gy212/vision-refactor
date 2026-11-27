@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
+import logging
 import subprocess
 import threading
 from pathlib import Path
@@ -10,6 +11,7 @@ import numpy as np
 import pytest
 
 import core.media.writer as media_writer
+import core.workflows.exam.clip as exam_clip
 from core.evaluation import estimate_action_range
 from core.foundation.tasks import Cancelled, CancelToken
 from core.media import (
@@ -465,7 +467,7 @@ def test_prepare_exam_pair_mjpeg_cancel_cleans_sibling_and_temp(
 def test_exam_clip_step_fallback_on_xvid_and_keeps_sources_on_corrupt_or_trim_error(
     tmp_path: Path, monkeypatch
 ) -> None:
-    # 1. 非 MJPG 的 XVID .avi：安全走流式回退，且输出 .avi 可被转码为 H.264 .mp4
+    # 1. 非 MJPG 的 XVID .avi：走流式路径（优先直写 H.264 .mp4，无编码器时回退 .avi）并产出合规 H.264 .mp4
     xvid_front = tmp_path / "xvid_front.avi"
     xvid_side = tmp_path / "xvid_side.avi"
     for path in (xvid_front, xvid_side):
@@ -478,7 +480,11 @@ def test_exam_clip_step_fallback_on_xvid_and_keeps_sources_on_corrupt_or_trim_er
         xvid_front, xvid_side, front_frames=60, side_frames=60, out_dir=xvid_out
     )
     assert res.meta.get("stream_copy") is False
-    assert res.front_path.suffix == ".avi" and res.side_path.suffix == ".avi"
+    assert res.front_path.suffix in {".mp4", ".avi"}
+    assert res.side_path.suffix in {".mp4", ".avi"}
+    for out_file in (res.front_path, res.side_path):
+        if out_file.suffix == ".mp4":
+            assert _video_fourcc(out_file).lower() in {"h264", "avc1"}
     h264_front = transcode_to_h264(res.front_path)
     assert h264_front is not None and h264_front.suffix == ".mp4"
     assert _video_fourcc(h264_front).lower() in {"h264", "avc1"}
@@ -542,3 +548,210 @@ def test_exam_clip_step_fallback_on_xvid_and_keeps_sources_on_corrupt_or_trim_er
     assert any("exam_clip_failed" in note for note in err_ctx.notes)
     assert not list(err_dir.glob("*_exam.*"))
     assert not list(err_dir.glob(".*.tmp.*"))
+
+
+class _StubFileWriter:
+    def __init__(self, path: Path, *, fail_on_frame: int | None = None) -> None:
+        self.path = path
+        self.fail_on_frame = fail_on_frame
+        self.frames = 0
+        self.released = False
+        self.path.write_bytes(b"stub-video")
+
+    def write(self, _frame: np.ndarray) -> None:
+        self.frames += 1
+        if self.fail_on_frame is not None and self.frames == self.fail_on_frame:
+            raise RuntimeError("write boom")
+
+    def release(self) -> None:
+        self.released = True
+
+
+def _write_xvid_pair(root: Path, count: int = 60) -> tuple[Path, Path]:
+    root.mkdir(parents=True, exist_ok=True)
+    front, side = root / "xvid_front.avi", root / "xvid_side.avi"
+    for path in (front, side):
+        vw = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"XVID"), 30.0, (64, 48))
+        for i in range(count):
+            vw.write(_encode_indexed_frame(i, active=(20 <= i < 45)))
+        vw.release()
+    return front, side
+
+
+def test_non_mjpeg_stream_write_prefers_mp4_h264_and_fallback_avi_end_to_end(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    front, side = _write_xvid_pair(tmp_path)
+
+    # 1. 命中系统 H.264 编码器：直出 .mp4、清理同名残留 .avi、下游 Transcode 跳过 ffmpeg
+    seg_mp4 = tmp_path / "seg_mp4"
+    seg_mp4.mkdir()
+    (seg_mp4 / "front_exam.avi").write_bytes(b"stale-front-avi")
+    (seg_mp4 / "side_exam.avi").write_bytes(b"stale-side-avi")
+    requested_mp4: list[Path] = []
+    with monkeypatch.context() as mp:
+        mp.setattr(
+            exam_clip,
+            "open_video_writer",
+            lambda p, *, fps, size: (
+                requested_mp4.append(Path(p)) or _StubFileWriter(Path(p)),
+                Path(p),
+                "avc1",
+            ),
+        )
+        mp.setattr(
+            media_writer.subprocess,
+            "run",
+            lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("ffmpeg should not run")),
+        )
+        mp.setattr(
+            media_writer.subprocess,
+            "Popen",
+            lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("ffmpeg should not run")),
+        )
+        ctx = StepContext(
+            segment_id="seg_mp4",
+            segment_dir=seg_mp4,
+            views=("front", "side"),
+            sources={"front": front, "side": side},
+            frames={"front": 60, "side": 60},
+            errors={},
+            stop_evt=threading.Event(),
+            publish=lambda _s, _m: None,
+        )
+        cancel = CancelToken()
+        ExamClipStep().run(ctx, cancel)
+        assert requested_mp4 == [seg_mp4 / "front_exam.mp4", seg_mp4 / "side_exam.mp4"]
+        assert ctx.sources["front"] == seg_mp4 / "front_exam.mp4"
+        assert ctx.sources["side"] == seg_mp4 / "side_exam.mp4"
+        assert not (seg_mp4 / "front_exam.avi").exists()
+        assert not (seg_mp4 / "side_exam.avi").exists()
+        Transcode().run(ctx, cancel)
+        assert ctx.video("front") == seg_mp4 / "front_exam.mp4"
+        assert ctx.video("side") == seg_mp4 / "side_exam.mp4"
+        assert ctx.warnings == []
+
+    # 2. 无 H.264 编码器回退 .avi：清理同名残留 .mp4，下游 Transcode 接手转码为真 H.264 .mp4
+    seg_avi = tmp_path / "seg_avi"
+    seg_avi.mkdir()
+    (seg_avi / "front_exam.mp4").write_bytes(b"stale-front-mp4")
+    (seg_avi / "side_exam.mp4").write_bytes(b"stale-side-mp4")
+    requested_avi: list[Path] = []
+    real_open = media_writer.open_video_writer
+    with monkeypatch.context() as mp:
+        mp.setattr(
+            exam_clip,
+            "open_video_writer",
+            lambda p, *, fps, size: (
+                requested_avi.append(Path(p))
+                or real_open(Path(p).with_suffix(".avi"), fps=fps, size=size)
+            ),
+        )
+        ctx2 = StepContext(
+            segment_id="seg_avi",
+            segment_dir=seg_avi,
+            views=("front", "side"),
+            sources={"front": front, "side": side},
+            frames={"front": 60, "side": 60},
+            errors={},
+            stop_evt=threading.Event(),
+            publish=lambda _s, _m: None,
+        )
+        cancel2 = CancelToken()
+        ExamClipStep().run(ctx2, cancel2)
+        assert requested_avi == [seg_avi / "front_exam.mp4", seg_avi / "side_exam.mp4"]
+        assert ctx2.sources["front"] == seg_avi / "front_exam.avi"
+        assert ctx2.sources["side"] == seg_avi / "side_exam.avi"
+        assert not (seg_avi / "front_exam.mp4").exists()
+        assert not (seg_avi / "side_exam.mp4").exists()
+    Transcode().run(ctx2, cancel2)
+    assert ctx2.video("front") == seg_avi / "front_exam.mp4"
+    assert ctx2.video("side") == seg_avi / "side_exam.mp4"
+    assert not (seg_avi / "front_exam.avi").exists()
+    assert not (seg_avi / "side_exam.avi").exists()
+    assert _video_fourcc(ctx2.video("front")).lower() in {"h264", "avc1"}
+    assert _video_fourcc(ctx2.video("side")).lower() in {"h264", "avc1"}
+
+
+@pytest.mark.parametrize("mode", ["mp4_direct", "avi_fallback"])
+def test_non_mjpeg_stream_write_error_cleans_half_pair(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    front, side = _write_xvid_pair(tmp_path)
+    out_dir = tmp_path / f"out_{mode}"
+    writers: list[_StubFileWriter] = []
+
+    def fake_open(preferred: Path, *, fps: float, size: tuple[int, int]):
+        actual = Path(preferred) if mode == "mp4_direct" else Path(preferred).with_suffix(".avi")
+        fail_at = 2 if len(writers) == 1 else None
+        writer = _StubFileWriter(actual, fail_on_frame=fail_at)
+        writers.append(writer)
+        return writer, actual, ("avc1" if mode == "mp4_direct" else "MJPG")
+
+    monkeypatch.setattr(exam_clip, "open_video_writer", fake_open)
+    with pytest.raises(RuntimeError, match="write boom"):
+        prepare_exam_pair(front, side, front_frames=60, side_frames=60, out_dir=out_dir)
+
+    assert len(writers) == 2 and all(w.released for w in writers)
+    assert not list(out_dir.glob("*_exam.*"))
+
+
+def test_cleanup_oserror_logs_warning_without_masking_primary_exception(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # 1. trim_mjpeg_avi 清理临时文件遇 OSError：记录 warning 且不覆盖原始 CalledProcessError
+    src = _write_mjpeg_avi(tmp_path / "src.avi", 20)
+    dst = tmp_path / "dst.avi"
+    real_unlink = Path.unlink
+    created_temps: list[Path] = []
+
+    def fail_run(command, **_kwargs):
+        temp_path = Path(command[-1])
+        temp_path.write_bytes(b"partial-avi")
+        created_temps.append(temp_path)
+        raise subprocess.CalledProcessError(1, command)
+
+    def locked_temp_unlink(self: Path, missing_ok: bool = False) -> None:
+        if self.name.endswith(".tmp.avi"):
+            raise PermissionError("temp file locked")
+        real_unlink(self, missing_ok=missing_ok)
+
+    with caplog.at_level(logging.WARNING, logger="core.media.writer"):
+        with monkeypatch.context() as mp:
+            mp.setattr(media_writer.subprocess, "run", fail_run)
+            mp.setattr(Path, "unlink", locked_temp_unlink)
+            with pytest.raises(subprocess.CalledProcessError):
+                trim_mjpeg_avi(src, dst, start_frame=2, end_frame=10)
+    assert len(created_temps) == 1
+    assert any(
+        created_temps[0].name in rec.getMessage() and "temp file locked" in rec.getMessage()
+        for rec in caplog.records
+    )
+    created_temps[0].unlink(missing_ok=True)
+
+    # 2. prepare_exam_pair 清理半套裁剪产物遇 OSError：记录 warning 且不覆盖主异常
+    front, side = _write_xvid_pair(tmp_path / "clip_err")
+    out_dir = tmp_path / "clip_err_out"
+    caplog.clear()
+    calls = 0
+
+    def fake_open(preferred: Path, *, fps: float, size: tuple[int, int]):
+        nonlocal calls
+        calls += 1
+        actual = Path(preferred)
+        return _StubFileWriter(actual, fail_on_frame=2 if calls == 2 else None), actual, "avc1"
+
+    def locked_exam_unlink(self: Path, missing_ok: bool = False) -> None:
+        if "_exam." in self.name:
+            raise PermissionError("exam partial locked")
+        real_unlink(self, missing_ok=missing_ok)
+
+    with caplog.at_level(logging.WARNING, logger="core.workflows.exam.clip"):
+        with monkeypatch.context() as mp:
+            mp.setattr(exam_clip, "open_video_writer", fake_open)
+            mp.setattr(Path, "unlink", locked_exam_unlink)
+            with pytest.raises(RuntimeError, match="write boom"):
+                prepare_exam_pair(front, side, front_frames=60, side_frames=60, out_dir=out_dir)
+    messages = [rec.getMessage() for rec in caplog.records]
+    assert any("front_exam.mp4" in m and "exam partial locked" in m for m in messages)
+    assert any("side_exam.mp4" in m and "exam partial locked" in m for m in messages)

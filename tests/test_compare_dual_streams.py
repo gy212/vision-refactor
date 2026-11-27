@@ -27,7 +27,11 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from core.evaluation import FeedbackConfig, LEGACY_DEFAULT_FEATURE_LAYOUT, compare_dual_streams  # noqa: E402
+from core.evaluation import (
+    FeedbackConfig,
+    LEGACY_DEFAULT_FEATURE_LAYOUT,
+    compare_dual_streams,
+)  # noqa: E402
 from core.pose import POSE33_V3  # noqa: E402
 from core.pose.features import extract_features as _extract_pose_features  # noqa: E402
 from core.evaluation import subsequence_dtw, subsequence_dtw_with_path  # noqa: E402
@@ -130,7 +134,9 @@ def test_single_thread_extraction_closes_resources_on_success(tracked_extraction
     assert _TrackedPipeline.instances[0].closed is True
 
 
-def test_single_thread_extraction_closes_resources_on_inference_error(tracked_extraction):
+def test_single_thread_extraction_closes_resources_on_inference_error(
+    tracked_extraction,
+):
     _TrackedPipeline.fail_on_infer = True
 
     with pytest.raises(RuntimeError, match="inference failed"):
@@ -198,7 +204,9 @@ def test_cancel_during_front_scoring_skips_side_and_returns_no_result(monkeypatc
     extracted = iter(((front_seq, 30.0, None), (side_seq, 30.0, None)))
     score_calls: list[np.ndarray] = []
 
-    monkeypatch.setattr(dual_mod, "extract_features", lambda *_args, **_kwargs: next(extracted))  # P3：双流比对迁入 matching.dual
+    monkeypatch.setattr(
+        dual_mod, "extract_features", lambda *_args, **_kwargs: next(extracted)
+    )  # P3：双流比对迁入 matching.dual
 
     def score_once_then_cancel(seq, *_args, **_kwargs):
         score_calls.append(seq)
@@ -333,7 +341,11 @@ def test_no_split_and_high_score_for_matching_streams(registered_videos, monkeyp
     front_n = int(_load_raw("front_src_raw.npz").shape[0])
     side_n = int(_load_raw("side_src_raw.npz").shape[0])
     configured = "heavy" if pose_variant == "full" else "full"
-    monkeypatch.setattr(dual_mod, "load_feedback_config", lambda: FeedbackConfig(pose_variant=configured))
+    monkeypatch.setattr(
+        dual_mod,
+        "load_feedback_config",
+        lambda: FeedbackConfig(pose_variant=configured),
+    )
     judge_views = dual_mod.judge_views
 
     def judge_with_actual_model(views, action, stance, cfg):
@@ -371,14 +383,20 @@ def test_no_split_and_high_score_for_matching_streams(registered_videos, monkeyp
 def test_swapped_streams_score_worse_than_correct_pairing(registered_videos):
     """正确配对应明显优于把 front/side 视频喂反，防止通道接反的回归。"""
     with H.replay_context():
-        correct = compare_dual_streams(FRONT_TPL, SIDE_TPL, FRONT_SRC, SIDE_SRC, pose_variant="full")
-        swapped = compare_dual_streams(FRONT_TPL, SIDE_TPL, SIDE_SRC, FRONT_SRC, pose_variant="full")
+        correct = compare_dual_streams(
+            FRONT_TPL, SIDE_TPL, FRONT_SRC, SIDE_SRC, pose_variant="full"
+        )
+        swapped = compare_dual_streams(
+            FRONT_TPL, SIDE_TPL, SIDE_SRC, FRONT_SRC, pose_variant="full"
+        )
 
     assert correct.front_score > swapped.front_score
     assert correct.side_score > swapped.side_score
 
 
-def test_raw_series_extracted_once_per_stream_no_cross_contamination(registered_videos, monkeypatch):
+def test_raw_series_extracted_once_per_stream_no_cross_contamination(
+    registered_videos, monkeypatch
+):
     """独立 raw_series 闭包必须分别绑定各自视频路径：各调用一次、路径不串流。"""
     calls: list[Path] = []
     orig = dual_mod.extract_pose_raw_series
@@ -410,21 +428,33 @@ def test_layout_version_mismatch_raises_value_error(registered_videos, tmp_path)
     meta = dict(d["meta"].item())
     meta["feature_layout"] = LEGACY_DEFAULT_FEATURE_LAYOUT
     mutated_front_tpl = tmp_path / "front_template_v1.npz"
-    np.savez_compressed(mutated_front_tpl, features=d["features"], meta=np.array(meta, dtype=object))
+    np.savez_compressed(
+        mutated_front_tpl, features=d["features"], meta=np.array(meta, dtype=object)
+    )
 
     with H.replay_context():
         with pytest.raises(ValueError):
-            compare_dual_streams(mutated_front_tpl, SIDE_TPL, FRONT_SRC, SIDE_SRC, pose_variant="full")
+            compare_dual_streams(
+                mutated_front_tpl, SIDE_TPL, FRONT_SRC, SIDE_SRC, pose_variant="full"
+            )
 
 
-def test_dual_streams_parallel_matches_serial_zero_ulp_and_zero_reextraction(registered_videos):
+def test_dual_streams_parallel_matches_serial_zero_ulp_and_zero_reextraction(
+    registered_videos,
+):
     """双流比对并发提点：真双路并发、与串行完全一致、特征与规则/关节误差 0 重复推理。"""
     from core.pose import extract as extract_mod
 
     with H.replay_context():
         serial = compare_dual_streams(
-            FRONT_TPL, SIDE_TPL, FRONT_SRC, SIDE_SRC,
-            pose_variant="full", enable_rules=True, enable_error_analysis=True, parallel=False,
+            FRONT_TPL,
+            SIDE_TPL,
+            FRONT_SRC,
+            SIDE_SRC,
+            pose_variant="full",
+            enable_rules=True,
+            enable_error_analysis=True,
+            parallel=False,
         )
         lock = threading.Lock()
         barrier = threading.Barrier(2, timeout=3.0)
@@ -459,8 +489,14 @@ def test_dual_streams_parallel_matches_serial_zero_ulp_and_zero_reextraction(reg
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr(extract_mod, "create_engine", tracked)
             parallel = compare_dual_streams(
-                FRONT_TPL, SIDE_TPL, FRONT_SRC, SIDE_SRC,
-                pose_variant="full", enable_rules=True, enable_error_analysis=True, parallel=True,
+                FRONT_TPL,
+                SIDE_TPL,
+                FRONT_SRC,
+                SIDE_SRC,
+                pose_variant="full",
+                enable_rules=True,
+                enable_error_analysis=True,
+                parallel=True,
             )
 
     assert max_active == 2
@@ -543,12 +579,20 @@ def test_exam_pool_skips_parallel_warmup_when_raw_or_windows_injected(tmp_path, 
     monkeypatch.setattr(exam_pool_mod, "extract_pose_pair", fail_warmup)
     monkeypatch.setattr(exam_pool_mod, "action_side_repetitions", lambda *_a: [(0.5, 1.0)])
     monkeypatch.setattr(
-        exam_pool_mod, "load_feedback_config", lambda: (_ for _ in ()).throw(ValueError("skip rules"))
+        exam_pool_mod,
+        "load_feedback_config",
+        lambda: (_ for _ in ()).throw(ValueError("skip rules")),
     )
 
     fake_raw = Pose33RawSeries(
         landmarks=np.zeros((60, 33, 4), dtype=np.float32),
-        meta={"fps": 30.0, "width": 64, "height": 64, "frame_count": 60, "start_frame": 0},
+        meta={
+            "fps": 30.0,
+            "width": 64,
+            "height": 64,
+            "frame_count": 60,
+            "start_frame": 0,
+        },
     )
     fake_windows_calls: list[Path] = []
 
@@ -567,7 +611,10 @@ def test_exam_pool_skips_parallel_warmup_when_raw_or_windows_injected(tmp_path, 
         compare_windows=fake_compare_windows,
         parallel=True,
     )
-    assert fake_windows_calls == [Path("nonexistent_front.mp4"), Path("nonexistent_side.mp4")]
+    assert fake_windows_calls == [
+        Path("nonexistent_front.mp4"),
+        Path("nonexistent_side.mp4"),
+    ]
     assert res.front_score == pytest.approx(0.82)
     assert res.side_score == pytest.approx(0.82)
 
@@ -603,11 +650,21 @@ def test_recording_service_exam_guard_switches_parallel_by_foreground_state(tmp_
     done_idx = [0]
 
     def fake_score(*_args, **kwargs):
-        parallel_seen.append(bool(kwargs["parallel"]))
+        parallel_arg = kwargs["parallel"]
+        assert callable(parallel_arg)
+        parallel_seen.append(bool(parallel_arg()))
         return SimpleNamespace(
-            front_score=0.9, side_score=0.9, combined_score=0.9, combined_percent=90,
-            front_matches=(), side_matches=(), front_segment=(0, 4), side_segment=(0, 4),
-            action_scores=(), rule_checks=(), rule_error="",
+            front_score=0.9,
+            side_score=0.9,
+            combined_score=0.9,
+            combined_percent=90,
+            front_matches=(),
+            side_matches=(),
+            front_segment=(0, 4),
+            side_segment=(0, 4),
+            action_scores=(),
+            rule_checks=(),
+            rule_error="",
         )
 
     monkeypatch.setattr(exam_pool_mod, "score_exam_pools", fake_score)
@@ -651,13 +708,18 @@ def test_recording_service_exam_guard_switches_parallel_by_foreground_state(tmp_
 
     def plan_for(_segment) -> ProcessingPlan:
         steps = dual_segment_steps(
-            record_skeleton=False, auto_compare=True,
-            front_templates=(tpl,), side_templates=(tpl,), deps=deps,
+            record_skeleton=False,
+            auto_compare=True,
+            front_templates=(tpl,),
+            side_templates=(tpl,),
+            deps=deps,
         )
         return ProcessingPlan(steps, result=ResultSpec(front_template=tpl, side_template=tpl))
 
     finalizer = SegmentFinalizer(on_update=on_update)
-    service = RecordingService(finalizer, plan_for=plan_for, recorder=SegmentRecorder(writer_factory))
+    service = RecordingService(
+        finalizer, plan_for=plan_for, recorder=SegmentRecorder(writer_factory)
+    )
     frame = np.zeros((16, 16, 3), dtype=np.uint8)
     try:
         service.begin_session({"front": (16, 16), "side": (16, 16)}, 30.0)
@@ -712,25 +774,478 @@ def test_can_parallel_pose_pair_and_score_exam_pool_low_cpu_guard(tmp_path, monk
         meta=np.array({"pose_variant": "heavy", "feature_layout": "pose33_v3"}, dtype=object),
     )
     recorded_parallel: list[bool] = []
+    captured_predicates: list = []
 
     def fake_score(*_args, **kwargs):
-        recorded_parallel.append(bool(kwargs["parallel"]))
+        parallel_arg = kwargs["parallel"]
+        assert callable(parallel_arg)
+        captured_predicates.append(parallel_arg)
+        recorded_parallel.append(bool(parallel_arg()))
         return SimpleNamespace(
-            front_score=0.8, side_score=0.8, combined_score=0.8, combined_percent=80,
-            front_matches=(), side_matches=(), front_segment=(0, 4), side_segment=(0, 4),
-            action_scores=(), rule_checks=(), rule_error="",
+            front_score=0.8,
+            side_score=0.8,
+            combined_score=0.8,
+            combined_percent=80,
+            front_matches=(),
+            side_matches=(),
+            front_segment=(0, 4),
+            side_segment=(0, 4),
+            action_scores=(),
+            rule_checks=(),
+            rule_error="",
         )
 
     monkeypatch.setattr(exam_pool_mod, "score_exam_pools", fake_score)
     ctx = StepContext(
-        segment_id="seg-guard", segment_dir=tmp_path, views=("front", "side"),
+        segment_id="seg-guard",
+        segment_dir=tmp_path,
+        views=("front", "side"),
         sources={"front": tmp_path / "f.mp4", "side": tmp_path / "s.mp4"},
-        frames={"front": 10, "side": 10}, errors={}, stop_evt=Event(), publish=lambda *_a: None,
+        frames={"front": 10, "side": 10},
+        errors={},
+        stop_evt=Event(),
+        publish=lambda *_a: None,
     )
-    for cpus, recording, expected in ((4, True, False), (8, True, True), (4, False, True)):
+    for cpus, recording, expected in (
+        (4, True, False),
+        (8, True, True),
+        (4, False, True),
+    ):
         monkeypatch.setattr(os, "cpu_count", lambda c=cpus: c)
+        state = [recording]
         step = ScoreExamPool(
-            (tpl,), (tpl,), model_available=lambda: True, foreground_recording=lambda r=recording: r
+            (tpl,),
+            (tpl,),
+            model_available=lambda: True,
+            foreground_recording=lambda s=state: s[0],
         )
         step.run(ctx, CancelToken())
         assert recorded_parallel[-1] is expected
+        if cpus == 4 and not recording:
+            state[0] = True
+            assert captured_predicates[-1]() is False
+            state[0] = False
+            assert captured_predicates[-1]() is True
+
+
+def _write_tiny_avi(path: Path, frames: int, *, size: tuple[int, int] = (32, 32)) -> Path:
+    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"MJPG"), 10.0, size)
+    assert writer.isOpened()
+    try:
+        for i in range(frames):
+            writer.write(np.full((size[1], size[0], 3), (i * 19) % 256, dtype=np.uint8))
+    finally:
+        writer.release()
+    return path
+
+
+def test_score_exam_pool_midflight_recording_throttles_low_cpu_parallel_infer(
+    tmp_path, monkeypatch
+):
+    """< 8 核考场 idle 空窗已并发拉起两路 infer 后，中途开录立即收口至 <= 1，恢复 idle 重新并发。"""
+    import os
+    import time
+    from core.foundation.tasks import CancelToken
+    from core.pose import extract as extract_mod
+    from core.recording import ScoreExamPool, StepContext
+
+    tpl = tmp_path / "直拳.npz"
+    np.savez_compressed(
+        tpl,
+        features=np.zeros((5, 22, 2), dtype=np.float32),
+        meta=np.array({"pose_variant": "heavy", "feature_layout": "pose33_v3"}, dtype=object),
+    )
+    front_v = _write_tiny_avi(tmp_path / "front.avi", frames=10)
+    side_v = _write_tiny_avi(tmp_path / "side.avi", frames=10)
+
+    monkeypatch.setattr(os, "cpu_count", lambda: 4)
+    recording = [False]
+    lock = threading.Lock()
+    idle_barrier = threading.Barrier(2, timeout=3.0)
+    rec_start_barrier = threading.Barrier(2, timeout=3.0)
+    resume_barrier = threading.Barrier(2, timeout=3.0)
+    active = 0
+    phase_max = {"idle": 0, "recording": 0, "resumed": 0}
+    recording_frames = 0
+    recording_switched = [False]
+    resumed_switched = [False]
+
+    class TimedPipe:
+        def __init__(self) -> None:
+            self.idx = 0
+
+        def infer(self, _frame, *, timestamp_ms=None):
+            nonlocal active, recording_frames
+            idx = self.idx
+            self.idx += 1
+            if idx == 0:
+                with lock:
+                    active += 1
+                    phase_max["idle"] = max(phase_max["idle"], active)
+                try:
+                    idle_barrier.wait()
+                finally:
+                    with lock:
+                        active -= 1
+                # 两路完成首帧后同步切入前台录制态，避免遗留帧干扰相位归属
+                if rec_start_barrier.wait() == 0 and not recording_switched[0]:
+                    recording_switched[0] = True
+                    recording[0] = True
+                return None, []
+            if 1 <= idx <= 4:
+                with lock:
+                    active += 1
+                    phase_max["recording"] = max(phase_max["recording"], active)
+                    recording_frames += 1
+                try:
+                    time.sleep(0.015)
+                finally:
+                    with lock:
+                        active -= 1
+                with lock:
+                    if recording_frames == 8 and not resumed_switched[0]:
+                        resumed_switched[0] = True
+                        recording[0] = False
+                return None, []
+            if idx == 5:
+                with lock:
+                    active += 1
+                    phase_max["resumed"] = max(phase_max["resumed"], active)
+                try:
+                    resume_barrier.wait()
+                finally:
+                    with lock:
+                        active -= 1
+            return None, []
+
+        def close(self) -> None:
+            pass
+
+    created = [0]
+    monkeypatch.setattr(
+        extract_mod,
+        "create_engine",
+        lambda _spec, **_kw: (created.__setitem__(0, created[0] + 1), TimedPipe())[1],
+    )
+    ctx = StepContext(
+        segment_id="seg-midflight",
+        segment_dir=tmp_path,
+        views=("front", "side"),
+        sources={"front": front_v, "side": side_v},
+        frames={"front": 10, "side": 10},
+        errors={},
+        stop_evt=Event(),
+        publish=lambda *_a: None,
+        foreground_recording=lambda: recording[0],
+    )
+    step = ScoreExamPool((tpl,), (tpl,), model_available=lambda: True)
+    outcome = step.run(ctx, CancelToken())
+
+    assert outcome is not None and outcome.status == "completed"
+    assert created[0] == 2  # 两路预热后完全命中 pose_cache，0 重复推理
+    assert phase_max["idle"] == 2
+    assert recording_frames == 8
+    assert phase_max["recording"] == 1
+    assert phase_max["resumed"] == 2
+
+    # 8 核下即使前台全程录制也保持并发
+    monkeypatch.setattr(os, "cpu_count", lambda: 8)
+    recording[0] = True
+    hi_barrier = threading.Barrier(2, timeout=3.0)
+    hi_active = hi_max = 0
+
+    class HiCpuPipe:
+        def __init__(self) -> None:
+            self.first = True
+
+        def infer(self, _frame, *, timestamp_ms=None):
+            nonlocal hi_active, hi_max
+            with lock:
+                hi_active += 1
+                hi_max = max(hi_max, hi_active)
+            try:
+                if self.first:
+                    self.first = False
+                    hi_barrier.wait()
+                return None, []
+            finally:
+                with lock:
+                    hi_active -= 1
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(extract_mod, "create_engine", lambda _spec, **_kw: HiCpuPipe())
+    step.run(ctx, CancelToken())
+    assert hi_max == 2
+
+
+def test_extract_pose_pair_hardlink_shares_pose_cache_both_directions(tmp_path, monkeypatch):
+    """硬链接同物理文件（resolve 路径不同）在 pose_cache 中双键互通，0 重复推理；不同文件仍隔离。"""
+    import os
+    from core.pose import (
+        FORMAL,
+        extract_pose_pair,
+        extract_pose_sequence,
+        formal_engine,
+        pose_cache,
+    )
+    from core.pose import extract as extract_mod
+
+    orig = _write_tiny_avi(tmp_path / "front.avi", frames=5)
+    hardlink = tmp_path / "side_hardlink.avi"
+    other = _write_tiny_avi(tmp_path / "other.avi", frames=5)
+    os.link(orig, hardlink)
+    assert orig.samefile(hardlink)
+    assert orig.resolve() != hardlink.resolve()
+
+    created = [0]
+
+    class CountingPipe:
+        def infer(self, _frame, *, timestamp_ms=None):
+            return None, []
+
+        def close(self) -> None:
+            pass
+
+    def fake_create(_spec, **_kw):
+        created[0] += 1
+        return CountingPipe()
+
+    monkeypatch.setattr(extract_mod, "create_engine", fake_create)
+    spec = formal_engine("full")
+
+    # 正向：extract_pose_pair 提取 orig 后同步写入 hardlink 键
+    with pose_cache():
+        elapsed = [-1.0, -1.0]
+        s1, s2 = extract_pose_pair(orig, hardlink, spec, FORMAL, parallel=True, elapsed_out=elapsed)
+        assert s1 is s2
+        assert created[0] == 1
+        assert elapsed[0] >= 0.0 and elapsed[1] == 0.0
+        assert extract_pose_sequence(orig, spec, FORMAL) is s1
+        assert extract_pose_sequence(hardlink, spec, FORMAL) is s1
+        assert created[0] == 1
+
+    # 反向：先缓存 hardlink，extract_pose_pair(orig, hardlink) 命中并补齐 orig 键
+    with pose_cache():
+        pre = extract_pose_sequence(hardlink, spec, FORMAL)
+        assert created[0] == 2
+        elapsed = [-1.0, -1.0]
+        h1, h2 = extract_pose_pair(orig, hardlink, spec, FORMAL, parallel=True, elapsed_out=elapsed)
+        assert h1 is pre and h2 is pre
+        assert elapsed == [0.0, 0.0]
+        assert extract_pose_sequence(orig, spec, FORMAL) is pre
+        assert created[0] == 2
+
+        # 负向：不同物理文件仍独立缓存、各自提取
+        d1, d2 = extract_pose_pair(orig, other, spec, FORMAL, parallel=True)
+        assert d1 is pre and d2 is not pre
+        assert created[0] == 3
+
+
+def test_extract_pose_pair_subthread_cancel_spawn_failure_and_progress_contracts(
+    tmp_path, monkeypatch
+):
+    """覆盖子线程直抛 Cancelled、第二路 spawn 失败清理、双路进度单调有界与注入工厂顺序/独立计时。"""
+    import time
+    from core.foundation.tasks import Cancelled, TaskGroup
+    from core.media import video_source as video_source_mod
+    from core.pose import FORMAL, PRACTICE_V4, extract_pose_pair, formal_engine
+    from core.pose import extract as extract_mod
+
+    short_v = _write_tiny_avi(tmp_path / "short.avi", frames=5)
+    long_v = _write_tiny_avi(tmp_path / "long.avi", frames=30)
+    spec = formal_engine("full")
+
+    # 1) 子线程引擎直抛 Cancelled 级联终止另一路并传播 Cancelled（非 AssertionError）
+    sibling_frames = [0]
+
+    class CancelFirstEngine:
+        def infer(self, _frame, *, timestamp_ms=None):
+            raise Cancelled("engine_abort")
+
+        def close(self) -> None:
+            pass
+
+    class SlowSiblingEngine:
+        def infer(self, _frame, *, timestamp_ms=None):
+            sibling_frames[0] += 1
+            time.sleep(0.02)
+            return None, []
+
+        def close(self) -> None:
+            pass
+
+    cancel_pipes = iter([CancelFirstEngine(), SlowSiblingEngine()])
+    with pytest.raises(Cancelled, match="engine_abort"):
+        extract_pose_pair(
+            short_v,
+            long_v,
+            spec,
+            FORMAL,
+            parallel=True,
+            engine_factory=lambda: next(cancel_pipes),
+        )
+    assert sibling_frames[0] < 30
+
+    # 2) 第二路 spawn 失败：取消并 join 第一路、释放全部资源且重抛原始异常
+    first_handle_ref: list = []
+    first_started = threading.Event()
+    first_closed = [False]
+    orig_spawn = TaskGroup.spawn
+    spawn_calls = [0]
+
+    def fail_second_spawn(self, name, fn, **kwargs):
+        spawn_calls[0] += 1
+        if spawn_calls[0] == 2:
+            assert first_started.wait(3.0)
+            raise RuntimeError("thread-spawn-failed")
+        handle = orig_spawn(self, name, fn, **kwargs)
+        first_handle_ref.append(handle)
+        return handle
+
+    class SlowPipe:
+        def infer(self, _frame, *, timestamp_ms=None):
+            first_started.set()
+            time.sleep(0.02)
+            return None, []
+
+        def close(self) -> None:
+            first_closed[0] = True
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(TaskGroup, "spawn", fail_second_spawn)
+        with pytest.raises(RuntimeError, match="thread-spawn-failed"):
+            extract_pose_pair(short_v, long_v, spec, FORMAL, parallel=True, engine_factory=SlowPipe)
+    assert len(first_handle_ref) == 1 and first_handle_ref[0].done is True
+    assert first_closed[0] is True
+
+    # 3) 双路 progress 在长短悬殊（并行与串行）下绝不先报 100% 再倒退，且 done 单调有界
+    class NoopPipe:
+        def infer(self, _frame, *, timestamp_ms=None):
+            return None, []
+
+        def close(self) -> None:
+            pass
+
+    for is_parallel in (True, False):
+        events: list[tuple[int, int]] = []
+        extract_pose_pair(
+            short_v,
+            long_v,
+            spec,
+            FORMAL,
+            parallel=is_parallel,
+            progress=lambda d, t: events.append((d, t)),
+            engine_factory=NoopPipe,
+        )
+        assert events and events[-1] == (35, 35)
+        dones = [d for d, _ in events]
+        assert dones == sorted(dones)
+        ratios = [d / t for d, t in events if t > 0]
+        assert ratios == sorted(ratios)
+        assert all(0 <= d <= t for d, t in events if t > 0)
+        assert all(not (t > 0 and d == t) for d, t in events[:-1])
+
+    # 4) 单路 total==0（未知帧数）时绝不出现 done > total > 0
+    class UnknownTotalCap:
+        def __init__(self, path) -> None:
+            self.path = str(path)
+            self.i = 0
+            self.known = self.path.endswith("known_total.avi")
+
+        def isOpened(self) -> bool:
+            return True
+
+        def get(self, prop) -> float:
+            if prop == cv2.CAP_PROP_FPS:
+                return 25.0
+            if prop == cv2.CAP_PROP_FRAME_COUNT:
+                return 20.0 if self.known else 0.0
+            return 0.0
+
+        def read(self):
+            if self.i >= 20:
+                return False, None
+            self.i += 1
+            return True, np.zeros((4, 4, 3), dtype=np.uint8)
+
+        def release(self) -> None:
+            pass
+
+    unknown_events: list[tuple[int, int]] = []
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(video_source_mod.cv2, "VideoCapture", UnknownTotalCap)
+        extract_pose_pair(
+            "no_total.avi",
+            "known_total.avi",
+            spec,
+            FORMAL,
+            parallel=True,
+            progress=lambda d, t: unknown_events.append((d, t)),
+            engine_factory=NoopPipe,
+        )
+    assert unknown_events
+    assert all(t == 0 for _, t in unknown_events)
+
+    # 5) 注入工厂严格先正面后侧面 + 逐路独立 elapsed_out + 异常长度快速失败
+    order_log: list[str] = []
+
+    class TagPipe:
+        def __init__(self, tag: str, delay_s: float) -> None:
+            self.tag = tag
+            self.delay_s = delay_s
+            self.first = True
+
+        def infer(self, _frame, *, timestamp_ms=None):
+            if self.first:
+                self.first = False
+                order_log.append(self.tag)
+                if self.delay_s > 0:
+                    time.sleep(self.delay_s)
+            return None, []
+
+        def close(self) -> None:
+            pass
+
+    for is_parallel in (True, False):
+        order_log.clear()
+        assigned: list[tuple[str, int]] = []
+        front_pipe = TagPipe("front", 0.0)
+        side_pipe = TagPipe("side", 0.08)
+        pipes = iter([front_pipe, side_pipe])
+        elapsed = [0.0, 0.0]
+
+        def tracked_factory():
+            pipe = next(pipes)
+            assigned.append((pipe.tag, len(assigned)))
+            return pipe
+
+        extract_pose_pair(
+            short_v,
+            short_v.with_name("long.avi"),
+            spec,
+            PRACTICE_V4,
+            parallel=is_parallel,
+            engine_factory=tracked_factory,
+            elapsed_out=elapsed,
+        )
+        assert assigned == [("front", 0), ("side", 1)]
+        assert elapsed[0] < 0.05
+        assert elapsed[1] >= 0.07
+
+    with pytest.raises(ValueError, match="elapsed_out"):
+        extract_pose_pair(short_v, long_v, spec, FORMAL, elapsed_out=[0.0])
+
+    # 6) 默认路径单次主线程 default_models_dir 预播种（工作线程不重复调用）
+    dir_threads: list[int] = []
+    main_tid = threading.get_ident()
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(
+            extract_mod,
+            "default_models_dir",
+            lambda: (dir_threads.append(threading.get_ident()), tmp_path)[1],
+        )
+        mp.setattr(extract_mod, "create_engine", lambda _s, **_kw: NoopPipe())
+        extract_pose_pair(short_v, long_v, spec, FORMAL, parallel=True)
+    assert dir_threads == [main_tid]

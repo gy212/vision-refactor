@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import math
 import subprocess
 import tempfile
@@ -15,6 +16,8 @@ import cv2
 from core.foundation.atomic_io import replace_file
 from core.media.ffmpeg import NO_WINDOW, ffmpeg_executable
 from core.media.video_source import first_frame_ok, probe_video
+
+_logger = logging.getLogger(__name__)
 
 FFMPEG_TRANSCODE_TIMEOUT_S = 30 * 60
 _FFMPEG_POLL_INTERVAL_S = 0.05
@@ -62,10 +65,13 @@ def open_video_writer(
     last_err: str | None = None
     for out_path, codec in candidates:
         out_path.parent.mkdir(parents=True, exist_ok=True)
+        existed_before = out_path.exists()
         vw = cv2.VideoWriter(str(out_path), _fourcc(codec), fps, (w, h))
         if vw.isOpened():
             return vw, out_path, codec
         vw.release()
+        if not existed_before and out_path.exists():
+            _discard_temp(out_path)
         last_err = f"VideoWriter open failed: path={out_path}, codec={codec}"
 
     raise RuntimeError(last_err or "VideoWriter open failed")
@@ -97,8 +103,8 @@ def _is_cancelled(
 def _discard_temp(path: Path) -> None:
     try:
         path.unlink(missing_ok=True)
-    except OSError:
-        pass
+    except OSError as exc:
+        _logger.warning("清理临时视频文件失败（%s）：%s", path, exc)
 
 
 def _run_ffmpeg_cancellable(
@@ -352,20 +358,14 @@ def transcode_to_h264(
             raise OSError("ffmpeg produced no output")
         replace_file(temporary_dst, dst)
     except InterruptedError:
-        try:
-            temporary_dst.unlink(missing_ok=True)
-        except OSError:
-            pass
+        _discard_temp(temporary_dst)
         raise
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
-        try:
-            temporary_dst.unlink(missing_ok=True)
-        except OSError:
-            pass
+        _discard_temp(temporary_dst)
         return src
 
     try:
         src.unlink()
-    except OSError:
-        pass
+    except OSError as exc:
+        _logger.warning("清理已转码原始 AVI 失败（%s）：%s", src, exc)
     return dst

@@ -19,7 +19,8 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from core.evaluation import FeedbackConfig, analyze_practice  # noqa: E402
+from core.evaluation import FeedbackConfig, analyze_practice, extract_series  # noqa: E402
+from core.evaluation import practice as practice_mod  # noqa: E402
 from core.foundation.tasks import Cancelled, CancelToken  # noqa: E402
 from core.media import video_source as video_source_mod  # noqa: E402
 from core.pose import (  # noqa: E402
@@ -212,7 +213,9 @@ def test_blocking_submit_returns_none_after_close():
         def close(self):
             pass
 
-    engine = ParallelPoseEngine(pipeline_factory=Blocked, workers=1, drop_when_full=False, queue_factor=1)
+    engine = ParallelPoseEngine(
+        pipeline_factory=Blocked, workers=1, drop_when_full=False, queue_factor=1
+    )
     engine.start()
     frame = np.zeros((2, 2, 3), dtype=np.uint8)
     results: list = []
@@ -281,7 +284,12 @@ def _reference_normalize_v3_frame(row: np.ndarray) -> np.ndarray | None:
     with np.errstate(all="ignore"):
         pts = np.asarray(row[:33, :2], dtype=np.float32)
         ls, rs, lh, rh = pts[11], pts[12], pts[23], pts[24]
-        if not (np.isfinite(ls).all() and np.isfinite(rs).all() and np.isfinite(lh).all() and np.isfinite(rh).all()):
+        if not (
+            np.isfinite(ls).all()
+            and np.isfinite(rs).all()
+            and np.isfinite(lh).all()
+            and np.isfinite(rh).all()
+        ):
             return None
         sh_c, hip_c = 0.5 * (ls + rs), 0.5 * (lh + rh)
         center = hip_c if np.isfinite(hip_c).all() else sh_c
@@ -301,7 +309,9 @@ def _reference_normalize_v3_frame(row: np.ndarray) -> np.ndarray | None:
             rot = float(target - float(np.arctan2(float(v[1]), float(v[0]))))
             ca, sa = float(np.cos(rot)), float(np.sin(rot))
         rot_m = np.array([[ca, -sa], [sa, ca]], dtype=np.float32)
-        out = np.clip(((pts[11:33] - center) / float(scale)) @ rot_m.T, -5.0, 5.0).astype(np.float32, copy=False)
+        out = np.clip(((pts[11:33] - center) / float(scale)) @ rot_m.T, -5.0, 5.0).astype(
+            np.float32, copy=False
+        )
         if (not np.isfinite(out).all()) or float(np.max(np.abs(out))) > 5.0:
             return None
         return out
@@ -367,7 +377,9 @@ def test_normalize_pose_xy_v3_batch_empty_and_validation():
     with pytest.raises(ValueError, match="landmarks"):
         normalize_pose_xy_v3_batch(np.zeros((2, 10, 2), dtype=np.float32))
     with pytest.raises(ValueError, match="detected"):
-        normalize_pose_xy_v3_batch(np.zeros((2, 33, 4), dtype=np.float32), np.ones((3,), dtype=bool))
+        normalize_pose_xy_v3_batch(
+            np.zeros((2, 33, 4), dtype=np.float32), np.ones((3,), dtype=bool)
+        )
 
 
 def test_normalize_pose_xy_v3_batch_extreme_fallbacks_zero_ulp():
@@ -430,8 +442,22 @@ _EXTREME_FLOATS = st.one_of(
     st.floats(min_value=-2.0, max_value=2.0, allow_nan=False, allow_infinity=False),
     st.sampled_from(
         [
-            0.0, -0.0, 1e-7, -1e-7, 1e-6, 0.02, float(np.float32(0.02)), 0.020001,
-            3e38, -3e38, 1e19, -1e19, 1e-20, float("nan"), float("inf"), float("-inf"),
+            0.0,
+            -0.0,
+            1e-7,
+            -1e-7,
+            1e-6,
+            0.02,
+            float(np.float32(0.02)),
+            0.020001,
+            3e38,
+            -3e38,
+            1e19,
+            -1e19,
+            1e-20,
+            float("nan"),
+            float("inf"),
+            float("-inf"),
         ]
     ),
 )
@@ -483,7 +509,9 @@ def test_normalize_pose_xy_v3_batch_hypothesis_zero_ulp(t, dtype, data):
         warm_lm = lm[:mid]
         warm_det = det[:mid]
         segments = (
-            SegmentWarmup(0, mid - 1, np.zeros((0, 33, 4), dtype=dtype), np.zeros((0,), dtype=bool)),
+            SegmentWarmup(
+                0, mid - 1, np.zeros((0, 33, 4), dtype=dtype), np.zeros((0,), dtype=bool)
+            ),
             SegmentWarmup(mid, t - 1, warm_lm, warm_det),
         )
         seg_seq = _make_pose_sequence(lm, det, decoded=decoded, segments=segments)
@@ -498,12 +526,20 @@ def test_normalize_pose_xy_v3_batch_hypothesis_zero_ulp(t, dtype, data):
 # --------------------------------------------------------------------------- #
 
 
-def _write_test_avi(path: Path, frames: int = 8, size=(64, 48), fps: float = 10.0) -> Path:
+def _write_test_avi(
+    path: Path,
+    frames: int = 8,
+    size=(64, 48),
+    fps: float = 10.0,
+    *,
+    pixel_value: int | None = None,
+) -> Path:
     writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"MJPG"), fps, size)
     assert writer.isOpened()
     try:
         for i in range(frames):
-            writer.write(np.full((size[1], size[0], 3), (i * 17) % 256, dtype=np.uint8))
+            val = pixel_value if pixel_value is not None else (i * 17) % 256
+            writer.write(np.full((size[1], size[0], 3), val, dtype=np.uint8))
     finally:
         writer.release()
     return path
@@ -512,8 +548,12 @@ def _write_test_avi(path: Path, frames: int = 8, size=(64, 48), fps: float = 10.
 def test_extract_pose_pair_parallel_zero_ulp_and_parent_pose_cache_hit():
     """双路并发提点：真 2 路并发、与串行 0 ULP 一致、写回父线程 pose_cache 后下游 0 重复推理。"""
     fix_dir = Path(__file__).resolve().parent / "fixtures" / "pose33_v3"
-    front_raw = np.asarray(np.load(fix_dir / "front_src_raw.npz", allow_pickle=True)["landmarks"], np.float32)
-    side_raw = np.asarray(np.load(fix_dir / "side_src_raw.npz", allow_pickle=True)["landmarks"], np.float32)
+    front_raw = np.asarray(
+        np.load(fix_dir / "front_src_raw.npz", allow_pickle=True)["landmarks"], np.float32
+    )
+    side_raw = np.asarray(
+        np.load(fix_dir / "side_src_raw.npz", allow_pickle=True)["landmarks"], np.float32
+    )
     front_src, side_src = "golden://pair_front.mp4", "golden://pair_side.mp4"
 
     H.clear_registry()
@@ -558,7 +598,9 @@ def test_extract_pose_pair_parallel_zero_ulp_and_parent_pose_cache_hit():
             with pytest.MonkeyPatch.context() as mp:
                 mp.setattr(extract_mod, "create_engine", tracked_create)
                 with pose_cache():
-                    par_f, par_s = extract_pose_pair(front_src, side_src, spec, FORMAL, parallel=True)
+                    par_f, par_s = extract_pose_pair(
+                        front_src, side_src, spec, FORMAL, parallel=True
+                    )
                     assert max_active == 2
                     assert created == 2
                     assert infer_count == len(front_raw) + len(side_raw)
@@ -567,7 +609,9 @@ def test_extract_pose_pair_parallel_zero_ulp_and_parent_pose_cache_hit():
                     hit_s = extract_pose_sequence(side_src, spec, FORMAL)
                     raw_f = extract_pose_raw_series(front_src, pose_variant="full")
                     raw_s = extract_pose_raw_series(side_src, pose_variant="full")
-                    again_f, again_s = extract_pose_pair(front_src, side_src, spec, FORMAL, parallel=True)
+                    again_f, again_s = extract_pose_pair(
+                        front_src, side_src, spec, FORMAL, parallel=True
+                    )
                     assert created == 2
                     assert infer_count == len(front_raw) + len(side_raw)
                     assert hit_f is par_f and hit_s is par_s
@@ -725,22 +769,36 @@ def test_extract_pose_pair_cancel_and_error_close_resources_without_cache_pollut
         assert normal_calls[0] == 20
 
 
+def _practice_landmarks(offset: float = 0.0):
+    pts = [SimpleNamespace(x=0.5, y=0.5, z=0.0, visibility=1.0) for _ in range(33)]
+    coords = {
+        0: (0.5, 0.15),
+        11: (0.4, 0.3),
+        12: (0.6, 0.3),
+        13: (0.4, 0.45),
+        14: (0.6, 0.45),
+        15: (0.55 + offset, 0.45),
+        16: (0.75, 0.45),
+        23: (0.43, 0.6),
+        24: (0.57, 0.6),
+        25: (0.4, 0.78),
+        26: (0.6, 0.78),
+        27: (0.35, 0.96),
+        28: (0.65, 0.96),
+        29: (0.38, 0.98),
+        30: (0.68, 0.98),
+        31: (0.3, 0.96),
+        32: (0.6, 0.96),
+    }
+    for idx, (x, y) in coords.items():
+        pts[idx] = SimpleNamespace(x=x, y=y, z=0.0, visibility=1.0)
+    return pts
+
+
 def test_analyze_practice_parallel_runs_concurrently_and_matches_serial(tmp_path):
     """练习分析双摄入口接入共享并发原语：真双路并发且结论与串行完全一致。"""
     front = _write_test_avi(tmp_path / "front.avi", frames=16, size=(96, 96), fps=12.0)
     side = _write_test_avi(tmp_path / "side.avi", frames=16, size=(96, 96), fps=12.0)
-
-    def make_landmarks(offset: float):
-        pts = [SimpleNamespace(x=0.5, y=0.5, z=0.0, visibility=1.0) for _ in range(33)]
-        coords = {
-            0: (0.5, 0.15), 11: (0.4, 0.3), 12: (0.6, 0.3), 13: (0.4, 0.45), 14: (0.6, 0.45),
-            15: (0.55 + offset, 0.45), 16: (0.75, 0.45), 23: (0.43, 0.6), 24: (0.57, 0.6),
-            25: (0.4, 0.78), 26: (0.6, 0.78), 27: (0.35, 0.96), 28: (0.65, 0.96),
-            29: (0.38, 0.98), 30: (0.68, 0.98), 31: (0.3, 0.96), 32: (0.6, 0.96),
-        }
-        for idx, (x, y) in coords.items():
-            pts[idx] = SimpleNamespace(x=x, y=y, z=0.0, visibility=1.0)
-        return pts
 
     def strip_timing(result: dict) -> dict:
         cleaned = dict(result)
@@ -759,19 +817,442 @@ def test_analyze_practice_parallel_runs_concurrently_and_matches_serial(tmp_path
             if self._barrier is not None and self._first:
                 self._first = False
                 self._barrier.wait()
-            return make_landmarks(float(frame[0, 0, 0]) * 1e-4), []
+            return _practice_landmarks(float(frame[0, 0, 0]) * 1e-4), []
 
         def close(self) -> None:
             pass
 
     cfg = FeedbackConfig()
     serial = analyze_practice(
-        "stance", "left", front, side, config=cfg,
-        pipeline_factory=lambda: DeterministicPipe(), parallel=False,
+        "stance",
+        "left",
+        front,
+        side,
+        config=cfg,
+        pipeline_factory=lambda: DeterministicPipe(),
+        parallel=False,
     )
     barrier = threading.Barrier(2, timeout=3.0)
     parallel = analyze_practice(
-        "stance", "left", front, side, config=cfg,
-        pipeline_factory=lambda: DeterministicPipe(barrier), parallel=True,
+        "stance",
+        "left",
+        front,
+        side,
+        config=cfg,
+        pipeline_factory=lambda: DeterministicPipe(barrier),
+        parallel=True,
     )
+    for res in (serial, parallel):
+        for view in ("front", "side"):
+            secs = res["capture"][view]["analysisSeconds"]
+            assert isinstance(secs, float) and 0.0 <= secs < 10.0
     assert strip_timing(parallel) == strip_timing(serial)
+
+
+def test_analyze_practice_default_preseeds_once_and_hits_pose_cache(tmp_path):
+    """默认 pipeline_factory=None 时主线程单次预播种、命中 pose_cache，且兼容外部 monkeypatch。"""
+    front = _write_test_avi(tmp_path / "front.avi", frames=12, size=(96, 96), fps=12.0)
+    side = _write_test_avi(tmp_path / "side.avi", frames=12, size=(96, 96), fps=12.0)
+    main_tid = threading.get_ident()
+    models_dir_threads: list[int] = []
+    created: list[dict] = []
+    infer_calls = [0]
+    lock = threading.Lock()
+
+    class CountingPipe:
+        def infer(self, frame, *, timestamp_ms=None):
+            with lock:
+                infer_calls[0] += 1
+            return _practice_landmarks(float(frame[0, 0, 0]) * 1e-4), []
+
+        def close(self) -> None:
+            pass
+
+    def fake_models_dir() -> Path:
+        with lock:
+            models_dir_threads.append(threading.get_ident())
+        return tmp_path
+
+    def fake_create(spec, *, models_dir=None, download=True, **_kw):
+        with lock:
+            created.append({"spec": spec, "models_dir": models_dir, "download": download})
+        return CountingPipe()
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(extract_mod, "default_models_dir", fake_models_dir)
+        mp.setattr(extract_mod, "create_engine", fake_create)
+        cfg = FeedbackConfig()
+        with pose_cache():
+            res1 = analyze_practice("stance", "left", front, side, config=cfg, parallel=True)
+            assert models_dir_threads == [main_tid]
+            assert len(created) == 2
+            assert all(c["download"] is False and c["models_dir"] == tmp_path for c in created)
+            assert infer_calls[0] == 24
+
+            res2 = analyze_practice("stance", "left", front, side, config=cfg, parallel=True)
+            assert models_dir_threads == [main_tid]
+            assert len(created) == 2
+            assert infer_calls[0] == 24
+            assert res2["capture"]["front"]["analysisSeconds"] == 0.0
+            assert res2["capture"]["side"]["analysisSeconds"] == 0.0
+            assert res2["checks"] == res1["checks"]
+            assert res2["status"] == res1["status"]
+
+            # 同作用域内单路 extract_series 默认路径亦命中缓存
+            extract_series(front, cfg, lambda: False)
+            assert infer_calls[0] == 24
+
+    # 兼容外部 monkeypatch practice.create_practice_engine 与 practice.models_dir
+    patched_factory_calls = [0]
+
+    def patched_practice_engine(_cfg=None):
+        patched_factory_calls[0] += 1
+        return CountingPipe()
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(practice_mod, "create_practice_engine", patched_practice_engine)
+        analyze_practice("stance", "left", front, side, config=FeedbackConfig(), parallel=True)
+        assert patched_factory_calls[0] == 2
+
+    empty_models = tmp_path / "empty_models"
+    empty_models.mkdir()
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(practice_mod, "models_dir", lambda: empty_models)
+        with pytest.raises(FileNotFoundError, match="缺少 MediaPipe heavy"):
+            extract_series(front, FeedbackConfig(pose_variant="heavy"), lambda: False)
+
+    patched_create_calls = [0]
+
+    def patched_create_engine(_spec, **_kw):
+        patched_create_calls[0] += 1
+        return CountingPipe()
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(practice_mod, "create_engine", patched_create_engine)
+        analyze_practice("stance", "left", front, side, config=FeedbackConfig(), parallel=True)
+        assert patched_create_calls[0] == 2
+
+
+def test_analyze_practice_stateful_pipeline_factory_order_under_parallel(tmp_path, monkeypatch):
+    """并行模式下注入有状态迭代器工厂，即使正面首帧更慢，仍严格保证先正面后侧面。"""
+    front = _write_test_avi(
+        tmp_path / "front.avi", frames=12, size=(80, 64), fps=12.0, pixel_value=20
+    )
+    side = _write_test_avi(
+        tmp_path / "side.avi", frames=12, size=(96, 64), fps=12.0, pixel_value=230
+    )
+
+    orig_open_video = extract_mod.open_video
+
+    class DelayedFirstFrameSource:
+        def __init__(self, inner, delay_s: float) -> None:
+            self._inner = inner
+            self._delay_s = delay_s
+
+        def __enter__(self):
+            self._inner.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            return self._inner.__exit__(*args)
+
+        def __iter__(self):
+            first = True
+            for frame in self._inner:
+                if first and self._delay_s > 0:
+                    first = False
+                    time.sleep(self._delay_s)
+                yield frame
+
+        def __getattr__(self, name: str):
+            return getattr(self._inner, name)
+
+    def staggered_open_video(path, options=None, cancel=None):
+        src = orig_open_video(path, options, cancel)
+        delay = 0.03 if Path(path).name == "front.avi" else 0.0
+        return DelayedFirstFrameSource(src, delay)
+
+    monkeypatch.setattr(extract_mod, "open_video", staggered_open_video)
+
+    class TaggedPipe:
+        def __init__(self, tag: str, barrier: threading.Barrier) -> None:
+            self.tag = tag
+            self.barrier = barrier
+            self.seen_widths: list[int] = []
+            self.seen_luma: list[int] = []
+            self.closed = False
+            self._first = True
+
+        def infer(self, frame, *, timestamp_ms=None):
+            if self._first:
+                self._first = False
+                self.barrier.wait()
+            self.seen_widths.append(int(frame.shape[1]))
+            self.seen_luma.append(int(frame[0, 0, 0]))
+            return _practice_landmarks(), []
+
+        def close(self) -> None:
+            self.closed = True
+
+    for _ in range(3):
+        barrier = threading.Barrier(2, timeout=3.0)
+        front_pipe = TaggedPipe("front", barrier)
+        side_pipe = TaggedPipe("side", barrier)
+        pipes = iter([front_pipe, side_pipe])
+        analyze_practice(
+            "stance",
+            "left",
+            front,
+            side,
+            config=FeedbackConfig(),
+            pipeline_factory=pipes.__next__,
+            parallel=True,
+        )
+        assert len(front_pipe.seen_widths) == 12 and set(front_pipe.seen_widths) == {80}
+        assert all(v < 64 for v in front_pipe.seen_luma)
+        assert len(side_pipe.seen_widths) == 12 and set(side_pipe.seen_widths) == {96}
+        assert all(v > 192 for v in side_pipe.seen_luma)
+        assert front_pipe.closed and side_pipe.closed
+
+
+@pytest.mark.parametrize("parallel", [False, True])
+@pytest.mark.parametrize("front_delay,side_delay", [(0.0, 0.15), (0.15, 0.0)])
+def test_analyze_practice_per_view_analysis_seconds_isolated(
+    tmp_path, parallel: bool, front_delay: float, side_delay: float
+):
+    """正侧两路 analysisSeconds 严格独立记录，较快一路绝不被较慢一路耗时污染。"""
+    front = _write_test_avi(tmp_path / "front.avi", frames=8, size=(64, 64), fps=10.0)
+    side = _write_test_avi(tmp_path / "side.avi", frames=8, size=(64, 64), fps=10.0)
+
+    class DelayedPipe:
+        def __init__(self, delay: float) -> None:
+            self._delay = delay
+            self._first = True
+
+        def infer(self, _frame, *, timestamp_ms=None):
+            if self._first:
+                self._first = False
+                if self._delay > 0:
+                    time.sleep(self._delay)
+            return _practice_landmarks(), []
+
+        def close(self) -> None:
+            pass
+
+    pipes = iter([DelayedPipe(front_delay), DelayedPipe(side_delay)])
+    res = analyze_practice(
+        "stance",
+        "left",
+        front,
+        side,
+        config=FeedbackConfig(),
+        pipeline_factory=pipes.__next__,
+        parallel=parallel,
+    )
+    front_s = res["capture"]["front"]["analysisSeconds"]
+    side_s = res["capture"]["side"]["analysisSeconds"]
+    fast_s, slow_s = (front_s, side_s) if front_delay == 0.0 else (side_s, front_s)
+    assert fast_s < 0.08, f"较快一路耗时被污染: front={front_s}, side={side_s}"
+    assert slow_s >= 0.12, f"较慢一路耗时未如实记录: front={front_s}, side={side_s}"
+    assert slow_s - fast_s >= 0.08
+
+
+def test_extract_pose_pair_engine_cancelled_cascades_and_practice_raises_interrupted(tmp_path):
+    """子线程引擎直抛 Cancelled 时级联终止另一路并向上传播 Cancelled，练习入口转为 InterruptedError。"""
+    v1 = _write_test_avi(tmp_path / "v1.avi", frames=5, size=(32, 32), fps=10.0)
+    v2 = _write_test_avi(tmp_path / "v2.avi", frames=60, size=(32, 32), fps=10.0)
+
+    class CancelEngine:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def infer(self, _frame, *, timestamp_ms=None):
+            raise Cancelled("engine_abort")
+
+        def close(self) -> None:
+            self.closed = True
+
+    class SlowSiblingEngine:
+        def __init__(self) -> None:
+            self.calls = 0
+            self.closed = False
+
+        def infer(self, _frame, *, timestamp_ms=None):
+            self.calls += 1
+            time.sleep(0.01)
+            return None, []
+
+        def close(self) -> None:
+            self.closed = True
+
+    cancel_pipe = CancelEngine()
+    slow_pipe = SlowSiblingEngine()
+    with pytest.raises(Cancelled) as exc_info:
+        extract_pose_pair(
+            v1,
+            v2,
+            formal_engine("full"),
+            FORMAL,
+            parallel=True,
+            engine_factory=iter([cancel_pipe, slow_pipe]).__next__,
+        )
+    assert exc_info.value.reason == "engine_abort"
+    assert cancel_pipe.closed and slow_pipe.closed
+    assert slow_pipe.calls < 60
+
+    for parallel in (False, True):
+        with pytest.raises(InterruptedError, match="分析已取消"):
+            analyze_practice(
+                "stance",
+                "left",
+                v1,
+                v2,
+                config=FeedbackConfig(),
+                pipeline_factory=CancelEngine,
+                parallel=parallel,
+            )
+
+
+def test_extract_pose_pair_second_spawn_failure_cancels_and_joins_first_worker(
+    tmp_path, monkeypatch
+):
+    """第二路 TaskGroup.spawn 抛 RuntimeError 时，已启动的第一路 worker 被取消并 join 干净无残留。"""
+    v1 = _write_test_avi(tmp_path / "v1.avi", frames=80, size=(32, 32), fps=10.0)
+    v2 = _write_test_avi(tmp_path / "v2.avi", frames=80, size=(32, 32), fps=10.0)
+    first_started = threading.Event()
+    first_closed = threading.Event()
+    first_calls = [0]
+    spawned_handles = []
+
+    class SlowFirstPipe:
+        def infer(self, _frame, *, timestamp_ms=None):
+            first_started.set()
+            first_calls[0] += 1
+            time.sleep(0.01)
+            return None, []
+
+        def close(self) -> None:
+            first_closed.set()
+
+    real_group_cls = extract_mod.TaskGroup
+    spawn_count = [0]
+
+    class FailingSecondSpawnGroup(real_group_cls):
+        def spawn(self, name, fn, *, owner="", close_budget_s=2.0, daemon=True):
+            spawn_count[0] += 1
+            if spawn_count[0] == 2:
+                assert first_started.wait(2.0), "第一路 worker 未启动"
+                raise RuntimeError("spawn-second-boom")
+            handle = super().spawn(
+                name, fn, owner=owner, close_budget_s=close_budget_s, daemon=daemon
+            )
+            spawned_handles.append(handle)
+            return handle
+
+    monkeypatch.setattr(extract_mod, "TaskGroup", FailingSecondSpawnGroup)
+    with pytest.raises(RuntimeError, match="spawn-second-boom"):
+        extract_pose_pair(
+            v1,
+            v2,
+            formal_engine("full"),
+            FORMAL,
+            parallel=True,
+            engine_factory=SlowFirstPipe,
+        )
+    assert len(spawned_handles) == 1 and spawned_handles[0].done is True
+    assert first_closed.is_set() is True
+    calls_after_exit = first_calls[0]
+    assert calls_after_exit < 80
+    time.sleep(0.05)
+    assert first_calls[0] == calls_after_exit
+
+
+def test_extract_pose_pair_progress_monotonic_and_bounded(tmp_path, monkeypatch):
+    """双路 progress 在长短悬殊（5 帧 vs 50 帧）与未知总帧数（total==0）下绝不先 100% 再回退或越界。"""
+    short_vid = _write_test_avi(tmp_path / "short.avi", frames=5, size=(16, 16), fps=10.0)
+    long_vid = _write_test_avi(tmp_path / "long.avi", frames=50, size=(16, 16), fps=10.0)
+
+    class PacedPipe:
+        def __init__(self, delay_s: float) -> None:
+            self._delay_s = delay_s
+
+        def infer(self, _frame, *, timestamp_ms=None):
+            if self._delay_s > 0:
+                time.sleep(self._delay_s)
+            return None, []
+
+        def close(self) -> None:
+            pass
+
+    spec = formal_engine("full")
+    for parallel in (True, False):
+        for pair, delays in (
+            ((short_vid, long_vid), (0.0, 0.002)),
+            ((long_vid, short_vid), (0.002, 0.0)),
+        ):
+            events: list[tuple[int, int]] = []
+            pipes = iter([PacedPipe(delays[0]), PacedPipe(delays[1])])
+            extract_pose_pair(
+                pair[0],
+                pair[1],
+                spec,
+                FORMAL,
+                parallel=parallel,
+                progress=lambda d, t: events.append((d, t)),
+                engine_factory=pipes.__next__,
+            )
+            assert events, f"未收到进度回调: parallel={parallel}"
+            known_ratios: list[float] = []
+            for done, total in events:
+                assert done >= 0 and total >= 0
+                if total > 0:
+                    assert done <= total, f"进度越界 done>total: {events}"
+                    known_ratios.append(done / total)
+            assert known_ratios == sorted(known_ratios), f"进度出现倒退: {events}"
+            assert not any(t > 0 and d == t and t < 55 for d, t in events), (
+                f"提前报满 100%: {events}"
+            )
+            assert known_ratios and known_ratios[-1] == 1.0
+
+    # 未知总帧数（total == 0）场景：绝不出现 done > total > 0 或提前满 100%
+    class FakeCap:
+        def __init__(self, path: str) -> None:
+            self._name = Path(path).name
+            self._i = 0
+
+        def isOpened(self) -> bool:
+            return True
+
+        def get(self, prop: int) -> float:
+            if prop == cv2.CAP_PROP_FPS:
+                return 10.0
+            if prop == cv2.CAP_PROP_FRAME_COUNT:
+                return 0.0 if "unknown" in self._name else 20.0
+            return 0.0
+
+        def read(self):
+            if self._i >= 20:
+                return False, None
+            self._i += 1
+            return True, np.zeros((4, 4, 3), dtype=np.uint8)
+
+        def release(self) -> None:
+            pass
+
+    monkeypatch.setattr(video_source_mod.cv2, "VideoCapture", FakeCap)
+    for parallel in (True, False):
+        for pair in (("unknown_a.mp4", "known_b.mp4"), ("unknown_a.mp4", "unknown_b.mp4")):
+            events = []
+            extract_pose_pair(
+                pair[0],
+                pair[1],
+                spec,
+                FORMAL,
+                parallel=parallel,
+                progress=lambda d, t: events.append((d, t)),
+                engine_factory=lambda: PacedPipe(0.0),
+            )
+            assert events
+            for done, total in events:
+                assert done >= 0 and total >= 0
+                assert total == 0, f"含未知帧数流时不应虚报已知总量: {events}"
