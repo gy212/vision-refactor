@@ -19,10 +19,15 @@ from typing import Any
 import cv2
 import numpy as np
 
-from core.evaluation.segmentation import estimate_action_range  # 动作区间迁入 segmentation，考试裁剪与旧导入继续从这里取
-from core.evaluation.segmentation import estimate_action_range_from_features as estimate_action_range_from_feature_seq  # noqa: F401
-from core.foundation.tasks import Cancelled, CancelToken
+from core.evaluation.segmentation import (
+    estimate_action_range,
+)  # 动作区间迁入 segmentation，考试裁剪与旧导入继续从这里取
+from core.evaluation.segmentation import (
+    estimate_action_range_from_features as estimate_action_range_from_feature_seq,
+)  # noqa: F401
+from core.foundation.tasks import Cancelled, CancelToken, translate_interrupted
 from core.media.video_source import DecodeOptions, open_video
+from core.media.writer import is_mjpeg_avi, open_video_writer, trim_mjpeg_avi
 from core.recording import StepContext
 
 
@@ -51,11 +56,8 @@ def align_frame_counts(front_n: int, side_n: int) -> tuple[int, list[str]]:
         return 0, ["empty_recording"]
     n = min(front_n, side_n)
     if front_n != side_n:
-        warnings.append(
-            f"frame_align: front={front_n} side={side_n} -> n={n} (trim longer tail)"
-        )
+        warnings.append(f"frame_align: front={front_n} side={side_n} -> n={n} (trim longer tail)")
     return n, warnings
-
 
 
 def energy_from_gray_frames(frames: list[np.ndarray]) -> np.ndarray:
@@ -123,6 +125,20 @@ def _count_frames_up_to(
     return count, fps, size
 
 
+def _cancel_predicate(cancel: CancelToken | None) -> Callable[[], bool] | None:
+    if cancel is None:
+        return None
+
+    def _is_cancelled() -> bool:
+        try:
+            cancel.raise_if_cancelled()
+        except Cancelled:
+            return True
+        return False
+
+    return _is_cancelled
+
+
 def _stream_write_range(
     path: Path,
     out_path: Path,
@@ -133,7 +149,7 @@ def _stream_write_range(
     size_hint: tuple[int, int] | None = None,
     cancel: CancelToken | None = None,
 ) -> tuple[Path, int]:
-    """流式写出 [start, end) 帧到 out_path；返回实际路径与写出帧数。取消时删除写了一半的文件。"""
+    """流式写出 [start, end) 帧到 out_path；返回实际路径与写出帧数。取消或异常时删除写了一半的文件。"""
     if end <= start:
         raise RuntimeError("裁剪区间为空")
     writer = None
@@ -152,28 +168,28 @@ def _stream_write_range(
                 if size_hint and size_hint[0] > 0 and size_hint[1] > 0:
                     w, h = size_hint
                 out.parent.mkdir(parents=True, exist_ok=True)
-                fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-                writer = cv2.VideoWriter(str(out), fourcc, float(fps), (w, h))
-                if not writer.isOpened():
-                    out = out_path.with_suffix(".avi")
-                    fourcc = cv2.VideoWriter_fourcc(*"XVID")
-                    writer = cv2.VideoWriter(str(out), fourcc, float(fps), (w, h))
-                if not writer.isOpened():
-                    raise RuntimeError(f"无法创建视频写出：{out_path}")
+                writer, out, _codec = open_video_writer(out_path, fps=float(fps), size=(w, h))
             writer.write(fr)
             written += 1
             del fr
-    except Cancelled:
+    except BaseException:
         if writer is not None:
             writer.release()
             writer = None
-            out.unlink(missing_ok=True)
+            try:
+                out.unlink(missing_ok=True)
+            except OSError:
+                pass
         raise
     finally:
         if writer is not None:
             writer.release()
         source.close()
     if written <= 0:
+        try:
+            out.unlink(missing_ok=True)
+        except OSError:
+            pass
         raise RuntimeError(f"裁剪写出 0 帧：{path}")
     return out, written
 
@@ -201,9 +217,7 @@ def _aligned_range(
 
     n2 = min(front_n, side_n)
     if n2 < n:
-        warnings.append(
-            f"read_short: expected {n} got front={front_n} side={side_n}"
-        )
+        warnings.append(f"read_short: expected {n} got front={front_n} side={side_n}")
     if energy is not None and energy.size > max(0, n2 - 1):
         energy = energy[: max(0, n2 - 1)]
 
@@ -222,6 +236,42 @@ def _aligned_range(
     return start, end, n2, fps, size_f, size_s
 
 
+def _write_single_range(
+    path: Path,
+    out_dir: Path,
+    view: str,
+    *,
+    start: int,
+    end: int,
+    fps: float,
+    size_hint: tuple[int, int] | None,
+    cancel: CancelToken | None,
+) -> tuple[Path, int, bool]:
+    """写出单路 [start, end)；MJPG AVI 走 L1 包级无损流拷贝输出 .avi，其余格式走流式回退写出 .avi。"""
+    avi_out = out_dir / f"{view}_exam.avi"
+    if is_mjpeg_avi(path):
+        _check_cancel(cancel)
+        with translate_interrupted(cancel):
+            written = trim_mjpeg_avi(
+                path,
+                avi_out,
+                start_frame=start,
+                end_frame=end,
+                cancel_check=_cancel_predicate(cancel),
+            )
+        return avi_out, written, True
+    out, written = _stream_write_range(
+        path,
+        avi_out,
+        start=start,
+        end=end,
+        fps=fps,
+        size_hint=size_hint,
+        cancel=cancel,
+    )
+    return out, written, False
+
+
 def _write_aligned_pair(
     sources: tuple[Path, Path],
     out_dir: Path,
@@ -232,19 +282,30 @@ def _write_aligned_pair(
     fps: float,
     warnings: list[str],
     cancel: CancelToken | None = None,
-) -> tuple[Path, Path, int]:
-    """写出两路 [start, end) 并保证写出帧数一致（不一致时按较短一路重写），返回 (正面, 侧面, 帧数)。
+) -> tuple[Path, Path, int, bool]:
+    """写出两路 [start, end) 并保证写出帧数一致（不一致时按较短一路重写），返回 (正面, 侧面, 帧数, 是否全无损直裁)。
 
-    取消时删除本次已写完的两路产物（写了一半的那一路由 ``_stream_write_range`` 删除），不留半套裁剪结果。
+    取消或异常时删除本次已写完的产物（写了一半的那一路由底层写出函数删除），不留半套裁剪结果。
     """
     created: list[Path] = []
     try:
         return _write_pair_outputs(
-            sources, out_dir, sizes, created, start=start, end=end, fps=fps, warnings=warnings, cancel=cancel,
+            sources,
+            out_dir,
+            sizes,
+            created,
+            start=start,
+            end=end,
+            fps=fps,
+            warnings=warnings,
+            cancel=cancel,
         )
-    except Cancelled:
+    except BaseException:
         for path in created:
-            path.unlink(missing_ok=True)
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
         raise
 
 
@@ -259,16 +320,24 @@ def _write_pair_outputs(
     fps: float,
     warnings: list[str],
     cancel: CancelToken | None,
-) -> tuple[Path, Path, int]:
+) -> tuple[Path, Path, int, bool]:
     """``_write_aligned_pair`` 的写出与再截齐；每写完一路把产物路径记进 ``created``。"""
-    names = ("front_exam.mp4", "side_exam.mp4")
+    views = ("front", "side")
+    copied = [False, False]
 
     def write(i: int, stop: int) -> tuple[Path, int]:
         size = sizes[i]
-        out, count = _stream_write_range(
-            sources[i], out_dir / names[i], start=start, end=stop, fps=fps,
-            size_hint=size if size[0] > 0 else None, cancel=cancel,
+        out, count, stream_copy = _write_single_range(
+            sources[i],
+            out_dir,
+            views[i],
+            start=start,
+            end=stop,
+            fps=fps,
+            size_hint=size if size[0] > 0 else None,
+            cancel=cancel,
         )
+        copied[i] = stream_copy
         created.append(out)
         return out, count
 
@@ -289,7 +358,7 @@ def _write_pair_outputs(
             raise RuntimeError(
                 f"clip re-trim still mismatched: front={front_written} side={side_written}"
             )
-    return front_out, side_out, written
+    return front_out, side_out, written, all(copied)
 
 
 def prepare_exam_pair(
@@ -304,7 +373,7 @@ def prepare_exam_pair(
     use_pixel_energy: bool = True,
     cancel: CancelToken | None = None,
 ) -> ClipResult:
-    """截齐 + 裁剪，写出 front_exam / side_exam（流式，峰值内存 O(1 帧)）。``cancel`` 取消时抛 ``Cancelled``。"""
+    """截齐 + 裁剪，写出 front_exam / side_exam（MJPG AVI 走无损流拷贝，其余流式写出，峰值内存 O(1 帧)）。``cancel`` 取消时抛 ``Cancelled``。"""
     front_source = Path(front_source)
     side_source = Path(side_source)
     out_dir = Path(out_dir)
@@ -314,12 +383,24 @@ def prepare_exam_pair(
     if n <= 0:
         raise RuntimeError("录制帧数为 0，无法派发")
     start, end, n2, fps, size_f, size_s = _aligned_range(
-        front_source, side_source, n, warnings,
-        trim_head_s=trim_head_s, trim_tail_s=trim_tail_s, use_pixel_energy=use_pixel_energy, cancel=cancel,
+        front_source,
+        side_source,
+        n,
+        warnings,
+        trim_head_s=trim_head_s,
+        trim_tail_s=trim_tail_s,
+        use_pixel_energy=use_pixel_energy,
+        cancel=cancel,
     )
-    front_out, side_out, written = _write_aligned_pair(
-        (front_source, side_source), out_dir, (size_f, size_s),
-        start=start, end=end, fps=fps, warnings=warnings, cancel=cancel,
+    front_out, side_out, written, stream_copied = _write_aligned_pair(
+        (front_source, side_source),
+        out_dir,
+        (size_f, size_s),
+        start=start,
+        end=end,
+        fps=fps,
+        warnings=warnings,
+        cancel=cancel,
     )
     return ClipResult(
         front_path=front_out,
@@ -335,6 +416,7 @@ def prepare_exam_pair(
             "source_front_frames": front_frames,
             "source_side_frames": side_frames,
             "streamed": True,
+            "stream_copy": stream_copied,
         },
     )
 

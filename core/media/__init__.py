@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """媒体层（L1）的公共 API：离线视频解码、帧契约、视频写出/转码与摄像头录像的 MJPEG 写出、录像时间轴与采集记录、片段路径布局与摄像头子系统。"""
+
 from core.media.video_source import (
     DEFAULT_FPS,
     NO_END,
@@ -42,15 +43,40 @@ from core.media.camera import (
     make_label,
     probe_camera,
 )
-from core.media.frames import CapturedFrame, FrameSet, capture_clock_ns, is_valid_bgr, monotonic_of_capture
-from core.media.capture_record import capture_document, read_capture_record, write_capture_record
+from core.media.frames import (
+    CapturedFrame,
+    FrameSet,
+    capture_clock_ns,
+    is_valid_bgr,
+    monotonic_of_capture,
+)
+from core.media.capture_record import (
+    capture_document,
+    read_capture_record,
+    write_capture_record,
+)
 from core.media.frame_clock import BoundaryShift, FrameClock, FrameClockStats
 from core.media.pacing import Timeline, TimelineStats
 from core.media.transforms import apply_rotation, rotated_size
-from core.media.segment_layout import CAPTURE_FILE, VIDEO_SUFFIXES, SegmentLayout, role_for_view, view_for_role
+from core.media.segment_layout import (
+    CAPTURE_FILE,
+    VIDEO_SUFFIXES,
+    SegmentLayout,
+    role_for_view,
+    view_for_role,
+)
 from core.media.ffmpeg import ffmpeg_executable
-from core.media.mjpeg_writer import MjpegPipeWriter, RecordingWriterError, open_recording_writer
-from core.media.writer import open_video_writer, transcode_to_h264
+from core.media.mjpeg_writer import (
+    MjpegPipeWriter,
+    RecordingWriterError,
+    open_recording_writer,
+)
+from core.media.writer import (
+    is_mjpeg_avi,
+    open_video_writer,
+    transcode_to_h264,
+    trim_mjpeg_avi,
+)
 from core.media.writer_opener import OpenedWriter, OpenWriter, WriterOpener
 
 __all__ = [
@@ -83,6 +109,7 @@ __all__ = [
     "FrameClockStats",
     "FrameQueue",
     "FrameSet",
+    "is_mjpeg_avi",
     "is_valid_bgr",
     "LatestSlot",
     "list_device_names",
@@ -110,6 +137,7 @@ __all__ = [
     "Timeline",
     "TimelineStats",
     "transcode_to_h264",
+    "trim_mjpeg_avi",
     "UndecodableFrame",
     "VIDEO_SUFFIXES",
     "VideoError",
