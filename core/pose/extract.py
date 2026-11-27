@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import contextvars
+import os
 import threading
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -28,6 +29,7 @@ from core.pose.sequence import PoseSequence, SegmentWarmup, SourceMeta
 from core.pose.validity import DEFAULT_VALID_CONF_THR, MEDIAPIPE_VALIDITY_POLICY
 
 SEGMENT_WARMUP_FRAMES = 15
+MIN_CPUS_FOR_RECORDING_PARALLEL = 8
 ProgressFn = Callable[[int, int], None]
 EngineFactory = Callable[[], object]
 FrameHook = Callable[[object, object], None]  # (media.Frame, pose_landmarks 或 None)，顺序跟踪时逐帧回调
@@ -359,3 +361,170 @@ def extract_pose_sequence(video: Path | str, engine: EngineSpec, profile: Extrac
     if store is not None:
         store.setdefault(key, []).append((profile.decode.end, reached_eof, seq))
     return seq
+
+
+def can_parallel_pose_pair(
+    *, foreground_recording: bool = False, cpu_count: int | None = None
+) -> bool:
+    """判断当前是否允许双摄两路并发提点。
+
+    前台未在实时录制时允许并发；若前台正在实时录制，则仅在逻辑核数 ``>= 8`` 时并发，
+    弱 CPU 考场机自动退回单路串行，避免抢占前台 30fps 录像算力。
+    """
+    if not foreground_recording:
+        return True
+    if cpu_count is None:
+        cpus = os.cpu_count()
+    else:
+        if isinstance(cpu_count, bool) or not isinstance(cpu_count, int):
+            raise TypeError(f"cpu_count 必须为 int 或 None，实际 {type(cpu_count).__name__}")
+        cpus = cpu_count
+    return (cpus or 0) >= MIN_CPUS_FOR_RECORDING_PARALLEL
+
+
+def _same_video_path(first: Path, second: Path) -> bool:
+    """判断两路路径是否指向同一物理文件（或同一虚拟回放键）。"""
+    if str(first) == str(second):
+        return True
+    try:
+        return first.samefile(second)
+    except OSError:
+        return _file_key(first) == _file_key(second)
+
+
+def _extract_pair_sequential(
+    first: Path,
+    second: Path,
+    engine: EngineSpec,
+    profile: ExtractionProfile,
+    *,
+    same_file: bool,
+    cancel: CancelToken | None,
+    progress: ProgressFn | None,
+    engine_factory: EngineFactory | None,
+) -> tuple[PoseSequence, PoseSequence]:
+    seq1 = extract_pose_sequence(
+        first, engine, profile, workers=1, cancel=cancel, progress=progress,
+        engine_factory=engine_factory,
+    )
+    if cancel is not None:
+        cancel.raise_if_cancelled()
+    if same_file:
+        return seq1, seq1
+    seq2 = extract_pose_sequence(
+        second, engine, profile, workers=1, cancel=cancel, progress=progress,
+        engine_factory=engine_factory,
+    )
+    if cancel is not None:
+        cancel.raise_if_cancelled()
+    return seq1, seq2
+
+
+def _extract_pair_parallel(
+    first: Path,
+    second: Path,
+    engine: EngineSpec,
+    profile: ExtractionProfile,
+    *,
+    store: dict | None,
+    cancel: CancelToken | None,
+    progress: ProgressFn | None,
+    engine_factory: EngineFactory | None,
+) -> tuple[PoseSequence, PoseSequence]:
+    if engine_factory is None:
+        default_models_dir()  # 并发前单次解析/播种模型目录，避免冻结包双线程竞争
+    shared = cancel.child() if cancel is not None else CancelToken()
+    results: list[PoseSequence | None] = [None, None]
+    errors: list[BaseException | None] = [None, None]
+    captured: list[list[tuple[tuple, list]]] = [[], []]
+    progress_lock = threading.Lock()
+    done_counts, total_counts = [0, 0], [0, 0]
+
+    def make_progress(slot: int) -> ProgressFn | None:
+        if progress is None:
+            return None
+
+        def report(done: int, total: int) -> None:
+            with progress_lock:
+                done_counts[slot], total_counts[slot] = done, total
+                progress(done_counts[0] + done_counts[1], total_counts[0] + total_counts[1])
+
+        return report
+
+    def run_view(slot: int, video: Path) -> None:
+        child_store: dict = {}
+        token = _CACHE.set(child_store)
+        try:
+            results[slot] = extract_pose_sequence(
+                video, engine, profile, workers=1, cancel=shared,
+                progress=make_progress(slot), engine_factory=engine_factory,
+            )
+            if child_store:
+                captured[slot] = list(child_store.items())
+        except Cancelled:
+            return
+        except BaseException as exc:
+            errors[slot] = exc
+            shared.cancel("error")
+        finally:
+            _CACHE.reset(token)
+
+    group = TaskGroup("pose-pair")
+    handles = [
+        group.spawn("view-0", lambda _t: run_view(0, first), owner="extract_pose_pair"),
+        group.spawn("view-1", lambda _t: run_view(1, second), owner="extract_pose_pair"),
+    ]
+    for handle in handles:
+        handle.join()
+    if cancel is not None:
+        cancel.raise_if_cancelled()
+    for exc in errors:
+        if exc is not None:
+            raise exc
+    shared.raise_if_cancelled()
+    assert results[0] is not None and results[1] is not None
+    if store is not None:
+        for entries in captured:
+            for key, items in entries:
+                store.setdefault(key, []).extend(items)
+    return results[0], results[1]
+
+
+def extract_pose_pair(
+    first_video: Path | str,
+    second_video: Path | str,
+    engine: EngineSpec,
+    profile: ExtractionProfile = FORMAL,
+    *,
+    parallel: bool = True,
+    cancel: CancelToken | None = None,
+    progress: ProgressFn | None = None,
+    engine_factory: EngineFactory | None = None,
+) -> tuple[PoseSequence, PoseSequence]:
+    """双摄正/侧两路视频提点唯一公共原语（固定 ``workers=1`` 顺序跟踪，与串行 0 ULP 一致）。
+
+    先查当前调用线程的 ``pose_cache``：若任一路已命中、两路指向同一物理文件或 ``parallel=False``，
+    直接顺序走缓存不额外起线程；两路均未缓存且 ``parallel=True`` 时通过 ``TaskGroup`` 并发跑两路
+    独立 ``PoseEngine``，完成后按精确缓存键写回父线程 ``pose_cache``，确保下游 100% 命中缓存。
+    """
+    if cancel is not None:
+        cancel.raise_if_cancelled()
+    first, second = Path(str(first_video)), Path(str(second_video))
+    same_file = _same_video_path(first, second)
+    store = _CACHE.get() if engine_factory is None else None
+    hit1 = hit2 = None
+    if store is not None:
+        key1 = _cache_key(first, engine, profile, 1)
+        hit1 = _cache_lookup(store, key1, profile.decode.end)
+        hit2 = hit1 if same_file else _cache_lookup(store, _cache_key(second, engine, profile, 1), profile.decode.end)
+        if hit1 is not None and hit2 is not None:
+            return hit1, hit2
+    if (not parallel) or same_file or (hit1 is not None) or (hit2 is not None):
+        return _extract_pair_sequential(
+            first, second, engine, profile, same_file=same_file,
+            cancel=cancel, progress=progress, engine_factory=engine_factory,
+        )
+    return _extract_pair_parallel(
+        first, second, engine, profile, store=store,
+        cancel=cancel, progress=progress, engine_factory=engine_factory,
+    )

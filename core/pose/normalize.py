@@ -164,60 +164,114 @@ def normalize_pose_xy_v3(pose_landmarks) -> np.ndarray | None:
     """
     if pose_landmarks is None:
         return None
+    with np.errstate(all="ignore"):
+        pts = _landmark_xy_array(pose_landmarks, range(33))
+    out, valid = normalize_pose_xy_v3_batch(pts[None, :, :])
+    return out[0] if valid[0] else None
 
-    lm = pose_landmarks
 
-    # BlazePose indices
-    L_SHOULDER, R_SHOULDER = 11, 12
-    L_HIP, R_HIP = 23, 24
+def _v3_rotation_transpose(
+    ls: np.ndarray,
+    rs: np.ndarray,
+    sh_c: np.ndarray,
+    hip_c: np.ndarray,
+    sh_w_f64: np.ndarray,
+    torso_f64: np.ndarray,
+    torso_fin: np.ndarray,
+) -> np.ndarray:
+    """按 v3 前/侧自适应策略计算每帧转置旋转矩阵 ``(M, 2, 2) float32``（与单帧 ``R.T`` 逐位一致）。"""
+    width_ratio = np.where(torso_fin, sh_w_f64 / (torso_f64 + 1e-6), 0.0)
+    use_shoulders = width_ratio >= 0.35
+    v = np.where(use_shoulders[:, None], rs - ls, sh_c - hip_c)
+    target = np.where(use_shoulders, 0.0, -float(np.pi) / 2.0)
 
-    pts = _landmark_xy_array(lm, range(33))
-    ls, rs = pts[L_SHOULDER], pts[R_SHOULDER]
-    lh, rh = pts[L_HIP], pts[R_HIP]
+    v_norm_f64 = np.linalg.norm(v, axis=1).astype(np.float64)
+    no_rot = (~np.isfinite(v_norm_f64)) | (v_norm_f64 < 1e-6)
+    ang = np.arctan2(v[:, 1].astype(np.float64), v[:, 0].astype(np.float64))
+    rot = target - ang
+    ca = np.where(no_rot, 1.0, np.cos(rot)).astype(np.float32)
+    sa = np.where(no_rot, 0.0, np.sin(rot)).astype(np.float32)
 
-    if (not np.isfinite(ls).all()) or (not np.isfinite(rs).all()) or (not np.isfinite(lh).all()) or (not np.isfinite(rh).all()):
-        return None
+    rot_t = np.empty((ls.shape[0], 2, 2), dtype=np.float32)
+    rot_t[:, 0, 0] = ca
+    rot_t[:, 0, 1] = sa
+    rot_t[:, 1, 0] = -sa
+    rot_t[:, 1, 1] = ca
+    return rot_t
 
-    sh_c = 0.5 * (ls + rs)
-    hip_c = 0.5 * (lh + rh)
-    center = hip_c if np.isfinite(hip_c).all() else sh_c
-    if not np.isfinite(center).all():
-        return None
 
-    shoulder_w = float(np.linalg.norm(ls - rs))
-    hip_w = float(np.linalg.norm(lh - rh))
-    torso_len = float(np.linalg.norm(sh_c - hip_c))
+def normalize_pose_xy_v3_batch(
+    landmarks: np.ndarray,
+    detected: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """批量版 v3 姿态归一化，与单帧 ``normalize_pose_xy_v3`` 逐位（0 ULP）一致。
 
-    # Prefer torso length as scale; fall back to widths if needed.
-    min_scale = 0.02
-    scale = torso_len if (np.isfinite(torso_len) and torso_len >= min_scale) else max(shoulder_w, hip_w)
-    if (not np.isfinite(scale)) or (scale < min_scale):
-        return None
+    输入 ``landmarks`` 形状 ``(T, >=33, >=2)``（可为 float32/float64 或只读数组），
+    可选 ``detected`` 形状 ``(T,)`` 布尔掩码。返回 ``(features[T, 22, 2] float32, valid[T] bool)``；
+    ``T == 0`` 时安全返回 ``(0, 22, 2)`` 与 ``(0,)`` 空数组。
+    """
+    arr = np.asarray(landmarks)
+    if arr.ndim != 3 or arr.shape[1] < 33 or arr.shape[2] < 2:
+        raise ValueError(f"landmarks 形状必须为 (T, >=33, >=2)，实际 {arr.shape}")
+    n = int(arr.shape[0])
+    out = np.zeros((n, 22, 2), dtype=np.float32)
+    ok = np.zeros((n,), dtype=bool)
+    if n == 0:
+        return out, ok
 
-    # Decide rotation axis by "front-ish" heuristic.
-    width_ratio = float(shoulder_w / (torso_len + 1e-6)) if np.isfinite(torso_len) else 0.0
-    use_shoulders = bool(width_ratio >= 0.35)
-    if use_shoulders:
-        v = rs - ls
-        target = 0.0  # align to +X axis
+    if detected is None:
+        det_idx = np.arange(n, dtype=np.intp)
     else:
-        v = sh_c - hip_c
-        target = -float(np.pi) / 2.0  # align upwards (-Y)
+        det = np.asarray(detected, dtype=bool)
+        if det.shape != (n,):
+            raise ValueError(f"detected 形状必须为 ({n},)，实际 {det.shape}")
+        det_idx = np.flatnonzero(det)
+    if det_idx.size == 0:
+        return out, ok
 
-    v_norm = float(np.linalg.norm(v))
-    if (not np.isfinite(v_norm)) or v_norm < 1e-6:
-        # Fallback: no rotation (still scaled/centered).
-        ca, sa = 1.0, 0.0
-    else:
-        ang = float(np.arctan2(float(v[1]), float(v[0])))
-        rot = float(target - ang)
-        ca, sa = float(np.cos(rot)), float(np.sin(rot))
-    R = np.array([[ca, -sa], [sa, ca]], dtype=np.float32)
+    with np.errstate(all="ignore"):
+        pts_all = np.asarray(arr[det_idx, :33, :2], dtype=np.float32)
+        keep = np.flatnonzero(np.isfinite(pts_all[:, (11, 12, 23, 24), :]).all(axis=(1, 2)))
+        if keep.size == 0:
+            return out, ok
 
-    out = _transform_xy_points(pts[11:33], center=center, scale=float(scale), rot=R, clip=5.0)
-    if (not np.isfinite(out).all()) or float(np.max(np.abs(out))) > 5.0:
-        return None
-    return out
+        cand, pts = det_idx[keep], pts_all[keep]
+        ls, rs, lh, rh = pts[:, 11, :], pts[:, 12, :], pts[:, 23, :], pts[:, 24, :]
+        sh_c, hip_c = 0.5 * (ls + rs), 0.5 * (lh + rh)
+        center = np.where(np.isfinite(hip_c).all(axis=1)[:, None], hip_c, sh_c)
+        center_fin = np.isfinite(center).all(axis=1)
+
+        sh_w_f64 = np.linalg.norm(ls - rs, axis=1).astype(np.float64)
+        hip_w_f64 = np.linalg.norm(lh - rh, axis=1).astype(np.float64)
+        torso_f64 = np.linalg.norm(sh_c - hip_c, axis=1).astype(np.float64)
+        torso_fin = np.isfinite(torso_f64)
+
+        min_scale = 0.02
+        scale_f64 = np.where(
+            torso_fin & (torso_f64 >= min_scale),
+            torso_f64,
+            np.maximum(sh_w_f64, hip_w_f64),
+        )
+        s_keep = np.flatnonzero(center_fin & np.isfinite(scale_f64) & (scale_f64 >= min_scale))
+        if s_keep.size == 0:
+            return out, ok
+
+        cand, pts = cand[s_keep], pts[s_keep]
+        rot_t = _v3_rotation_transpose(
+            ls[s_keep], rs[s_keep], sh_c[s_keep], hip_c[s_keep],
+            sh_w_f64[s_keep], torso_f64[s_keep], torso_fin[s_keep],
+        )
+        scale = scale_f64[s_keep].astype(np.float32)
+        shifted = (pts[:, 11:33, :] - center[s_keep][:, None, :]) / scale[:, None, None]
+        transformed = np.clip(np.matmul(shifted, rot_t), -5.0, 5.0).astype(np.float32, copy=False)
+        f_keep = np.flatnonzero(
+            np.isfinite(transformed).all(axis=(1, 2))
+            & (np.max(np.abs(transformed), axis=(1, 2)) <= 5.0)
+        )
+        if f_keep.size > 0:
+            out[cand[f_keep]] = transformed[f_keep]
+            ok[cand[f_keep]] = True
+    return out, ok
 
 
 def _blaze33_xy_getter(pose_landmarks):

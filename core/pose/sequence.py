@@ -12,7 +12,50 @@ from enum import Enum
 
 import numpy as np
 
+from core.pose.normalize import normalize_pose_xy_v3, normalize_pose_xy_v3_batch
 from core.pose.view_score import pose_view_score
+
+
+def _normalize_rows(
+    rows: np.ndarray,
+    detected: np.ndarray,
+    normalizer: Callable,
+    zero_shape: tuple[int, ...],
+) -> tuple[np.ndarray, np.ndarray]:
+    """批量归一化 ``rows`` 中 ``detected`` 为真的帧；v3 走向量化核，其余正常器走同一返回契约。"""
+    shape = tuple(int(x) for x in zero_shape)
+    if normalizer is normalize_pose_xy_v3 and shape == (22, 2):
+        return normalize_pose_xy_v3_batch(rows, detected)
+    n = int(rows.shape[0])
+    out = np.zeros((n, *shape), dtype=np.float32)
+    valid = np.zeros((n,), dtype=bool)
+    for t in np.flatnonzero(detected):
+        idx = int(t)
+        f = normalizer(rows[idx])
+        if f is not None:
+            out[idx] = f
+            valid[idx] = True
+    return out, valid
+
+
+def _forward_fill_features(
+    feats: np.ndarray,
+    valid: np.ndarray,
+    initial: np.ndarray | None = None,
+) -> np.ndarray:
+    """按 ``HOLD_LAST_FEATURE`` 补齐无效帧：沿用上一有效帧，首个有效帧前填 ``initial``（缺省补 0）。"""
+    m = int(feats.shape[0])
+    if m == 0 or valid.all():
+        return feats
+    idx = np.where(valid, np.arange(m, dtype=np.intp), -1)
+    np.maximum.accumulate(idx, out=idx)
+    out = np.zeros_like(feats)
+    has_prev = idx >= 0
+    if has_prev.any():
+        out[has_prev] = feats[idx[has_prev]]
+    if initial is not None and not has_prev.all():
+        out[~has_prev] = initial
+    return out
 
 
 class GapPolicy(str, Enum):
@@ -137,31 +180,40 @@ class PoseSequence:
         return rows[t] if detected[t] else None
 
     def _sequential_features(self, normalizer: Callable, zero_shape) -> np.ndarray:
-        feats: list[np.ndarray] = []
-        for t in range(len(self)):
-            f = normalizer(self._frame(self.landmarks, self.detected, t))
-            if f is None:
-                f = feats[-1].copy() if feats else np.zeros(zero_shape, dtype=np.float32)
-            feats.append(f)
-        return np.stack(feats, axis=0)
+        shape = tuple(int(x) for x in zero_shape)
+        if len(self) == 0:
+            return np.zeros((0, *shape), dtype=np.float32)
+        feats, valid = _normalize_rows(self.landmarks, self.detected, normalizer, shape)
+        return _forward_fill_features(feats, valid)
 
     def _segmented_features(self, normalizer: Callable, zero_shape) -> np.ndarray:
-        out = np.zeros((len(self), *zero_shape), dtype=np.float32)
+        n = len(self)
+        shape = tuple(int(x) for x in zero_shape)
+        out = np.zeros((n, *shape), dtype=np.float32)
+        if n == 0:
+            return out
+        active = np.zeros((n,), dtype=bool)
+        spans: list[tuple[SegmentWarmup, int, int]] = []
         for seg in self.segments:
+            s, e = int(seg.seg_start), min(int(seg.seg_end) + 1, n)
+            if s >= e:
+                continue
+            undec = np.flatnonzero(~self.decoded[s:e])
+            stop = s + int(undec[0]) if undec.size else e
+            if stop > s:
+                active[s:stop] = True
+                spans.append((seg, s, stop))
+        if not spans:
+            return out
+        feats, valid = _normalize_rows(self.landmarks, self.detected & active, normalizer, shape)
+        for seg, s, stop in spans:
             last = None
-            for w in range(seg.landmarks.shape[0]):
-                f = normalizer(self._frame(seg.landmarks, seg.detected, w))
-                if f is not None:
-                    last = f
-            for t in range(seg.seg_start, seg.seg_end + 1):
-                if not self.decoded[t]:
-                    break
-                f = normalizer(self._frame(self.landmarks, self.detected, t))
-                if f is None:
-                    f = last.copy() if last is not None else np.zeros(zero_shape, dtype=np.float32)
-                else:
-                    last = f
-                out[t] = f
+            if seg.landmarks.shape[0] > 0:
+                w_feats, w_valid = _normalize_rows(seg.landmarks, seg.detected, normalizer, shape)
+                w_ok = np.flatnonzero(w_valid)
+                if w_ok.size:
+                    last = w_feats[int(w_ok[-1])]
+            out[s:stop] = _forward_fill_features(feats[s:stop], valid[s:stop], initial=last)
         return out
 
     # ------------------------------------------------------------------ 视角分数

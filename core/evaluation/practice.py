@@ -7,7 +7,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Collection
+from collections.abc import Callable, Collection, Iterator
+from contextlib import contextmanager
 from dataclasses import asdict, replace
 import time
 from pathlib import Path
@@ -37,11 +38,12 @@ from core.media.video_source import (
 )
 from core.pose.engine import create_engine
 from core.pose.extract import (
+    extract_pose_pair,
     extract_pose_sequence,
     practice_engine,
     practice_v4_profile,
 )
-from core.pose.sequence import Coords, GapPolicy
+from core.pose.sequence import Coords, GapPolicy, PoseSequence
 
 _VIEW_LABELS = {"front": "正面", "side": "侧面"}
 
@@ -52,31 +54,23 @@ def create_practice_engine(cfg: FeedbackConfig | None = None):
     return create_engine(practice_engine(cfg.pose_variant), models_dir=models_dir(), download=False)
 
 
-def extract_series(
-    path: Path, cfg: FeedbackConfig, stopped: Callable[[], bool], pipeline_factory=None
-) -> dict:
-    """默认原帧率逐帧推理，只保留关键点。丢失帧全无效，绝不复用上一帧。
-
-    ``PRACTICE_V4`` 提取（长边上限、抽帧取自 ``cfg``）+ ``raw(ZERO, ASPECT_CORRECTED)``：x、z 统一为图像高度单位。
-    """
-    started = time.monotonic()
-    profile = practice_v4_profile(sample_fps=cfg.sample_fps, max_edge=cfg.max_edge)
+@contextmanager
+def _practice_extract_errors() -> Iterator[None]:
+    """统一将底层视频/取消异常转换为练习分析对外的业务错误契约。"""
     try:
-        seq = extract_pose_sequence(
-            path,
-            practice_engine(cfg.pose_variant),
-            profile,
-            cancel=from_stopped(stopped),
-            engine_factory=pipeline_factory or (lambda: create_practice_engine(cfg)),
-        )
-    except VideoOpenError:
-        raise ValueError(f"视频无法读取，请重新录制：{path.name}") from None
+        yield
+    except VideoOpenError as exc:
+        raise ValueError(f"视频无法读取，请重新录制：{exc.path.name}") from None
     except VideoFpsUnavailable:
         raise ValueError("视频帧率不可用，请重新录制") from None
     except UndecodableFrame:
         raise ValueError("视频存在不可解码的帧，请重新录制") from None
     except Cancelled:
         raise InterruptedError("分析已取消") from None
+
+
+def _sequence_to_series(seq: PoseSequence, started: float) -> dict:
+    """将提取出的 ``PoseSequence`` 转为练习规则序列字典（宽高比修正坐标、丢帧全无效）。"""
     if len(seq) == 0:
         raise ValueError("视频没有可读取的帧，请重新录制")
     w, h = (int(v) for v in seq.source_wh[-1])
@@ -100,6 +94,29 @@ def extract_series(
         "analysisSeconds": round(time.monotonic() - started, 3),
     }
     return series
+
+
+def extract_series(
+    path: Path, cfg: FeedbackConfig, stopped: Callable[[], bool], pipeline_factory=None
+) -> dict:
+    """默认原帧率逐帧推理，只保留关键点。丢失帧全无效，绝不复用上一帧。
+
+    ``PRACTICE_V4`` 提取（长边上限、抽帧取自 ``cfg``）+ ``raw(ZERO, ASPECT_CORRECTED)``：x、z 统一为图像高度单位。
+    """
+    started = time.monotonic()
+    profile = practice_v4_profile(sample_fps=cfg.sample_fps, max_edge=cfg.max_edge)
+    with _practice_extract_errors():
+        seq = extract_pose_sequence(
+            path,
+            practice_engine(cfg.pose_variant),
+            profile,
+            cancel=from_stopped(stopped),
+            engine_factory=pipeline_factory or (lambda: create_practice_engine(cfg)),
+        )
+    return _sequence_to_series(seq, started)
+
+
+_DEFAULT_EXTRACT_SERIES = extract_series
 
 
 def _observe_view(
@@ -451,6 +468,7 @@ def analyze_practice(
     config=None,
     pipeline_factory=None,
     disabled_checks: Collection[str] = (),
+    parallel: bool = True,
 ) -> dict:
     """正、侧两路练习视频（可缺一路）→ 练习结果字典；``config=None`` 时读 ``feedback_config.json``。"""
     cfg = config or load_feedback_config()
@@ -463,11 +481,25 @@ def analyze_practice(
     if front is not None and side is not None and Path(front).samefile(Path(side)):
         raise ValueError("正侧面不能使用同一个视频，请选择同次录制的两路视频")
     views = {}
-    for view, path in (("front", front), ("side", side)):
+    if front is not None and side is not None and extract_series is _DEFAULT_EXTRACT_SERIES:
         if stopped():
             raise InterruptedError("分析已取消")
-        if path is not None:
-            views[view] = extract_series(Path(path), cfg, stopped, pipeline_factory)
+        started = time.monotonic()
+        profile = practice_v4_profile(sample_fps=cfg.sample_fps, max_edge=cfg.max_edge)
+        factory = pipeline_factory or (lambda: create_practice_engine(cfg))
+        with _practice_extract_errors():
+            seq_f, seq_s = extract_pose_pair(
+                Path(front), Path(side), practice_engine(cfg.pose_variant), profile,
+                parallel=parallel, cancel=from_stopped(stopped), engine_factory=factory,
+            )
+        views["front"] = _sequence_to_series(seq_f, started)
+        views["side"] = _sequence_to_series(seq_s, started)
+    else:
+        for view, path in (("front", front), ("side", side)):
+            if stopped():
+                raise InterruptedError("分析已取消")
+            if path is not None:
+                views[view] = extract_series(Path(path), cfg, stopped, pipeline_factory)
     if stopped():
         raise InterruptedError("分析已取消")
     return evaluate_series(action, stance, views, cfg, disabled_checks=disabled_checks)

@@ -22,6 +22,7 @@ from core.foundation.tasks import Cancelled, CancelToken
 from core.media.video_source import first_frame_ok
 from core.media.writer import transcode_to_h264
 from core.pose.engine import missing_model_message
+from core.pose.extract import can_parallel_pose_pair
 from core.pose.models import MEDIAPIPE_MODELS, is_installed
 from core.pose.raw_series import extract_pose_raw_series
 
@@ -36,6 +37,11 @@ TranscodeFn = Callable[[Path, threading.Event], Path | None]
 VideoValidator = Callable[[Path], bool]
 ModelAvailable = Callable[[], bool]
 PoolCompare = Callable[..., Any]
+RecordingActiveFn = Callable[[], bool]
+
+
+def _not_recording() -> bool:
+    return False
 
 
 class PostprocessError(RuntimeError):
@@ -70,6 +76,7 @@ class StepContext:
     warnings: list[str] = field(default_factory=list)
     # 计划附带的说明（如考试裁剪的提示），在结果 JSON 里排在步骤警告之后
     notes: list[str] = field(default_factory=list)
+    foreground_recording: RecordingActiveFn = _not_recording
 
     def video(self, view: str) -> Path:
         """该路当前最新的视频：转码后的产物，否则是录像源。"""
@@ -287,6 +294,7 @@ class ScoreExamPool:
     compare: PoolCompare = match_video
     compare_windows: PoolCompare = match_video_windows
     model_available: ModelAvailable = default_model_available
+    foreground_recording: RecordingActiveFn | bool = False
     lane: Lane = "analysis"
 
     def run(self, ctx: StepContext, cancel: CancelToken) -> Terminal | None:
@@ -305,10 +313,17 @@ class ScoreExamPool:
             message = f"正在执行侧面多模板 DTW 比对（{len(side_tpls)} 个，正面池为空）"
             ctx.warnings.append("正面模板池为空，仅比对侧面")
         ctx.publish("comparing", message)
+        step_recording = (
+            self.foreground_recording()
+            if callable(self.foreground_recording)
+            else self.foreground_recording
+        )
+        is_recording = bool(ctx.foreground_recording()) or bool(step_recording)
+        parallel = can_parallel_pose_pair(foreground_recording=is_recording)
         result = exam_pool.score_exam_pools(
             front_tpls, side_tpls, ctx.video("front"), ctx.video("side"),
             compare=self.compare, raw_series=extract_pose_raw_series, stop_evt=ctx.stop_evt,
-            compare_windows=self.compare_windows,
+            compare_windows=self.compare_windows, parallel=parallel,
         )
         _raise_if_cancelled(ctx, cancel)
         message = "后台多模板比对完成" if front_tpls and side_tpls else "后台单侧多模板比对完成"
@@ -354,6 +369,7 @@ class StepDeps:
     compare: PoolCompare = match_video
     compare_windows: PoolCompare = match_video_windows
     model_available: ModelAvailable = default_model_available
+    foreground_recording: RecordingActiveFn | bool = False
 
 
 def dual_segment_steps(
@@ -364,10 +380,14 @@ def dual_segment_steps(
     side_templates: tuple[Path, ...] = (),
     deps: StepDeps = StepDeps(),
     skeleton: Step | None = None,
+    foreground_recording: RecordingActiveFn | bool | None = None,
 ) -> tuple[Step, ...]:
     """双路片段：检查 → 转码 → 校验 →（``skeleton`` 给出时）骨架成片 →（自动比对开时）考试池评分。
     考试计划在前面加裁剪步骤；带骨架的片段由 ``CompareGate`` 跳过比对。"""
     rendered = () if skeleton is None else (skeleton,)
+    recording_flag = (
+        deps.foreground_recording if foreground_recording is None else foreground_recording
+    )
     return (
         CheckRecording(),
         Transcode(deps.transcode),
@@ -376,7 +396,8 @@ def dual_segment_steps(
         CompareGate(record_skeleton=record_skeleton, auto_compare=auto_compare),
         ScoreExamPool(
             tuple(front_templates), tuple(side_templates),
-            compare=deps.compare, compare_windows=deps.compare_windows, model_available=deps.model_available,
+            compare=deps.compare, compare_windows=deps.compare_windows,
+            model_available=deps.model_available, foreground_recording=recording_flag,
         ),
     )
 

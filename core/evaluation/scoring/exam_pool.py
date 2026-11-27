@@ -22,6 +22,7 @@ import numpy as np
 
 from core.evaluation.action_catalog import action_definition
 from core.evaluation.kick_events import kick_repetitions
+from core.evaluation.matching.engine import match_video, match_video_windows
 from core.evaluation.rule_checks import ACTION_BY_NAME, judge_views, series_from_raw
 from core.evaluation.rules.sanda_v5 import (
     DEFAULT_STANCE,
@@ -41,8 +42,9 @@ from core.evaluation.templates import (
     split_view_suffix,
 )
 from core.evaluation.view_weights import normalized_pair
-from core.pose.extract import pose_cache
-from core.pose.raw_series import slice_pose_raw_series
+from core.foundation.tasks import Cancelled, from_stopped
+from core.pose.extract import FORMAL, extract_pose_pair, formal_engine, pose_cache
+from core.pose.raw_series import extract_pose_raw_series, slice_pose_raw_series
 
 POSE_VARIANT = "heavy"  # 黑盒检测统一走精度最高的 heavy + pose33_v3 链路
 TEMPLATE_LAYOUT = "pose33_v3"
@@ -514,6 +516,20 @@ class ExamPoolResult:
     rule_error: str = ""
 
 
+def _warm_exam_pair(
+    front_video: Path, side_video: Path, *, parallel: bool, stop_evt: Event
+) -> None:
+    """在 ``pose_cache`` 作用域内经共享原语预热正/侧两路 heavy 姿态，下游两池与规则 100% 命中缓存。"""
+    _check_stop(stop_evt)
+    try:
+        extract_pose_pair(
+            front_video, side_video, formal_engine(POSE_VARIANT), FORMAL,
+            parallel=parallel, cancel=from_stopped(stop_evt.is_set),
+        )
+    except Cancelled:
+        raise InterruptedError("后台比对已取消") from None
+
+
 def score_exam_pools(
     front_tpls: list[Path],
     side_tpls: list[Path],
@@ -524,11 +540,12 @@ def score_exam_pools(
     raw_series: RawSeriesFn,
     stop_evt: Event,
     compare_windows: WindowCompare | None = None,
+    parallel: bool = True,
 ) -> ExamPoolResult:
     """正对正池、侧对侧池逐模板评分后合并（考试双机位视角固定，不做自动正侧切分）。
 
-    池里有上步组合的模板且注入了 ``compare_windows`` 时，先在侧面视频上切出每一次，两池的上步组合模板都按这些时间
-    逐次匹配；这时两池在同一个 ``pose_cache`` 作用域内评分，切分与侧面池共用同一次推理。
+    双池均非空且走真实提取时，先在同一 ``pose_cache`` 作用域内经 ``extract_pose_pair`` 预热两路，
+    避免两池与上步组合切分、规则/几何复算重复推理。
     """
     try:
         rule_cfg, rule_error = load_feedback_config(), ""
@@ -543,58 +560,40 @@ def score_exam_pools(
         )
     )
     stepwise = compare_windows is not None and bool(per_rep_actions)
-    with pose_cache() if stepwise else nullcontext():
+    warm_dual = bool(
+        front_tpls and side_tpls
+        and compare is match_video and raw_series is extract_pose_raw_series
+        and (compare_windows is None or compare_windows is match_video_windows)
+    )
+    with pose_cache() if (stepwise or warm_dual) else nullcontext():
+        if warm_dual:
+            _warm_exam_pair(front_video, side_video, parallel=parallel, stop_evt=stop_evt)
         reps = None
         reps_by_action = None
         if stepwise:
             _check_stop(stop_evt)
             side_raw = raw_series(side_video, pose_variant=POSE_VARIANT)
             cfg_rep = rule_cfg or FeedbackConfig()
-            reps_by_action = {
-                act: action_side_repetitions(side_raw, act, cfg_rep)
-                for act in per_rep_actions
-            }
+            reps_by_action = {act: action_side_repetitions(side_raw, act, cfg_rep) for act in per_rep_actions}
             reps = reps_by_action.get("step_straight_combo")
         pool_args = {
-            "compare": compare,
-            "raw_series": raw_series,
-            "stop_evt": stop_evt,
-            "rule_cfg": rule_cfg,
-            "reps": reps,
-            "reps_by_action": reps_by_action,
+            "compare": compare, "raw_series": raw_series, "stop_evt": stop_evt,
+            "rule_cfg": rule_cfg, "reps": reps, "reps_by_action": reps_by_action,
             "compare_windows": compare_windows,
         }
-        front_details, front_score, front_targets = score_pool(
-            front_tpls, front_video, "front", **pool_args
-        )
-        side_details, side_score, side_targets = score_pool(
-            side_tpls, side_video, "side", **pool_args
-        )
-    reports = (
-        rule_reports(front_targets, side_targets, rule_cfg)
-        if rule_cfg is not None
-        else []
-    )
+        front_details, front_score, front_targets = score_pool(front_tpls, front_video, "front", **pool_args)
+        side_details, side_score, side_targets = score_pool(side_tpls, side_video, "side", **pool_args)
+    reports = rule_reports(front_targets, side_targets, rule_cfg) if rule_cfg is not None else []
     # 合并只影响 combined 与逐动作列，避免正+侧双模板动作被双重计数。
     action_scores = merge_view_weighted_actions(front_details + side_details)
     all_scores = [d["score"] for d in action_scores]
     combined = float(np.mean(all_scores)) if all_scores else 0.0
     pct = int(np.clip(int(round(combined * 100.0)), 0, 100))
     # 兼容旧字段：front/side_segment 取各池首个匹配窗口
-    front_seg = (
-        (front_details[0]["start"], front_details[0]["end"]) if front_details else None
-    )
-    side_seg = (
-        (side_details[0]["start"], side_details[0]["end"]) if side_details else None
-    )
+    front_seg = (front_details[0]["start"], front_details[0]["end"]) if front_details else None
+    side_seg = (side_details[0]["start"], side_details[0]["end"]) if side_details else None
     return ExamPoolResult(
-        front_score,
-        side_score,
-        combined,
-        pct,
-        front_segment=front_seg,
-        side_segment=side_seg,
-        action_scores=tuple(action_scores),
-        rule_checks=tuple(reports),
-        rule_error=rule_error,
+        front_score, side_score, combined, pct,
+        front_segment=front_seg, side_segment=side_seg,
+        action_scores=tuple(action_scores), rule_checks=tuple(reports), rule_error=rule_error,
     )

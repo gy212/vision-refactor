@@ -52,6 +52,8 @@ class RecordingService:
         self._plan_for = plan_for
         self._recorder = recorder or SegmentRecorder()
         self._lock = threading.RLock()
+        if isinstance(finalizer, SegmentFinalizer):
+            finalizer.bind_recording_probe(lambda: self._recorder.state != "idle")
 
     @property
     def finalizer(self) -> SegmentFinalizer:

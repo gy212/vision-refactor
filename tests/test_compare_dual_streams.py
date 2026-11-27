@@ -15,6 +15,7 @@ compare_dual_streams 单测（issue #55，为 #56 打底）。
 from __future__ import annotations
 
 import sys
+import threading
 from pathlib import Path
 from threading import Event
 
@@ -164,6 +165,26 @@ def test_cancelled_extraction_closes_resources_without_scoring(tracked_extractio
             stop_evt=stop_evt,
         )
 
+    assert 1 <= len(_TrackedCapture.instances) <= 2
+    assert all(item.released for item in _TrackedCapture.instances)
+    assert 1 <= len(_TrackedPipeline.instances) <= 2
+    assert all(item.closed for item in _TrackedPipeline.instances)
+
+    # 显式串行模式取消：首路即停，不打开第二路
+    _TrackedCapture.instances.clear()
+    _TrackedPipeline.instances.clear()
+    serial_stop = Event()
+    _TrackedPipeline.cancel_evt = serial_stop
+    with pytest.raises(InterruptedError, match="姿态特征提取已取消"):
+        compare_dual_streams(
+            FRONT_TPL,
+            SIDE_TPL,
+            Path("tracked-front.mp4"),
+            Path("tracked-side.mp4"),
+            pose_variant="full",
+            stop_evt=serial_stop,
+            parallel=False,
+        )
     assert len(_TrackedCapture.instances) == 1
     assert _TrackedCapture.instances[0].released is True
     assert len(_TrackedPipeline.instances) == 1
@@ -394,3 +415,322 @@ def test_layout_version_mismatch_raises_value_error(registered_videos, tmp_path)
     with H.replay_context():
         with pytest.raises(ValueError):
             compare_dual_streams(mutated_front_tpl, SIDE_TPL, FRONT_SRC, SIDE_SRC, pose_variant="full")
+
+
+def test_dual_streams_parallel_matches_serial_zero_ulp_and_zero_reextraction(registered_videos):
+    """双流比对并发提点：真双路并发、与串行完全一致、特征与规则/关节误差 0 重复推理。"""
+    from core.pose import extract as extract_mod
+
+    with H.replay_context():
+        serial = compare_dual_streams(
+            FRONT_TPL, SIDE_TPL, FRONT_SRC, SIDE_SRC,
+            pose_variant="full", enable_rules=True, enable_error_analysis=True, parallel=False,
+        )
+        lock = threading.Lock()
+        barrier = threading.Barrier(2, timeout=3.0)
+        created = active = max_active = 0
+        orig_create = extract_mod.create_engine
+
+        def tracked(spec, **kw):
+            nonlocal created
+            with lock:
+                created += 1
+            pipe = orig_create(spec, **kw)
+            orig_infer = pipe.infer
+            first = [True]
+
+            def wrapped(frame, **kwargs):
+                nonlocal active, max_active
+                with lock:
+                    active += 1
+                    max_active = max(max_active, active)
+                try:
+                    if first[0]:
+                        first[0] = False
+                        barrier.wait()
+                    return orig_infer(frame, **kwargs)
+                finally:
+                    with lock:
+                        active -= 1
+
+            pipe.infer = wrapped
+            return pipe
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(extract_mod, "create_engine", tracked)
+            parallel = compare_dual_streams(
+                FRONT_TPL, SIDE_TPL, FRONT_SRC, SIDE_SRC,
+                pose_variant="full", enable_rules=True, enable_error_analysis=True, parallel=True,
+            )
+
+    assert max_active == 2
+    assert created == 2
+    assert parallel == serial
+
+
+def test_score_segment_parallel_matches_serial_and_zero_reextraction(registered_videos, tmp_path):
+    """离线考试池复算 score_segment 接入共享并发原语：结果与串行完全一致且仅各推理一次。"""
+    from core.pose import extract as extract_mod
+    from core.services import score_segment
+
+    def make_heavy(out: Path, src: Path) -> Path:
+        d = np.load(src, allow_pickle=True)
+        meta = {**d["meta"].item(), "pose_variant": "heavy"}
+        np.savez_compressed(out, features=d["features"], meta=np.array(meta, dtype=object))
+        return out
+
+    front_tpls = [make_heavy(tmp_path / "高鞭腿.npz", FRONT_TPL)]
+    side_tpls = [make_heavy(tmp_path / "直拳.npz", SIDE_TPL)]
+
+    with H.replay_context():
+        serial = score_segment(FRONT_SRC, SIDE_SRC, front_tpls, side_tpls, parallel=False)
+        lock = threading.Lock()
+        barrier = threading.Barrier(2, timeout=3.0)
+        created = max_active = active = 0
+        orig_create = extract_mod.create_engine
+
+        def tracked(spec, **kw):
+            nonlocal created
+            with lock:
+                created += 1
+            pipe = orig_create(spec, **kw)
+            orig_infer = pipe.infer
+            first = [True]
+
+            def wrapped(frame, **kwargs):
+                nonlocal active, max_active
+                with lock:
+                    active += 1
+                    max_active = max(max_active, active)
+                try:
+                    if first[0]:
+                        first[0] = False
+                        barrier.wait()
+                    return orig_infer(frame, **kwargs)
+                finally:
+                    with lock:
+                        active -= 1
+
+            pipe.infer = wrapped
+            return pipe
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(extract_mod, "create_engine", tracked)
+            parallel = score_segment(FRONT_SRC, SIDE_SRC, front_tpls, side_tpls, parallel=True)
+
+    assert max_active == 2
+    assert created == 2
+    assert parallel == serial
+
+
+def test_exam_pool_skips_parallel_warmup_when_raw_or_windows_injected(tmp_path, monkeypatch):
+    """保留默认 compare=match_video 但注入假 raw_series/compare_windows 时不得误调真实预热。"""
+    from types import SimpleNamespace
+    from core.evaluation import match_video
+    from core.evaluation.scoring import exam_pool as exam_pool_mod
+    from core.pose import Pose33RawSeries
+
+    tpl = tmp_path / "上步前后手直拳组合.npz"
+    np.savez_compressed(
+        tpl,
+        features=np.zeros((5, 22, 2), dtype=np.float32),
+        meta=np.array({"pose_variant": "heavy", "feature_layout": "pose33_v3"}, dtype=object),
+    )
+
+    def fail_warmup(*_args, **_kwargs):
+        raise AssertionError("注入假依赖时不得触发真实 extract_pose_pair 预热")
+
+    monkeypatch.setattr(exam_pool_mod, "extract_pose_pair", fail_warmup)
+    monkeypatch.setattr(exam_pool_mod, "action_side_repetitions", lambda *_a: [(0.5, 1.0)])
+    monkeypatch.setattr(
+        exam_pool_mod, "load_feedback_config", lambda: (_ for _ in ()).throw(ValueError("skip rules"))
+    )
+
+    fake_raw = Pose33RawSeries(
+        landmarks=np.zeros((60, 33, 4), dtype=np.float32),
+        meta={"fps": 30.0, "width": 64, "height": 64, "frame_count": 60, "start_frame": 0},
+    )
+    fake_windows_calls: list[Path] = []
+
+    def fake_compare_windows(templates, video, _windows, **_kw):
+        fake_windows_calls.append(Path(video))
+        return [[SimpleNamespace(score=0.82, start_frame=1, end_frame=20)] for _ in templates]
+
+    res = exam_pool_mod.score_exam_pools(
+        [tpl],
+        [tpl],
+        Path("nonexistent_front.mp4"),
+        Path("nonexistent_side.mp4"),
+        compare=match_video,
+        raw_series=lambda *_a, **_k: fake_raw,
+        stop_evt=Event(),
+        compare_windows=fake_compare_windows,
+        parallel=True,
+    )
+    assert fake_windows_calls == [Path("nonexistent_front.mp4"), Path("nonexistent_side.mp4")]
+    assert res.front_score == pytest.approx(0.82)
+    assert res.side_score == pytest.approx(0.82)
+
+
+def test_recording_service_exam_guard_switches_parallel_by_foreground_state(tmp_path, monkeypatch):
+    """端到端验证 RecordingService + SegmentFinalizer + dual_segment_steps 自动感知前台录制态。"""
+    import os
+    from types import SimpleNamespace
+    from core.evaluation.scoring import exam_pool as exam_pool_mod
+    from core.recording import (
+        ProcessingPlan,
+        RecordingService,
+        ResultSpec,
+        SegmentFinalizer,
+        SegmentMeta,
+        SegmentRecorder,
+        StepDeps,
+        dual_segment_steps,
+    )
+
+    tpl = tmp_path / "直拳.npz"
+    np.savez_compressed(
+        tpl,
+        features=np.zeros((5, 22, 2), dtype=np.float32),
+        meta=np.array({"pose_variant": "heavy", "feature_layout": "pose33_v3"}, dtype=object),
+    )
+    monkeypatch.setattr(os, "cpu_count", lambda: 4)  # 弱 CPU 考场机（< 8 核）
+
+    parallel_seen: list[bool] = []
+    transcode_gate = Event()
+    transcode_waiting = Event()
+    completed = [Event(), Event()]
+    done_idx = [0]
+
+    def fake_score(*_args, **kwargs):
+        parallel_seen.append(bool(kwargs["parallel"]))
+        return SimpleNamespace(
+            front_score=0.9, side_score=0.9, combined_score=0.9, combined_percent=90,
+            front_matches=(), side_matches=(), front_segment=(0, 4), side_segment=(0, 4),
+            action_scores=(), rule_checks=(), rule_error="",
+        )
+
+    monkeypatch.setattr(exam_pool_mod, "score_exam_pools", fake_score)
+
+    class StubWriter:
+        def __init__(self, path: Path) -> None:
+            self.path = Path(path)
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self.path.write_bytes(b"stub")
+
+        def write(self, _frame) -> None:
+            pass
+
+        def release(self) -> None:
+            pass
+
+    def writer_factory(path, _fps, _size, _rot):
+        w = StubWriter(path)
+        return w, w.path, "fake"
+
+    seg_num = [0]
+
+    def gated_transcode(path: Path, _stop: Event) -> Path:
+        if seg_num[0] == 2:
+            transcode_waiting.set()
+            assert transcode_gate.wait(3.0)
+        return path
+
+    def on_update(update) -> None:
+        if update.status == "completed":
+            idx = done_idx[0]
+            done_idx[0] += 1
+            if idx < len(completed):
+                completed[idx].set()
+
+    deps = StepDeps(
+        transcode=gated_transcode,
+        video_validator=lambda _p: True,
+        model_available=lambda: True,
+    )
+
+    def plan_for(_segment) -> ProcessingPlan:
+        steps = dual_segment_steps(
+            record_skeleton=False, auto_compare=True,
+            front_templates=(tpl,), side_templates=(tpl,), deps=deps,
+        )
+        return ProcessingPlan(steps, result=ResultSpec(front_template=tpl, side_template=tpl))
+
+    finalizer = SegmentFinalizer(on_update=on_update)
+    service = RecordingService(finalizer, plan_for=plan_for, recorder=SegmentRecorder(writer_factory))
+    frame = np.zeros((16, 16, 3), dtype=np.uint8)
+    try:
+        service.begin_session({"front": (16, 16), "side": (16, 16)}, 30.0)
+        # 第 1 段：结束后无后续前台录制（recorder 为 idle）-> 即使 4 核仍允许 parallel=True
+        seg_num[0] = 1
+        assert service.start(SegmentMeta(tmp_path / "rec"))
+        service.write({"front": frame, "side": frame})
+        service.finish()
+        assert completed[0].wait(3.0)
+        assert parallel_seen == [True]
+
+        # 第 2 段：卡在转码阶段，同时前台开启第 3 段录制 -> 放行进入 ScoreExamPool 时自动降为 parallel=False
+        seg_num[0] = 2
+        assert service.start(SegmentMeta(tmp_path / "rec"))
+        service.write({"front": frame, "side": frame})
+        service.finish()
+        assert transcode_waiting.wait(3.0)
+        assert service.start(SegmentMeta(tmp_path / "rec"))
+        assert service.state == "recording"
+        transcode_gate.set()
+        assert completed[1].wait(3.0)
+        assert parallel_seen == [True, False]
+        service.finish(discard=True)
+    finally:
+        transcode_gate.set()
+        service.close_session()
+        finalizer.close(2.0)
+
+
+def test_can_parallel_pose_pair_and_score_exam_pool_low_cpu_guard(tmp_path, monkeypatch):
+    """考试后台资源守卫：前台录制且 CPU < 8 核退回串行；>= 8 核或未录制允许并行。"""
+    import os
+    from types import SimpleNamespace
+    from core.evaluation.scoring import exam_pool as exam_pool_mod
+    from core.foundation.tasks import CancelToken
+    from core.pose import can_parallel_pose_pair
+    from core.recording import ScoreExamPool, StepContext
+
+    assert can_parallel_pose_pair(foreground_recording=False, cpu_count=2) is True
+    assert can_parallel_pose_pair(foreground_recording=True, cpu_count=4) is False
+    assert can_parallel_pose_pair(foreground_recording=True, cpu_count=7) is False
+    assert can_parallel_pose_pair(foreground_recording=True, cpu_count=8) is True
+    monkeypatch.setattr(os, "cpu_count", lambda: None)
+    assert can_parallel_pose_pair(foreground_recording=True) is False
+    with pytest.raises(TypeError):
+        can_parallel_pose_pair(foreground_recording=True, cpu_count=True)  # type: ignore[arg-type]
+
+    tpl = tmp_path / "直拳.npz"
+    np.savez_compressed(
+        tpl,
+        features=np.zeros((5, 22, 2), dtype=np.float32),
+        meta=np.array({"pose_variant": "heavy", "feature_layout": "pose33_v3"}, dtype=object),
+    )
+    recorded_parallel: list[bool] = []
+
+    def fake_score(*_args, **kwargs):
+        recorded_parallel.append(bool(kwargs["parallel"]))
+        return SimpleNamespace(
+            front_score=0.8, side_score=0.8, combined_score=0.8, combined_percent=80,
+            front_matches=(), side_matches=(), front_segment=(0, 4), side_segment=(0, 4),
+            action_scores=(), rule_checks=(), rule_error="",
+        )
+
+    monkeypatch.setattr(exam_pool_mod, "score_exam_pools", fake_score)
+    ctx = StepContext(
+        segment_id="seg-guard", segment_dir=tmp_path, views=("front", "side"),
+        sources={"front": tmp_path / "f.mp4", "side": tmp_path / "s.mp4"},
+        frames={"front": 10, "side": 10}, errors={}, stop_evt=Event(), publish=lambda *_a: None,
+    )
+    for cpus, recording, expected in ((4, True, False), (8, True, True), (4, False, True)):
+        monkeypatch.setattr(os, "cpu_count", lambda c=cpus: c)
+        step = ScoreExamPool(
+            (tpl,), (tpl,), model_available=lambda: True, foreground_recording=lambda r=recording: r
+        )
+        step.run(ctx, CancelToken())
+        assert recorded_parallel[-1] is expected
